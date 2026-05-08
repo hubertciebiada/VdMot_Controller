@@ -654,7 +654,6 @@ void  CStmApp::app_check_data()
                         if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
                         strncpy(tempsId[idx].id,ps,sizeof(tempsId[idx].id));
                         ps=cmdptr+1;
-                        idx++;
                     }
                 }
                 tempsCount=tempsPrivCount;
@@ -729,7 +728,6 @@ void  CStmApp::app_check_data()
                         if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
                         strncpy(voltsId[idx].id,ps,sizeof(voltsId[idx].id));
                         ps=cmdptr+1;
-                        idx++;
                     }
                 }
                 voltsCount=voltsPrivCount;
