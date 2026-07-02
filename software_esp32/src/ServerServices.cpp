@@ -67,7 +67,7 @@
 #include <FS.h>
 #ifdef USE_LittleFS
   #define SPIFFS LittleFS
-  #include <LITTLEFS.h> 
+  #include <LittleFS.h> 
 #else
   #include <SPIFFS.h>
 #endif 
