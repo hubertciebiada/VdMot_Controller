@@ -40,7 +40,7 @@
 
 
 #include <Arduino.h>
-#include "Pushover.h"
+#include "PushOver.h"
 #include <map>
 #include "globals.h"
 #include "VdmTask.h"

@@ -41,7 +41,7 @@
 #include "Messenger.h"
 #include <Arduino.h>
 #ifndef NO_MESSENGER
-#include "Pushover.h"
+#include "PushOver.h"
 #include "ESP_Mail_Client.h"
 #endif
 #include "globals.h"

@@ -40,7 +40,7 @@
 
 #pragma once
 
-#include <Pushover.h>
+#include <PushOver.h>
 
 
 #define USING_CORE_ESP32_CORE_V200_PLUS     true

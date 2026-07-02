@@ -45,7 +45,7 @@
 #include "VdmConfig.h"
 #include <Syslog.h>
 #ifndef NO_MESSENGER
-#include "Pushover.h"
+#include "PushOver.h"
 #include "ESP_Mail_Client.h"
 #endif
 
