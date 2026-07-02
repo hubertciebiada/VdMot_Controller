@@ -44,8 +44,10 @@
 #include <ArduinoJson.h>
 #include "VdmConfig.h"
 #include <Syslog.h>
+#ifndef NO_MESSENGER
 #include "Pushover.h"
 #include "ESP_Mail_Client.h"
+#endif
 
 class CMessenger
 {
@@ -55,11 +57,13 @@ public:
   int sendPO(const char* appToken, const char* userToken ,const char* title, const char* message);
   int testPO(JsonObject doc);
   void sendEmail(const char* user, const char* pwd ,const char* host, uint16_t port,const char* recipient,const char* title,const char* thisMessage);
-  void testEmail(JsonObject doc); 
+  void testEmail(JsonObject doc);
+#ifndef NO_MESSENGER
   void mSMTCallback(SMTP_Status status);
-  
+
   CPushover pushoverClient;
   SMTPSession smtp;
+#endif
 
   String title;
   String message;

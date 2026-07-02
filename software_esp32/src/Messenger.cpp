@@ -40,8 +40,10 @@
 
 #include "Messenger.h"
 #include <Arduino.h>
+#ifndef NO_MESSENGER
 #include "Pushover.h"
 #include "ESP_Mail_Client.h"
+#endif
 #include "globals.h"
 #include <string.h>
 
@@ -50,6 +52,17 @@ CMessenger Messenger;
 CMessenger::CMessenger()
 {
 }
+
+#ifdef NO_MESSENGER
+// NO_MESSENGER: stripped-down build without e-mail (ESP-Mail-Client) and PushOver
+// support, to fit the 1280 KB app partition. The class interface stays intact so
+// Services.cpp / ServerServices.cpp compile unchanged; all senders are no-ops.
+void CMessenger::sendMessage (const char*, const char*) {}
+int  CMessenger::testPO(JsonObject) { return -1; }
+int  CMessenger::sendPO(const char*, const char*, const char*, const char*) { return -1; }
+void CMessenger::testEmail(JsonObject) {}
+void CMessenger::sendEmail (const char*, const char*, const char*, uint16_t, const char*, const char*, const char*) {}
+#else
 
 void CMessenger::sendMessage (const char* thisTitle,const char* thisMessage)
 {
@@ -246,3 +259,5 @@ void smtpCallback(SMTP_Status status);
     ESP_MAIL_PRINTF("Error, Status Code: %d, Error Code: %d, Reason: %s", smtp.statusCode(), smtp.errorCode(), smtp.errorReason().c_str());
 
 }
+
+#endif // NO_MESSENGER
