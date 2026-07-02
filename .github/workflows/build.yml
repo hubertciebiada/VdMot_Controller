@@ -1,0 +1,153 @@
+name: Build firmware
+
+# Reproducible firmware builds for the deploy branch.
+#   - ESP32 (WT32-ETH01) : env wt32-eth01_release + a digest-less image variant
+#   - STM32 (BlackPill F401, C2/C3/C4 hardware) : env STM32_release_C2
+# Everything (PlatformIO core, esptool, platforms, lib_deps) is pinned so a CI
+# build byte-matches a local build. On a v* tag both binaries are attached to a
+# GitHub Release.
+
+on:
+  push:
+    branches:
+      - deploy
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# esptool 4.11.0 is verified to produce a byte-identical --dont-append-digest
+# image to the platform-bundled tool; PlatformIO 6.1.19 is the pinned core.
+env:
+  PIO_VERSION: "6.1.19"
+  ESPTOOL_VERSION: "4.11.0"
+  APP_PARTITION_BYTES: "1310720"
+
+jobs:
+  esp32:
+    name: ESP32 (WT32-ETH01)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-esp32-${{ hashFiles('software_esp32/platformio.ini') }}
+          restore-keys: pio-esp32-
+
+      - name: Install PlatformIO + esptool
+        run: python -m pip install --upgrade "platformio==${PIO_VERSION}" "esptool==${ESPTOOL_VERSION}"
+
+      - name: Extract firmware version
+        id: ver
+        run: |
+          VER=$(sed -n "s/^firmware_version = '\"\(.*\)\"'.*/\1/p" software_esp32/platformio.ini | head -1)
+          if [ -z "$VER" ]; then echo "::error::could not parse firmware_version"; exit 1; fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "firmware version: $VER"
+
+      - name: Build ESP32 release
+        working-directory: software_esp32
+        run: pio run -e wt32-eth01_release
+
+      - name: Generate digest-less image
+        working-directory: software_esp32/.pio/build/wt32-eth01_release
+        run: |
+          python -m esptool --chip esp32 elf2image \
+            --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            --dont-append-digest \
+            -o firmware_nodigest.bin firmware.elf
+
+      - name: Assert image fits app partition
+        working-directory: software_esp32/.pio/build/wt32-eth01_release
+        run: |
+          SIZE=$(stat -c%s firmware.bin)
+          echo "firmware.bin = $SIZE bytes (limit ${APP_PARTITION_BYTES})"
+          if [ "$SIZE" -gt "${APP_PARTITION_BYTES}" ]; then
+            echo "::error::firmware.bin ($SIZE B) exceeds app partition (${APP_PARTITION_BYTES} B)"
+            exit 1
+          fi
+
+      - name: Stage named artifacts
+        working-directory: software_esp32/.pio/build/wt32-eth01_release
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          cp firmware.bin          "ESP32_firmware_${V}.bin"
+          cp firmware_nodigest.bin "ESP32_firmware_${V}_nodigest.bin"
+          ls -l ESP32_firmware_*.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware
+          path: software_esp32/.pio/build/wt32-eth01_release/ESP32_firmware_*.bin
+          if-no-files-found: error
+
+  stm32:
+    name: STM32 (BlackPill F401, C2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-stm32-${{ hashFiles('software_stm32/platformio.ini') }}
+          restore-keys: pio-stm32-
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade "platformio==${PIO_VERSION}"
+
+      - name: Build STM32 release C2
+        working-directory: software_stm32
+        run: pio run -e STM32_release_C2
+
+      - name: Stage named artifact
+        working-directory: software_stm32/.pio/build/STM32_release_C2
+        run: |
+          cp firmware.bin STM32_C2_firmware.bin
+          ls -l STM32_C2_firmware.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stm32-firmware
+          path: software_stm32/.pio/build/STM32_release_C2/STM32_C2_firmware.bin
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [esp32, stm32]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t FILES < <(find artifacts -type f -name '*.bin' | sort)
+          if [ "${#FILES[@]}" -eq 0 ]; then echo "::error::no artifacts to release"; exit 1; fi
+          printf 'attaching: %s\n' "${FILES[@]}"
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            "${FILES[@]}"
