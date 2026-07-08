@@ -1,6 +1,6 @@
 name: Build firmware
 
-# Reproducible firmware builds for the deploy branch.
+# Reproducible firmware builds for the hc-version branch.
 #   - ESP32 (WT32-ETH01) : env wt32-eth01_release + a digest-less image variant
 #   - STM32 (BlackPill F401, C2/C3/C4 hardware) : env STM32_release_C2
 # Everything (PlatformIO core, esptool, platforms, lib_deps) is pinned so a CI
@@ -10,7 +10,7 @@ name: Build firmware
 on:
   push:
     branches:
-      - deploy
+      - hc-version
     tags:
       - 'v*'
   workflow_dispatch:
