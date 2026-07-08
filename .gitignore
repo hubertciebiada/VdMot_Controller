@@ -1,2 +1,5 @@
 ## OS specific ########
 .DS_Store
+
+## PlatformIO — build artefakty (oba MCU) ########
+.pio/
