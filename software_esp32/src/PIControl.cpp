@@ -111,13 +111,14 @@ float CPiControl::piCtrl(float target,float value) {
   time(&now);
   ta=difftime(now,ts);      // in sec
   time(&ts);
- 
-  dt =  ((double)ta / (double)ti);
 
+  // after the window was closed, count one regular cycle instead of the open time
   if (windowControlState == windowCloseRestore) {
     ta = VdmConfig.configFlash.valvesControlConfig.valveControlConfig[valveIndex].ts;
     windowControlState = windowIdle;
   }
+
+  dt =  ((double)ta / (double)ti);
   
   if (VdmConfig.heatValues.heatControl==piControlOnHeating)
   {
