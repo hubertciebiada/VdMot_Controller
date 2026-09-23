@@ -256,7 +256,7 @@ void CVdmTask::deleteTask (taskid_t* taskId)
 
 void CVdmTask::disOrEnableTask (taskid_t taskId,bool enabled)
 {
-    if (taskId=!TASKMGR_INVALIDID) taskManager.setTaskEnabled(taskId, enabled);
+    if (taskId!=TASKMGR_INVALIDID) taskManager.setTaskEnabled(taskId, enabled);
     //UART_DBG.println("task enable "+String(taskId)+":"+String(enabled));
 }
 
