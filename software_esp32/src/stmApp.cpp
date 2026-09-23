@@ -581,8 +581,11 @@ void  CStmApp::app_check_data()
                     val8 = atoi(argptr[3]);
                     actuators[idx].state = (val8 & 0x7f);
                     actuators[idx].calibration = (val8>=0x80);
-                    actuators[idx].temp1 = ConvertCF(atoi(argptr[4]))+getTOffset(actuators[idx].tIdx1);
-                    actuators[idx].temp2 =  ConvertCF(atoi(argptr[5]))+getTOffset(actuators[idx].tIdx2);
+                    // STM sentinels (-500 no value, -1270 read error) must stay <= -500
+                    int16_t t1=atoi(argptr[4]);
+                    int16_t t2=atoi(argptr[5]);
+                    actuators[idx].temp1 = (t1<=-500) ? t1 : ConvertCF(t1)+getTOffset(actuators[idx].tIdx1);
+                    actuators[idx].temp2 = (t2<=-500) ? t2 : ConvertCF(t2)+getTOffset(actuators[idx].tIdx2);
                     if (argcnt >= 10) {
                         actuators[idx].movements = atoi(argptr[6]);   
                         actuators[idx].opening_count = atoi(argptr[7]);
@@ -692,7 +695,8 @@ void  CStmApp::app_check_data()
                     memset(temps[idx].id,0x0,sizeof(temps[idx].id)); 
                     strlcpy(temps[idx].id,argptr[0],sizeof(temps[idx].id));
                     int16_t cValue=atoi(argptr[1]);
-                    temps[idx].temperature=ConvertCF(cValue)+VdmConfig.configFlash.tempsConfig.tempConfig[idx].offset;
+                    if (cValue<=-500) temps[idx].temperature=cValue;    // STM sentinel, keep as "failed"
+                    else temps[idx].temperature=ConvertCF(cValue)+VdmConfig.configFlash.tempsConfig.tempConfig[idx].offset;
                 } 
                 tempIndex++;
                 
