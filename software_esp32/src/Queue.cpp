@@ -45,12 +45,15 @@ CQueue Queue;
 CQueue::CQueue(byte bufferSize) {
   m_enabled = true;
   m_bufferSize = bufferSize;
+  m_mutex = xSemaphoreCreateMutexStatic(&m_mutexBuffer);
 }
 
 void CQueue::clear() {
-  while (available()) {
-    pop();
+  xSemaphoreTake(m_mutex, portMAX_DELAY);
+  while (!m_queue.IsEmpty()) {
+    m_queue.Pop();
   }
+  xSemaphoreGive(m_mutex);
 }
 
 void CQueue::setBufferSize(byte size) {
@@ -71,16 +74,25 @@ bool CQueue::isEnabled() {
 }
 
 void CQueue::push(String data) {
+  xSemaphoreTake(m_mutex, portMAX_DELAY);
   if (m_enabled && m_queue.Count() < m_bufferSize) {
     m_queue.Push(data);
   }
+  xSemaphoreGive(m_mutex);
 }
 
 
 int CQueue::available()  {
-  return m_queue.Count();
+  xSemaphoreTake(m_mutex, portMAX_DELAY);
+  int count = m_queue.Count();
+  xSemaphoreGive(m_mutex);
+  return count;
 }
 
 String CQueue::pop() {
-  return m_queue.Pop();
+  String data;
+  xSemaphoreTake(m_mutex, portMAX_DELAY);
+  if (!m_queue.IsEmpty()) data = m_queue.Pop();
+  xSemaphoreGive(m_mutex);
+  return data;
 }

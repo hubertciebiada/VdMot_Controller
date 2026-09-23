@@ -39,6 +39,8 @@
 
 
 #include "Arduino.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "TypedQueue.h"
 #include "globals.h"
 
@@ -51,6 +53,9 @@ class CQueue {
    bool m_enabled;
    String m_currentLine;
    byte m_bufferSize;
+   // push comes from the web/MQTT side, pop from the STM app task
+   StaticSemaphore_t m_mutexBuffer;
+   SemaphoreHandle_t m_mutex;
   public:
   CQueue(byte bufferSize=40);
   int available();
