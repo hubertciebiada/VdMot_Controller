@@ -325,7 +325,7 @@ bool CStmApp::checkCmdIsAvailable (String thisCmd)
 {   
     uint8_t i=0;
     while (commCmds[i] != NULL) {
-        if (memcmp((const char*) &thisCmd,commCmds[i],5)==0) {
+        if (strncmp(thisCmd.c_str(),commCmds[i],5)==0) {
             return(true);
         }
         i++;
@@ -554,7 +554,7 @@ void  CStmApp::app_check_data()
             if(argcnt == 0) {
                 settarget_check = true; 
             }
-            if (memcmp(cmd,(const void*) &cmd_buffer,5) ==0) cmd_buffer="";
+            if (strncmp(cmd,cmd_buffer.c_str(),5) ==0) cmd_buffer="";
             appState=APP_IDLE;
         }
         // get target position
@@ -818,7 +818,7 @@ void  CStmApp::app_check_data()
                 VdmSystem.stmMinRequired=versionExplode(minSTMRequired);
                 VdmSystem.stmVersionFalse=VdmSystem.stmNRevision<VdmSystem.stmMinRequired;
             #endif
-            if (memcmp(cmd,(const void*) &cmd_buffer,5) ==0) cmd_buffer="";
+            if (strncmp(cmd,cmd_buffer.c_str(),5) ==0) cmd_buffer="";
             appState=APP_IDLE;
         }
 
@@ -826,7 +826,7 @@ void  CStmApp::app_check_data()
             if(argcnt > 0) {
                 VdmSystem.stmID=atoi(argptr[0]); 
             }
-            if (memcmp(cmd,(const void*) &cmd_buffer,5) ==0) cmd_buffer="";
+            if (strncmp(cmd,cmd_buffer.c_str(),5) ==0) cmd_buffer="";
             appState=APP_IDLE;
         }
 
@@ -1163,7 +1163,6 @@ void  CStmApp::app_comm_machine()
 
         case COMM_HANDLEQUEUE:
                 if ((cmd_buffer=="") && (Queue.available()>0) && (stmStatus>=STM_READY)) {
-                    memset(&cmd_buffer,0x0,sizeof(cmd_buffer));
                     cmd_buffer=Queue.pop();
                     #ifdef EnvDevelop
                         UART_DBG.println("pop "+String(cmd_buffer));
