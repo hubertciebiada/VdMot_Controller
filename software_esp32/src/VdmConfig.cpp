@@ -48,10 +48,20 @@
 
 CVdmConfig VdmConfig;
 
+// Serialises all Preferences (NVS) access; the lock is recursive, so a
+// locked function may call another one.
+class CPrefsLock
+{
+public:
+  explicit CPrefsLock(SemaphoreHandle_t mutex) : m_mutex(mutex) { xSemaphoreTakeRecursive(m_mutex, portMAX_DELAY); }
+  ~CPrefsLock() { xSemaphoreGiveRecursive(m_mutex); }
+private:
+  SemaphoreHandle_t m_mutex;
+};
 
 CVdmConfig::CVdmConfig()
 {
-  
+  prefsMutex = xSemaphoreCreateRecursiveMutexStatic(&prefsMutexBuffer);
 }
 
 void CVdmConfig::init()
@@ -195,6 +205,7 @@ void CVdmConfig::clearConfig()
 
 void CVdmConfig::readConfig()
 {
+  CPrefsLock lock(prefsMutex);
   if (prefs.begin(nvsSystemCfg,false)) {
     configFlash.systemConfig.celsiusFahrenheit=prefs.getUChar(nvsSystemCelsiusFahrenheit);
     if (prefs.isKey(nvsSystemStationName))
@@ -337,6 +348,7 @@ void CVdmConfig::readConfig()
 
 void CVdmConfig::writeConfig(bool reboot)
 {
+  CPrefsLock lock(prefsMutex);
   prefs.begin(nvsSystemCfg,false);
   prefs.clear();
   prefs.putUChar(nvsSystemCelsiusFahrenheit,configFlash.systemConfig.celsiusFahrenheit);
@@ -431,6 +443,7 @@ void CVdmConfig::writeConfig(bool reboot)
 
 void CVdmConfig::writeMiscValues()
 {
+  CPrefsLock lock(prefsMutex);
   prefs.begin(nvsMisc,false);
   prefs.putLong(nvsMiscLastCalib,miscValues.lastCalib);
   prefs.end();
@@ -438,6 +451,7 @@ void CVdmConfig::writeMiscValues()
 
 void CVdmConfig::writeValvesControlConfig(bool reboot, bool restartTask)
 {
+  CPrefsLock lock(prefsMutex);
   prefs.begin(nvsValvesControlCfg,false);
   prefs.clear();
   prefs.putBytes(nvsValvesControl, (void *) configFlash.valvesControlConfig.valveControlConfig, sizeof(configFlash.valvesControlConfig.valveControlConfig));
@@ -461,6 +475,7 @@ void CVdmConfig::writeValvesControlConfig(bool reboot, bool restartTask)
 
 void CVdmConfig::writeSysLogValues()
 {
+  CPrefsLock lock(prefsMutex);
   prefs.begin(nvsNetCfg,false);
   prefs.putUChar(nvsNetSysLogEnable,configFlash.netConfig.syslogLevel);
   prefs.putULong(nvsNetSysLogIp,configFlash.netConfig.syslogIp);

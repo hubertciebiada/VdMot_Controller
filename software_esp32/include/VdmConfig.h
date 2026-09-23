@@ -43,6 +43,8 @@
 
 #include "globals.h"
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <ArduinoJson.h>
 
 #define pinSetFactoryCfg  2
@@ -394,11 +396,16 @@ public:
   void writeMiscValues();
 
   Preferences prefs;
+  // prefs is used from the web (AsyncTCP) task and from loopTask
+  SemaphoreHandle_t prefsMutex;
 
   CONFIG_FLASH configFlash;
 
   MISC_VALUES miscValues;
   HEATCFG_VALUES heatValues;
+
+private:
+  StaticSemaphore_t prefsMutexBuffer;
 };
 
 extern CVdmConfig VdmConfig;
