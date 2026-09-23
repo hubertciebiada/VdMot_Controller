@@ -810,7 +810,7 @@ void CMqtt::publish_valves () {
                                 s = String(((float)StmApp.actuators[x].temp1)/10,1); 
                                 if (VdmConfig.configFlash.protConfig.mqttConfig.flags.numFormat==numFormatGer) s.replace('.',',');
                             } else s="failed";
-                            publishValue(topicstr, (char*) &s, sizeof(topicstr));
+                            publishValue(topicstr, (char*) s.c_str(), sizeof(topicstr));
                             lastValveValues[x].temp1=StmApp.actuators[x].temp1;
                         }
                     }
@@ -823,7 +823,7 @@ void CMqtt::publish_valves () {
                                 s = String(((float)StmApp.actuators[x].temp2)/10,1); 
                                 if (VdmConfig.configFlash.protConfig.mqttConfig.flags.numFormat==numFormatGer) s.replace('.',',');
                             } else s="failed";
-                            publishValue(topicstr, (char*) &s, sizeof(topicstr));
+                            publishValue(topicstr, (char*) s.c_str(), sizeof(topicstr));
                             lastValveValues[x].temp2=StmApp.actuators[x].temp2;
                         }
                     }
@@ -875,7 +875,7 @@ void CMqtt::publish_temps()
                                 s = String(((float)StmApp.temps[x].temperature)/10,1); 
                                 if (VdmConfig.configFlash.protConfig.mqttConfig.flags.numFormat==numFormatGer) s.replace('.',','); 
                             }
-                            publishValue(topicstr, (char*) &s, sizeof(topicstr));
+                            publishValue(topicstr, (char*) s.c_str(), sizeof(topicstr));
                         }
                     }
                 }
@@ -921,7 +921,7 @@ void CMqtt::publish_volts()
                     else
                     s = String(StmApp.volts[voltIdx].value,3); 
                     if (VdmConfig.configFlash.protConfig.mqttConfig.flags.numFormat==numFormatGer) s.replace('.',',');    
-                    publishValue(topicstr, (char*) &s, sizeof(topicstr));
+                    publishValue(topicstr, (char*) s.c_str(), sizeof(topicstr));
                     // unit
                     topicstr[len] = '\0';
                     strlcat(topicstr, "/unit",sizeof(topicstr)); 
