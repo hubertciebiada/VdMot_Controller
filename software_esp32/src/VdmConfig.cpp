@@ -571,7 +571,7 @@ void CVdmConfig::postValvesCfg (JsonObject doc)
   if (!doc["calib"]["dayOfCalib"].isNull()) configFlash.valvesConfig.dayOfCalib=doc["calib"]["dayOfCalib"];
   if (!doc["calib"]["hourOfCalib"].isNull()) configFlash.valvesConfig.hourOfCalib=doc["calib"]["hourOfCalib"];
 
-  for (uint8_t i=0; i<size; i++) {
+  for (size_t i=0; i<size; i++) {
      if (!doc["valves"][i]["no"].isNull()) {
       idx=doc["valves"][i]["no"];
       idx--;
@@ -647,7 +647,7 @@ void CVdmConfig::postValvesControlCfg (JsonObject doc)
         if (!doc["deadband"].isNull()) configFlash.valvesControl1Config.valveControl1Config[i].deadband=doc["deadband"];  
       }
   } else {
-    for (uint8_t i=0; i<size; i++) {
+    for (size_t i=0; i<size; i++) {
       if (!doc["valves"][i]["no"].isNull()) {
         idx=doc["valves"][i]["no"];
         idx--;
@@ -688,11 +688,14 @@ void CVdmConfig::postValvesControlCfg (JsonObject doc)
 
 void CVdmConfig::postTempsCfg (JsonObject doc)
 {
-  uint8_t chunkStart=doc["chunkStart"];
-  uint8_t chunkEnd=doc["chunkEnd"];
+  int chunkStart=doc["chunkStart"] | 0;
+  int chunkEnd=doc["chunkEnd"] | 0;
   uint8_t idx=0;
+
+  // chunk is 1-based and inclusive; reject anything outside tempConfig[]
+  if ((chunkStart<1) || (chunkEnd>TEMP_SENSORS_COUNT) || (chunkStart>chunkEnd)) return;
  
-  for (uint8_t i=chunkStart-1; i<chunkEnd; i++) {
+  for (int i=chunkStart-1; i<chunkEnd; i++) {
     if (!doc["temps"][idx]["name"].isNull()) copyJsonString(configFlash.tempsConfig.tempConfig[i].name,doc["temps"][idx]["name"],sizeof(configFlash.tempsConfig.tempConfig[i].name));
     if (!doc["temps"][idx]["id"].isNull()) copyJsonString(configFlash.tempsConfig.tempConfig[i].ID,doc["temps"][idx]["id"],sizeof(configFlash.tempsConfig.tempConfig[i].ID));
     if (!doc["temps"][idx]["active"].isNull()) configFlash.tempsConfig.tempConfig[i].active=doc["temps"][idx]["active"];
@@ -704,6 +707,7 @@ void CVdmConfig::postTempsCfg (JsonObject doc)
 void CVdmConfig::postVoltsCfg (JsonObject doc)
 {
   size_t size=doc["volts"].size(); 
+  if (size>VOLT_SENSORS_COUNT) size=VOLT_SENSORS_COUNT;
   for (uint8_t i=0; i<size; i++) {
     if (!doc["volts"][i]["name"].isNull()) copyJsonString(configFlash.voltsConfig.voltConfig[i].name,doc["volts"][i]["name"],sizeof(configFlash.voltsConfig.voltConfig[i].name));
     if (!doc["volts"][i]["id"].isNull()) copyJsonString(configFlash.voltsConfig.voltConfig[i].ID,doc["volts"][i]["id"],sizeof(configFlash.voltsConfig.voltConfig[i].ID));
