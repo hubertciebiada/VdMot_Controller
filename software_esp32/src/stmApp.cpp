@@ -469,6 +469,7 @@ void  CStmApp::app_check_data()
 
         if (stmStatus==STM_NOT_READY) stmStatus=STM_READY;
         stmFailed=false;
+        appTimeOuts=0;      // the STM answers: only consecutive timeouts count
         // devide buffer into command and data
 		// ****************************************
 
