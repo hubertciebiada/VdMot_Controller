@@ -56,3 +56,4 @@ char* findCharInString (char c,char* pString,size_t size);
 char* copyStringUntilChar (char* pString,char* buffer,char c,size_t pSize,size_t bSize);
 size_t strlcat(char *dst, const char *src, size_t dsize);
 bool copyJsonString(char* dst, JsonVariantConst src, size_t size);
+bool jsonToLong(JsonVariantConst src, long* value);

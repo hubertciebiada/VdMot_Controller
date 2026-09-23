@@ -40,6 +40,10 @@
 
 #include "helper.h"
 #include "VdmSystem.h"
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
 
 String ip2String (IPAddress ipv4addr)
 {
@@ -173,5 +177,34 @@ bool copyJsonString(char* dst, JsonVariantConst src, size_t size)
   const char* s = src.as<const char*>();
   if ((s == NULL) || (size == 0)) return false;
   strlcpy(dst, s, size);
+  return true;
+}
+
+// Read an integer from a JSON number or from a numeric string: the web UI posts
+// input field values as strings ("50"), other clients send numbers. A fractional
+// number is truncated, as the implicit as<int>() conversion did. Anything else
+// (null, bool, empty or non-numeric string, out of range for long) is rejected.
+bool jsonToLong(JsonVariantConst src, long* value)
+{
+  if (src.is<long>()) {
+    *value = src.as<long>();
+    return true;
+  }
+  if (src.is<double>()) {
+    double d = src.as<double>();
+    // the negated test also rejects NaN
+    if (!((d > (double)LONG_MIN - 1.0) && (d < (double)LONG_MAX + 1.0))) return false;
+    *value = (long)d;
+    return true;
+  }
+  const char* s = src.as<const char*>();
+  if (s == NULL) return false;
+  char* end;
+  errno = 0;
+  long v = strtol(s, &end, 10);
+  if ((end == s) || (errno == ERANGE)) return false;
+  while (isspace((unsigned char)*end)) end++;
+  if (*end != '\0') return false;
+  *value = v;
   return true;
 }

@@ -63,7 +63,7 @@ public:
   void startScanWifi();
   void startMqtt(uint32_t interval);
   void startApp();
-  void startStm32Ota(uint8_t command,String thisFileName);
+  bool startStm32Ota(uint8_t command,String thisFileName);
   void startServices();
   void startPIServices(bool startTask=true);
   void stopPIServices();
@@ -90,6 +90,7 @@ public:
   
   TsetFactoryCfgState setFactoryCfgState;
   bool restartPiTask;
+  bool stmOtaStarted;       // an STM update was started in this boot
   bool piTaskInitiated;
 
   bool sendMessenger;

@@ -56,6 +56,7 @@
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include "ServerServices.h"
+#include "helper.h"
 #include "VdmSystem.h"
 #include "VdmTask.h"
 #include "Services.h"
@@ -141,8 +142,8 @@ bool getValveIndex (JsonObject doc, uint8_t* index)
 {
   *index=255;
   if (doc["valve"].isNull()) return true;
-  if (!doc["valve"].is<int>()) return false;
-  int valve=doc["valve"].as<int>();
+  long valve;
+  if (!jsonToLong(doc["valve"],&valve)) return false;     // number or numeric string
   if (valve==255) return true;
   if ((valve<1) || (valve>ACTUATOR_COUNT)) return false;
   *index=valve-1;
@@ -209,15 +210,22 @@ void discoveryHA (JsonObject doc)
   }
 }
 
-void CServerServices::postSetValve (JsonObject doc)
+// returns false when the valve number or a given target (0..100 %) is invalid
+bool CServerServices::postSetValve (JsonObject doc)
 {
   uint8_t index;
+  bool ok=true;
   if (!doc["valve"].isNull()) {
     index=(doc["valve"].as<uint8_t>())-1;
     if (index<ACTUATOR_COUNT) {
       if (VdmConfig.configFlash.valvesConfig.valveConfig[index].active) {
-        int target = doc["value"] | -1;
-        if ((target>=0) && (target<=100)) StmApp.actuators[index].target_position = target;
+        if (!doc["value"].isNull()) {
+          // the web UI posts the input field value as a string
+          long target;
+          if (jsonToLong(doc["value"],&target) && (target>=0) && (target<=100)) {
+            StmApp.actuators[index].target_position = target;
+          } else ok=false;
+        }
       }
       if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].controlFlags.active) {
         if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].valueSource==3) {
@@ -238,8 +246,9 @@ void CServerServices::postSetValve (JsonObject doc)
           if (!doc["ctrlDynOffs"].isNull()) PiControl[index].dynOffset = doc["ctrlDynOffs"];
         }
       }
-    }
+    } else ok=false;
   }
+  return ok;
 }
 
 String getContentType(String filename) 
@@ -468,6 +477,11 @@ String uploadFilePath(const String& filename)
   return filename.startsWith("/") ? filename : "/"+filename;
 }
 
+// an upload is written to <name>.part and renamed to <name> only when it is
+// complete, so an interrupted upload never leaves a truncated file under the
+// real name (and never replaces a good file of that name)
+static const char uploadTempSuffix[] = ".part";
+
 // the request handler answers; a non-NULL _tempObject marks a failed upload
 void markUploadFailed(AsyncWebServerRequest *request)
 {
@@ -479,26 +493,46 @@ void handleUploadFile(AsyncWebServerRequest *request, const String& filename, si
 {
   if(!index){
     String thisFileName = uploadFilePath(filename);
+    String tempFileName = thisFileName + uploadTempSuffix;
     // open the file on first call and store the file handle in the request object
     #ifdef EnvDevelop
       UART_DBG.println("file has arguments : "+String(request->args()));
       UART_DBG.println("filename : "+thisFileName);
     #endif
-    request->_tempFile = SPIFFS.open(thisFileName, "w");
+    if (SPIFFS.exists(tempFileName)) SPIFFS.remove(tempFileName);   // left by an earlier interrupted upload
+    request->_tempFile = SPIFFS.open(tempFileName, "w");
     if (!request->_tempFile) markUploadFailed(request);
+    else {
+      // client gone before the last chunk: drop the partial file
+      request->onDisconnect([request, tempFileName]() {
+        if (request->_tempFile) {
+          request->_tempFile.close();
+          SPIFFS.remove(tempFileName);
+        }
+      });
+    }
   }
   if(len && request->_tempFile) {
     // stream the incoming chunk to the opened file
     if (request->_tempFile.write(data,len) != len) {
       // FS full: never leave a truncated (STM firmware) file behind
       request->_tempFile.close();
-      SPIFFS.remove(uploadFilePath(filename));
+      SPIFFS.remove(uploadFilePath(filename) + uploadTempSuffix);
       markUploadFailed(request);
     }
   }
   if(final){
-    // close the file handle as the upload is now done
-    if (request->_tempFile) request->_tempFile.close();
+    // close the file handle as the upload is now done, then publish it under its name
+    if (request->_tempFile) {
+      String thisFileName = uploadFilePath(filename);
+      String tempFileName = thisFileName + uploadTempSuffix;
+      request->_tempFile.close();
+      if (SPIFFS.exists(thisFileName)) SPIFFS.remove(thisFileName);
+      if (!SPIFFS.rename(tempFileName, thisFileName)) {
+        SPIFFS.remove(tempFileName);
+        markUploadFailed(request);
+      }
+    }
     #ifdef EnvDevelop
       UART_DBG.println("upload finished");
     #endif
@@ -511,21 +545,23 @@ CServerServices::CServerServices()
   jsonSetValveReceived=false;
 }
 
-void CServerServices::stmDoUpdate(JsonObject doc)
+// returns the HTTP status: 200 started, 400 bad request, 409 refused
+int CServerServices::stmDoUpdate(JsonObject doc)
 {
-
-  if (!doc["file"].isNull()) {
-    if (!doc["cmd"].isNull()) {
-    String thisFileName = doc["file"].as<const char*>();
-    if (!thisFileName.startsWith("/")) thisFileName = "/"+thisFileName;
-    uint8_t command = doc["cmd"];
-    #ifdef EnvDevelop
-      UART_DBG.println("file : "+thisFileName + " Command "+ String(command));
-    #endif
-    if (command==0) VdmTask.startStm32Ota(STM32OTA_START,thisFileName);
-    if (command==1) VdmTask.startStm32Ota(STM32OTA_STARTBLANK,thisFileName);
-  }
-  }
+  const char* file = doc["file"].as<const char*>();
+  if ((file == NULL) || (*file == '\0') || doc["cmd"].isNull()) return 400;
+  String thisFileName = uploadFilePath(file);
+  // never flash what is left of an interrupted upload
+  if (thisFileName.endsWith(uploadTempSuffix)) return 400;
+  uint8_t command = doc["cmd"];
+  #ifdef EnvDevelop
+    UART_DBG.println("file : "+thisFileName + " Command "+ String(command));
+  #endif
+  bool started;
+  if (command==0) started=VdmTask.startStm32Ota(STM32OTA_START,thisFileName);
+  else if (command==1) started=VdmTask.startStm32Ota(STM32OTA_STARTBLANK,thisFileName);
+  else return 400;
+  return started ? 200 : 409;
 }
 
 void  CServerServices::initServer() 
@@ -568,8 +604,10 @@ void  CServerServices::initServer()
   AsyncCallbackJsonWebHandler* stmDoUpdateHandler = new AsyncCallbackJsonWebHandler("/stmdoupdate", [](AsyncWebServerRequest *request, JsonVariant &json) {
     if (json.is<JsonObject>()) {
       JsonObject&& jsonObj = json.as<JsonObject>();
-      ServerServices.stmDoUpdate (jsonObj);
-      request->send(200, aj, resOk);
+      int status = ServerServices.stmDoUpdate (jsonObj);
+      if (status == 200) request->send(200, aj, resOk);
+      else if (status == 409) request->send(409, tp, "STM update refused: one update per boot or restart pending");
+      else request->send(400, tp, "Invalid file or command");
     } else request->send(400, tp, "Not an object");
   });
   server.addHandler(stmDoUpdateHandler);
@@ -577,8 +615,8 @@ void  CServerServices::initServer()
   AsyncCallbackJsonWebHandler* setValveHandler = new AsyncCallbackJsonWebHandler("/setvalve", [](AsyncWebServerRequest *request, JsonVariant &json) {
     if (json.is<JsonObject>()) {
       JsonObject&& jsonObj = json.as<JsonObject>();
-      ServerServices.postSetValve (jsonObj);
-      request->send(200, aj, resOk);
+      if (ServerServices.postSetValve (jsonObj)) request->send(200, aj, resOk);
+      else request->send(400, tp, "Invalid valve or target");
     } else request->send(400, tp, "Not an object");
   });
   server.addHandler(setValveHandler);

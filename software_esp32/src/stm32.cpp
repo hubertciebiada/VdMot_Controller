@@ -708,6 +708,25 @@ int CStm32::PrepareFile(String FileName)
       myflashfile.fsfile.close();
       return -1;
     }
+
+    // a (truncated or foreign) file that does not start with a Cortex-M vector
+    // table for this flash would leave the STM unbootable: initial SP inside
+    // SRAM, reset handler a Thumb address inside the image
+    uint8_t vectors[8];
+    if (myflashfile.fsfile.read(vectors, sizeof(vectors)) != sizeof(vectors)) {
+      myflashfile.fsfile.close();
+      return -1;
+    }
+    uint32_t initialSP = vectors[0] | (vectors[1] << 8) | (vectors[2] << 16) | ((uint32_t)vectors[3] << 24);
+    uint32_t resetVector = vectors[4] | (vectors[5] << 8) | (vectors[6] << 16) | ((uint32_t)vectors[7] << 24);
+    if ((initialSP <= STM32OTA_SRAMSTART) || (initialSP > STM32OTA_SRAMSTART + STM32OTA_MAXSRAMSIZE) ||
+        ((resetVector & 1) == 0) || (resetVector < STM32STADDR) || (resetVector >= STM32STADDR + myflashfile.size)) {
+      if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_ATOMIC) {
+        syslog.log(LOG_DEBUG, "STM32 ota: get File --> no valid vector table, SP 0x"+String(initialSP,HEX)+" reset 0x"+String(resetVector,HEX));
+      }
+      myflashfile.fsfile.close();
+      return -1;
+    }
  
     myflashfile.blockcnt = myflashfile.size / STM32OTA_BLOCKSIZE;
     myflashfile.lastbytes = myflashfile.size % STM32OTA_BLOCKSIZE;

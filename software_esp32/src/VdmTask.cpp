@@ -65,6 +65,10 @@ CVdmTask::CVdmTask()
   taskIdSetFactoryCfgInProgress=TASKMGR_INVALIDID;
   taskIdRunOnceClearFS=TASKMGR_INVALIDID;
   taskIdRunOnceGetFS=TASKMGR_INVALIDID;
+  taskIdResetSystem=TASKMGR_INVALIDID;
+  taskIdwaitForFinishQueue=TASKMGR_INVALIDID;
+  restartStmApp=TASKMGR_INVALIDID;
+  stmOtaStarted=false;
   setFactoryCfgState=idle;
   for (uint8_t picIdx=0; picIdx<ACTUATOR_COUNT; picIdx++) {
             taskIdPiControl[picIdx]=TASKMGR_INVALIDID;
@@ -130,11 +134,14 @@ void CVdmTask::startApp()
     }
 }
 
-void CVdmTask::startStm32Ota(uint8_t command,String thisFileName)
+// Returns false when the update is refused. Only one update per boot: the ESP
+// restarts after every attempt, and a flash started while that restart (or any
+// other pending one) is scheduled would be cut off, leaving the STM erased.
+bool CVdmTask::startStm32Ota(uint8_t command,String thisFileName)
 {
-    // one update per boot: a second request would restart the flasher mid-flash
-    // (the ESP restarts after every update attempt)
-    if (taskIdStm32Ota!=TASKMGR_INVALIDID) return;
+    if (stmOtaStarted || (taskIdResetSystem!=TASKMGR_INVALIDID) ||
+        (taskIdwaitForFinishQueue!=TASKMGR_INVALIDID)) return false;
+    stmOtaStarted=true;     // never cleared, the ESP restarts afterwards
 
     taskManager.setTaskEnabled (taskIdApp,false);
     taskManager.setTaskEnabled (taskIdMqtt,false);
@@ -145,6 +152,7 @@ void CVdmTask::startStm32Ota(uint8_t command,String thisFileName)
     taskIdStm32Ota = taskManager.scheduleFixedRate(50, [] {         // 50 ms good for 115200 baud UART speed and blocksize of 256
         Stm32.STM32ota_loop();
     });
+    return true;
 }
 
 void CVdmTask::startServices()

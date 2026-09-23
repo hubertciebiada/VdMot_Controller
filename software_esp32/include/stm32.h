@@ -51,6 +51,8 @@
 #define     STM32OTA_STARTBLANK     0x45
 #define     STM32OTA_BLOCKSIZE      256
 #define     STM32OTA_MAXIMAGESIZE   (512UL*1024UL)
+#define     STM32OTA_SRAMSTART      0x20000000UL
+#define     STM32OTA_MAXSRAMSIZE    (128UL*1024UL)   // F411xE; F401 has less
 
 #define     otaDelayFlash           50
 #define     otaDelayErase           50

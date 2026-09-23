@@ -75,6 +75,8 @@ CStmApp::CStmApp()
 {
     settarget_check =false;
     pendingTargetValve=NO_PENDING_TARGET;
+    memset(targetResends,0,sizeof(targetResends));
+    expectedReply[0]='\0';
     tempIndex=0;
     checkTempsCount = 0;
     checkVoltsCount = 0;
@@ -236,6 +238,42 @@ void CStmApp::scanTemps()
         memset(tempsId[i].id,0x0,sizeof(tempsId[i].id));
     }
     app_cmd(APP_PRE_SETONEWIRESEARCH);
+}
+
+// A sensor that is no longer on the STM's list (failed, removed, STM reset or
+// rescanned) gets no new readings: mark its config slot as failed instead of
+// keeping the last good value forever. Called when a new list has arrived.
+void CStmApp::invalidateMissingTemps()
+{
+    for (uint8_t x=0;x<TEMP_SENSORS_COUNT;x++) {
+        if (temps[x].id[0]=='\0') continue;       // no reading yet
+        bool listed=false;
+        for (uint8_t i=0;(i<tempsCount) && (i<TEMP_SENSORS_COUNT);i++) {
+            if (strncmp(temps[x].id,tempsId[i].id,sizeof(temps[x].id))==0) {
+                listed=true;
+                break;
+            }
+        }
+        if (!listed) temps[x].temperature=-500;   // STM "no value" sentinel
+    }
+}
+
+void CStmApp::invalidateMissingVolts()
+{
+    for (uint8_t x=0;x<VOLT_SENSORS_COUNT;x++) {
+        if (volts[x].id[0]=='\0') continue;       // no reading yet
+        bool listed=false;
+        for (uint8_t i=0;(i<voltsCount) && (i<VOLT_SENSORS_COUNT);i++) {
+            if (strncmp(volts[x].id,voltsId[i].id,sizeof(volts[x].id))==0) {
+                listed=true;
+                break;
+            }
+        }
+        if (!listed) {
+            volts[x].vad=-1000;                     // STM "no value" sentinel
+            volts[x].failed=true;
+        }
+    }
 }
 
 void CStmApp::matchSensors()
@@ -471,7 +509,6 @@ void  CStmApp::app_check_data()
         if (stmStatus==STM_NOT_READY) stmStatus=STM_READY;
         stmFailed=false;
         appTimeOuts=0;      // the STM answers: only consecutive timeouts count
-        pendingTargetValve=NO_PENDING_TARGET;
         // devide buffer into command and data
 		// ****************************************
 
@@ -499,6 +536,14 @@ void  CStmApp::app_check_data()
             noToken++;
             if (noToken>noOfArgs) break;
         }
+
+        // Only the reply to the outstanding request ends the pending state. A stray
+        // line (a reply that came after its timeout, noise) is still applied by its
+        // prefix, but pairing it with the current request would put every later
+        // reply one line behind. The STM answers a bad gvlon with "goned error".
+        APP_STATE stateBefore=appState;
+        bool expectedLine=(expectedReply[0]!='\0') && ((strncmp(cmd,expectedReply,5)==0) ||
+            ((strncmp(expectedReply,APP_PRE_GETONEWIRESETT,5)==0) && (strncmp(cmd,APP_PRE_GETONEWIREDATA,5)==0)));
 
 		// get actual values
 		// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -556,6 +601,11 @@ void  CStmApp::app_check_data()
 		else if(memcmp(APP_PRE_SETTARGETPOS,cmd,5) == 0) {
             if(argcnt == 0) {
                 settarget_check = true; 
+            }
+            // the target went through: no resend
+            if (expectedLine && (pendingTargetValve<ACTUATOR_COUNT)) {
+                targetResends[pendingTargetValve]=0;
+                pendingTargetValve=NO_PENDING_TARGET;
             }
             if (strncmp(cmd,cmd_buffer.c_str(),5) ==0) cmd_buffer="";
             appState=APP_IDLE;
@@ -676,6 +726,7 @@ void  CStmApp::app_check_data()
                 tempsPrivCount=idx;
                 tempsCount=tempsPrivCount;
             }
+            if ((argcnt==2) || ((argcnt==1) && (tempsPrivCount==0))) invalidateMissingTemps();
             if (tempsPrivCount==0) {
                 fastGetOneWire=false;
                // oneWireAllRead=true;
@@ -755,6 +806,7 @@ void  CStmApp::app_check_data()
                 voltsPrivCount=idx;
                 voltsCount=voltsPrivCount;
             }
+            if ((argcnt==2) || ((argcnt==1) && (voltsPrivCount==0))) invalidateMissingVolts();
             if (voltsPrivCount==0) {
                 fastGetOneWire=false;
                // oneWireAllRead=true;
@@ -947,6 +999,14 @@ void  CStmApp::app_check_data()
             appState=APP_IDLE;
         }
 
+        if (expectedLine) expectedReply[0]='\0';
+        else {
+            appState=stateBefore;
+            if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
+                syslog.log(LOG_DEBUG, "STMApp:stray reply >" + String(cmd) + "< while waiting for >" + String(expectedReply) + "<");
+            }
+        }
+
         cmd_buffer="";
         buffer[0] = '\0';
     }
@@ -976,9 +1036,18 @@ void CStmApp::appHandler()
             break;
         
         case APP_TIMEOUT:
-            // the target was lost on the way: send it again in a later cycle
+            expectedReply[0]='\0';
+            // the target was lost on the way: send it again in a later cycle, but
+            // give up after a few attempts so a target the STM never acknowledges
+            // cannot hold up the other valves and the polling for ever
             if (pendingTargetValve<ACTUATOR_COUNT) {
-                target_position_mirror[pendingTargetValve]=TARGET_RESEND;
+                if (targetResends[pendingTargetValve]<maxTargetResends) {
+                    targetResends[pendingTargetValve]++;
+                    target_position_mirror[pendingTargetValve]=TARGET_RESEND;
+                } else {
+                    targetResends[pendingTargetValve]=0;
+                    syslog.log(LOG_DEBUG, "STMApp:target of valve #"+String(pendingTargetValve+1)+" not acknowledged, given up");
+                }
                 pendingTargetValve=NO_PENDING_TARGET;
             }
             appTimeOuts++;
@@ -1020,6 +1089,7 @@ void CStmApp::app_comm_send(String thisAppCmd,uint8_t * value1,uint8_t * value2)
             strlcat(sendbuffer," ",sizeof(sendbuffer));
         }
     }
+    strlcpy(expectedReply,thisAppCmd.c_str(),sizeof(expectedReply));
     UART_STM32.println(sendbuffer);   
 }
 
@@ -1048,6 +1118,11 @@ void  CStmApp::app_comm_machine()
                         if(target_position_mirror[x] != actuators[x].target_position)
                         {
                             target_position_mirror[x] = actuators[x].target_position;
+                            if (actuators[x].target_position>100) {
+                                // the STM silently ignores it: never send, the valve keeps its position
+                                syslog.log(LOG_DEBUG, "STMApp:target "+String(actuators[x].target_position)+" of valve #"+String(x+1)+" out of range 0..100, not sent");
+                                continue;
+                            }
                             if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                                 syslog.log(LOG_DEBUG, "STMApp:valve position has changed : "+String(VdmConfig.configFlash.valvesConfig.valveConfig[x].name)+"(#"+String(x+1)+") = "+String(actuators[x].target_position));
                             }
@@ -1181,6 +1256,7 @@ void  CStmApp::app_comm_machine()
                     #ifdef EnvDevelop
                         UART_DBG.println("pop "+String(cmd_buffer));
                     #endif
+                    strlcpy(expectedReply,cmd_buffer.c_str(),sizeof(expectedReply));
                     UART_STM32.println(cmd_buffer);
                     appState=APP_PENDING;
                 }

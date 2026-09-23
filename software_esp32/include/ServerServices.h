@@ -51,8 +51,8 @@ public:
   void init();
   void initServer();
   void valvesCalib();
-  void stmDoUpdate(JsonObject doc);
-  void postSetValve (JsonObject doc);
+  int stmDoUpdate(JsonObject doc);
+  bool postSetValve (JsonObject doc);
   bool jsonSetValveReceived;
 };
 

@@ -163,6 +163,7 @@ enum EEP_STATE {EEP_IDLE,EEP_REQUEST,EEP_DONE};
 
 #define maxAppRetries 100
 #define maxAppTimeOuts 10
+#define maxTargetResends 3      // resends of a timed-out stgtp before the target is given up
 
 class CStmApp
 {
@@ -179,6 +180,8 @@ public:
   void valvesDetect();
   void scanValves();
   void scanTemps();
+  void invalidateMissingTemps();
+  void invalidateMissingVolts();
   void matchSensors();
   void setTempIdx();
   void setLearnAfterMovements();
@@ -224,6 +227,8 @@ private:
   bool settarget_check;
   uint8_t target_position_mirror[ACTUATOR_COUNT];
   uint8_t pendingTargetValve;   // valve of an unanswered stgtp, NO_PENDING_TARGET if none
+  uint8_t targetResends[ACTUATOR_COUNT];  // consecutive timed-out stgtp per valve
+  char expectedReply[6];        // command prefix of the outstanding request, "" if none
   uint8_t getindex;
 
   uint8_t timeout;

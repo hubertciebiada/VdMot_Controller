@@ -564,6 +564,19 @@ void CVdmConfig::postProtCfg (JsonObject doc)
   if (!doc["numFormat"].isNull()) configFlash.protConfig.mqttConfig.flags.numFormat = doc["numFormat"];
 }
 
+// valve temperature sensor index: 0 = none, 1..TEMP_SENSORS_COUNT. The web UI
+// posts the number input's value as a string, "" for an empty field (= none).
+static bool getTempIdx(JsonVariantConst src, uint8_t* tIdx)
+{
+  long value;
+  const char* s=src.as<const char*>();
+  if ((s!=NULL) && (*s=='\0')) value=0;
+  else if (!jsonToLong(src,&value)) return false;
+  if ((value<0) || (value>TEMP_SENSORS_COUNT)) return false;
+  *tIdx=value;
+  return true;
+}
+
 void CVdmConfig::postValvesCfg (JsonObject doc)
 {
   uint8_t idx=0; 
@@ -579,15 +592,15 @@ void CVdmConfig::postValvesCfg (JsonObject doc)
           if (!doc["valves"][i]["name"].isNull()) copyJsonString(configFlash.valvesConfig.valveConfig[idx].name,doc["valves"][i]["name"],sizeof(configFlash.valvesConfig.valveConfig[idx].name));
           if (!doc["valves"][i]["active"].isNull()) configFlash.valvesConfig.valveConfig[idx].active=doc["valves"][i]["active"];
           if (!doc["valves"][i]["tIdx1"].isNull()) {
-            int tIdx=doc["valves"][i]["tIdx1"] | -1;    // 0 = none, 1..TEMP_SENSORS_COUNT
-            if ((tIdx>=0) && (tIdx<=TEMP_SENSORS_COUNT)) {
+            uint8_t tIdx;
+            if (getTempIdx(doc["valves"][i]["tIdx1"],&tIdx)) {
               StmApp.actuators[idx].tIdx1=tIdx;
               StmApp.setTempIdxActive=true;
             }
           }
           if (!doc["valves"][i]["tIdx2"].isNull()) {
-            int tIdx=doc["valves"][i]["tIdx2"] | -1;    // 0 = none, 1..TEMP_SENSORS_COUNT
-            if ((tIdx>=0) && (tIdx<=TEMP_SENSORS_COUNT)) {
+            uint8_t tIdx;
+            if (getTempIdx(doc["valves"][i]["tIdx2"],&tIdx)) {
               StmApp.actuators[idx].tIdx2=tIdx;
               StmApp.setTempIdxActive=true;
             }
