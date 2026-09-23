@@ -457,34 +457,43 @@ bool handleCmd(JsonObject doc)
   return (found);
 }
 
+// LittleFS paths must be absolute
+String uploadFilePath(const String& filename)
+{
+  return filename.startsWith("/") ? filename : "/"+filename;
+}
+
+// the request handler answers; a non-NULL _tempObject marks a failed upload
+void markUploadFailed(AsyncWebServerRequest *request)
+{
+  if (request->_tempObject == NULL) request->_tempObject = malloc(1);
+}
+
 void handleUploadFile(AsyncWebServerRequest *request, const String& filename, size_t index, 
             uint8_t *data, size_t len, bool final)
 {
   if(!index){
-    String thisFileName = filename;
+    String thisFileName = uploadFilePath(filename);
     // open the file on first call and store the file handle in the request object
     #ifdef EnvDevelop
       UART_DBG.println("file has arguments : "+String(request->args()));
-    #endif
-    if (request->args()) {
-        #ifdef EnvDevelop      
-          UART_DBG.println("file has argument "+request->arg("dir"));
-        #endif
-        thisFileName = "/"+filename; 
-    }
-    #ifdef EnvDevelop
       UART_DBG.println("filename : "+thisFileName);
     #endif
     request->_tempFile = SPIFFS.open(thisFileName, "w");
+    if (!request->_tempFile) markUploadFailed(request);
   }
-  if(len) {
+  if(len && request->_tempFile) {
     // stream the incoming chunk to the opened file
-    request->_tempFile.write(data,len);
+    if (request->_tempFile.write(data,len) != len) {
+      // FS full: never leave a truncated (STM firmware) file behind
+      request->_tempFile.close();
+      SPIFFS.remove(uploadFilePath(filename));
+      markUploadFailed(request);
+    }
   }
   if(final){
     // close the file handle as the upload is now done
-    request->_tempFile.close();
-    request->send(200, aj, Web.getFSDir()); 
+    if (request->_tempFile) request->_tempFile.close();
     #ifdef EnvDevelop
       UART_DBG.println("upload finished");
     #endif
@@ -542,7 +551,11 @@ void  CServerServices::initServer()
   server.on("/msgconfig", HTTP_GET, [](AsyncWebServerRequest * request) {handleGetMsgConfig(request);});
   server.on("/stm?", HTTP_GET, [](AsyncWebServerRequest * request) {handleGetStm(request);});
   
-  server.on("/fupload", HTTP_POST, [](AsyncWebServerRequest *request) {},
+  server.on("/fupload", HTTP_POST, [](AsyncWebServerRequest *request) {
+      // called once after the upload (also when the request carried no file)
+      if (request->_tempObject != NULL) request->send(500, tp, "Upload failed");
+      else request->send(200, aj, Web.getFSDir());
+    },
       [](AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data,
                     size_t len, bool final) {handleUploadFile(request, filename, index, data, len, final);}
   );
