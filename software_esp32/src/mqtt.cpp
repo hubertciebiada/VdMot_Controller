@@ -854,10 +854,11 @@ void CMqtt::publish_temps()
     String s;
     
     if ((StmApp.stmInitState==STM_INIT_FINISHED) && StmApp.oneWireAllRead) {
-        for (uint8_t x = 0;x<StmApp.tempsCount;x++) {
+        // temps[] is indexed by config slot, not by STM detection order
+        for (uint8_t x = 0;x<TEMP_SENSORS_COUNT;x++) {
             if (lastTempValues[x].publishNow || forcePublish) {
                 tempIdx=StmApp.findTempID(StmApp.temps[x].id);
-                if (tempIdx>=0) {
+                if (tempIdx==x) {
                     if (VdmConfig.configFlash.tempsConfig.tempConfig[tempIdx].active) {
                         if ((StmApp.findTempIdxInValve (tempIdx)<0) || VdmConfig.configFlash.protConfig.protocolFlags.publishAllTemps) {
                             memset(topicstr,0x0,sizeof(topicstr));
@@ -905,10 +906,11 @@ void CMqtt::publish_volts()
     String s;
     
     if ((StmApp.stmInitState==STM_INIT_FINISHED) && StmApp.oneWireAllRead) {
-        for (uint8_t x = 0;x<StmApp.voltsCount;x++) {
+        // volts[] is indexed by config slot, not by STM detection order
+        for (uint8_t x = 0;x<VOLT_SENSORS_COUNT;x++) {
             if (lastVoltValues[x].publishNow || forcePublish) {
                 voltIdx=StmApp.findVoltID(StmApp.volts[x].id);
-                if (voltIdx>=0) {
+                if (voltIdx==x) {
                     memset(topicstr,0x0,sizeof(topicstr));
                     memset(nrstr,0x0,sizeof(nrstr));
                     itoa((x+1), nrstr, 10);

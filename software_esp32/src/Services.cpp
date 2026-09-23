@@ -91,7 +91,7 @@ void CServices::checkDS18()
   String title = String(VdmConfig.configFlash.systemConfig.stationName) + " : SYSTEM" ;
   String s = "DS18 sensor failed for room\r\n";
 
-  for (uint8_t x = 0;x<StmApp.tempsCount;x++) {
+  for (uint8_t x = 0;x<TEMP_SENSORS_COUNT;x++) {    // temps[] is indexed by config slot
     tempIdx=StmApp.findTempID(StmApp.temps[x].id);  // starts with 0 
     if (tempIdx>=0) {
       if (VdmConfig.configFlash.tempsConfig.tempConfig[tempIdx].active) {

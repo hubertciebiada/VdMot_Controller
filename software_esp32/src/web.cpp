@@ -449,7 +449,9 @@ String CWeb::getTempsStatus(VDM_TEMPS_CONFIG tempsConfig)
   bool start = false;
   String s;
 
-  for (uint8_t i=0;i<StmApp.tempsCount;i++) {
+  // temps[] is indexed by config slot; an empty id means no reading yet
+  for (uint8_t i=0;i<TEMP_SENSORS_COUNT;i++) {
+    if (strlen(StmApp.temps[i].id)==0) continue;
     if (((StmApp.findTempIdxInValve(i)<0) || (VdmConfig.configFlash.protConfig.protocolFlags.publishAllTemps)) && (VdmConfig.configFlash.tempsConfig.tempConfig[i].active)) {
       if (start) result += ",";
       temperature = StmApp.temps[i].temperature;
@@ -469,7 +471,9 @@ String CWeb::getVoltsStatus(VDM_VOLTS_CONFIG voltsConfig)
   String result = "[";
   bool start = false;
   
-  for (uint8_t i=0;i<StmApp.voltsCount;i++) {
+  // volts[] is indexed by config slot; an empty id means no reading yet
+  for (uint8_t i=0;i<VOLT_SENSORS_COUNT;i++) {
+     if (strlen(StmApp.volts[i].id)==0) continue;
      if (voltsConfig.voltConfig[i].active) {
       if (start) result += ",";
       result += "{\"id\":\"" + String(StmApp.volts[i].id) + "\","+
