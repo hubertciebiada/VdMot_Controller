@@ -136,24 +136,29 @@ void scanTSensors (JsonObject doc)
   StmApp.scanTemps();
 }
 
+// "valve": 1..ACTUATOR_COUNT, or 255 / missing for all valves
+bool getValveIndex (JsonObject doc, uint8_t* index)
+{
+  *index=255;
+  if (doc["valve"].isNull()) return true;
+  if (!doc["valve"].is<int>()) return false;
+  int valve=doc["valve"].as<int>();
+  if (valve==255) return true;
+  if ((valve<1) || (valve>ACTUATOR_COUNT)) return false;
+  *index=valve-1;
+  return true;
+}
+
 void valvesCalibration (JsonObject doc)
 {  
-  uint8_t index=255;
-  if (!doc["valve"].isNull()) {
-    index=(doc["valve"].as<uint8_t>());
-    if (index!=255) index--;
-  }
-  StmApp.valvesCalibration(index);
+  uint8_t index;
+  if (getValveIndex(doc,&index)) StmApp.valvesCalibration(index);
 }
 
 void valvesAssembly (JsonObject doc)
 {  
-  uint8_t index=255;
-  if (!doc["valve"].isNull()) {
-    index=(doc["valve"].as<uint8_t>());
-    if (index!=255) index--;
-  }
-  StmApp.valvesAssembly(index);
+  uint8_t index;
+  if (getValveIndex(doc,&index)) StmApp.valvesAssembly(index);
 }
 
 void valvesDetect (JsonObject doc)
