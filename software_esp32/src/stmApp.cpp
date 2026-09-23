@@ -791,7 +791,7 @@ void  CStmApp::app_check_data()
                     syslog.log(LOG_DEBUG,"STMApp:one wire data - only 1 arg");
                 }
                 voltIndex++;
-                if (voltIndex>=tempsCount) {  // all temp sensors read
+                if (voltIndex>=voltsCount) {  // all volt sensors read
                     voltIndex=0;
                     fastGetOneWire=false;
                     if (VdmTask.piTaskInitiated) oneWireAllRead=true;
