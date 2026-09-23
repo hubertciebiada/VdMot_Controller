@@ -1075,7 +1075,9 @@ void  CStmApp::app_comm_machine()
                 break;
 
         case COMM_GETDATA:  
-                if (eepState!=EEP_IDLE) {
+                // ask for the EEPROM state only after the queued commands went out,
+                // so a 'done' reply covers their EEPROM writes too
+                if ((eepState!=EEP_IDLE) && (Queue.available()==0)) {
                     commstate =  COMM_GETEEPSTATE;
                 } else {
                     commstate =  COMM_GETONEWIRECOUNT;
@@ -1097,6 +1099,7 @@ void  CStmApp::app_comm_machine()
             #endif
             app_comm_send(APP_PRE_EEPSTATE);
             appState=APP_PENDING;
+            commstate = COMM_GETONEWIRECOUNT;   // continue the cycle, incl. the queue
             break;
 
         case COMM_GETONEWIRECOUNT:
