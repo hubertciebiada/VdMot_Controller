@@ -51,9 +51,8 @@
 //LiquidCrystal_PCF8574 lcd(0x27);  // set the LCD address to 0x27 for a 16 chars and 2 line display
 
 // info
-// changes in arduino core lib
-// .platformio\packages\framework-arduinoststm32\cores\arduino/HardwareSerial.h:44:4:
-// --> increased tx buffer size from default 64 to 1024
+// serial rx/tx buffer sizes (1024) are set by build flags in platformio.ini,
+// no changes to the arduino core are needed
 
 // Init STM32 timer TIM2
 STM32Timer ITimer1(TIM2);
