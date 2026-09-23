@@ -187,7 +187,7 @@ void CVdmSystem::getFSDirectory()
   if (root) {
     root.rewindDirectory();
     File file = root.openNextFile();
-    while (file) { // Now get all the filenames, file types and sizes
+    while (file && (numfiles<maxFiles)) { // Now get all the filenames, file types and sizes
       Filenames[numfiles].filename = (String(file.name()).startsWith("/") ? String(file.name()).substring(1) : file.name());
       Filenames[numfiles].ftype    = (file.isDirectory() ? "Dir" : "File");
       Filenames[numfiles].fsize    = ConvBinUnits(file.size(), 1);
@@ -196,7 +196,6 @@ void CVdmSystem::getFSDirectory()
       #endif
       file = root.openNextFile();
       numfiles++;
-      if (numfiles>maxFiles) break;
     }
     root.close();
   }
