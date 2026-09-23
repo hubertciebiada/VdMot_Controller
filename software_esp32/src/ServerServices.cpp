@@ -211,7 +211,8 @@ void CServerServices::postSetValve (JsonObject doc)
     index=(doc["valve"].as<uint8_t>())-1;
     if (index<ACTUATOR_COUNT) {
       if (VdmConfig.configFlash.valvesConfig.valveConfig[index].active) {
-        if (!doc["value"].isNull()) StmApp.actuators[index].target_position = doc["value"];
+        int target = doc["value"] | -1;
+        if ((target>=0) && (target<=100)) StmApp.actuators[index].target_position = target;
       }
       if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].controlFlags.active) {
         if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].valueSource==3) {

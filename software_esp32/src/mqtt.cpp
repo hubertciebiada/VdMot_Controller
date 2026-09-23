@@ -557,7 +557,12 @@ void CMqtt::callback(char* topic, byte* payload, unsigned int length)
                     if (isFloat(value)) {
                         if (checkTopicName(pt,(char*) "/target")) {
                             if (VdmConfig.configFlash.valvesConfig.valveConfig[idx].active) {
-                                StmApp.actuators[idx].target_position = atoi(value);
+                                int target = atoi(value);
+                                if ((target>=0) && (target<=100)) {
+                                    StmApp.actuators[idx].target_position = target;
+                                } else if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
+                                    syslog.log(LOG_DEBUG, "MQTT: target out of range 0..100 : "+String(value));
+                                }
                             }
                         } else if (checkTopicName(pt,(char*) "/tValue")) {
                             if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[idx].controlFlags.active) {
