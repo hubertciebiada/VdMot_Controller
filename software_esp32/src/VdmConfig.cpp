@@ -601,16 +601,16 @@ void CVdmConfig::postValvesControlCfg (JsonObject doc)
 
   if (size==0) {
       for (uint8_t i =0;i<12;i++) {
-        if (!doc["active"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].controlFlags.active=doc["active"];
+        if (!doc["active"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].controlFlags.active=doc["active"];
         if (!doc["allow"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].controlFlags.allow=doc["allow"]; 
-        if (!doc["window"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].controlFlags.windowInstalled=doc["window"];
-        if (!doc["vSource"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].valueSource=doc["vSource"];
-        if (!doc["tSource"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].targetSource=doc["tSource"];  
-        if (!doc["scheme"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].scheme=doc["scheme"];  
-        if (!doc["startAZ"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].startActiveZone=doc["startAZ"];  
-        if (!doc["endAZ"].isNull()) configFlash.valvesControlConfig.valveControlConfig[idx].endActiveZone=doc["endAZ"]; 
-        if (!doc["inittTarget"].isNull()) configFlash.valvesControlInit.valveControlInit[idx].tTarget=doc["inittTarget"];
-        if (!doc["deadband"].isNull()) configFlash.valvesControl1Config.valveControl1Config[idx].deadband=doc["deadband"];  
+        if (!doc["window"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].controlFlags.windowInstalled=doc["window"];
+        if (!doc["vSource"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].valueSource=doc["vSource"];
+        if (!doc["tSource"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].targetSource=doc["tSource"];  
+        if (!doc["scheme"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].scheme=doc["scheme"];  
+        if (!doc["startAZ"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].startActiveZone=doc["startAZ"];  
+        if (!doc["endAZ"].isNull()) configFlash.valvesControlConfig.valveControlConfig[i].endActiveZone=doc["endAZ"]; 
+        if (!doc["inittTarget"].isNull()) configFlash.valvesControlInit.valveControlInit[i].tTarget=doc["inittTarget"];
+        if (!doc["deadband"].isNull()) configFlash.valvesControl1Config.valveControl1Config[i].deadband=doc["deadband"];  
       }
   } else {
     for (uint8_t i=0; i<size; i++) {
