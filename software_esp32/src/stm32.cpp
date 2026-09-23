@@ -79,6 +79,21 @@ void CStm32::clearUART_STM32Buffer()
    while(UART_STM32.available()) UART_STM32.read();
 }
 
+// true from the start request until flashing has finished or failed
+bool CStm32::updateRunning()
+{
+  switch (stmUpdateStatus) {
+    case updStarted:
+    case updInProgress:
+    case updErasing:
+    case updFlashing:
+    case upVerifying:
+      return true;
+    default:
+      return false;
+  }
+}
+
 void CStm32::STM32ota_setup() 
 {
 

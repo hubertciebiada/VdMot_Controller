@@ -90,6 +90,7 @@ public:
   void ResetSTM32(bool useTask = false);
   bool waitForSTMResponse (uint32_t timeout_ms);
   void clearUART_STM32Buffer();
+  bool updateRunning();
 
   volatile uint8_t stmUpdPercent;
   volatile otaUpdateStatus stmUpdateStatus;

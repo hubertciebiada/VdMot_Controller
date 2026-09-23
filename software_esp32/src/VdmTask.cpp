@@ -112,6 +112,9 @@ void CVdmTask::startMqtt(uint32_t interval)
 void CVdmTask::startApp()
 {
     if (taskIdStm32Ota!=TASKMGR_INVALIDID) {
+        // an STM update is still running (e.g. started before the delayed first
+        // start of the app): leave it alone, the flasher calls startApp() when done
+        if (Stm32.updateRunning()) return;
         deleteTask (&taskIdStm32Ota);
         delay (1000);       // wait to finish task; 
       //  taskIdStm32Ota=TASKMGR_INVALIDID; 
@@ -129,19 +132,19 @@ void CVdmTask::startApp()
 
 void CVdmTask::startStm32Ota(uint8_t command,String thisFileName)
 {
+    // one update per boot: a second request would restart the flasher mid-flash
+    // (the ESP restarts after every update attempt)
+    if (taskIdStm32Ota!=TASKMGR_INVALIDID) return;
+
     taskManager.setTaskEnabled (taskIdApp,false);
     taskManager.setTaskEnabled (taskIdMqtt,false);
     delay (1000);           // wait to finish task;
 
     Stm32.STM32ota_setup();
     Stm32.STM32ota_start(command,thisFileName);
-    if (taskIdStm32Ota==TASKMGR_INVALIDID) {
-        taskIdStm32Ota = taskManager.scheduleFixedRate(50, [] {         // 50 ms good for 115200 baud UART speed and blocksize of 256
-            Stm32.STM32ota_loop();
-        });
-    } else {
-        delay (100);         
-    }
+    taskIdStm32Ota = taskManager.scheduleFixedRate(50, [] {         // 50 ms good for 115200 baud UART speed and blocksize of 256
+        Stm32.STM32ota_loop();
+    });
 }
 
 void CVdmTask::startServices()
