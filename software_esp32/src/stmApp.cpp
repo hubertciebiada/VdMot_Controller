@@ -390,6 +390,7 @@ int8_t CStmApp::findTempIdxInValve (uint8_t tempIdx)
 void CStmApp::setSensorIndex(uint8_t valveIndex,char* sensor1,char* sensor2)
 {
     int8_t sensorIdx;
+    if (valveIndex>=ACTUATOR_COUNT) return;
     sensorIdx=findTempID(sensor1);
     if (sensorIdx>=0) actuators[valveIndex].tIdx1=sensorIdx+1; else actuators[valveIndex].tIdx1=0;
     sensorIdx=findTempID(sensor2);
@@ -503,7 +504,8 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:actual position answer "+String(argptr[0])+" : "+String(argptr[1]));
                 }
-                actuators[atoi(argptr[0])].actual_position = atoi(argptr[1]);
+                int idx=atoi(argptr[0]);
+                if ((idx>=0) && (idx<ACTUATOR_COUNT)) actuators[idx].actual_position = atoi(argptr[1]);
             }
             appState=APP_IDLE;
         }
@@ -515,7 +517,8 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:mean current answer "+String(argptr[0])+" : "+String(argptr[1]));  
                 }
-                actuators[atoi(argptr[0])].meancurrent = atoi(argptr[1]);
+                int idx=atoi(argptr[0]);
+                if ((idx>=0) && (idx<ACTUATOR_COUNT)) actuators[idx].meancurrent = atoi(argptr[1]);
             }
             appState=APP_IDLE;
         }
@@ -527,15 +530,17 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:valve status "+String(argptr[1]));
                 }
-                uint8_t nActuators = atoi(argptr[0]);
+                int nActuators = atoi(argptr[0]);
+                if (nActuators > ACTUATOR_COUNT) nActuators = ACTUATOR_COUNT;
                 char* cmdptr;
                 char* ps=argptr[1];
-                for (uint8_t idx=0; idx<nActuators;idx++) {
+                for (int idx=0; idx<nActuators;idx++) {
                     if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
                     val8 = atoi(ps);
                     actuators[idx].state = (val8 & 0x7f);
                     actuators[idx].calibration =  (val8>=0x80);
-                    if (cmdptr!=NULL) ps=cmdptr+1;
+                    if (cmdptr==NULL) break;    // list shorter than announced
+                    ps=cmdptr+1;
                 }
                 stmStatus=STM_READ_ALL_FROM_QUEUE;  
                 if (stmInitState==STM_INIT_STARTED) stmInitState=STM_INIT_FINISHED ;
@@ -556,7 +561,8 @@ void  CStmApp::app_check_data()
             // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
             else if(memcmp(APP_PRE_GETTARGETPOS,cmd,5) == 0) {
                 if(argcnt == 2) {
-                    actuators[atoi(argptr[0])].target_position = atoi(argptr[1]);
+                    int idx=atoi(argptr[0]);
+                    if ((idx>=0) && (idx<ACTUATOR_COUNT)) actuators[idx].target_position = atoi(argptr[1]);
                 }
                 appState=APP_IDLE;
             }
@@ -565,8 +571,8 @@ void  CStmApp::app_check_data()
 		// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 		else if(memcmp(APP_PRE_GETVLVDATA,cmd,5) == 0) {
             if(argcnt >= 6) {
-                uint8_t idx=atoi(argptr[0]);
-                if(idx < ACTUATOR_COUNT) {
+                int idx=atoi(argptr[0]);
+                if((idx>=0) && (idx < ACTUATOR_COUNT)) {
                     actuators[idx].actual_position = atoi(argptr[1]);
                     actuators[idx].meancurrent = atoi(argptr[2]);
                     val8 = atoi(argptr[3]);
@@ -820,26 +826,29 @@ void  CStmApp::app_check_data()
 
         else if(memcmp(APP_PRE_GETONEWIRESETT,cmd,5) == 0) {
             if(argcnt == 3) {
-                setSensorIndex(atoi(argptr[0]),argptr[1],argptr[2]);
+                int idx=atoi(argptr[0]);
+                if ((idx>=0) && (idx<ACTUATOR_COUNT)) setSensorIndex(idx,argptr[1],argptr[2]);
             }
             if(argcnt == 2) {
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire settings data "+String(argptr[0])+" : "+String(argptr[1]));
                 }   
-                uint8_t nItems= atoi(argptr[0]);
+                int nItems= atoi(argptr[0]);
+                if (nItems > ACTUATOR_COUNT) nItems = ACTUATOR_COUNT;
                 if (nItems>0) {
                     char* cmdptr;
                     char* ps=argptr[1];
                     
-                    for (uint8_t idx=0; idx<nItems;idx++) {
+                    for (int idx=0; idx<nItems;idx++) {
+                        if ((cmdptr=strchr(ps,','))==NULL) break;   // list shorter than announced
+                        *cmdptr='\0';
+                        strlcpy(argptr[4],ps,argSize[4]);
+                        ps=cmdptr+1;
                         if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
-                        strncpy(argptr[4],ps,argSize[4]);
-                        if (cmdptr!=NULL) ps=cmdptr+1;
-                        if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
-                        strncpy(argptr[5],ps,argSize[5]); 
+                        strlcpy(argptr[5],ps,argSize[5]); 
                         setSensorIndex(idx,argptr[4],argptr[5]);
-                        if (cmdptr!=NULL) ps=cmdptr+1;
-                        
+                        if (cmdptr==NULL) break;
+                        ps=cmdptr+1;
                     }
                 }
                 
