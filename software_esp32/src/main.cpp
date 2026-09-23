@@ -67,9 +67,9 @@ void setup(void) {
 
   uint32_t* SpStart = NULL;
   StackPtrAtStart = (uint32_t *)&SpStart;
-  watermarkStart =  uxTaskGetStackHighWaterMark(NULL);
-  StackPtrEnd = StackPtrAtStart - watermarkStart;
-  stackSize = StackPtrAtStart - StackPtrEnd;
+  watermarkStart =  uxTaskGetStackHighWaterMark(NULL);   // in bytes on ESP32
+  StackPtrEnd = (uint32_t *)((uint8_t *)StackPtrAtStart - watermarkStart);
+  stackSize = watermarkStart;
 
   #ifdef EnvDevelop
     UART_DBG.println("VdMot_Controller");
