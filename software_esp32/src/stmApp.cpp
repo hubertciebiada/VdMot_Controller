@@ -478,7 +478,8 @@ void  CStmApp::app_check_data()
 
         // Returns first token
         char *token = strtok(cmdptr, " ");
-        strncpy(cmd,token,sizeof(cmd)-1);		// command
+        memset(cmd,0x0,sizeof(cmd));
+        if (token != NULL) strlcpy(cmd,token,sizeof(cmd));		// command
         // Keep get tokens while one of the
         // delimiters present in buffer.
         //UART_DBG.println("token1 "+String(token));
