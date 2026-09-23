@@ -579,12 +579,18 @@ void CVdmConfig::postValvesCfg (JsonObject doc)
           if (!doc["valves"][i]["name"].isNull()) copyJsonString(configFlash.valvesConfig.valveConfig[idx].name,doc["valves"][i]["name"],sizeof(configFlash.valvesConfig.valveConfig[idx].name));
           if (!doc["valves"][i]["active"].isNull()) configFlash.valvesConfig.valveConfig[idx].active=doc["valves"][i]["active"];
           if (!doc["valves"][i]["tIdx1"].isNull()) {
-            StmApp.actuators[idx].tIdx1=doc["valves"][i]["tIdx1"];
-            StmApp.setTempIdxActive=true;
+            int tIdx=doc["valves"][i]["tIdx1"] | -1;    // 0 = none, 1..TEMP_SENSORS_COUNT
+            if ((tIdx>=0) && (tIdx<=TEMP_SENSORS_COUNT)) {
+              StmApp.actuators[idx].tIdx1=tIdx;
+              StmApp.setTempIdxActive=true;
+            }
           }
           if (!doc["valves"][i]["tIdx2"].isNull()) {
-            StmApp.actuators[idx].tIdx2=doc["valves"][i]["tIdx2"];
-            StmApp.setTempIdxActive=true;
+            int tIdx=doc["valves"][i]["tIdx2"] | -1;    // 0 = none, 1..TEMP_SENSORS_COUNT
+            if ((tIdx>=0) && (tIdx<=TEMP_SENSORS_COUNT)) {
+              StmApp.actuators[idx].tIdx2=tIdx;
+              StmApp.setTempIdxActive=true;
+            }
           }
       }
      }

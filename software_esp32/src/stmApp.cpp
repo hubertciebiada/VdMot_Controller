@@ -165,7 +165,7 @@ int16_t CStmApp::ConvertCF(int16_t cValue)
 int16_t CStmApp::getTOffset(uint8_t tIdx)
 {
     int16_t result = 0;
-    if (tIdx>0) {
+    if ((tIdx>0) && (tIdx<=TEMP_SENSORS_COUNT)) {
         result = VdmConfig.configFlash.tempsConfig.tempConfig[tIdx-1].offset;
     } 
     return (result); 
