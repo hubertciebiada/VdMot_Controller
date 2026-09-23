@@ -167,7 +167,7 @@ void CVdmConfig::clearConfig()
 
   configFlash.valvesConfig.dayOfCalib=9;
   configFlash.valvesConfig.hourOfCalib=0;
-  memset (configFlash.netConfig.pwd,0,sizeof(configFlash.netConfig.timeServer));
+  memset (configFlash.netConfig.timeServer,0,sizeof(configFlash.netConfig.timeServer));
   strncpy(configFlash.netConfig.timeServer,"pool.ntp.org",sizeof(configFlash.netConfig.timeServer));
   strncpy(configFlash.timeZoneConfig.tz,"Europe/Berlin",sizeof(configFlash.timeZoneConfig.tz));
   strncpy(configFlash.timeZoneConfig.tzCode,"CET-1CEST,M3.5.0,M10.5.0/3",sizeof(configFlash.timeZoneConfig.tzCode));
