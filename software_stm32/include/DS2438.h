@@ -131,7 +131,7 @@ private:
   float    _current;
   float    _inverseR;   //  1/(4096*resistor) optimized.
 
-  void     readScratchPad(uint8_t page);
+  bool     readScratchPad(uint8_t page);
   void     writeScratchPad(uint8_t page);
 };
 

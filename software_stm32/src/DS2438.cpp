@@ -145,7 +145,7 @@ float DS2438::readVAD()
   _oneWire->select(_address);
   _oneWire->write(DS2438_READ_VOLTAGE, 0);
   delay(DS2438_CONVERSION_DELAY);
-  readScratchPad(0);
+  const bool valid = readScratchPad(0);
 /*
   COMM_DBG.print("scrp {");
     for (uint8_t i = 0; i < 9; i++)
@@ -158,7 +158,7 @@ float DS2438::readVAD()
     }
     COMM_DBG.print(" }");  
 */
-  if (!checkScratchpad()) _vad=-10;
+  if (!valid || !checkScratchpad()) _vad=-10;
   else
   _vad = ((_scratchPad[4] & 0x03) * 256 + _scratchPad[3]) * 0.01;  //  10 mV resolution
 
@@ -399,7 +399,8 @@ float DS2438::readDCA()
 void DS2438::setConfigBit(uint8_t bit)
 {
   uint8_t mask = (0x01 << bit);
-  readScratchPad(0);
+  // never write back a corrupted read (the write is copied to the device EEPROM)
+  if (!readScratchPad(0)) return;
   if ((_scratchPad[0] & mask) == mask) return;  //  already 1
   _scratchPad[0] |= mask;
   writeScratchPad(0);
@@ -409,7 +410,8 @@ void DS2438::setConfigBit(uint8_t bit)
 void DS2438::clearConfigBit(uint8_t bit)
 {
   uint8_t mask = (0x01 << bit);
-  readScratchPad(0);
+  // never write back a corrupted read (the write is copied to the device EEPROM)
+  if (!readScratchPad(0)) return;
   if ((_scratchPad[0] & mask) == 0x00) return;  //  already 0
   _scratchPad[0] &= ~mask;
   writeScratchPad(0);
@@ -427,9 +429,10 @@ uint8_t DS2438::getConfigRegister()
 //
 //  PRIVATE
 //
-void DS2438::readScratchPad(uint8_t page)
+// reads page 0..7 including its CRC byte; false if the page is invalid or corrupted
+bool DS2438::readScratchPad(uint8_t page)
 {
-  if (page > 7) return;
+  if (page > 7) return false;
   _oneWire->reset();
   _oneWire->select(_address);  
   _oneWire->write(DS2438_RECALL_SCRATCH, 0);
@@ -438,8 +441,8 @@ void DS2438::readScratchPad(uint8_t page)
   _oneWire->select(_address);
   _oneWire->write(DS2438_READ_SCRATCH, 0);
   _oneWire->write(page, 0);
-  for (uint8_t i = 0; i < 8; i++) _scratchPad[i] = _oneWire->read();
-  //  skip crc for now.
+  for (uint8_t i = 0; i < 9; i++) _scratchPad[i] = _oneWire->read();
+  return _oneWire->crc8(_scratchPad, 8) == _scratchPad[8];
 }
 
 

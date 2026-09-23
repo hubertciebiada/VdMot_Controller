@@ -36,6 +36,7 @@
 #include <ArduinoJson.h>            // library https://github.com/bblanchon/ArduinoJson
 #include "owDevices.h"
 #include "DS2438.h"
+#include "app.h"
 
 
 tempsensor  tempsensors[MAXONEWIRECNT];
@@ -56,6 +57,10 @@ volatile int lock = 0;
 
 #define COMM_DBG				Serial6		// serial port for debugging
 
+#define DS2438_FAMILY         0x26
+#define MAX_ONEWIRE_SEARCH    64          // upper bound of search passes per enumeration
+#define TEMP_UNKNOWN          -500        // temperature (1/10 degC) of a sensor that was not read yet
+
 
 void printAddress(DeviceAddress deviceAddress)
 {
@@ -73,38 +78,58 @@ void printAddress(DeviceAddress deviceAddress)
   #endif
 }
 
+// enumerates the bus once and fills tempsensors[] (DS18 family) and voltsensors[] (DS2438)
+// in search order; devices beyond the array sizes are ignored
 void setDeviceAddress() {
-   uint8_t thisSensorAddress[8];
+    DeviceAddress addr;
+    uint8_t devices = 0;
+    uint8_t ds18 = 0;
+    uint8_t ds2438 = 0;
 
-   noOfDevices = sensors.getDeviceCount();
-    #ifdef tempDebug
-      COMM_DBG.print("Found "); 
-      COMM_DBG.print(noOfDevices, 10); 
-      COMM_DBG.println(" one wire sensors:");
-    #endif
-    for (unsigned int i=0; i<noOfDevices; i++)
-    {
-        sensors.getAddress(thisSensorAddress, i);
-        if (thisSensorAddress[0] == 0x26) {
-          sensors.getAddress(voltsensors[noOfDS2438Devices].address, i);
-          #ifdef tempDebug
-            printAddress(voltsensors[noOfDS2438Devices].address);       
-            COMM_DBG.println();
-          #endif
-          noOfDS2438Devices++;
-         
-        } else {
-          if (sensors.validFamily(thisSensorAddress)) {
-            sensors.getAddress(tempsensors[noOfDS18Devices].address, i);
+    oneWire.reset_search();
+    for (uint8_t guard = 0; guard < MAX_ONEWIRE_SEARCH && oneWire.search(addr); guard++) {
+        if (OneWire::crc8(addr, 7) != addr[7]) continue;
+        devices++;
+        if (addr[0] == DS2438_FAMILY) {
+          if (ds2438 < MAXDS2438CNT) {
+            memcpy(voltsensors[ds2438].address, addr, sizeof(DeviceAddress));
             #ifdef tempDebug
-              printAddress(tempsensors[noOfDS18Devices].address);       
+              printAddress(voltsensors[ds2438].address);       
               COMM_DBG.println();
             #endif
-            noOfDS18Devices++;
+            ds2438++;
           }
         } 
-        
+        else if (sensors.validFamily(addr)) {
+          if (ds18 < MAXONEWIRECNT) {
+            // a different sensor at this index must not inherit the old temperature
+            if (memcmp(tempsensors[ds18].address, addr, sizeof(DeviceAddress)) != 0) {
+              memcpy(tempsensors[ds18].address, addr, sizeof(DeviceAddress));
+              tempsensors[ds18].temperature = TEMP_UNKNOWN;
+            }
+            #ifdef tempDebug
+              printAddress(tempsensors[ds18].address);       
+              COMM_DBG.println();
+            #endif
+            ds18++;
+          }
+        }
     }
+
+    // forget sensors that are no longer present
+    for (uint8_t i = ds18; i < MAXONEWIRECNT; i++) {
+      memset(tempsensors[i].address, 0, sizeof(DeviceAddress));
+      tempsensors[i].temperature = TEMP_UNKNOWN;
+    }
+    for (uint8_t i = ds2438; i < MAXDS2438CNT; i++) {
+      memset(voltsensors[i].address, 0, sizeof(DeviceAddress));
+      voltsensors[i].vad = 0;
+    }
+
+    noOfDevices = devices;
+    noOfDS18Devices = ds18;
+    noOfDS2438Devices = ds2438;
+
     #ifdef tempDebug
       COMM_DBG.print("Found "); 
       COMM_DBG.print(noOfDS18Devices, 10); 
@@ -123,6 +148,7 @@ void temperature_setup() {
     for (uint8_t i=0; i<MAXONEWIRECNT; i++)
     {
       memset (tempsensors[i].address,0x0,8);
+      tempsensors[i].temperature = TEMP_UNKNOWN;
     }
 
     sensors.begin();
@@ -132,11 +158,6 @@ void temperature_setup() {
       COMM_DBG.println("search for devices"); 
     #endif
     setDeviceAddress();
-
-    // init sensor array
-    for (unsigned int i = 0; i<MAXONEWIRECNT; i++) {
-      tempsensors[i].temperature = -500;
-    }
 
     bm.begin();
 
@@ -200,8 +221,9 @@ void temperature_loop() {
               break;
               
     case T_OUTPUT:  
-              if(devcnt < noOfDS18Devices) {
-                temp = sensors.getTempCByIndex(devcnt);
+              if(devcnt < noOfDS18Devices && devcnt < MAXONEWIRECNT) {
+                // read by ROM address: bus indexes also count DS2438 devices
+                temp = sensors.getTempC(tempsensors[devcnt].address);
                 tempsensors[devcnt].temperature = round(temp*10);
                 #ifdef tempDebug
                   COMM_DBG.print("Sensor temp ");
@@ -224,7 +246,7 @@ void temperature_loop() {
               break;
 
     case T_READVAD:
-              if (devDS2438Cnt<noOfDS2438Devices) {
+              if (devDS2438Cnt<noOfDS2438Devices && devDS2438Cnt<MAXDS2438CNT) {
                 bm.setAddress(voltsensors[devDS2438Cnt].address);
                   v=bm.readVAD();
                   voltsensors[devDS2438Cnt].vad=100*v; // 10mV resolution
@@ -270,6 +292,8 @@ void temperature_loop() {
               // wdu todo ds2438
               else if (substate == 2) {
                 setDeviceAddress();
+                // sensor indexes of the valves refer to the new search order
+                app_match_sensors();
                 temp_cmd = TEMP_CMD_NONE;
                 tempstate = T_IDLE;
               }
@@ -289,9 +313,11 @@ void get_sensordata (unsigned int index, char *buffer, int buflen) {
   String testjson;
   String AddressStr;
  
-  doc["cnt"] = noOfDevices;
+  const int count = noOfDS18Devices < MAXONEWIRECNT ? noOfDS18Devices : MAXONEWIRECNT;
 
-  for (int i=0; i<(int)noOfDevices; i++)
+  doc["cnt"] = count;
+
+  for (int i=0; i<count; i++)
   {     
     doc["sns"][i]["temp"] = tempsensors[i].temperature;
 

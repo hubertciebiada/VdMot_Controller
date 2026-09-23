@@ -36,7 +36,7 @@
 #include "eeprom.h"
 
 
-struct valve myvalves[ACTUATOR_COUNT];
+volatile struct valve myvalves[ACTUATOR_COUNT];
 
 //unsigned char target_position_mirror[ACTUATOR_COUNT];
 unsigned int learning_time = LEARN_AFTER_TIME_DEFAULT;
@@ -264,7 +264,8 @@ int16_t app_set_learntime(uint32_t time) {
   // update all valve memories 
   for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {          
     // distribute learn timing equaly over valve slots
-    myvalves[x].learn_time = (unsigned int) (((long)learning_time * ((long)x+1)) / (long)ACTUATOR_COUNT);
+    // 64 bit product, learning_time * (x+1) can exceed 32 bit
+    myvalves[x].learn_time = (unsigned int) (((uint64_t)learning_time * (x+1)) / ACTUATOR_COUNT);
   }
 
   return 0;
@@ -322,7 +323,7 @@ void app_scan_valves()
 // sets valve full open
 // valve will be opened fully
 // if valve = 255, all valves will be opened fully
-int16_t app_set_valveopen(int16_t valve) {
+int16_t app_set_valveopen(uint16_t valve) {
 
   if(valve < ACTUATOR_COUNT) {
     myvalvemots[valve].target_position = 100;
@@ -342,13 +343,21 @@ int16_t app_set_valveopen(int16_t valve) {
 }
 
 
-// match sensor address from eeprom with found sensors and set index/slot to valve struct
-int16_t app_match_sensors() {
-  uint8_t   numberOfDevices = 0;
-  DeviceAddress currAddress;
-  uint8_t   found1 = 0, found2 = 0;
-  uint8_t   valveindexlast = 0;
+// true if the 1-Wire address matches the EEPROM sensor slot (rom code and crc)
+static bool app_sensor_matches(const struct ds1820_eeprom_layout &slot, const uint8_t *address) {
+  if (slot.crc != address[7]) return false;
+  for (unsigned int z = 0; z < 6; z++) {
+    if (slot.romcode[z] != address[1+z]) return false;
+  }
+  return true;
+}
 
+
+// match sensor address from eeprom with found sensors and set index/slot to valve struct
+// the stored index is the position in tempsensors[] (DS18 sensors only), the same index
+// space that gvlvd/gvlon and the ESP's sensor list use
+int16_t app_match_sensors() {
+  const uint8_t count = noOfDS18Devices < MAXONEWIRECNT ? noOfDS18Devices : MAXONEWIRECNT;
 
   for (uint8_t i=0;i<ACTUATOR_COUNT;i++) {
        myvalves[i].sensorindex1 = VALVE_SENSOR_UNKNOWN;
@@ -358,66 +367,37 @@ int16_t app_match_sensors() {
   #ifdef appDebug
     COMM_DBG.println("Read 1-wire sensor addresses from eeprom");
   #endif
-  numberOfDevices = sensors.getDeviceCount();
     
-  for (unsigned int owsensorindex=0; owsensorindex<numberOfDevices; owsensorindex++)
+  for (unsigned int owsensorindex=0; owsensorindex<count; owsensorindex++)
   {
-      sensors.getAddress(currAddress, owsensorindex);
+      const uint8_t *currAddress = tempsensors[owsensorindex].address;
+      bool found = false;
       #ifdef appDebug
-        printAddress(currAddress);
+        printAddress((uint8_t *) currAddress);
       #endif
 
-      // first sensor of valve
-      // step through all possible valves
-      for (unsigned int valveindex1 = 0;valveindex1<ACTUATOR_COUNT;valveindex1++) {
-        valveindexlast = valveindex1;
-        found1 = 0;
-        if (eep_content.owsensors1[valveindex1].crc == currAddress[7]) 
-        {
-            found1++;
-            for (unsigned z = 0;z<6;z++) {
-                if (eep_content.owsensors1[valveindex1].romcode[z] == currAddress[1+z]) {
-                    found1++;
-                }
-            }           
-        }
-       
-        if (found1 == 7)
-        {
+      for (unsigned int valveindex = 0;valveindex<ACTUATOR_COUNT;valveindex++) {
+        // first sensor of valve
+        if (app_sensor_matches(eep_content.owsensors1[valveindex], currAddress)) {
             #ifdef appDebug
               COMM_DBG.print(" found as 1st sensor at valve: ");
-              COMM_DBG.println(String(valveindexlast)+":"+String(owsensorindex));
+              COMM_DBG.println(String(valveindex)+":"+String(owsensorindex));
             #endif
-            myvalves[valveindexlast].sensorindex1 = owsensorindex;
-        } 
-      }
-     
-      // second sensor of valve
-      // step through all possible valves
-      for (unsigned int valveindex = 0;valveindex<ACTUATOR_COUNT;valveindex++) {
-        valveindexlast = valveindex;
-        found2 = 0;
-        if (eep_content.owsensors2[valveindex].crc == currAddress[7]) 
-        {
-            found2++;
-            for (unsigned z = 0;z<6;z++) {
-                if (eep_content.owsensors2[valveindex].romcode[z] == currAddress[1+z]) {
-                    found2++;
-                }
-            }           
+            myvalves[valveindex].sensorindex1 = owsensorindex;
+            found = true;
         }
-       
-        if (found2 == 7)
-        {     
+        // second sensor of valve
+        if (app_sensor_matches(eep_content.owsensors2[valveindex], currAddress)) {
             #ifdef appDebug     
               COMM_DBG.print(" found as 2nd sensor at valve: ");
-              COMM_DBG.println(valveindexlast, DEC);
+              COMM_DBG.println(valveindex, DEC);
             #endif
-            myvalves[valveindexlast].sensorindex2 = owsensorindex;
+            myvalves[valveindex].sensorindex2 = owsensorindex;
+            found = true;
         }
       }
     
-      if(found1==0 && found2==0) {
+      if(!found) {
         #ifdef appDebug
           COMM_DBG.println(" not found");
         #endif
