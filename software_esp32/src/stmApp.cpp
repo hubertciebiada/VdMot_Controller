@@ -399,7 +399,7 @@ void CStmApp::setSensorIndex(uint8_t valveIndex,char* sensor1,char* sensor2)
 void  CStmApp::app_check_data() 
 {
     static int errorcnt = 0;
-    int availcnt;
+    static bool rxOverflow = false;
     uint8_t noToken;
     uint8_t val8;
     String sv;
@@ -412,47 +412,49 @@ void  CStmApp::app_check_data()
         return;
     #endif
 
-    availcnt = UART_STM32.available();
     found=false;
- 
-    if (availcnt > 0) {
+    bool rxActivity = false;
 
-        for (int c = 0; c < availcnt; c++)
-        {           
-            *bufptr++ = (char) UART_STM32.read();
-            buflen++;  
-        }
-        if (buflen>=sizeof(buffer)-1) {
-            *bufptr='\r';
-        }        
-    }  
-
-    // if there is a little in the buffer
-    if(buflen >= 5) 
-    {
-        for (uint16_t c = 0; c < buflen; c++)
-        {     
-            if (buffer[c] == '\r') {
+    // Assemble one line per call. Bytes after the terminator stay in the UART
+    // buffer for the next call, so back-to-back replies are not lost. A line
+    // longer than the buffer is dropped completely instead of overrunning it.
+    while (!found && (UART_STM32.available() > 0)) {
+        char c = (char) UART_STM32.read();
+        rxActivity = true;
+        if ((c == '\r') || (c == '\n')) {
+            if (rxOverflow) {
+                syslog.log(LOG_DEBUG, "STMApp: line exceeds receive buffer, dropped");
+                rxOverflow = false;
+                buflen = 0;
+            } else if (buflen >= 5) {       // shortest valid reply is a 5-char command
+                buffer[buflen] = '\0';
                 errorcnt = 0;
-                buffer[c] = '\0';
                 found = true;
-                buflen = 0;         // reset counter
-                bufptr = buffer;    // reset ptr    
-                UART_STM32.read();  // read possible \n
+                buflen = 0;
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_ATOMIC) {
                     syslog.log(LOG_DEBUG, "STMApp:found new data packet: >" + String(buffer) + "<");
                 }
+            } else {
+                buflen = 0;                 // empty line, LF of CR LF or noise
             }
+        } else if (rxOverflow) {
+            // discard until the end of the oversized line
+        } else if (buflen < sizeof(buffer)-1) {
+            buffer[buflen++] = c;
+        } else {
+            rxOverflow = true;
         }
-        
-        // timeout incomplete recv sequences
-        if (!found) errorcnt++;
-        if (errorcnt > 5) {
-            syslog.log(LOG_DEBUG, "incomplete buffer : >" + String(buffer) + "<");
+    }
 
+    // timeout incomplete recv sequences (no new byte for ~6 cycles)
+    if (!found && ((buflen > 0) || rxOverflow)) {
+        if (rxActivity) errorcnt = 0; else errorcnt++;
+        if (errorcnt > 5) {
+            buffer[buflen] = '\0';
+            syslog.log(LOG_DEBUG, "incomplete buffer : >" + String(buffer) + "<");
             errorcnt = 0;
             buflen = 0;
-            bufptr = buffer;            
+            rxOverflow = false;
         }
     }
    
