@@ -82,6 +82,8 @@ class CWT32AsyncOTA
     String _userName;
     String _pwd;
     bool _authRequired;
+    bool _updateOk;             // last upload was written and verified completely
+    const char* _updateError;   // first error of the running upload, NULL if none
 };
 
 extern CWT32AsyncOTA WT32AsyncOTA;

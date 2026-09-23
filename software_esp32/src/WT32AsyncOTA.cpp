@@ -74,6 +74,8 @@ CWT32AsyncOTA::CWT32AsyncOTA()
     _userName = "";
     _pwd = "";
     _authRequired = false;
+    _updateOk = false;
+    _updateError = NULL;
 }
 
 void CWT32AsyncOTA::setID(const char* id)
@@ -127,11 +129,17 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
         }
         // the request handler is triggered after the upload has finished... 
         // create the response, add header, and send response
-        AsyncWebServerResponse *response = request->beginResponse((Update.hasError())?500:200, "text/plain", (Update.hasError())?"FAIL":"OK");
+        bool ok = _updateOk;
+        int code = ok ? 200 : ((_updateError != NULL) ? 400 : 500);
+        const char* text = ok ? "OK" : ((_updateError != NULL) ? _updateError : "FAIL");
+        _updateOk = false;
+        _updateError = NULL;
+        if (!ok && Update.isRunning()) Update.abort();  // free the buffer so a retry can begin
+        AsyncWebServerResponse *response = request->beginResponse(code, "text/plain", text);
         response->addHeader("Connection", "close");
         response->addHeader("Access-Control-Allow-Origin", "*");
         request->send(response);
-        restart();
+        if (ok) restart();      // only boot a complete, verified image
     }, [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
         //Upload handler chunks in data
         if(_authRequired){
@@ -140,13 +148,20 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
             }
         }
 
+    // errors are only recorded here; the request handler sends the one response
     if (!index) {
+        _updateOk = false;
+        _updateError = NULL;
+        if (Update.isRunning()) Update.abort();     // left over from an interrupted upload
+
         if(!request->hasParam("MD5", true)) {
-            return request->send(400, "text/plain", "MD5 parameter missing");
+            _updateError = "MD5 parameter missing";
+            return;
         }
 
         if(!Update.setMD5(request->getParam("MD5", true)->value().c_str())) {
-            return request->send(400, "text/plain", "MD5 parameter invalid");
+            _updateError = "MD5 parameter invalid";
+            return;
         }
 
         #if defined(ESP8266)
@@ -160,24 +175,27 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
             if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) { // Start with max available size
         #endif
             Update.printError(Serial);
-            return request->send(400, "text/plain", "OTA could not begin");
+            _updateError = "OTA could not begin";
+            return;
             }
         }
+        if (_updateError != NULL) return;
 
         // Write chunked data to the free sketch space
         if (len) {
             if (Update.write(data, len) != len) {
-                return request->send(400, "text/plain", "OTA could not begin");
+                _updateError = "OTA write failed";
+                return;
             }
         }
             
         if (final) { // if the final flag is set then this is the last frame of data
             if (!Update.end(true)) { //true to set the size to the current progress
                 Update.printError(Serial);
-                return request->send(400, "text/plain", "Could not end OTA");
+                _updateError = "Could not end OTA";
+                return;
             }
-        }else{
-            return;
+            _updateOk = true;
         }
     });
 }
