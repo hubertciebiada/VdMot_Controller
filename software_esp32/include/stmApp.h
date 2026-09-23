@@ -158,6 +158,9 @@ enum STM_INIT_STATE {STM_INIT_NOT_STARTED,STM_INIT_STARTED,STM_INIT_FINISHED,STM
 enum APP_STATE {APP_IDLE,APP_PENDING,APP_TIMEOUT};
 enum EEP_STATE {EEP_IDLE,EEP_REQUEST,EEP_DONE};
 
+#define NO_PENDING_TARGET   0xFF
+#define TARGET_RESEND       0xFF      // mirror value that differs from every valid target
+
 #define maxAppRetries 100
 #define maxAppTimeOuts 10
 
@@ -220,6 +223,7 @@ private:
 
   bool settarget_check;
   uint8_t target_position_mirror[ACTUATOR_COUNT];
+  uint8_t pendingTargetValve;   // valve of an unanswered stgtp, NO_PENDING_TARGET if none
   uint8_t getindex;
 
   uint8_t timeout;

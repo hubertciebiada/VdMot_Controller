@@ -74,6 +74,7 @@ CStmApp StmApp;
 CStmApp::CStmApp() 
 {
     settarget_check =false;
+    pendingTargetValve=NO_PENDING_TARGET;
     tempIndex=0;
     checkTempsCount = 0;
     checkVoltsCount = 0;
@@ -470,6 +471,7 @@ void  CStmApp::app_check_data()
         if (stmStatus==STM_NOT_READY) stmStatus=STM_READY;
         stmFailed=false;
         appTimeOuts=0;      // the STM answers: only consecutive timeouts count
+        pendingTargetValve=NO_PENDING_TARGET;
         // devide buffer into command and data
 		// ****************************************
 
@@ -970,6 +972,11 @@ void CStmApp::appHandler()
             break;
         
         case APP_TIMEOUT:
+            // the target was lost on the way: send it again in a later cycle
+            if (pendingTargetValve<ACTUATOR_COUNT) {
+                target_position_mirror[pendingTargetValve]=TARGET_RESEND;
+                pendingTargetValve=NO_PENDING_TARGET;
+            }
             appTimeOuts++;
             if (appTimeOuts>maxAppTimeOuts) {
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {		
@@ -1043,6 +1050,7 @@ void  CStmApp::app_comm_machine()
                             settarget_check=false;
                            
                             app_comm_send(APP_PRE_SETTARGETPOS,&x, &(actuators[x].target_position));
+                            pendingTargetValve=x;
                             #ifdef EnvDevelop
                                 UART_DBG.println("valve position has changed : "+String(x)+" = "+String(actuators[x].target_position));
                             #endif
