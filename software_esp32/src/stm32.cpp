@@ -375,7 +375,7 @@ void CStm32::STM32ota_loop()
                   }
                 } 
 
-                stmUpdPercent = 20 + (uint8_t) ((400 * (uint32_t) blockcounter) / (uint32_t) myflashfile.blockcnt / 10); 
+                if (myflashfile.blockcnt > 0) stmUpdPercent = 20 + (uint8_t) ((400 * (uint32_t) blockcounter) / (uint32_t) myflashfile.blockcnt / 10); 
 
                 if(blockcounter < myflashfile.blockcnt) {
                   #ifdef EnvDevelop
@@ -424,7 +424,7 @@ void CStm32::STM32ota_loop()
                   clearUART_STM32Buffer();
                 }
 
-                stmUpdPercent = 60 + (uint8_t) ((400 * (uint32_t) blockcounter) / (uint32_t) myflashfile.blockcnt / 10); 
+                if (myflashfile.blockcnt > 0) stmUpdPercent = 60 + (uint8_t) ((400 * (uint32_t) blockcounter) / (uint32_t) myflashfile.blockcnt / 10); 
                
                 if(blockcounter < myflashfile.blockcnt) {
                   #ifdef EnvDevelop
@@ -679,6 +679,15 @@ int CStm32::PrepareFile(String FileName)
   if (myflashfile.fsfile) {
 
     myflashfile.size = myflashfile.fsfile.size();
+    // refuse before anything is erased: an empty file cannot be an STM image and
+    // nothing larger than the biggest supported flash (512 KiB, F401xE/F411xE) fits
+    if ((myflashfile.size == 0) || (myflashfile.size > STM32OTA_MAXIMAGESIZE)) {
+      if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_ATOMIC) {
+        syslog.log(LOG_DEBUG, "STM32 ota: get File --> invalid size "+String(myflashfile.size));
+      }
+      myflashfile.fsfile.close();
+      return -1;
+    }
  
     myflashfile.blockcnt = myflashfile.size / STM32OTA_BLOCKSIZE;
     myflashfile.lastbytes = myflashfile.size % STM32OTA_BLOCKSIZE;

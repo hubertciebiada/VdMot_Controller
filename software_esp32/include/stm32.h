@@ -50,6 +50,7 @@
 #define     STM32OTA_START          0x12
 #define     STM32OTA_STARTBLANK     0x45
 #define     STM32OTA_BLOCKSIZE      256
+#define     STM32OTA_MAXIMAGESIZE   (512UL*1024UL)
 
 #define     otaDelayFlash           50
 #define     otaDelayErase           50
