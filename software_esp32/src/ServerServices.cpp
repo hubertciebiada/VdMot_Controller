@@ -440,7 +440,7 @@ bool handleCmd(JsonObject doc)
   char const **p;
   bool found = false;
 
-  if (!doc["action"].isNull()) {
+  if (doc["action"].is<const char*>()) {      // a non-string action would give NULL
     const char* d=doc["action"].as<const char*>();
     uint8_t i=0;
   
