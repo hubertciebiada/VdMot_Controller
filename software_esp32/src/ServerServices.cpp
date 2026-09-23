@@ -684,7 +684,13 @@ AsyncCallbackJsonWebHandler* testEmailHandler = new AsyncCallbackJsonWebHandler(
   });
   server.addHandler(testEmailHandler);  
 
-  WT32AsyncOTA.begin(&server);    // Start WT32OTA
+  // protect the ESP firmware upload with the web login, when one is configured
+  // (same rule as /auth: both user name and password must be set)
+  if ((strlen(VdmConfig.configFlash.netConfig.userName)>0) && (strlen(VdmConfig.configFlash.netConfig.userPwd)>0)) {
+    WT32AsyncOTA.begin(&server,VdmConfig.configFlash.netConfig.userName,VdmConfig.configFlash.netConfig.userPwd);
+  } else {
+    WT32AsyncOTA.begin(&server);
+  }
   server.begin();
 }
 

@@ -136,9 +136,9 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
         //Upload handler chunks in data
         if(_authRequired){
             if(!request->authenticate(_userName.c_str(), _pwd.c_str())){
-                return request->requestAuthentication();
+                return;     // ignore the data; the request handler answers with 401
+            }
         }
-    }
 
     if (!index) {
         if(!request->hasParam("MD5", true)) {
