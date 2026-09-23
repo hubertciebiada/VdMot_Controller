@@ -170,9 +170,8 @@ void CVdmSystem::sendResetReason() {
     uint8_t rr=esp_reset_reason();
     if (rr>10) rr=0;
     if ((rr>=4) && (rr<=7) || (rr==9)) {
-      if (VdmConfig.configFlash.messengerConfig.activeFlags.pushOver) {
-        Messenger.sendMessage(systemMsgReset,getLastResetReason().c_str());
-      }
+      // sendMessage() itself picks the enabled channels (Pushover and/or e-mail)
+      Messenger.sendMessage(systemMsgReset,getLastResetReason().c_str());
     }
   }
 }
