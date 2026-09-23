@@ -363,7 +363,8 @@ void CStm32::STM32ota_loop()
                 }
 
                 if (blockcounter > 0) {
-                  if (UART_STM32.read() != STM32ACK) {
+                  // ACK of the previous block; it may still be on its way
+                  if (!waitForSTMResponse(1000) || (UART_STM32.read() != STM32ACK)) {
                     #ifdef EnvDevelop
                       UART_DBG.println("--> no ACK");
                     #endif
@@ -399,7 +400,11 @@ void CStm32::STM32ota_loop()
                     syslog.log(LOG_DEBUG, "STM32 ota: write last bytes");
                   }  
                   if (myflashfile.lastbytes>0) {
-                    if (FlashBytes(myflashfile.blockcnt, myflashfile.lastbytes) != 0) {
+                    if ((FlashBytes(myflashfile.blockcnt, myflashfile.lastbytes) != 0) ||
+                        !waitForSTMResponse(1000) || (UART_STM32.read() != STM32ACK)) {
+                      if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_ATOMIC) {
+                        syslog.log(LOG_DEBUG, "STM32 ota: --> last block not acknowledged");
+                      }  
                       stm32ota_state = STM32OTA_ERROR;
                       break;
                     }
@@ -484,7 +489,7 @@ void CStm32::STM32ota_loop()
                 }
                 
                 if(blockcounter < myflashfile.blockcnt) {
-                  if (UART_STM32.available() == STM32OTA_BLOCKSIZE) {
+                  if (UART_STM32.available() >= STM32OTA_BLOCKSIZE) {
                     UART_STM32.readBytes(buffer, STM32OTA_BLOCKSIZE);
                     
                     for (size_t i = 0; i < STM32OTA_BLOCKSIZE; i++)
@@ -496,7 +501,7 @@ void CStm32::STM32ota_loop()
                   }
                 }
                 else {
-                  if (UART_STM32.available() == myflashfile.lastbytes) {
+                  if (UART_STM32.available() >= myflashfile.lastbytes) {
                     UART_STM32.readBytes(buffer, myflashfile.lastbytes);
                     
                     for (size_t i = 0; i < myflashfile.lastbytes; i++)
