@@ -40,6 +40,7 @@
 #include "eeprom.h"
 #include "otasupport.h"
 #include "STM32TimerInterrupt.h"      
+#include <IWatchdog.h>
 #ifdef useCan
   #include "mycan.h"
 #endif
@@ -57,11 +58,16 @@
 // Init STM32 timer TIM2
 STM32Timer ITimer1(TIM2);
 
+// independent watchdog, fed by the main loop only while the valve state machine (TIM2) runs;
+// the longest blocking operations (1-Wire bus search, EEPROM write) take about one second at most
+#define WATCHDOG_TIMEOUT_US   4000000UL
+
 void setup_system();
 void loop_system();
 
 
 void setup() {
+  valve_pins_safe();
   BootSetup();
 }
 
@@ -159,6 +165,9 @@ void setup_system() {
       COMM_DBG.println(F("Can't set ITimer1. Select another freq. or timer"));
     #endif
   }
+
+  if (IWatchdog.isReset(true)) COMM_DBG.println("reset by watchdog");
+  IWatchdog.begin(WATCHDOG_TIMEOUT_US);
 }
 
 
@@ -171,6 +180,7 @@ void loop_system() {
 
   static uint8_t buttontest = 0;
   static uint8_t ledTimer = 0;
+  static uint32_t lastValveTicks = 0;
 
   int16_t recvcmd;
   
@@ -219,6 +229,12 @@ void loop_system() {
   // 10 ms loop
   if ((millis()-loop_10ms) > (uint32_t) 10 ) {  
     loop_10ms = millis();  
+
+    const uint32_t valveTicks = valve_loop_ticks;
+    if (valveTicks != lastValveTicks) {
+      lastValveTicks = valveTicks;
+      IWatchdog.reload();
+    }
     
     app_loop();  
     communication_loop();

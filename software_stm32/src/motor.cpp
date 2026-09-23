@@ -60,7 +60,6 @@
 #define CMD_M_OPEN      'o'
 #define CMD_M_CLOSE     'c'
 #define CMD_M_STOP      's'
-#define CMD_M_STOP_ISR  'x'
 #define CMD_M_NOTHING   'n'
 #define CMD_M_TEST      't'
 
@@ -73,7 +72,6 @@
 #define M_RES_TURNING     5
 #define M_RES_ENDSTOP     6
 #define M_RES_STOP        7
-#define M_RES_STOP_ISR    8
 #define M_RES_NOCURRENT   9
 #define M_RES_TEST        10
 #define M_RES_ERROR       11
@@ -91,7 +89,20 @@ byte appcycle(byte cmd, byte valvenr);
 
 void TimerHandler0();
 
-enum ASTATE valvestate;
+#define MUX_SETTLE_TICKS  ((WAIT_MUX + 9) / 10)     // motorcycle() runs every 10 ms
+
+// position arithmetic clamped to 0..100 %
+static byte position_add (byte position, byte delta) {
+  unsigned int sum = (unsigned int) position + delta;
+  return sum > 100 ? 100 : (byte) sum;
+}
+
+static byte position_sub (byte position, byte delta) {
+  return delta >= position ? 0 : (byte) (position - delta);
+}
+
+volatile enum ASTATE valvestate;
+volatile uint32_t valve_loop_ticks = 0;
 
 // Init STM32 timer TIM1
 STM32Timer ITimer0(TIM1);
@@ -117,13 +128,15 @@ volatile byte         isr_timer_go = 0;     // ISR var for timer pwm start
 volatile byte         isr_timer_fin = 0;    // ISR var for timer pwm finished
 
 volatile byte         isr_overcurrentevent = 0;
+volatile byte         isr_stop_request = 0;     // set by EXTI when the target count is reached
 
-valvemotor myvalvemots[ACTUATOR_COUNT];
+volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 
 
-char command = '\0';
-int valvenr = 0;
-byte poschangecmd = 0;
+// handoff main loop -> valve_loop (TIM2), written by appsetaction() with interrupts disabled
+volatile char command = '\0';
+volatile int valvenr = 0;
+volatile byte poschangecmd = 0;
 unsigned int m_meancurrent = 0;           // mean current in mA
 
 uint8_t currentbound_low_fac = 17;        // lower current limit factor for detection of end stop
@@ -141,6 +154,27 @@ uint8_t calibRetries = 0;
 
 static int undercurrcnt = 0;
 static int overcurrcnt = 0;
+
+// drives the valve PSU and motor enable outputs to their inactive level;
+// called right after reset, before the 3 s boot window
+void valve_pins_safe () {
+  // preset the output latch first: switching to open drain with the reset value LOW
+  // would enable the valve PSU for a moment
+  set_GPIO_Port_Clock(STM_PORT(digitalPinToPinName(POWER_ENA)));
+  PSU_OFF();
+  pinMode(POWER_ENA, OUTPUT_OPEN_DRAIN);
+  PSU_OFF();
+
+  // L293 enable inputs; PA15/PB3 are JTAG pins with pull resistors after reset
+  pinMode(CTRL_ENA0, OUTPUT);
+  pinMode(CTRL_ENA1, OUTPUT);
+  pinMode(CTRL_ENA2, OUTPUT);
+  pinMode(CTRL_ENA3, OUTPUT);
+  pinMode(CTRL_ENA4, OUTPUT);
+  pinMode(CTRL_ENA5, OUTPUT);
+  ena_motor(0, 0);
+}
+
 
 // call from setup function in main
 byte valve_setup () {
@@ -214,7 +248,7 @@ void valve_loop () {
 
   static unsigned int closing_count = 0;  
   static unsigned int opening_count = 0;
-  static unsigned int deadzone_count = 0;
+  static int deadzone_count = 0;
 
   static int idlecurrenttimer = 0;
   
@@ -226,6 +260,8 @@ void valve_loop () {
   static int locktimer = 0;
 
   static enum ASTATE oldvalvestate;
+
+  valve_loop_ticks++;
 
   if(waittimer) waittimer--;
 
@@ -382,7 +418,7 @@ void valve_loop () {
                       COMM_DBG.println("A: opened valve"); 
                     #endif                 
                     valvestate = A_IDLE;
-                    myvalvemots[valveindex].actual_position += pos_change;
+                    myvalvemots[valveindex].actual_position = position_add(myvalvemots[valveindex].actual_position, pos_change);
                     myvalvemots[valveindex].status = VLV_STATE_IDLE; 
                     #ifdef motDebug                   
                       COMM_DBG.print("A: new position "); COMM_DBG.println(myvalvemots[valveindex].actual_position);
@@ -450,7 +486,7 @@ void valve_loop () {
                     #endif
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_IDLE;
-                    myvalvemots[valveindex].actual_position -= pos_change; 
+                    myvalvemots[valveindex].actual_position = position_sub(myvalvemots[valveindex].actual_position, pos_change);
                     #ifdef motDebug
                       COMM_DBG.print("A: new position "); COMM_DBG.println(myvalvemots[valveindex].actual_position);                   
                     #endif
@@ -599,7 +635,7 @@ void valve_loop () {
                         myvalvemots[valveindex].meancurrent = (myvalvemots[valveindex].meancurrent + m_meancurrent) / 2;                      
                       }                      
                                           
-                      deadzone_count = closing_count - opening_count;
+                      deadzone_count = (int) closing_count - (int) opening_count;
                       scaler = opening_count / 100;
                       #ifdef motDebug
                         COMM_DBG.print("A: learned closing_count = "); COMM_DBG.println(closing_count);
@@ -613,9 +649,11 @@ void valve_loop () {
                       myvalvemots[valveindex].deadzone_count = deadzone_count;
                       myvalvemots[valveindex].scaler = scaler;
                       myvalvemots[valveindex].actual_position = 0;    // because valve was closed completely  
-                      COMM_DBG.print("A: counts = "); COMM_DBG.println(myvalvemots[valveindex].closing_count); 
-                      COMM_DBG.println(myvalvemots[valveindex].opening_count);  
-                      COMM_DBG.println(noOfMinCounts);                  
+                      #ifdef motDebug
+                        COMM_DBG.print("A: counts = "); COMM_DBG.println(myvalvemots[valveindex].closing_count); 
+                        COMM_DBG.println(myvalvemots[valveindex].opening_count);  
+                        COMM_DBG.println(noOfMinCounts);                  
+                      #endif
                       if ((closing_count<noOfMinCounts) || (opening_count<noOfMinCounts)) 
                       { 
                         calibRetries++;
@@ -627,7 +665,9 @@ void valve_loop () {
                           PSU_ON(); 
                           psuofftimer = 0;
                           waittimer = WAIT_TIMER50; 
-                          COMM_DBG.print("A: calibration retry  = "); COMM_DBG.println(calibRetries); 
+                          #ifdef motDebug
+                            COMM_DBG.print("A: calibration retry  = "); COMM_DBG.println(calibRetries); 
+                          #endif
                           break;
                         }
 
@@ -716,7 +756,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A_SET2: opened valve"); 
                     #endif                 
-                    myvalvemots[valveindex].actual_position += pos_change;
+                    myvalvemots[valveindex].actual_position = position_add(myvalvemots[valveindex].actual_position, pos_change);
                     #ifdef motDebug                   
                       COMM_DBG.print("A_SET2: new position "); COMM_DBG.println(myvalvemots[valveindex].actual_position);
                     #endif
@@ -805,12 +845,17 @@ byte motorcycle (int mvalvenr, byte cmd) {
   #define M_TURNING   4
   #define M_TURNON    8
   #define M_STOP      5
-  #define M_STOP_ISR  6
   #define M_UNDERCURR 7
   #define M_TESTPREP  9
   #define M_TEST      10
+  #define M_SETTLE    11      // wait for the MUX relay after set_motor()
+  #define M_START     12      // start motor after M_SETTLE (open/close)
+  #define M_TESTSTART 13      // start motor after M_SETTLE (test)
 
   static byte motorstate = M_INIT;
+  static byte settle_next = M_IDLE;
+  static byte settle_result = M_RES_TURNING;
+  static int settlecnt = 0;
 
   static int cyclecnt = 0;
   static int debouncecnt = 0;
@@ -822,12 +867,12 @@ byte motorcycle (int mvalvenr, byte cmd) {
   static long meancurrent_mem = 0;              // memory for meancurrent values
   byte result = 0;
 
-  // quickpass for isr state switching
-  if(cmd==CMD_M_STOP_ISR) {
-    motorstate = M_STOP_ISR;
-    //result = M_RES_STOP_ISR;
+  // target count reached (flag set by the EXTI handler, which must not run this state machine itself)
+  if (isr_stop_request) {
+    isr_stop_request = 0;
+    if (motorstate == M_TURNON || motorstate == M_TURNING) motorstate = M_STOP;
   }
-  //else {
+
     switch (motorstate) {
       case M_INIT:  MUX_OFF();         // relay MUX off
                     ena_motor(0, 0);
@@ -866,7 +911,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     }
   
                     // correct motor nr?
-                    if (motorstate != M_IDLE && mvalvenr > (int) ACTUATOR_COUNT) {
+                    if (motorstate != M_IDLE && (mvalvenr < 0 || mvalvenr >= (int) ACTUATOR_COUNT)) {
                       motorstate = M_IDLE;
                       result = M_RES_IDLE;
                     }
@@ -881,16 +926,11 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       COMM_DBG.println("M: state open");                                  
                     #endif
                     set_motor(mvalvenr, DIR_OPEN);
-                    undercurrcnt = 0;
-                    overcurrcnt = 0;
-                    motorstate = M_TURNON;
-                    isr_valvenr = mvalvenr;
-                    isr_counter=0;
-                    cyclecnt = 0;
-                    debouncecnt = 0;                  
+                    settlecnt = MUX_SETTLE_TICKS;
+                    settle_next = M_START;
+                    settle_result = M_RES_TURNING;
+                    motorstate = M_SETTLE;
                     result = M_RES_OPENS;
-                    attachInterrupt(digitalPinToInterrupt(REVINPIN), isr_count, RISING);
-                    
                     break;
                     
       case M_CLOSE:
@@ -898,16 +938,31 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       COMM_DBG.println("M: state close");                                 
                     #endif
                     set_motor(mvalvenr, DIR_CLOSE);
+                    settlecnt = MUX_SETTLE_TICKS;
+                    settle_next = M_START;
+                    settle_result = M_RES_TURNING;
+                    motorstate = M_SETTLE;
+                    result = M_RES_CLOSES;
+                    break;
+
+      case M_SETTLE:
+                    if (settlecnt > 0) settlecnt--;
+                    if (settlecnt == 0) motorstate = settle_next;
+                    result = settle_result;
+                    break;
+
+      case M_START:
                     undercurrcnt = 0;
-                    overcurrcnt = 0;   
+                    overcurrcnt = 0;
                     motorstate = M_TURNON;
                     isr_valvenr = mvalvenr;
                     isr_counter=0;
                     cyclecnt = 0;
                     debouncecnt = 0;
-                    result = M_RES_CLOSES;
+                    isr_stop_request = 0;
+                    isr_overcurrentevent = 0;     // may be left over from the previous move
+                    result = M_RES_TURNING;
                     attachInterrupt(digitalPinToInterrupt(REVINPIN), isr_count, RISING);
-  
                     break;
                   
       case M_TURNON:
@@ -1029,6 +1084,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     #ifdef motDebug
                       COMM_DBG.println("M: state stop");    
                     #endif                                  
+                    detachInterrupt(digitalPinToInterrupt(REVINPIN));
                     ena_motor(0, 0);
                     isr_turning = 0;
                     #ifdef motDebug
@@ -1038,14 +1094,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     motorstate = M_IDLE;
                     result = M_RES_STOP;                  
                     
-                    break;
-
-      case M_STOP_ISR: 
-                    #ifdef motDebug
-                      COMM_DBG.println("M: target stop");  
-                    #endif
-                    motorstate = M_STOP;
-                    result = M_RES_STOP_ISR;  
                     break;
 
       case M_UNDERCURR:         
@@ -1065,6 +1113,15 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       COMM_DBG.println("M: test prep");                                  
                     #endif
                     set_motor(mvalvenr, DIR_OPEN); 
+                    settlecnt = MUX_SETTLE_TICKS;
+                    settle_next = M_TESTSTART;
+                    settle_result = M_RES_TEST;
+                    motorstate = M_SETTLE;
+                    result = M_RES_TEST;
+                    break;
+
+      case M_TESTSTART:
+                    isr_overcurrentevent = 0;     // may be left over from the previous move
                     ena_motor(mvalvenr, 1);                 
                 
                     cyclecnt = 0;
@@ -1149,11 +1206,11 @@ byte motorcycle (int mvalvenr, byte cmd) {
 
 
 // sets direction and mux relay
+// the relay needs WAIT_MUX ms to settle before the motor is enabled, motorcycle() waits in M_SETTLE
 void set_motor (int smvalvenr, int dir) {
 
   if (smvalvenr % 2) { MUX_OFF(); }
   else { MUX_ON(); }
-  delay(WAIT_MUX); // wait for relay settling, depending on revision
   
   if (dir == DIR_OPEN) { DIR_OFF(); } 
   else { DIR_ON(); }
@@ -1185,11 +1242,12 @@ void isr_count () {
 
 
 // call from isr to stop motor immediately
+// the state machine picks the stop up on its next run (TIM2), it is not reentrant
 void callback_motorstop () {
   detachInterrupt(digitalPinToInterrupt(REVINPIN));
   isr_turning = 0;
   ena_motor(0, 0);  
-  motorcycle(0, CMD_M_STOP_ISR);  
+  isr_stop_request = 1;
 }
 
 
@@ -1200,13 +1258,22 @@ enum ASTATE valve_getstate () {
 
 
 int16_t appsetaction(char cmd, unsigned int valveindex, byte posdelta, bool force) {
+  bool accepted = false;
 
-  if(((valvestate == A_IDLE) || force) && (valveindex < ACTUATOR_COUNT)) {
-    valvenr = (int) valveindex;
-    command = cmd;
-    poschangecmd = posdelta;
-    return 0;
+  if (valveindex < ACTUATOR_COUNT) {
+    // valve_loop (TIM2) must see valve, position and command as one consistent set
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if ((valvestate == A_IDLE) || force) {
+      valvenr = (int) valveindex;
+      poschangecmd = posdelta;
+      command = cmd;              // last: valve_loop acts on the command
+      accepted = true;
+    }
+    __set_PRIMASK(primask);
   }
+
+  if (accepted) return 0;
   else {
     #ifdef motDebug          
       COMM_DBG.print("command rejected, state: ");

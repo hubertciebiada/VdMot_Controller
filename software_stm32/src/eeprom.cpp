@@ -331,6 +331,14 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 }
 
 
+// reads a block; on an I2C error the buffer is filled with 0xFF like an erased
+// EEPROM, so the range checks at startup fall back to the defaults instead of
+// using stack garbage
+static void eeprom_read_block (uint16_t address, uint8_t *buf, uint16_t length) {
+	if (eeprom.readBlock(address, buf, length) != length) memset(buf, 0xFF, length);
+}
+
+
 //----------------------------------------------------------------------------
 //
 // reads eeprom layout from eeprom
@@ -351,7 +359,7 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 	// first read base layout
 	x = 1 + sizeof(lay->descr) + sizeof(lay->OneWireCfg) + sizeof(lay->currentbound_low_fac) + sizeof(lay->currentbound_high_fac)+ sizeof(lay->numberOfMovements);
 	//eep.readByteArray(address, buf, x);
-	eeprom.readBlock(address, buf, x);
+	eeprom_read_block(address, buf, x);
 
 	x = 0;
 	lay->b_slave = buf[x++];
@@ -376,7 +384,7 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 	for(scnt=0;scnt<ACTUATOR_COUNT;scnt++) {
 		x = 8;
 
-		eeprom.readBlock(address, buf, x);
+		eeprom_read_block(address, buf, x);
 
 		lay->owsensors1[scnt].familycode = buf[0];
 		lay->owsensors1[scnt].romcode[5] = buf[1];
@@ -394,7 +402,7 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 	for(scnt=0;scnt<ACTUATOR_COUNT;scnt++) {
 		x = 8;
 
-		eeprom.readBlock(address, buf, x);
+		eeprom_read_block(address, buf, x);
 
 		lay->owsensors2[scnt].familycode = buf[0];
 		lay->owsensors2[scnt].romcode[5] = buf[1];
@@ -412,7 +420,7 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 	for(scnt=0;scnt<ADDITIONAL_SENSOR_COUNT;scnt++) {
 		x = 8;
 
-		eeprom.readBlock(address, buf, x);
+		eeprom_read_block(address, buf, x);
 
 		lay->owsensors[scnt].familycode = buf[0];
 		lay->owsensors[scnt].romcode[5] = buf[1];
@@ -426,14 +434,14 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 		address += x;
 	}
 
-	eeprom.readBlock(address, buf, 1);
+	eeprom_read_block(address, buf, 1);
 	lay->startOnPower = buf[0];
 	address++;
-	eeprom.readBlock(address, buf, 2);
+	eeprom_read_block(address, buf, 2);
 	pb=(uint16_t*) &buf[0];
 	lay->noOfMinCounts = *pb;
 	address+=2;
-	eeprom.readBlock(address, buf, 1);
+	eeprom_read_block(address, buf, 1);
 	lay->maxCalibRetries = buf[0];
 	address++;
 	eep_content.status = EEP_VALID;

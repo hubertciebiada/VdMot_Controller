@@ -57,7 +57,7 @@ struct valvemotor {
 //typedef struct valves {
   unsigned int closing_count;  
   unsigned int opening_count;
-  unsigned int deadzone_count;  
+  int deadzone_count;              // closing_count - opening_count, may be negative
   unsigned int scaler;
   unsigned int meancurrent;
   // unsigned int sensorindex1;
@@ -74,13 +74,15 @@ struct valvemotor {
   uint8_t calibRetries;
 };
 
-extern valvemotor myvalvemots[ACTUATOR_COUNT];
+// shared between the valve state machine (TIM2 interrupt) and the main loop
+extern volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 
 enum ASTATE {
 A_INIT, A_IDLE, A_CLOSE, A_OPEN1, A_OPEN2, A_LEARN1, 
 A_LEARN2, A_LEARN3, A_LEARN4, A_SET, A_SET1, A_SET2, A_CLOSE1, A_CLOSE2, A_TEST };
 
-extern enum ASTATE valvestate;
+extern volatile enum ASTATE valvestate;
+extern volatile uint32_t valve_loop_ticks;     // incremented on every valve_loop run (watchdog heartbeat)
 
 
 
@@ -89,6 +91,7 @@ void valve_loop ();
 //byte valve_setup (struct valve *valvedata);
 //byte valve_setup (struct valvemotor *valvedata);
 byte valve_setup ();
+void valve_pins_safe ();
 
 enum ASTATE valve_getstate ();
 int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force=false);
