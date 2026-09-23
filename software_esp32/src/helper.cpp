@@ -165,3 +165,13 @@ size_t strlcat(char *dst, const char *src, size_t dsize)
 
 	return(dlen + (src - osrc));	/* count does not include NUL */
 }
+
+// Copy a JSON string into a fixed-size buffer, always NUL-terminated.
+// Anything that is not a string (null, number, object) leaves dst unchanged.
+bool copyJsonString(char* dst, JsonVariantConst src, size_t size)
+{
+  const char* s = src.as<const char*>();
+  if ((s == NULL) || (size == 0)) return false;
+  strlcpy(dst, s, size);
+  return true;
+}

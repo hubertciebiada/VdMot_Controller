@@ -682,12 +682,12 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire temp data "+String(argptr[0])+":"+String(argptr[1]));
                 } 
-                strncpy(tempsId[tempIndex].id,argptr[0],sizeof(tempsId[tempIndex].id));
+                strlcpy(tempsId[tempIndex].id,argptr[0],sizeof(tempsId[tempIndex].id));
 
                 int8_t idx=findTempID(argptr[0]);
                 if (idx>=0) {
                     memset(temps[idx].id,0x0,sizeof(temps[idx].id)); 
-                    strncpy(temps[idx].id,argptr[0],sizeof(temps[idx].id));
+                    strlcpy(temps[idx].id,argptr[0],sizeof(temps[idx].id));
                     int16_t cValue=atoi(argptr[1]);
                     temps[idx].temperature=ConvertCF(cValue)+VdmConfig.configFlash.tempsConfig.tempConfig[idx].offset;
                 } 
@@ -760,12 +760,12 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire volt data "+String(argptr[0])+":"+String(argptr[1]));
                 } 
-                strncpy(voltsId[voltIndex].id,argptr[0],sizeof(voltsId[voltIndex].id));
+                strlcpy(voltsId[voltIndex].id,argptr[0],sizeof(voltsId[voltIndex].id));
 
                 int8_t idx=findVoltID(argptr[0]);
                 if (idx>=0) {
                     memset(volts[idx].id,0x0,sizeof(volts[idx].id)); 
-                    strncpy(volts[idx].id,argptr[0],sizeof(volts[idx].id));
+                    strlcpy(volts[idx].id,argptr[0],sizeof(volts[idx].id));
                     volts[idx].vad=atoi(argptr[1]);
                     volts[idx].failed=(volts[idx].vad<=-1000);
                     float c = (float) volts[idx].vad;

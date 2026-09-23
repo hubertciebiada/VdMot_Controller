@@ -45,6 +45,7 @@
 #include "ESP_Mail_Client.h"
 #endif
 #include "globals.h"
+#include "helper.h"
 #include <string.h>
 
 CMessenger Messenger;
@@ -90,9 +91,9 @@ int CMessenger::testPO(JsonObject doc)
     char message [31] = {"Test from "};
     strlcat (message,VdmConfig.configFlash.systemConfig.stationName,sizeof(message)) ; 
 
-    if (!doc["appToken"].isNull()) strncpy(appToken,doc["appToken"].as<const char*>(),sizeof(appToken));
-    if (!doc["userToken"].isNull()) strncpy(userToken,doc["userToken"].as<const char*>(),sizeof(userToken));
-    if (!doc["title"].isNull()) strncpy(title,doc["title"].as<const char*>(),sizeof(title));
+    if (!doc["appToken"].isNull()) copyJsonString(appToken,doc["appToken"],sizeof(appToken));
+    if (!doc["userToken"].isNull()) copyJsonString(userToken,doc["userToken"],sizeof(userToken));
+    if (!doc["title"].isNull()) copyJsonString(title,doc["title"],sizeof(title));
 
     return (sendPO((const char*) &appToken,(const char*) &userToken,(const char*) &title,(const char*) &message));
 }
@@ -122,12 +123,12 @@ void CMessenger::testEmail(JsonObject doc)
   uint16_t port=465;
   char message [65] = {"Test from "};
   strlcat (message,VdmConfig.configFlash.systemConfig.stationName,sizeof(message)) ; 
-  if (!doc["user"].isNull()) strncpy(user,doc["user"].as<const char*>(),sizeof(user));
-  if (!doc["pwd"].isNull()) strncpy(pwd,doc["pwd"].as<const char*>(),sizeof(pwd));
-  if (!doc["host"].isNull()) strncpy(host,doc["host"].as<const char*>(),sizeof(host));
+  if (!doc["user"].isNull()) copyJsonString(user,doc["user"],sizeof(user));
+  if (!doc["pwd"].isNull()) copyJsonString(pwd,doc["pwd"],sizeof(pwd));
+  if (!doc["host"].isNull()) copyJsonString(host,doc["host"],sizeof(host));
   if (!doc["port"].isNull()) port = doc["port"];
-  if (!doc["recipient"].isNull()) strncpy(recipient,doc["recipient"].as<const char*>(),sizeof(recipient));
-  if (!doc["title"].isNull()) strncpy(title,doc["title"].as<const char*>(),sizeof(title));
+  if (!doc["recipient"].isNull()) copyJsonString(recipient,doc["recipient"],sizeof(recipient));
+  if (!doc["title"].isNull()) copyJsonString(title,doc["title"],sizeof(title));
   sendEmail (user,pwd,host,port,recipient,title,message);
 }
 
