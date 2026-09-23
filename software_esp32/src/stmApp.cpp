@@ -761,9 +761,7 @@ void  CStmApp::app_check_data()
                     syslog.log(LOG_DEBUG,"STMApp:one wire volt data "+String(argptr[0])+":"+String(argptr[1]));
                 } 
                 strncpy(voltsId[voltIndex].id,argptr[0],sizeof(voltsId[voltIndex].id));
-                memset(volts[voltIndex].id,0x0,sizeof(volts[voltIndex].id)); 
-                strncpy(volts[voltIndex].id,argptr[0],sizeof(volts[voltIndex].id));
-               
+
                 int8_t idx=findVoltID(argptr[0]);
                 if (idx>=0) {
                     memset(volts[idx].id,0x0,sizeof(volts[idx].id)); 
