@@ -1,0 +1,12 @@
+{
+  "name": "vdm_core",
+  "version": "2.0.0",
+  "description": "VdMot Revamped ESP32 core logic: hardware-free, host-testable (test/native).",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": ["-Wall", "-Wextra"]
+  }
+}

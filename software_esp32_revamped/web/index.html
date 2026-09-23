@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VdMot Revamped</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1 id="station">VdMot</h1>
+  <div class="chips">
+    <span class="chip" id="net">net</span>
+    <span class="chip" id="link">stm</span>
+    <span class="chip" id="mqtt">mqtt</span>
+  </div>
+  <div class="meta"><span id="time"></span> &middot; up <span id="uptime"></span></div>
+</header>
+<nav>
+  <a href="#valves">Valves</a>
+  <a href="#sensors">Sensors</a>
+  <a href="#events">Events</a>
+  <a href="#settings">Settings</a>
+  <a href="#maintenance">Maintenance</a>
+</nav>
+<main>
+  <section id="valves"><h2>Valves</h2><div id="valve-list" class="cards"></div></section>
+  <section id="sensors"><h2>Sensors</h2><div id="sensor-list"></div></section>
+  <section id="events"><h2>Events</h2><ol id="event-list" class="events"></ol></section>
+  <section id="settings"><h2>Settings</h2><p class="muted">Network, MQTT, names, sensor mapping, calibration schedule, motor parameters, breakaway, login.</p></section>
+  <section id="maintenance"><h2>Maintenance</h2><p class="muted">ESP update, STM flashing, reboot, STM reset, config/log export.</p></section>
+</main>
+<footer>VdMot Revamped &middot; ESP <span id="esp-version"></span> &middot; STM <span id="stm-version"></span></footer>
+<script src="/app.js"></script>
+</body>
+</html>
