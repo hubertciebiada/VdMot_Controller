@@ -810,10 +810,8 @@ void  CStmApp::app_check_data()
             #ifdef minSTMRequired
                 int8_t pos;
                 pos=VdmSystem.stmVersion.indexOf('_');
-                if (pos>=0) {
                 sv=VdmSystem.stmVersion;
-                sv.remove(pos); 
-                }
+                if (pos>=0) sv.remove(pos);
                 VdmSystem.stmNRevision=versionExplode(sv);
                 VdmSystem.stmMinRequired=versionExplode(minSTMRequired);
                 VdmSystem.stmVersionFalse=VdmSystem.stmNRevision<VdmSystem.stmMinRequired;

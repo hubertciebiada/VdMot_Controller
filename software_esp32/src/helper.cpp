@@ -94,14 +94,15 @@ void replace (char* buffer,uint16_t size,char find, char with)
 uint32_t versionExplode (String sv)
 {
   uint8_t arr[3]={0};
-  int8_t pos;
+  int pos;
   String s;
   uint32_t result=0;
   
   for (uint8_t i=0;i<3;i++) {
     pos=sv.indexOf('.');
-    if (pos>=0) memcpy(&s,sv.c_str(),pos); else s=sv;
+    if (pos>=0) s=sv.substring(0,pos); else s=sv;
     arr[2-i]=s.toInt();
+    if (pos<0) break;     // missing components stay 0
     sv.remove(0,pos+1);
    // UART_DBG.println("versionExplode pos "+String(pos)+":"+s+","+sv);
   }
