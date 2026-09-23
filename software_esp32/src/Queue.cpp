@@ -71,7 +71,7 @@ bool CQueue::isEnabled() {
 }
 
 void CQueue::push(String data) {
-  if (m_enabled && m_queue.Count() <= m_bufferSize) {
+  if (m_enabled && m_queue.Count() < m_bufferSize) {
     m_queue.Push(data);
   }
 }
