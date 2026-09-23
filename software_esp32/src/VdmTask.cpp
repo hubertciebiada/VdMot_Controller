@@ -209,7 +209,7 @@ void CVdmTask::startPIServices(bool startTask)
                 PiControl[picIdx].startActiveZone=VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].startActiveZone;
                 PiControl[picIdx].endActiveZone=VdmConfig.configFlash.valvesControlConfig.valveControlConfig[picIdx].endActiveZone;
                 if (StmApp.motorChars.startOnPower>100) StmApp.motorChars.startOnPower=0;
-                PiControl[picIdx].startValvePos=VdmConfig.configFlash.valvesControlInit.valveControlInit[picIdx].tTarget; //StmApp.motorChars.startOnPower;
+                PiControl[picIdx].startValvePos=StmApp.motorChars.startOnPower;
                 PiControl[picIdx].reloadPiControl();
                 //PiControl[picIdx].start=false;
                 if (startTask) {

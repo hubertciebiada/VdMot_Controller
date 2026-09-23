@@ -78,7 +78,9 @@ void CPiControl::reloadPiControl() {
       syslog.log(LOG_DEBUG, "pic: no reload pi valve # "+String(valveIndex+1)+" ("+String(VdmConfig.configFlash.valvesConfig.valveConfig[valveIndex].name)+")");
     }
    // UART_DBG.println("No reload pi valve # "+String(valveIndex+1));
-    setValveAction(VdmConfig.configFlash.valvesControlInit.valveControlInit[valveIndex].tTarget);
+    // no saved state: start from the power-on position of the STM, not from
+    // the initial target temperature (valveControlInit.tTarget is in degrees)
+    setValveAction((StmApp.motorChars.startOnPower<=100) ? StmApp.motorChars.startOnPower : 0);
   }
 }
 
