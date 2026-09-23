@@ -644,7 +644,9 @@ void  CStmApp::app_check_data()
         
         else if(memcmp(APP_PRE_GETONEWIRECNT,cmd,5) == 0) {
             if(argcnt == 1) {
-                tempsPrivCount= atoi(argptr[0]); 
+                tempsPrivCount= constrain(atoi(argptr[0]),0,TEMP_SENSORS_COUNT); 
+                // "N 0" is also the reply to the list request on an empty bus
+                if (tempsPrivCount==0) tempsCount=0;
                 if (tempsPrivCount!=tempsCount) app_cmd(APP_PRE_GETONEWIRECNT,String(255));
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire temp count "+String(tempsPrivCount));
@@ -654,16 +656,18 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire temp data "+String(argptr[1]));
                 } 
-                tempsPrivCount= atoi(argptr[0]);
-                if (tempsPrivCount>0) {
-                    char* cmdptr;
-                    char* ps=argptr[1];
-                    for (uint8_t idx=0; idx<tempsPrivCount;idx++) {
-                        if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
-                        strncpy(tempsId[idx].id,ps,sizeof(tempsId[idx].id));
-                        ps=cmdptr+1;
-                    }
+                int nItems= constrain(atoi(argptr[0]),0,TEMP_SENSORS_COUNT);
+                int idx=0;
+                char* cmdptr;
+                char* ps=argptr[1];
+                while (idx<nItems) {
+                    if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
+                    strlcpy(tempsId[idx].id,ps,sizeof(tempsId[idx].id));
+                    idx++;
+                    if (cmdptr==NULL) break;    // list shorter than announced
+                    ps=cmdptr+1;
                 }
+                tempsPrivCount=idx;
                 tempsCount=tempsPrivCount;
             }
             if (tempsPrivCount==0) {
@@ -718,7 +722,9 @@ void  CStmApp::app_check_data()
         
         else if(memcmp(APP_PRE_GETOWVOLTCNT,cmd,5) == 0) {
             if(argcnt == 1) {
-                voltsPrivCount= atoi(argptr[0]); 
+                voltsPrivCount= constrain(atoi(argptr[0]),0,VOLT_SENSORS_COUNT); 
+                // "N 0" is also the reply to the list request on an empty bus
+                if (voltsPrivCount==0) voltsCount=0;
                 if (voltsPrivCount!=voltsCount) app_cmd(APP_PRE_GETOWVOLTCNT,String(255));
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire volt count "+String(voltsPrivCount));
@@ -728,16 +734,18 @@ void  CStmApp::app_check_data()
                 if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                     syslog.log(LOG_DEBUG,"STMApp:one wire volt data "+String(argptr[1]));
                 } 
-                voltsPrivCount= atoi(argptr[0]);
-                if (voltsPrivCount>0) {
-                    char* cmdptr;
-                    char* ps=argptr[1];
-                    for (uint8_t idx=0; idx<voltsPrivCount;idx++) {
-                        if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
-                        strncpy(voltsId[idx].id,ps,sizeof(voltsId[idx].id));
-                        ps=cmdptr+1;
-                    }
+                int nItems= constrain(atoi(argptr[0]),0,VOLT_SENSORS_COUNT);
+                int idx=0;
+                char* cmdptr;
+                char* ps=argptr[1];
+                while (idx<nItems) {
+                    if ((cmdptr=strchr(ps,','))!=NULL) *cmdptr='\0';
+                    strlcpy(voltsId[idx].id,ps,sizeof(voltsId[idx].id));
+                    idx++;
+                    if (cmdptr==NULL) break;    // list shorter than announced
+                    ps=cmdptr+1;
                 }
+                voltsPrivCount=idx;
                 voltsCount=voltsPrivCount;
             }
             if (voltsPrivCount==0) {
