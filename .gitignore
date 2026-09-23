@@ -3,3 +3,6 @@
 
 ## PlatformIO — build artefakty (oba MCU) ########
 .pio/
+
+## native unit test builds (CMake) ########
+software_stm32/build/
