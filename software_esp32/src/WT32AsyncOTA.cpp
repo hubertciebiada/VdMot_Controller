@@ -159,11 +159,6 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
             return;
         }
 
-        if(!Update.setMD5(request->getParam("MD5", true)->value().c_str())) {
-            _updateError = "MD5 parameter invalid";
-            return;
-        }
-
         #if defined(ESP8266)
             int cmd = (filename == "filesystem") ? U_FS : U_FLASH;
             Update.runAsync(true);
@@ -178,6 +173,13 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
             _updateError = "OTA could not begin";
             return;
             }
+
+        // after begin(): begin() clears the expected MD5
+        if(!Update.setMD5(request->getParam("MD5", true)->value().c_str())) {
+            Update.abort();
+            _updateError = "MD5 parameter invalid";
+            return;
+        }
         }
         if (_updateError != NULL) return;
 
