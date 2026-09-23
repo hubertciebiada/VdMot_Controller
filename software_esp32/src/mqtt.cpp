@@ -454,7 +454,7 @@ bool CMqtt::checkTopicPath(char* topic,char* ref)
 
 void CMqtt::callback(char* topic, byte* payload, unsigned int length) 
 {
-    bool found;
+    bool found = false;
     char item[50];
     char* pt;
     char* pRef;
@@ -523,7 +523,7 @@ void CMqtt::callback(char* topic, byte* payload, unsigned int length)
                 pt+=strlen(pRef);
                 idx=0;
                 for (i=strlen(mqtt_valvesTopic);i<strlen(topic);i++) {
-                    if (*pt=='/') break;
+                    if ((*pt=='/') || (idx>=sizeof(item)-1)) break;
                     item[idx]=*pt;
                     idx++;
                     pt++;
@@ -532,8 +532,8 @@ void CMqtt::callback(char* topic, byte* payload, unsigned int length)
                 // find approbiated valve
                 idx=0;
                 found = false;
-                for (i=0;i<ACTUATOR_COUNT;i++) {
-                    strncpy(rbName,VdmConfig.configFlash.valvesConfig.valveConfig[i].name,sizeof(VdmConfig.configFlash.valvesConfig.valveConfig[i].name));
+                for (i=0;(i<ACTUATOR_COUNT) && (strlen(item)>0);i++) {
+                    strlcpy(rbName,VdmConfig.configFlash.valvesConfig.valveConfig[i].name,sizeof(rbName));
                     replace (rbName,strlen(rbName),' ','_');
                     if (strncmp(rbName,item,sizeof(rbName))==0) {
                         found = true;
@@ -542,9 +542,13 @@ void CMqtt::callback(char* topic, byte* payload, unsigned int length)
                     idx++;    
                 }
                 if (!found) {
-                    if (isNumber(item)) {
-                        idx=atoi(item)-1;
-                        found=true;
+                    // valve number 1..ACTUATOR_COUNT
+                    if ((strlen(item)>0) && (strlen(item)<=2) && isNumber(item)) {
+                        int nr=atoi(item);
+                        if ((nr>=1) && (nr<=ACTUATOR_COUNT)) {
+                            idx=nr-1;
+                            found=true;
+                        }
                     }
                 }
 
