@@ -1,6 +1,16 @@
 #include "vdm/motor_params.h"
 
+#include "vdm/calibration.h"
+#include "vdm/end_stop_detector.h"
+
 namespace vdm {
+
+// a factor above the table maximum cannot change where a move stops (kFacRequestMax)
+static_assert(static_cast<int32_t>(kMeanCurrentFloor_mA) * kLowFacRange.max >= EndStopDetector::kSafetyLimit &&
+                  static_cast<int32_t>(kMeanCurrentFloor_mA) * kHighFacRange.max >= EndStopDetector::kSafetyLimit,
+              "the largest end-stop factor must reach the safety limit");
+static_assert(kFacRequestMax >= kLowFacRange.max && kFacRequestMax >= kHighFacRange.max && kFacRequestMax <= 0xFF,
+              "factor request limit");
 
 namespace {
 
@@ -15,6 +25,12 @@ bool take(const ParamRange& r, uint32_t v, T& field) {
   if (!r.contains(v)) return false;
   field = static_cast<T>(v);
   return true;
+}
+
+// an end-stop factor: like take(), a value in (max, kFacRequestMax] is stored as max
+bool takeFactor(const ParamRange& r, uint32_t v, uint8_t& field) {
+  if (v > r.max && v <= kFacRequestMax) v = r.max;
+  return take(r, v, field);
 }
 
 }  // namespace
@@ -43,8 +59,8 @@ MotorParams sanitizeMotorParams(const MotorParams& p) {
 ParamsRequest applyMotorParamsRequest(MotorParams& inOut, uint8_t argc, const uint32_t (&values)[5]) {
   if (argc < 3 || argc > 5) return ParamsRequest::Rejected;
 
-  bool all = take(kLowFacRange, values[0], inOut.lowFac);
-  all = take(kHighFacRange, values[1], inOut.highFac) && all;
+  bool all = takeFactor(kLowFacRange, values[0], inOut.lowFac);
+  all = takeFactor(kHighFacRange, values[1], inOut.highFac) && all;
   all = take(kStartOnPowerRange, values[2], inOut.startOnPower) && all;
   if (argc >= 4) all = take(kMinCountsRange, values[3], inOut.minCounts) && all;
   if (argc == 5) all = take(kMaxRetriesRange, values[4], inOut.maxRetries) && all;

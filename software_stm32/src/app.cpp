@@ -59,7 +59,28 @@ static void app_start_learn (unsigned int valve) {
   myvalves[valve].forcedLearn = 0;
   myvalves[valve].timedLearn = 0;
   myvalves[valve].svcHold = 0;
-  myvalves[valve].rejectedTarget = VALVE_NO_TARGET;
+  // the target the calibration positions to; a later different one is new (S04)
+  myvalves[valve].rejectedTarget = myvalvemots[valve].target_position;
+}
+
+
+static bool app_faulted (unsigned int valve) {
+  const byte status = myvalvemots[valve].status;
+  return status == VLV_STATE_FAILED || status == VLV_STATE_BLOCKS;
+}
+
+
+// a failed or blocked valve is not driven: its position stays as it is and each new target is
+// reported as rejected (S04); a calibration (time trigger, staln) clears the fault.
+// Returns true for a target change that was counted.
+static bool app_reject_target (unsigned int valve) {
+  uint8_t rejected = myvalves[valve].rejectedTarget;
+  uint16_t count = myvalves[valve].cmdRejected;
+  const bool counted = vdm::rejectTarget(rejected, count, myvalvemots[valve].target_position,
+                                         myvalvemots[valve].actual_position);
+  myvalves[valve].rejectedTarget = rejected;
+  myvalves[valve].cmdRejected = count;
+  return counted;
 }
 
 
@@ -83,9 +104,8 @@ void app_target_changed (uint16_t valve) {
 int16_t app_service_move (uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA) {
   if (valve >= ACTUATOR_COUNT) return -1;
   if (app_learn_pending(valve, myvalvemots[valve].status, myvalvemots[valve].calibration)) return -3;
-  const int16_t result = appsetservice(valve, dir, counts, maxmA);
-  if (result == 0) myvalves[valve].svcHold = SVMOV_HOLD_10S;
-  return result;
+  // an accepted move also starts the hold (svcHold), a start the valve state machine refuses ends it
+  return appsetservice(valve, dir, counts, maxmA);
 }
 
 int16_t app_setup (void) { 
@@ -186,20 +206,21 @@ int16_t app_loop (void) {
             COMM_DBG.print("App: valve "); COMM_DBG.print(testvlvindex, 10);
             COMM_DBG.println(" unknown, try to find out...");
           #endif
-          appsetaction(CMD_A_TEST,testvlvindex,0);    
+          if (appsetaction(CMD_A_TEST,testvlvindex,0) == 0)
+            myvalves[testvlvindex].rejectedTarget = myvalvemots[testvlvindex].target_position;
         }
         
         else
         {        
           // fully open valves if needed
           if(myvalvemots[lastvalve].status == VLV_STATE_FULLOPEN) {
-            if (appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0) == 0) myvalves[lastvalve].rejectedTarget = VALVE_NO_TARGET;
+            if (appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0) == 0) myvalves[lastvalve].rejectedTarget = myvalvemots[lastvalve].target_position;
           }
 
           // learn all present valves if any target change happened before
           // this keeps controller calm right after startup, otherwise controller would be busy for up to 12 valve learning times (10 min ?!)
           // an explicit learn request (staln) does not wait for a target change (S08), nor does the movement
-          // trigger: its calibration flag makes stgtp ignore targets, so no target change could come
+          // trigger: it is due after a number of moves, not only once the next target arrives
           else if((firstchange > 0 || myvalves[lastvalve].forcedLearn
                    || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
                   && myvalvemots[lastvalve].status == VLV_STATE_PRESENT)  {
@@ -213,7 +234,7 @@ int16_t app_loop (void) {
           // a learn request (staln, time or movement trigger) marks its valve PRESENT here, while no
           // valve moves; this also renews a request whose PRESENT a move of the valve overwrote (the
           // move ended with its own status). Without it the time trigger would wait another
-          // learning_time and a movement trigger would keep the valve's targets locked (calibration flag)
+          // learning_time and a movement trigger would never start (its calibration flag stays set)
           else if ((myvalves[lastvalve].forcedLearn || myvalves[lastvalve].timedLearn
                     || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
                    && myvalvemots[lastvalve].status != VLV_STATE_UNKNOWN
@@ -232,8 +253,7 @@ int16_t app_loop (void) {
                 COMM_DBG.println(myvalvemots[lastvalve].target_position, 10);
               #endif
 
-              const byte status = myvalvemots[lastvalve].status;
-              const bool faulted = (status == VLV_STATE_FAILED) || (status == VLV_STATE_BLOCKS);
+              const bool faulted = app_faulted(lastvalve);
 
               // a target change; not the target a failed or blocked valve kept from its fault (S04)
               if (!faulted) firstchange = 1;
@@ -249,7 +269,8 @@ int16_t app_loop (void) {
               }
               else if (!faulted)
               {
-                myvalves[lastvalve].rejectedTarget = VALVE_NO_TARGET;
+                // the target of this move (a failed or blocked end counts later changes, S04)
+                myvalves[lastvalve].rejectedTarget = myvalvemots[lastvalve].target_position;
                 // should valve be opened
                 if(myvalvemots[lastvalve].target_position > myvalvemots[lastvalve].actual_position) {                  
                   if(myvalvemots[lastvalve].target_position == 100) appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0);
@@ -261,15 +282,13 @@ int16_t app_loop (void) {
                   else appsetaction(CMD_A_CLOSE,lastvalve,myvalvemots[lastvalve].actual_position-myvalvemots[lastvalve].target_position);
                 }
               }
-              else {
-                // the motor is not driven: the position stays as it is and each new target is reported as
-                // rejected (S04); a calibration (time trigger, staln) clears the fault
-                uint8_t rejected = myvalves[lastvalve].rejectedTarget;
-                uint16_t count = myvalves[lastvalve].cmdRejected;
-                if (vdm::rejectTarget(rejected, count, myvalvemots[lastvalve].target_position)) firstchange = 1;
-                myvalves[lastvalve].rejectedTarget = rejected;
-                myvalves[lastvalve].cmdRejected = count;
-              }
+              else if (app_reject_target(lastvalve)) firstchange = 1;
+          }
+
+          // a failed or blocked valve at its target: nothing is rejected, and a later different
+          // target counts even if it is the one the fault left behind (S04)
+          else if (app_faulted(lastvalve) && myvalvemots[lastvalve].actual_position == myvalvemots[lastvalve].target_position) {
+            app_reject_target(lastvalve);
           }
 
           lastvalve++;
@@ -296,7 +315,11 @@ byte app_10s_loop () {
   unsigned int x = 0;
 
   for (x=0; x< ACTUATOR_COUNT; x++) {
+    // the valve state machine clears the hold of a refused service move (interrupt)
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     if (myvalves[x].svcHold) myvalves[x].svcHold--;
+    __set_PRIMASK(primask);
 
     // backstop for a calibration handed to the valve state machine: its end (learn_end) clears the
     // state; a calibration that did not start, or ended without it, is cleared after CALIB_START_TICKS

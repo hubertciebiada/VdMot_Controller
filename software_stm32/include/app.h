@@ -43,7 +43,7 @@
 
 #define VALVE_INIT_TEMPERATURE            -2000   // init value for struct value of temperature
 #define VALVE_SENSOR_UNKNOWN              65535   // marks that no sensor slot is selected
-#define VALVE_NO_TARGET                   255     // rejectedTarget: nothing rejected
+#define VALVE_NO_TARGET                   255     // rejectedTarget: no target known
 #define SVMOV_HOLD_10S                    30      // app_10s_loop calls (~11 s) a service moved valve is left alone
 #define CALIB_START_TICKS                 2       // app_10s_loop calls a handed over calibration may take to start
 
@@ -92,10 +92,10 @@ struct valve {
 //   byte actual_position;
   byte statusm;
   uint16_t cmdRejected;       // target changes not executed because the valve is FAILED or BLOCKS
-  byte rejectedTarget;        // target counted last in cmdRejected, VALVE_NO_TARGET if none
+  byte rejectedTarget;        // last target that is not a new request (see vdm::rejectTarget), VALVE_NO_TARGET if none
   uint8_t forcedLearn;        // staln: learn without waiting for a target change
   uint8_t timedLearn;         // time trigger: learn at the next target change (after firstchange)
-  uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls)
+  uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls); set by appsetservice, cleared if the start is refused
   uint8_t retestRequest;      // sdetvlv: test the valve again (applied by app_loop while no valve moves)
   uint8_t openRequest;        // staop: open fully (applied by app_loop while no valve moves)
   //struct valvemotor valvemot;

@@ -2,7 +2,11 @@
 
 namespace vdm {
 
-bool rejectTarget(uint8_t& rejectedTarget, uint16_t& cmdRejected, uint8_t target) {
+bool rejectTarget(uint8_t& rejectedTarget, uint16_t& cmdRejected, uint8_t target, uint8_t actual) {
+  if (target == actual) {
+    rejectedTarget = target;
+    return false;
+  }
   if (rejectedTarget == target) return false;
 
   const bool change = rejectedTarget != kNoRejectedTarget;

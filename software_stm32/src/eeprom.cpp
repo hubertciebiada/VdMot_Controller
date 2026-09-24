@@ -57,7 +57,9 @@ I2C_eeprom eeprom(DEVICEADDRESS, EE24LC64MAXBYTES);
 
 struct eeprom_layout eep_content;
 
-#define EEP_READ_ATTEMPTS		3		// per block
+// failed block transfers allowed in one read of the layout (~40 blocks), whichever blocks they hit:
+// each failure blocks for up to ~0.2 s, so a read on a marginal bus ends in well under a second
+#define EEP_READ_FAILURES_MAX	3
 #define EEP_WRITE_ATTEMPTS		3		// per change, one attempt per eepromloop() run
 #define EEP_RETRY_FIRST_S		30		// a failed read or write is retried after 30 s, 60 s, ... up to 1 h
 #define EEP_RETRY_MAX_S			3600
@@ -68,8 +70,10 @@ struct eeprom_layout eep_content;
 static bool eep_read_failed = false;
 // the last change could not be written (all attempts failed); retried, cleared by a successful write
 static bool eep_write_failed = false;
-// set while the current read has hit an unreadable block
+// set once the current read has used up its failures (EEP_READ_FAILURES_MAX)
 static bool eep_read_error = false;
+// failed block transfers of the current read
+static uint8_t eep_read_failures = 0;
 // fields changed in RAM (EEP_CHANGED_*) and not written yet
 static uint8_t eep_changed_fields = 0;
 // eepromloop() runs once per second, so the ticks are seconds
@@ -399,16 +403,19 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 }
 
 
-// reads a block with retries; if it cannot be read the buffer is filled with 0xFF like an
-// erased EEPROM, so the range checks fall back to the defaults instead of using stack garbage.
-// After the first unreadable block the bus is not used again in this read (each failed transfer
-// blocks for up to ~0.2 s).
+// reads a block, retried while the read has failures left; if it cannot be read the buffer is
+// filled with 0xFF like an erased EEPROM, so the range checks fall back to the defaults instead of
+// using stack garbage. The failures are counted over the whole read, not per block: after
+// EEP_READ_FAILURES_MAX of them the bus is not used again in this read, so an intermittent bus
+// (each failed transfer blocks for up to ~0.2 s) cannot stretch the read past the watchdog.
 static void eeprom_read_block (uint16_t address, uint8_t *buf, uint16_t length) {
-	for (uint8_t attempt = 0; !eep_read_error && attempt < EEP_READ_ATTEMPTS; attempt++) {
+	while (!eep_read_error) {
 		if (eeprom.readBlock(address, buf, length) == length) return;
+		if (++eep_read_failures >= EEP_READ_FAILURES_MAX) {
+			EEPROM_DEBUG("read error, using defaults\r\n");
+			eep_read_error = true;
+		}
 	}
-	if (!eep_read_error) EEPROM_DEBUG("read error, using defaults\r\n");
-	eep_read_error = true;
 	memset(buf, 0xFF, length);
 }
 
@@ -484,6 +491,7 @@ static bool eeprom_read_image (struct eeprom_layout* lay) {
 	EEPROM_DEBUG("Read eeprom layout from eeprom...");
 
 	eep_read_error = false;
+	eep_read_failures = 0;
 	address = EE_GENERALDATA_ADR;
 
 	// first read base layout

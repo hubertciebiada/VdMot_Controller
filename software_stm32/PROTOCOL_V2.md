@@ -68,7 +68,7 @@ it stays in v1 mode.
 | field | meaning |
 |---|---|
 | idx | valve 0..11 |
-| status | valve status in the `gvlvd` encoding: bits 0..6 as in `gvlst` (1 idle, 2 opening, 3 closing, 4 failed, 5 unknown, 6 open circuit, 7 full open requested, 8 present / calibration pending, 9 blocked), bit 7 (0x80) the calibration flag of `gvlvd` (a calibration requested by `staln` or the movement trigger, or running) |
+| status | valve status in the `gvlvd` encoding: bits 0..6 as in `gvlst` (1 idle, 2 opening, 3 closing, 4 failed, 5 unknown, 6 open circuit, 7 full open requested, 8 present / calibration pending, 9 blocked), bit 7 (0x80) the calibration flag of `gvlvd`: set by `staln` and the movement trigger until that calibration ends; calibrations started by the time trigger or by the first target change of a valve found at start-up run with bit 7 clear, so a client detects a requested or running calibration with `calState & 3`, not with this bit |
 | pos | believed position 0..100 % |
 | target | target position 0..100 % as stored on the STM |
 | meanCur | learned mean motor current in mA (20 until the first successful calibration) |
@@ -177,7 +177,8 @@ An uptime smaller than in the previous reply means the STM restarted.
 
 Minimum and maximum of each `smotc` value in `smotc` order: low factor, high
 factor (tenths: 17 = 1.7 × mean current), start-on-power %, minimum pulses
-per calibration stroke, calibration repetitions. The same table applies when
+per calibration stroke, calibration repetitions (`smotc` also takes factors
+up to 50 and applies them as 40, see below). The same table applies when
 the values are loaded from the EEPROM at start-up; a stored value outside its
 range loads its default (17, 17, 30, 3000, 2).
 
@@ -196,7 +197,15 @@ range loads its default (17, 17, 30, 3000, 2).
   (the legacy web page offers 0.5..5.0) and used them until the next start,
   then fell back to 17. Such a value stored in the EEPROM by 1.x still loads
   17. A factor below 10 puts the end-stop threshold under the running current
-  and stops every move at once.
+  and stops every move at once, so 5..9 is refused. A factor of 41..50 is
+  applied as 40 (reply `smotc`, `gmotc` shows 40): with the 15 mA floor a
+  factor of 40 already puts the threshold at or above the 60 mA safety limit,
+  so a larger factor cannot stop the motor later.
+- `stgtp idx pos`: the target is also taken while a calibration of the valve
+  is requested or running (status bit 7 set); the calibration ends at the
+  newest target. 1.x acknowledged such a target but dropped it, and as the
+  calibration flag now stays set until the calibration ends (1.x cleared it
+  after about 110 s), dropping would lose targets for the whole calibration.
 - `stlnm n`: 0 switches the movement trigger off, 50..65534 are taken as
   they are, 1..49 are stored as 50 and larger values as 65534 (`gtlnm` shows
   the value in use). The same range is loaded at start-up, so the value
@@ -224,10 +233,13 @@ range loads its default (17, 17, 30, 3000, 2).
   1.x continued with the counts of the failed pass and reported idle.
 - Position of failed (4) and blocked (9) valves: the STM no longer sets
   `actual = target` without moving the motor; the position stays where it
-  was. The target the fault left behind (the target of the move that timed
-  out, the target kept through a blocked calibration) is not counted; every
-  later target change is counted in `cmdRejected` and, like any target
-  change, lets the calibrations of valves found at start-up begin. A normal
+  was. The target the valve was last driven to (the target of the move that
+  timed out, or of the calibration that blocked) is not counted, nor is a
+  target equal to the position the valve stands at; every other target it
+  gets while failed or blocked is counted once in `cmdRejected` (also one
+  that arrived during the failing move or calibration, and the old target
+  again after the valve was set to its current position) and, like any
+  target change, lets the calibrations of valves found at start-up begin. A normal
   move that ends with a timeout leaves the position unchanged (1.x reported
   the target). Open-circuit valves (6) keep the 1.x behaviour (position =
   target).
@@ -262,8 +274,9 @@ range loads its default (17, 17, 30, 3000, 2).
   limit trips then, not even for a jammed or shorted motor, and after it the
   filter needs some tens of milliseconds to reach a limit. This is the 1.x
   behaviour; the firmware has no current protection in that window.
-- A move to an end stop (0 %/100 % target) that stops at a threshold or the
-  safety limit after less than half of the travel expected from the learned
-  stroke is an early end stop: `lastStop` 3 (or 6), `earlyStops` + 1 and
+- A move to an end stop (0 %/100 % target) that starts at least 50 % of the
+  stroke away from that end and stops at a threshold or the safety limit
+  after less than half of the travel expected from the learned stroke is an
+  early end stop: `lastStop` 3 (or 6), `earlyStops` + 1 and
   calState bit 2. Moves before the first successful calibration are not
   checked.

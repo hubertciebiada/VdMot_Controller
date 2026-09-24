@@ -192,8 +192,10 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		commdbg_println("set target pos");
 
 		if (req.argc() == 2 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x) && req.argU8(1, 0, 100, pos)) {
-			if (!myvalvemots[x].calibration)  // wdu ???
-				myvalvemots[x].target_position = pos;
+			// also taken while a calibration is requested or running: its final positioning (A_SET)
+			// reads the target when the calibration ends, and app_loop starts a requested
+			// calibration before it moves the valve to a new target
+			myvalvemots[x].target_position = pos;
 			app_target_changed(x);
 			COMM_SER.println(APP_PRE_SETTARGETPOS);
 		}
@@ -494,7 +496,8 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	// set motor characteristics
 	// low high startOnPower [noOfMinCounts [maxCalibRetries]]
 	// every value is checked against the range table (gmotx): the values in range are applied, a value
-	// out of range leaves its field unchanged and the reply is "smotc err"; a request with fewer than
+	// out of range leaves its field unchanged and the reply is "smotc err" (an end-stop factor of 41..50 is
+	// applied as 40, see vdm::kFacRequestMax); a request with fewer than
 	// 3 values or a value that is not a number changes nothing ("smotc err")
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_SETMOTCHARS)) {

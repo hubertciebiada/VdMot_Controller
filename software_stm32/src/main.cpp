@@ -64,8 +64,9 @@ STM32Timer ITimer1(TIM2);
 // The LSI clock of the IWDG may run at 17..47 kHz instead of 32 kHz, so 8 s nominal is 5.4..15 s real.
 // The longest blocking operations stay below 5 s, also on a faulty bus: 1-Wire enumeration
 // (2 searches of at most 64 passes, ~2 s), EEPROM layout write (~0.2 s, or up to ~0.3 s as it
-// stops at the first I2C error), EEPROM layout read (~0.1 s, or up to ~2 s as it stops after the
-// first block that fails 3 times; after a failed read eepromloop() repeats it at most every 30 s).
+// stops at the first I2C error), EEPROM layout read (~0.1 s, or up to ~0.8 s as it stops after
+// 3 failed block transfers in total, whichever blocks fail; after a failed read eepromloop()
+// repeats it at most every 30 s).
 // setup_system() feeds the watchdog between these steps.
 #define WATCHDOG_TIMEOUT_US   8000000UL
 

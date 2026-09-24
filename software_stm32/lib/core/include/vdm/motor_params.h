@@ -29,6 +29,15 @@ constexpr ParamRange kStartOnPowerRange{0, 100, 30};
 constexpr ParamRange kMinCountsRange{0, 60000, 3000};
 constexpr ParamRange kMaxRetriesRange{0, 2, 2};
 
+// smotc (not the EEPROM load) also takes an end-stop factor above the table
+// maximum up to this value and applies it as the maximum: 1.x smotc and the
+// legacy web page accept up to 50 (5.0), and the legacy ESP ignores
+// `smotc err`, so refusing it would leave the valve at the old factor while the
+// web page shows the new one. Nothing is lost: with the 15 mA floor a factor of
+// 40 already puts every threshold at or above the 60 mA safety limit, which
+// stops the motor at the same current (static_assert in motor_params.cpp).
+constexpr uint16_t kFacRequestMax = 50;
+
 struct MotorParams {
   uint8_t lowFac;
   uint8_t highFac;
@@ -58,7 +67,8 @@ enum class ParamsRequest : uint8_t {
 
 // A parsed smotc request: the first three values are mandatory, minCounts and
 // maxRetries are optional (argc 3..5) and keep their current value if absent.
-// Each supplied value is checked against its own range. A value out of range
+// Each supplied value is checked against its own range; an end-stop factor in
+// (max, kFacRequestMax] is applied as max and counts as in range. A value out of range
 // never reaches `inOut`, but it does not drop the valid values sent with it:
 // the legacy ESP always sends all five values and ignores `smotc err`.
 ParamsRequest applyMotorParamsRequest(MotorParams& inOut, uint8_t argc, const uint32_t (&values)[5]);

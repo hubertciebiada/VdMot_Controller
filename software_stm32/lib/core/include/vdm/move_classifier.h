@@ -34,11 +34,19 @@ enum MoveDirection : uint8_t { kDirOpen = 0, kDirClose = 1 };
 // Pulse count meaning "run until an end stop".
 constexpr uint16_t kRunToEndStop = 0xFFFF;
 
+// A move to an end stop is checked for an early end stop only when it was
+// expected to cover at least this much of the full stroke. On a shorter move
+// half of the expected travel is within the error of the believed position
+// (scaler rounding, drift over many partial moves) and of the 250 ms inrush
+// time in which no end stop is detected, so a correct stop would count as early.
+constexpr uint8_t kEarlyCheckMinTravelPct = 50;
+
 struct MoveRequest {
   uint8_t dir;               // MoveDirection
   uint16_t requestedCounts;  // kRunToEndStop for a move to an end stop
   // For a move to an end stop: expected travel in % of the full stroke
-  // (100 = full travel); 0 disables the early end stop check.
+  // (100 = full travel); below kEarlyCheckMinTravelPct (0 included) the
+  // early end stop check is off.
   uint8_t expectedTravelPct;
   // Full stroke learned by the last successful calibration, 0 = unknown.
   uint32_t learnedTravel;
@@ -58,8 +66,9 @@ struct MoveClassification {
   bool early;  // end stop (threshold or safety) before half of the expected travel
 };
 
-// Early: a move to an end stop that ended at an end stop (threshold or safety
-// limit) after less than 50 % of learnedTravel * expectedTravelPct / 100.
+// Early: a move to an end stop with expectedTravelPct >= kEarlyCheckMinTravelPct
+// that ended at an end stop (threshold or safety limit) after less than 50 % of
+// learnedTravel * expectedTravelPct / 100.
 // A safety stop keeps reason SafetyOvercurrent but may still be early.
 MoveClassification classifyMove(const MoveRequest& req, MotorStop stop, uint32_t counted);
 

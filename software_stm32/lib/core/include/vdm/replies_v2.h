@@ -26,8 +26,11 @@ constexpr uint8_t kCalFlagLastFailed = 0x08;  // the last calibration did not su
 // running wins over requested
 uint8_t composeCalState(bool running, bool requested, bool earlyWarn, bool lastFailed);
 
-// gvlvx status in the gvlvd encoding: valve status, bit 7 (0x80) set while a
-// calibration is requested or running (the calibration flag of the valve)
+// gvlvx status in the gvlvd encoding: valve status, bit 7 (0x80) the
+// calibration flag of the valve, as in gvlvd. It is set only by staln and the
+// movement trigger (until that calibration ends); calibrations started by the
+// time trigger or by the first target change of a found valve run without it.
+// Whether a calibration is requested or running is calState & 3.
 constexpr uint8_t kStatusCalibrationBit = 0x80;
 uint8_t encodeValveStatus(uint8_t status, bool calibration);
 

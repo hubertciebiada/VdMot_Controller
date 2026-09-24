@@ -6,6 +6,7 @@ namespace {
 
 bool endedEarly(const MoveRequest& req, uint32_t counted) {
   if (req.requestedCounts != kRunToEndStop || req.learnedTravel == 0) return false;
+  if (req.expectedTravelPct < kEarlyCheckMinTravelPct) return false;
   const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;
   const uint64_t expected = static_cast<uint64_t>(req.learnedTravel) * pct / 100;
   return static_cast<uint64_t>(counted) * 2 < expected;

@@ -438,7 +438,7 @@ static void record_refused_move (int v) {
 }
 
 
-// every way out of a calibration: clears the request so stgtp is accepted again
+// every way out of a calibration: clears the request (calibration flag, gvlvd bit 7) and its state
 static void learn_end (int v, bool success) {
   myvalvemots[v].calibration = false;
   myvalvemots[v].calibState = calibIdle;
@@ -1081,6 +1081,8 @@ void valve_loop () {
                     }
                     else {
                       record_refused_move(valveindex);
+                      // nothing moved: app_loop may correct the position again
+                      myvalves[valveindex].svcHold = 0;
                       valvestate = A_IDLE;
                     }
                   }
@@ -1619,6 +1621,8 @@ int16_t appsetservice(unsigned int valveindex, uint8_t dir, uint16_t counts, uin
     svc_counts = counts;
     svc_maxmA = maxmA;
     valvenr = (int) valveindex;
+    // the valve is left where the move puts it; set before the command, as a refused start clears it
+    myvalves[valveindex].svcHold = SVMOV_HOLD_10S;
     command = CMD_A_SERVICE;      // last: valve_loop acts on the command
     accepted = true;
   }

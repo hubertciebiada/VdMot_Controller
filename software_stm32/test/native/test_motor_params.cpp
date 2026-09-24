@@ -127,15 +127,16 @@ TEST_CASE("applyMotorParamsRequest: an out-of-range value keeps its field, the o
   // valid() is {17, 23, 40, 3000, 1}; the in-range values of each request are 18, 24, 50, 2500, 2
   const Case cases[] = {
       {{9, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},
-      {{41, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},
+      {{51, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},   // above what the legacy web page offers
       {{5, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},    // legacy web page: factor 0.5
       {{18, 9, 50, 2500, 2}, {18, 23, 50, 2500, 2}},
-      {{18, 50, 50, 2500, 2}, {18, 23, 50, 2500, 2}},   // legacy web page: factor 5.0
+      {{18, 51, 50, 2500, 2}, {18, 23, 50, 2500, 2}},
       {{18, 24, 101, 2500, 2}, {18, 24, 40, 2500, 2}},
       {{18, 24, 50, 60001, 2}, {18, 24, 50, 3000, 2}},
       {{18, 24, 50, 2500, 3}, {18, 24, 50, 2500, 1}},
       {{0xFFFFFFFFu, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},
-      {{8, 45, 50, 2500, 2}, {17, 23, 50, 2500, 2}},    // both factors out of range
+      {{8, 60, 50, 2500, 2}, {17, 23, 50, 2500, 2}},    // both factors out of range
+      {{8, 45, 50, 2500, 2}, {17, 40, 50, 2500, 2}},    // 4.5 is applied as 4.0, 0.8 is not
       {{0, 0, 200, 70000, 9}, {17, 23, 40, 3000, 1}},   // nothing in range
   };
   for (const auto& c : cases) {
@@ -143,6 +144,28 @@ TEST_CASE("applyMotorParamsRequest: an out-of-range value keeps its field, the o
     CHECK(vdm::applyMotorParamsRequest(p, 5, c.v) == ParamsRequest::Partial);
     CHECK(same(p, c.expected));
   }
+}
+
+TEST_CASE("applyMotorParamsRequest: factors 41..50 of the legacy web page are applied as 40") {
+  // review finding: the legacy ESP sends smotc 17 45 30 3000 2 for close factor 4.5
+  CHECK(vdm::kFacRequestMax == 50);
+  for (uint32_t f : {41u, 45u, 50u}) {
+    MotorParams p = valid();
+    const uint32_t v[5] = {f, f, 30, 3000, 2};
+    CHECK(vdm::applyMotorParamsRequest(p, 5, v) == ParamsRequest::Applied);
+    CHECK(same(p, MotorParams{40, 40, 30, 3000, 2}));
+    CHECK(vdm::motorParamsValid(p));
+  }
+  MotorParams p = valid();
+  const uint32_t low[5] = {50, 17, 30, 0, 0};
+  CHECK(vdm::applyMotorParamsRequest(p, 3, low) == ParamsRequest::Applied);
+  CHECK(p.lowFac == 40);
+  CHECK(p.highFac == 17);
+  // 51 and above are still refused, the EEPROM load keeps loading the default
+  const uint32_t high[5] = {17, 51, 30, 0, 0};
+  CHECK(vdm::applyMotorParamsRequest(p, 3, high) == ParamsRequest::Partial);
+  CHECK(p.highFac == 17);
+  CHECK(vdm::sanitizeMotorParams(MotorParams{45, 45, 30, 3000, 2}).highFac == 17);
 }
 
 TEST_CASE("applyMotorParamsRequest: legacy ESP saves factor 0.8 together with a new start %") {

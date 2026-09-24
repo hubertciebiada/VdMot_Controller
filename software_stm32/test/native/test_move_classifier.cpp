@@ -54,15 +54,31 @@ TEST_CASE("classifyMove: early end stop only for moves to an end stop (S05)") {
 }
 
 TEST_CASE("classifyMove: expected travel scales with the distance to the end") {
-  // from 40 % to the closed end: 40 % of 4000 = 1600 expected, early below 800
-  CHECK(vdm::classifyMove(toEnd(40, 4000), MotorStop::EndStop, 799).early);
-  CHECK_FALSE(vdm::classifyMove(toEnd(40, 4000), MotorStop::EndStop, 800).early);
+  // from 60 % to the closed end: 60 % of 4000 = 2400 expected, early below 1200
+  CHECK(vdm::classifyMove(toEnd(60, 4000), MotorStop::EndStop, 1199).early);
+  CHECK_FALSE(vdm::classifyMove(toEnd(60, 4000), MotorStop::EndStop, 1200).early);
+  // the shortest checked move: 50 % of 4000 = 2000 expected, early below 1000
+  CHECK(vdm::classifyMove(toEnd(vdm::kEarlyCheckMinTravelPct, 4000), MotorStop::EndStop, 999).early);
+  CHECK_FALSE(vdm::classifyMove(toEnd(vdm::kEarlyCheckMinTravelPct, 4000), MotorStop::EndStop, 1000).early);
   // more than 100 % is treated as 100 %
   CHECK(vdm::classifyMove(toEnd(250, 4000), MotorStop::EndStop, 1999).early);
   CHECK_FALSE(vdm::classifyMove(toEnd(250, 4000), MotorStop::EndStop, 2000).early);
   // 0 % or an unknown stroke disables the check
   CHECK_FALSE(vdm::classifyMove(toEnd(0, 4000), MotorStop::EndStop, 0).early);
   CHECK_FALSE(vdm::classifyMove(toEnd(100, 0), MotorStop::EndStop, 0).early);
+}
+
+TEST_CASE("classifyMove: short moves to an end stop are not checked") {
+  // review finding: believed 3 % of a 3600 pulse stroke, the valve really is at
+  // about 1.4 % and reaches the end stop after 50 pulses; this is not early
+  CHECK(vdm::kEarlyCheckMinTravelPct == 50);
+  const auto c = vdm::classifyMove(toEnd(3, 3600), MotorStop::EndStop, 50);
+  CHECK_FALSE(c.early);
+  CHECK(c.reason == StopReason::EndStop);
+  CHECK_FALSE(vdm::classifyMove(toEnd(3, 3600), MotorStop::SafetyOvercurrent, 0).early);
+  // just below the limit: not checked even for a stop right after the start
+  CHECK_FALSE(vdm::classifyMove(toEnd(vdm::kEarlyCheckMinTravelPct - 1, 4000), MotorStop::EndStop, 0).early);
+  CHECK(vdm::classifyMove(toEnd(vdm::kEarlyCheckMinTravelPct, 4000), MotorStop::EndStop, 0).early);
 }
 
 TEST_CASE("classifyMove: early safety stop keeps its reason") {
