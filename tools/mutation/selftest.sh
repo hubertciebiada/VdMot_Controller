@@ -5,7 +5,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/src"
-echo 'int f(int x){ int i=0; while (i < x) { i++; } return i; }' > "$T/src/f.cpp"
+# 64-bit counter: an i++ -> i-- mutant must loop forever, not wrap around within the timeout on a fast CPU
+echo 'int f(int x){ long long i=0; while (i < x) { i++; } return (int)i; }' > "$T/src/f.cpp"
 cp "$T/src/f.cpp" "$T/orig.cpp"
 # the test prints a non-UTF-8 byte on failure: output decoding must never crash the runner
 printf '#include "src/f.cpp"\n#include <cstdio>\nint main(){ if (f(3)==3 && f(0)==0) return 0; std::fputs("\\xe4\\xff bad", stdout); return 1; }\n' > "$T/t.cpp"
