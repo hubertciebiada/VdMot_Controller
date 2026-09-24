@@ -37,7 +37,7 @@
 extern void temperature_setup();
 extern void setDeviceAddress();
 extern void temperature_loop();
-extern void get_sensordata (unsigned int index, char *buffer, int buflen);
+extern void print_sensordata (Print &out);
 extern void temp_command(int command);
 
 void printAddress(DeviceAddress deviceAddress);

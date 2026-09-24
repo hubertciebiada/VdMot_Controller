@@ -20,7 +20,8 @@ LineAssembler::LineAssembler(char* storage, size_t capacity)
       ready_(false),
       discarding_(false),
       overflows_(0),
-      malformed_(0) {
+      malformed_(0),
+      expired_(0) {
   clearBuffer();
 }
 
@@ -70,6 +71,13 @@ size_t LineAssembler::feed(const char* data, size_t len) {
 void LineAssembler::release() {
   ready_ = false;
   clearBuffer();
+}
+
+bool LineAssembler::expire(uint32_t nowMs, uint32_t lastByteMs, uint32_t timeoutMs) {
+  if (!partial() || nowMs - lastByteMs <= timeoutMs) return false;
+  if (!discarding_) ++expired_;
+  reset();
+  return true;
 }
 
 void LineAssembler::reset() {

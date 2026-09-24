@@ -34,6 +34,11 @@
 #include "motor.h"
 #include "owDevices.h"
 #include "eeprom.h"
+#include "vdm/settings.h"
+#include "vdm/target_rejection.h"
+
+static_assert(VALVE_NO_TARGET == vdm::kNoRejectedTarget, "one marker for no rejected target");
+static_assert(LEARN_AFTER_MOVEMENTS_DEFAULT == vdm::kLearnMovementsDefault, "one learn movements default");
 
 
 volatile struct valve myvalves[ACTUATOR_COUNT];
@@ -50,6 +55,7 @@ unsigned int reset_request = 0;
 static void app_start_learn (unsigned int valve) {
   if (appsetaction(CMD_A_LEARN, valve, 0) != 0) return;
   myvalvemots[valve].calibState = calibInProgress;
+  myvalvemots[valve].calibTime = CALIB_START_TICKS;
   myvalves[valve].forcedLearn = 0;
   myvalves[valve].timedLearn = 0;
   myvalves[valve].svcHold = 0;
@@ -100,16 +106,28 @@ int16_t app_setup (void) {
       myvalves[x].forcedLearn = 0;
       myvalves[x].timedLearn = 0;
       myvalves[x].svcHold = 0;
+      myvalves[x].retestRequest = 0;
+      myvalves[x].openRequest = 0;
       // distribute learn timing equaly over valve slots
       myvalves[x].learn_time = (unsigned int) (((long)LEARN_AFTER_TIME_DEFAULT * ((long)x+1)) / (long)ACTUATOR_COUNT);  
   }
 
+  app_load_config();
+  return 0;
+}
+
+
+// takes the configuration from the EEPROM mirror (at start-up, and after the EEPROM could be read
+// again, see eeprom.cpp): sensor assignment, learn movements, motor parameters and escalation.
+// A stored value out of range loads its default, and the mirror is corrected.
+void app_load_config (void) {
   // match sensor address from eeprom with found sensors and set index/slot to valve struct
   app_match_sensors();
 
-  if ((eep_content.numberOfMovements>=50) && (eep_content.numberOfMovements<65535))
-    learning_movements=eep_content.numberOfMovements;
-    app_set_learnmovements(learning_movements);
+  // the range of stlnm (0 = off, 50..65534), so a value set at runtime survives a restart
+  const uint16_t movements = vdm::sanitizeLearnMovements(eep_content.numberOfMovements);
+  eep_content.numberOfMovements = movements;
+  if (movements != learning_movements) app_set_learnmovements(movements);
   #ifdef appDebug
     COMM_DBG.print("learning_movements: "); 
     COMM_DBG.println(learning_movements, DEC);
@@ -125,7 +143,27 @@ int16_t app_setup (void) {
   stored.maxRetries = eep_content.maxCalibRetries;
   motor_set_params(vdm::sanitizeMotorParams(stored));
   motor_set_escalation(vdm::sanitizeEscalation(eep_content.escalation));
-  return 0;
+}
+
+
+// requests of sdetvlv and staop change the status (and position) of a valve; they are applied here,
+// while no valve moves, because the end of a move writes status and position of its valve
+static void app_apply_requests (void) {
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    if (myvalves[x].retestRequest) {
+      myvalves[x].retestRequest = 0;
+      myvalves[x].rejectedTarget = VALVE_NO_TARGET;
+      myvalvemots[x].actual_position = 0;      // fake some position deviation
+      myvalvemots[x].status = VLV_STATE_UNKNOWN;
+    }
+    if (myvalves[x].openRequest) {
+      myvalves[x].openRequest = 0;
+      // a failed or blocked valve is not moved until a calibration clears the fault;
+      // its new target 100 is counted as rejected (S04)
+      if (myvalvemots[x].status != VLV_STATE_FAILED && myvalvemots[x].status != VLV_STATE_BLOCKS)
+        myvalvemots[x].status = VLV_STATE_FULLOPEN;
+    }
+  }
 }
 
 int16_t app_loop (void) {
@@ -135,9 +173,12 @@ int16_t app_loop (void) {
 
   reset_check();
 
-    // if valve machine is idle search for new tasks
-    if(valve_getstate() == A_IDLE) 
+    // if valve machine is idle search for new tasks; no valve moves until the next command,
+    // so the status and position of every valve may be changed here
+    if(valve_idle()) 
     {
+        app_apply_requests();
+
         // find unknown states and try to find out whats on with the valve        
         if(myvalvemots[testvlvindex].status == VLV_STATE_UNKNOWN) 
         {
@@ -152,13 +193,16 @@ int16_t app_loop (void) {
         {        
           // fully open valves if needed
           if(myvalvemots[lastvalve].status == VLV_STATE_FULLOPEN) {
-            appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0);        
+            if (appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0) == 0) myvalves[lastvalve].rejectedTarget = VALVE_NO_TARGET;
           }
 
           // learn all present valves if any target change happened before
           // this keeps controller calm right after startup, otherwise controller would be busy for up to 12 valve learning times (10 min ?!)
-          // an explicit learn request (staln) does not wait for a target change (S08)
-          else if((firstchange > 0 || myvalves[lastvalve].forcedLearn) && myvalvemots[lastvalve].status == VLV_STATE_PRESENT)  {
+          // an explicit learn request (staln) does not wait for a target change (S08), nor does the movement
+          // trigger: its calibration flag makes stgtp ignore targets, so no target change could come
+          else if((firstchange > 0 || myvalves[lastvalve].forcedLearn
+                   || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
+                  && myvalvemots[lastvalve].status == VLV_STATE_PRESENT)  {
             #ifdef appDebug
               COMM_DBG.print("App 1: learning started for valve "); 
               COMM_DBG.println(lastvalve, 10);
@@ -166,9 +210,10 @@ int16_t app_loop (void) {
             app_start_learn(lastvalve);
           }
 
-          // a learn request that a running move of the valve overwrote (the move ended with its own
-          // status) is renewed; without it the time trigger would wait another learning_time and a
-          // movement trigger would keep the valve's targets locked (calibration flag) until then
+          // a learn request (staln, time or movement trigger) marks its valve PRESENT here, while no
+          // valve moves; this also renews a request whose PRESENT a move of the valve overwrote (the
+          // move ended with its own status). Without it the time trigger would wait another
+          // learning_time and a movement trigger would keep the valve's targets locked (calibration flag)
           else if ((myvalves[lastvalve].forcedLearn || myvalves[lastvalve].timedLearn
                     || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
                    && myvalvemots[lastvalve].status != VLV_STATE_UNKNOWN
@@ -187,7 +232,11 @@ int16_t app_loop (void) {
                 COMM_DBG.println(myvalvemots[lastvalve].target_position, 10);
               #endif
 
-              firstchange = 1;
+              const byte status = myvalvemots[lastvalve].status;
+              const bool faulted = (status == VLV_STATE_FAILED) || (status == VLV_STATE_BLOCKS);
+
+              // a target change; not the target a failed or blocked valve kept from its fault (S04)
+              if (!faulted) firstchange = 1;
                     
               // check if valve was learned before              
               if(myvalvemots[lastvalve].status == VLV_STATE_PRESENT)             
@@ -198,7 +247,7 @@ int16_t app_loop (void) {
                 #endif
                 app_start_learn(lastvalve);
               }
-              else if ((myvalvemots[lastvalve].status != VLV_STATE_FAILED) && (myvalvemots[lastvalve].status != VLV_STATE_BLOCKS))
+              else if (!faulted)
               {
                 myvalves[lastvalve].rejectedTarget = VALVE_NO_TARGET;
                 // should valve be opened
@@ -213,13 +262,13 @@ int16_t app_loop (void) {
                 }
               }
               else {
-                // the motor is not driven: the position stays as it is and the target is reported as
-                // rejected, once per target value (S04); a calibration (time trigger, staln) clears the fault
-                const byte target = myvalvemots[lastvalve].target_position;
-                if (myvalves[lastvalve].rejectedTarget != target) {
-                  myvalves[lastvalve].rejectedTarget = target;
-                  if (myvalves[lastvalve].cmdRejected < 0xFFFF) myvalves[lastvalve].cmdRejected++;
-                }
+                // the motor is not driven: the position stays as it is and each new target is reported as
+                // rejected (S04); a calibration (time trigger, staln) clears the fault
+                uint8_t rejected = myvalves[lastvalve].rejectedTarget;
+                uint16_t count = myvalves[lastvalve].cmdRejected;
+                if (vdm::rejectTarget(rejected, count, myvalvemots[lastvalve].target_position)) firstchange = 1;
+                myvalves[lastvalve].rejectedTarget = rejected;
+                myvalves[lastvalve].cmdRejected = count;
               }
           }
 
@@ -248,6 +297,17 @@ byte app_10s_loop () {
 
   for (x=0; x< ACTUATOR_COUNT; x++) {
     if (myvalves[x].svcHold) myvalves[x].svcHold--;
+
+    // backstop for a calibration handed to the valve state machine: its end (learn_end) clears the
+    // state; a calibration that did not start, or ended without it, is cleared after CALIB_START_TICKS
+    if (myvalvemots[x].calibState == calibInProgress) {
+      if (myvalvemots[x].calibActive) myvalvemots[x].calibTime = CALIB_START_TICKS;
+      else if (myvalvemots[x].calibTime > 0) myvalvemots[x].calibTime--;
+      else {
+        myvalvemots[x].calibration = false;
+        myvalvemots[x].calibState = calibIdle;
+      }
+    }
   }
 
   // walk through valves and evaluate learning values
@@ -257,12 +317,10 @@ byte app_10s_loop () {
     for (x=0; x< ACTUATOR_COUNT; x++) { 
       if(myvalves[x].learn_time <= 10) {
         myvalves[x].learn_time = learning_time;
-        // a calibration of the valve that runs now satisfies the trigger; otherwise the request is
-        // also kept in timedLearn, because a move of the valve that is running now ends with its
-        // own status and overwrites PRESENT (app_loop renews it)
-        if (myvalvemots[x].calibState == calibInProgress) continue;
+        // a calibration of the valve that runs now (or was just handed over) satisfies the trigger
+        if (myvalvemots[x].calibActive || myvalvemots[x].calibState == calibInProgress) continue;
+        // app_loop marks the valve PRESENT while no valve moves, the next target change starts the calibration
         myvalves[x].timedLearn = 1;
-        myvalvemots[x].status = VLV_STATE_PRESENT;     // next set target req will do a learning cycle
         #ifdef appDebug
           COMM_DBG.print("App: Valve "); 
           COMM_DBG.print(x, 10); 
@@ -276,16 +334,7 @@ byte app_10s_loop () {
   // learning movements
   if (learning_movements > 0) { 
     for (x=0; x< ACTUATOR_COUNT; x++) {
-      // timeout for calibration 
       if (myvalvemots[x].connected) {
-        if (myvalvemots[x].calibState==calibInProgress) {
-          if (myvalvemots[x].calibTime>0) 
-            myvalvemots[x].calibTime--;
-          else  {
-            myvalvemots[x].calibration=false;
-            myvalvemots[x].calibState=calibIdle;
-          }
-        }
         if((myvalves[x].learn_movements == 0) && (myvalvemots[x].calibState == calibIdle)) {
           myvalvemots[x].calibration=true;
           myvalvemots[x].calibTime=10;
@@ -293,7 +342,7 @@ byte app_10s_loop () {
           //myvalvemots[x].actual_position=0;
           myvalves[x].movements = 0;
           myvalves[x].learn_movements = learning_movements;
-          myvalvemots[x].status = VLV_STATE_PRESENT;     // mark state as present, net set target req will do a learning cycle
+          // app_loop marks the valve PRESENT while no valve moves and starts the calibration
           #ifdef appDebug
             COMM_DBG.print("App: Valve "); 
             COMM_DBG.print(x, 10); 
@@ -352,9 +401,9 @@ int16_t app_set_valvelearning(uint16_t valve) {
 
   if(valve < ACTUATOR_COUNT) {
    // myvalvemots[valve].actual_position = 0;     // fake some position deviation
+    // app_loop marks the valve PRESENT while no valve moves and starts the calibration
     myvalves[valve].forcedLearn = 1;
     myvalves[valve].svcHold = 0;
-    myvalvemots[valve].status = VLV_STATE_PRESENT; //VLV_STATE_UNKNOWN;
     myvalvemots[valve].calibration = true;
     myvalvemots[valve].calibState=calibStarted;
     myvalvemots[valve].calibTime=10;
@@ -369,7 +418,6 @@ int16_t app_set_valvelearning(uint16_t valve) {
         //myvalvemots[xx].actual_position = 0;      // fake some position deviation
         myvalves[xx].forcedLearn = 1;
         myvalves[xx].svcHold = 0;
-        myvalvemots[xx].status = VLV_STATE_PRESENT; //VLV_STATE_UNKNOWN;
         myvalvemots[xx].calibration = true;
         myvalvemots[xx].calibState=calibStarted;
         myvalvemots[xx].calibTime=10;
@@ -388,23 +436,23 @@ int16_t app_set_valvelearning(uint16_t valve) {
 // a learning cycle for valve will be executed
 void app_scan_valves() 
 {
-    // scan all valves
+    // scan all valves; app_loop resets status and position while no valve moves
     for(unsigned int xx=0;xx<ACTUATOR_COUNT;xx++){
-      myvalvemots[xx].actual_position = 0;      // fake some position deviation
-      myvalvemots[xx].status = VLV_STATE_UNKNOWN;
+      myvalves[xx].retestRequest = 1;
       myvalves[xx].svcHold = 0;
     }
 }
 
 
 // sets valve full open
-// valve will be opened fully
+// valve will be opened fully (app_loop sets FULLOPEN while no valve moves; a failed or blocked
+// valve only gets the target and stays where it is until a calibration)
 // if valve = 255, all valves will be opened fully
 int16_t app_set_valveopen(uint16_t valve) {
 
   if(valve < ACTUATOR_COUNT) {
     myvalvemots[valve].target_position = 100;
-		myvalvemots[valve].status = VLV_STATE_FULLOPEN;
+    myvalves[valve].openRequest = 1;
     myvalves[valve].svcHold = 0;
     return 0;
   }
@@ -412,7 +460,7 @@ int16_t app_set_valveopen(uint16_t valve) {
     // update all valves
     for(unsigned int xx=0;xx<ACTUATOR_COUNT;xx++){
       myvalvemots[xx].target_position = 100;
-			myvalvemots[xx].status = VLV_STATE_FULLOPEN;
+      myvalves[xx].openRequest = 1;
       myvalves[xx].svcHold = 0;
     }
     return 0;

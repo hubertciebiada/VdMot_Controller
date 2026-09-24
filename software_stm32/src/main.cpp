@@ -65,7 +65,8 @@ STM32Timer ITimer1(TIM2);
 // The longest blocking operations stay below 5 s, also on a faulty bus: 1-Wire enumeration
 // (2 searches of at most 64 passes, ~2 s), EEPROM layout write (~0.2 s, or up to ~0.3 s as it
 // stops at the first I2C error), EEPROM layout read (~0.1 s, or up to ~2 s as it stops after the
-// first block that fails 3 times). setup_system() feeds the watchdog between these steps.
+// first block that fails 3 times; after a failed read eepromloop() repeats it at most every 30 s).
+// setup_system() feeds the watchdog between these steps.
 #define WATCHDOG_TIMEOUT_US   8000000UL
 
 #define I2C_RECOVERY_HALF_CLOCK_US  5     // 100 kHz

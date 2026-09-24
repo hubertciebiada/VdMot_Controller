@@ -6,15 +6,13 @@
 #include "vdm/motor_params.h"
 
 using vdm::MotorParams;
+using vdm::ParamsRequest;
 
 namespace {
 
 MotorParams valid() { return MotorParams{17, 23, 40, 3000, 1}; }
 
-bool same(const MotorParams& a, const MotorParams& b) {
-  return a.lowFac == b.lowFac && a.highFac == b.highFac && a.startOnPower == b.startOnPower &&
-         a.minCounts == b.minCounts && a.maxRetries == b.maxRetries;
-}
+bool same(const MotorParams& a, const MotorParams& b) { return vdm::sameMotorParams(a, b); }
 
 }  // namespace
 
@@ -102,56 +100,96 @@ TEST_CASE("sanitizeMotorParams replaces only out-of-range fields") {
 TEST_CASE("applyMotorParamsRequest: three mandatory values") {
   MotorParams p = valid();
   const uint32_t v[5] = {10, 20, 55, 0, 0};
-  REQUIRE(vdm::applyMotorParamsRequest(p, 3, v));
+  REQUIRE(vdm::applyMotorParamsRequest(p, 3, v) == ParamsRequest::Applied);
   CHECK(same(p, MotorParams{10, 20, 55, 3000, 1}));
 }
 
 TEST_CASE("applyMotorParamsRequest: optional minCounts and retries") {
   MotorParams p = valid();
   const uint32_t v4[5] = {10, 20, 55, 100, 99};
-  REQUIRE(vdm::applyMotorParamsRequest(p, 4, v4));
+  REQUIRE(vdm::applyMotorParamsRequest(p, 4, v4) == ParamsRequest::Applied);
   CHECK(same(p, MotorParams{10, 20, 55, 100, 1}));
 
   const uint32_t v5[5] = {10, 40, 100, 60000, 2};
-  REQUIRE(vdm::applyMotorParamsRequest(p, 5, v5));
+  REQUIRE(vdm::applyMotorParamsRequest(p, 5, v5) == ParamsRequest::Applied);
   CHECK(same(p, MotorParams{10, 40, 100, 60000, 2}));
 
   const uint32_t v0[5] = {10, 10, 0, 0, 0};
-  REQUIRE(vdm::applyMotorParamsRequest(p, 5, v0));
+  REQUIRE(vdm::applyMotorParamsRequest(p, 5, v0) == ParamsRequest::Applied);
   CHECK(same(p, MotorParams{10, 10, 0, 0, 0}));
 }
 
-TEST_CASE("applyMotorParamsRequest: any out-of-range value rejects the whole request") {
-  const uint32_t cases[][5] = {
-      {9, 20, 50, 3000, 2},  {41, 20, 50, 3000, 2}, {17, 9, 50, 3000, 2},
-      {17, 41, 50, 3000, 2}, {5, 20, 50, 3000, 2},  {17, 50, 50, 3000, 2},
-      {17, 20, 101, 3000, 2}, {17, 20, 50, 60001, 2},
-      {17, 20, 50, 3000, 3}, {0xFFFFFFFFu, 20, 50, 3000, 2},
+TEST_CASE("applyMotorParamsRequest: an out-of-range value keeps its field, the others are applied") {
+  struct Case {
+    uint32_t v[5];
+    MotorParams expected;
+  };
+  // valid() is {17, 23, 40, 3000, 1}; the in-range values of each request are 18, 24, 50, 2500, 2
+  const Case cases[] = {
+      {{9, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},
+      {{41, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},
+      {{5, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},    // legacy web page: factor 0.5
+      {{18, 9, 50, 2500, 2}, {18, 23, 50, 2500, 2}},
+      {{18, 50, 50, 2500, 2}, {18, 23, 50, 2500, 2}},   // legacy web page: factor 5.0
+      {{18, 24, 101, 2500, 2}, {18, 24, 40, 2500, 2}},
+      {{18, 24, 50, 60001, 2}, {18, 24, 50, 3000, 2}},
+      {{18, 24, 50, 2500, 3}, {18, 24, 50, 2500, 1}},
+      {{0xFFFFFFFFu, 24, 50, 2500, 2}, {17, 24, 50, 2500, 2}},
+      {{8, 45, 50, 2500, 2}, {17, 23, 50, 2500, 2}},    // both factors out of range
+      {{0, 0, 200, 70000, 9}, {17, 23, 40, 3000, 1}},   // nothing in range
   };
   for (const auto& c : cases) {
     MotorParams p = valid();
-    CHECK_FALSE(vdm::applyMotorParamsRequest(p, 5, c));
-    CHECK(same(p, valid()));
+    CHECK(vdm::applyMotorParamsRequest(p, 5, c.v) == ParamsRequest::Partial);
+    CHECK(same(p, c.expected));
   }
+}
+
+TEST_CASE("applyMotorParamsRequest: legacy ESP saves factor 0.8 together with a new start %") {
+  // smotc 8 17 60 3000 2: the factor stays, start % and the rest are taken as by 1.x
+  MotorParams p{17, 17, 30, 3000, 2};
+  const uint32_t v[5] = {8, 17, 60, 2500, 0};
+  CHECK(vdm::applyMotorParamsRequest(p, 5, v) == ParamsRequest::Partial);
+  CHECK(same(p, MotorParams{17, 17, 60, 2500, 0}));
 }
 
 TEST_CASE("applyMotorParamsRequest: unused optional values are not checked") {
   MotorParams p = valid();
   const uint32_t v[5] = {17, 17, 50, 99999, 99};
-  CHECK(vdm::applyMotorParamsRequest(p, 3, v));
+  CHECK(vdm::applyMotorParamsRequest(p, 3, v) == ParamsRequest::Applied);
   CHECK(p.minCounts == 3000);
   CHECK(p.maxRetries == 1);
 
   const uint32_t w[5] = {17, 17, 50, 400, 99};
-  CHECK(vdm::applyMotorParamsRequest(p, 4, w));
+  CHECK(vdm::applyMotorParamsRequest(p, 4, w) == ParamsRequest::Applied);
   CHECK(p.minCounts == 400);
 }
 
-TEST_CASE("applyMotorParamsRequest: argument count outside 3..5") {
-  const uint32_t v[5] = {17, 17, 50, 3000, 2};
+TEST_CASE("applyMotorParamsRequest: argument count outside 3..5 applies nothing") {
+  const uint32_t v[5] = {18, 18, 50, 3000, 2};
   for (uint8_t argc : {0, 1, 2, 6, 255}) {
     MotorParams p = valid();
-    CHECK_FALSE(vdm::applyMotorParamsRequest(p, argc, v));
+    CHECK(vdm::applyMotorParamsRequest(p, argc, v) == ParamsRequest::Rejected);
     CHECK(same(p, valid()));
   }
+}
+
+TEST_CASE("sameMotorParams compares every field") {
+  const MotorParams a = valid();
+  CHECK(vdm::sameMotorParams(a, a));
+  MotorParams b = a;
+  b.lowFac++;
+  CHECK_FALSE(vdm::sameMotorParams(a, b));
+  b = a;
+  b.highFac++;
+  CHECK_FALSE(vdm::sameMotorParams(a, b));
+  b = a;
+  b.startOnPower++;
+  CHECK_FALSE(vdm::sameMotorParams(a, b));
+  b = a;
+  b.minCounts++;
+  CHECK_FALSE(vdm::sameMotorParams(a, b));
+  b = a;
+  b.maxRetries++;
+  CHECK_FALSE(vdm::sameMotorParams(a, b));
 }

@@ -11,6 +11,10 @@ namespace vdm {
 constexpr uint16_t kMeanCurrentFloor_mA = 15;
 // Mean current assumed for a valve that was never calibrated.
 constexpr uint16_t kMeanCurrentDefault_mA = 20;
+// Floor for the closing strokes of a calibration: 1.x closed with a fixed
+// 20 mA x factor, and a valve that closes against the water pressure needs at
+// least that, also when its learned mean current is lower.
+constexpr uint16_t kCalibrationCloseFloor_mA = kMeanCurrentDefault_mA;
 // A stroke must have at least this many mean current samples (one every
 // ~0.5 s) before its mean is learned.
 constexpr uint16_t kMinMeanSamples = 4;
@@ -21,7 +25,12 @@ constexpr uint8_t kSafetyLimit_mA = 60;
 
 // End-stop threshold in 0.1 mA for a mean current and a factor in tenths:
 // max(mean, floor) * factor.
-int32_t endStopBound(uint16_t meanCurrent_mA, uint8_t factor);
+int32_t endStopBound(uint16_t meanCurrent_mA, uint8_t factor,
+                     uint16_t floor_mA = kMeanCurrentFloor_mA);
+
+// Mean current floor of a calibration stroke: closing strokes use
+// kCalibrationCloseFloor_mA, opening strokes kMeanCurrentFloor_mA.
+uint16_t calibrationFloor(uint8_t dir);
 
 // Breakaway escalation: on calibration repetition n (n >= 1) the threshold
 // grows by n * stepPct percent, but never beyond maxmA (which itself is capped

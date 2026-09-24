@@ -190,3 +190,61 @@ TEST_CASE("LineAssembler: every dropped line is counted") {
   CHECK(la.overflowCount() == 1000);
   CHECK(la.malformedCount() == 1000);
 }
+
+TEST_CASE("LineAssembler: expire drops a stale partial line (sender went away)") {
+  StaticLineAssembler<32> la;
+  CHECK_FALSE(la.partial());
+  CHECK_FALSE(la.expire(1000, 0, 100));  // nothing pending
+
+  // "stgtp 3" from an ESP that reset before sending the terminator
+  la.feed("stgtp 3", 7);
+  CHECK(la.partial());
+  CHECK_FALSE(la.expire(1100, 1000, 100));  // exactly the timeout: kept
+  CHECK(la.partial());
+  CHECK(la.expire(1101, 1000, 100));
+  CHECK_FALSE(la.partial());
+  CHECK(la.expiredCount() == 1);
+  CHECK(la.malformedCount() == 0);
+  CHECK(la.overflowCount() == 0);
+
+  // the first request after the restart is not glued to the stale bytes
+  CHECK(feedAll(la, "gproto\n") == std::vector<std::string>{"gproto"});
+  CHECK(la.expiredCount() == 1);
+}
+
+TEST_CASE("LineAssembler: expire works across the millisecond clock wrap") {
+  StaticLineAssembler<32> la;
+  la.feed("gvl", 3);
+  CHECK_FALSE(la.expire(40, 0xFFFFFFF0u, 100));  // 56 ms after the last byte
+  CHECK(la.partial());
+  CHECK(la.expire(120, 0xFFFFFFF0u, 100));       // 136 ms
+  CHECK(la.expiredCount() == 1);
+}
+
+TEST_CASE("LineAssembler: expire leaves a complete line alone") {
+  StaticLineAssembler<32> la;
+  CHECK(la.feed("gvers\nxy", 8) == 6);
+  REQUIRE(la.hasLine());
+  CHECK_FALSE(la.partial());
+  CHECK_FALSE(la.expire(10000, 0, 100));
+  REQUIRE(la.hasLine());
+  CHECK(std::string(la.line()) == "gvers");
+  CHECK(la.expiredCount() == 0);
+}
+
+TEST_CASE("LineAssembler: expire ends the discarding of an unterminated overlong line") {
+  StaticLineAssembler<8> la;
+  la.feed("0123456789", 10);  // overflow, discarding until a terminator
+  CHECK(la.overflowCount() == 1);
+  CHECK(la.partial());
+  CHECK(la.expire(200, 0, 100));
+  CHECK(la.expiredCount() == 0);  // already counted as overflow
+  CHECK(feedAll(la, "gvers\n") == std::vector<std::string>{"gvers"});
+
+  StaticLineAssembler<8> bad;
+  bad.feed("ab\x01", 3);  // malformed, discarding
+  CHECK(bad.malformedCount() == 1);
+  CHECK(bad.expire(200, 0, 100));
+  CHECK(bad.expiredCount() == 0);
+  CHECK(feedAll(bad, "x\n") == std::vector<std::string>{"x"});
+}

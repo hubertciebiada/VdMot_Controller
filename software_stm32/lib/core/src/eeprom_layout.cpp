@@ -37,8 +37,4 @@ size_t encodeExtension(const StoredExtension& ext, uint8_t (&out)[kExtensionBloc
   return 3 + kExtensionPayloadV2;
 }
 
-uint16_t sanitizeLearnMovements(uint16_t stored) {
-  return (stored >= 50 && stored < 0xFFFF) ? stored : kLearnMovementsDefault;
-}
-
 }  // namespace vdm

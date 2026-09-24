@@ -127,11 +127,3 @@ TEST_CASE("decodeExtension: out-of-range values in a valid block fall back to de
   CHECK(vdm::decodeExtension(raw, e) == ExtensionState::Valid);
   CHECK(isDefault(e));
 }
-
-TEST_CASE("sanitizeLearnMovements: 1.x start-up range 50..65534") {
-  CHECK(vdm::sanitizeLearnMovements(49) == 2000);
-  CHECK(vdm::sanitizeLearnMovements(0) == 2000);
-  CHECK(vdm::sanitizeLearnMovements(50) == 50);
-  CHECK(vdm::sanitizeLearnMovements(65534) == 65534);
-  CHECK(vdm::sanitizeLearnMovements(65535) == 2000);
-}

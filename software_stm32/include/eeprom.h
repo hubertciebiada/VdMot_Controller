@@ -38,7 +38,14 @@ int16_t eepromloop();
 void eeprom_fill (void);
 int16_t eeprom_write_layout (struct eeprom_layout* lay);
 int16_t eeprom_read_layout (struct eeprom_layout* lay);
-void eeprom_changed();
+// fields of the layout, for eeprom_changed(): a layout that could not be read is merged with them
+#define EEP_CHANGED_SENSORS			0x01	// owsensors1/2 (sensor assignment)
+#define EEP_CHANGED_MOVEMENTS		0x02	// numberOfMovements
+#define EEP_CHANGED_MOTOR			0x04	// factors, startOnPower, noOfMinCounts, maxCalibRetries
+#define EEP_CHANGED_ESCALATION		0x08	// escalation
+#define EEP_CHANGED_ALL				0x0F
+
+void eeprom_changed(uint8_t fields);
 bool eeprom_free();
 uint8_t eeprom_state();		// gstat eepState: vdm::kEepStateOk/Pending/WriteFailed/ReadFailed
 

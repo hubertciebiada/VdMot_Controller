@@ -61,7 +61,6 @@ int testmode = 0;							// flag for testmode
 #define TERM_ARG_CNT			 3			// number of allowed command arguments
 #define TERM_LINE_SIZE			128			// max length of one terminal line
 #define TERM_MAX_READ			256			// bytes taken from the terminal per call
-#define SEND_BUFFER_LEN			800
 
 static int16_t Terminal_Execute (const vdm::Tokenizer &req);
 
@@ -124,8 +123,6 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 	uint16_t		x = 0;
 	uint32_t		xu32 = 0;
 	uint16_t		y = 0;
-
-	char sendbuf[SEND_BUFFER_LEN];
 
 	// most commands take up to two numeric arguments
 	const bool hasX = req.argc() >= 1 && req.argU16(0, 0, 65535, x);
@@ -250,8 +247,7 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 	// get onewire sensor data - sensor count and data and adress of all connected sensors
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is("getone")) {
-		get_sensordata(0, sendbuf, SEND_BUFFER_LEN);
-		COMM_DBG.println(sendbuf);
+		print_sensordata(COMM_DBG);
 	}
 
 	// set eeprom layout
@@ -265,7 +261,7 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is("saveep")) {
 		//eeprom_write_layout(&eep_content);
-		eeprom_changed();
+		eeprom_changed(EEP_CHANGED_ALL);
 		COMM_DBG.println("saved eeprom layout");
 	}
 
@@ -402,9 +398,9 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 			vdm::MotorParams params = motor_get_params();
 			const uint32_t values[5] = {x, y, params.startOnPower, 0, 0};
 
-			if (vdm::applyMotorParamsRequest(params, 3, values)) {
+			if (vdm::applyMotorParamsRequest(params, 3, values) == vdm::ParamsRequest::Applied) {
 				motor_set_params(params);
-				eeprom_changed();
+				eeprom_changed(EEP_CHANGED_MOTOR);
 				COMM_DBG.println("- valid");
 			}
 			else COMM_DBG.println("- values out of bounds");
@@ -435,9 +431,7 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 		if(req.argc() == 1 && hasX) {
 			// reset status of all valves so they will be detected again
 			if( x == 255) {
-				for(unsigned int xx=0;xx<ACTUATOR_COUNT;xx++) {
-					myvalvemots[xx].status = VLV_STATE_UNKNOWN; 
-				}
+				app_scan_valves();
 				COMM_DBG.println(" - reset all valves");
 			}
 			// not supported at the moment, app rework needed

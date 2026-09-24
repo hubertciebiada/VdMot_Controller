@@ -58,9 +58,11 @@
 #define COMM_LINE_SIZE			128			// longest v1 request (stvls) has less than 64 characters
 #define COMM_MAX_LINES			4			// requests handled per communication_loop call
 #define COMM_MAX_READ			512			// bytes taken from the UART per communication_loop call
+#define COMM_LINE_TIMEOUT_MS	100			// an unterminated line is dropped after this idle time (a request takes ~10 ms)
 #define NO_SENSOR_ADDRESS		"00-00-00-00-00-00-00-00"
 
 static vdm::StaticLineAssembler<COMM_LINE_SIZE> commLine;
+static uint32_t commLastByteMs = 0;			// when commLine consumed its last byte
 static uint32_t commTooManyArgs = 0;		// requests dropped for too many arguments (gstat parseErr)
 
 // longest reply (gprof), static to keep it off the main loop stack
@@ -92,7 +94,7 @@ static void setValveIDSensor (const char *text, struct ds1820_eeprom_layout &slo
 	if (!vdm::parseOneWireAddress(text, address)) return;
 	if (vdm::isZeroAddress(address) || sensors.validAddress(address)) {
 		storeSensorAddress(slot, address);
-		eeprom_changed();
+		eeprom_changed(EEP_CHANGED_SENSORS);
 	}
 }
 
@@ -120,7 +122,7 @@ int16_t comm_set_valve_sensor_index (uint16_t valve, uint8_t slot, uint16_t sens
 	}
 	else return -1;
 
-	eeprom_changed();
+	eeprom_changed(EEP_CHANGED_SENSORS);
 	return 0;
 }
 
@@ -396,14 +398,15 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	else if(req.is(APP_PRE_SETLEARNMOVEM)) {
 		commdbg_print("set valve learning movements to ");
 
-		// the ESP sends a uint32; v1 always replied, so cap instead of rejecting large counts
+		// the ESP sends a uint32; v1 always replied, so a value outside 0, 50..65534 is moved to the
+		// nearest bound instead of being rejected (the same range is loaded at start-up)
 		const bool valid = req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32);
-		if (valid) x = vdm::capLearnMovements(xu32);
+		if (valid) x = vdm::learnMovementsFromRequest(xu32);
 
 		if (valid && app_set_learnmovements(x) == 0) {
 			commdbg_println(x, DEC);
 			eep_content.numberOfMovements=x;
-			eeprom_changed();
+			eeprom_changed(EEP_CHANGED_MOVEMENTS);
 			COMM_SER.println(APP_PRE_SETLEARNMOVEM);
 		}
 		else commdbg_println("- error");
@@ -490,21 +493,28 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 
 	// set motor characteristics
 	// low high startOnPower [noOfMinCounts [maxCalibRetries]]
-	// every value is checked against the range table (gmotx), out of range: "smotc err", nothing changed
+	// every value is checked against the range table (gmotx): the values in range are applied, a value
+	// out of range leaves its field unchanged and the reply is "smotc err"; a request with fewer than
+	// 3 values or a value that is not a number changes nothing ("smotc err")
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_SETMOTCHARS)) {
 		uint32_t values[5] = {0, 0, 0, 0, 0};
-		vdm::MotorParams params = motor_get_params();
-		bool valid = req.argc() >= 3 && req.argc() <= 5;
+		const vdm::MotorParams current = motor_get_params();
+		vdm::MotorParams params = current;
+		vdm::ParamsRequest result = vdm::ParamsRequest::Rejected;
+		bool numbers = req.argc() >= 3 && req.argc() <= 5;
 
 		commdbg_print("got set motor characteristics request ");
 
-		for (uint8_t i = 0; valid && i < req.argc(); i++) valid = req.argU32(i, 0, UINT32_MAX, values[i]);
-		valid = valid && vdm::applyMotorParamsRequest(params, req.argc(), values);
+		for (uint8_t i = 0; numbers && i < req.argc(); i++) numbers = req.argU32(i, 0, UINT32_MAX, values[i]);
+		if (numbers) result = vdm::applyMotorParamsRequest(params, req.argc(), values);
 
-		if (valid) {
+		if (result != vdm::ParamsRequest::Rejected && !vdm::sameMotorParams(params, current)) {
 			motor_set_params(params);
-			eeprom_changed();
+			eeprom_changed(EEP_CHANGED_MOTOR);
+		}
+
+		if (result == vdm::ParamsRequest::Applied) {
 			COMM_SER.println(APP_PRE_SETMOTCHARS);
 			commdbg_println("- valid");
 		}
@@ -619,7 +629,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		commdbg_println("got get eeprom status request ");
 		COMM_SER.print(APP_PRE_EEPSTATE);
 		COMM_SER.print(" ");			
-		COMM_SER.print(eeprom_free(), DEC);
+		COMM_SER.print(vdm::eepstSaved(eeprom_state()), DEC);
 		COMM_SER.println(" ");			
 	} 
 
@@ -702,7 +712,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 
 		if (valid) {
 			motor_set_escalation(config);
-			eeprom_changed();
+			eeprom_changed(EEP_CHANGED_ESCALATION);
 		}
 		sendReply(vdm::formatResult(replyLine, APP_PRE_SETCALESC, valid));
 	}
@@ -719,7 +729,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		stat.resets = sysstat_resets();
 		stat.bootReason = (uint8_t) sysstat_boot_reason();
 		stat.rxOverflow = commLine.overflowCount();
-		stat.parseErrors = commLine.malformedCount() + commTooManyArgs;
+		stat.parseErrors = commLine.malformedCount() + commLine.expiredCount() + commTooManyArgs;
 		stat.eepromState = eeprom_state();
 		sendReply(vdm::formatStat(replyLine, stat));
 	}
@@ -747,6 +757,7 @@ int16_t communication_loop (void) {
 		// bytes following a complete line stay in the UART buffer for the next request
 		while (!commLine.hasLine() && budget > 0 && COMM_SER.available() > 0) {
 			commLine.push((char) COMM_SER.read());
+			commLastByteMs = millis();
 			budget--;
 		}
 
@@ -764,6 +775,12 @@ int16_t communication_loop (void) {
 		}
 		commLine.release();
 	}
+
+	// the rest of a partial line is read first: the main loop may have been blocked while it arrived.
+	// Bytes of a line that stay unterminated (ESP restarted in the middle of a request, noise) must
+	// not be glued to the next request.
+	if (COMM_SER.available() == 0 && commLine.expire(millis(), commLastByteMs, COMM_LINE_TIMEOUT_MS))
+		commdbg_println("comm: incomplete line dropped");
 
 	return result;
 }

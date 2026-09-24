@@ -176,3 +176,11 @@ TEST_CASE("encodeValveStatus: gvlvd encoding, bit 7 while calibrating") {
     CHECK(vdm::encodeValveStatus(static_cast<uint8_t>(s), true) == (s | 0x80u));
   }
 }
+
+TEST_CASE("eepstSaved: eepst reports 1 only for a stored configuration") {
+  CHECK(vdm::eepstSaved(vdm::kEepStateOk) == 1);
+  CHECK(vdm::eepstSaved(vdm::kEepStatePending) == 0);
+  CHECK(vdm::eepstSaved(vdm::kEepStateWriteFailed) == 0);
+  CHECK(vdm::eepstSaved(vdm::kEepStateReadFailed) == 0);
+  CHECK(vdm::eepstSaved(255) == 0);
+}

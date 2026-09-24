@@ -45,9 +45,11 @@
 #define VALVE_SENSOR_UNKNOWN              65535   // marks that no sensor slot is selected
 #define VALVE_NO_TARGET                   255     // rejectedTarget: nothing rejected
 #define SVMOV_HOLD_10S                    30      // app_10s_loop calls (~11 s) a service moved valve is left alone
+#define CALIB_START_TICKS                 2       // app_10s_loop calls a handed over calibration may take to start
 
 
 int16_t app_setup (void);
+void app_load_config (void);
 int16_t app_loop (void);
 byte app_10s_loop ();
 int16_t app_set_learnmovements(uint16_t cycles);
@@ -94,6 +96,8 @@ struct valve {
   uint8_t forcedLearn;        // staln: learn without waiting for a target change
   uint8_t timedLearn;         // time trigger: learn at the next target change (after firstchange)
   uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls)
+  uint8_t retestRequest;      // sdetvlv: test the valve again (applied by app_loop while no valve moves)
+  uint8_t openRequest;        // staop: open fully (applied by app_loop while no valve moves)
   //struct valvemotor valvemot;
 };
 

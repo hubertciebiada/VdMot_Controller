@@ -15,6 +15,8 @@ namespace vdm {
 //    to its terminator and counted as malformed.
 //  - Once a line is complete no further byte is consumed until release(), so
 //    bytes following the terminator stay with the caller for the next line.
+//  - expire() drops an unterminated line after an idle time, so the bytes of a
+//    line whose sender went away are not glued to the next request.
 class LineAssembler {
  public:
   // capacity includes the terminating NUL. A capacity < 2 (or a null buffer)
@@ -42,9 +44,21 @@ class LineAssembler {
   // Drops everything, including a partial line and discard state.
   void reset();
 
+  // True while bytes of an unterminated line were consumed (also while an
+  // overlong or malformed line is being discarded).
+  bool partial() const { return !ready_ && (len_ > 0 || discarding_); }
+
+  // Drops a partial line if the last byte was consumed at lastByteMs and
+  // more than timeoutMs have passed until nowMs (millisecond clock, may
+  // wrap). A dropped partial line is counted as expired; a line that was
+  // already being discarded is not counted again. Returns true if something
+  // was dropped.
+  bool expire(uint32_t nowMs, uint32_t lastByteMs, uint32_t timeoutMs);
+
   // Event counters; they wrap modulo 2^32, so consumers use differences.
   uint32_t overflowCount() const { return overflows_; }
   uint32_t malformedCount() const { return malformed_; }
+  uint32_t expiredCount() const { return expired_; }
 
  private:
   void startDiscard(bool overflow);
@@ -57,6 +71,7 @@ class LineAssembler {
   bool discarding_;
   uint32_t overflows_;
   uint32_t malformed_;
+  uint32_t expired_;
 };
 
 // LineAssembler owning its storage.

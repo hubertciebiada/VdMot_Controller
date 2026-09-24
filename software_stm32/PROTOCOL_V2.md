@@ -1,15 +1,31 @@
 # VdMot STM32 UART protocol v2 (firmware 2.0.0-revamped)
 
-Protocol v2 adds commands to protocol v1; it does not change a v1 command, except
-that `smotc` now answers out-of-range values with `smotc err` (see below).
+Protocol v2 adds commands to protocol v1. The v1 request and reply formats are
+unchanged, except that `smotc` now answers out-of-range values with
+`smotc err`; the changed behaviour of v1 commands is listed below.
 An ESP that only speaks v1 keeps working with this firmware, and an ESP that
 speaks v2 detects an older STM firmware because `gproto` gets no answer.
 
 ## Framing
 
-Same as v1: 115200 8N1, one request per line `cmd arg1 arg2 ...` terminated by
-CR, LF or CR LF, arguments separated by one or more spaces (a trailing space is
-optional). Every reply is one line terminated by CR LF.
+115200 8N1, one request per line, every reply is one line terminated by CR LF.
+
+A client that may talk to firmware 1.x (every ESP, because it detects the
+firmware only by its answers) must send every request, v1 and v2, as
+
+    cmd␠arg1␠arg2␠...␠\n        (CR LF instead of LF is fine)
+
+with a space after the command and after every argument and a final LF.
+Firmware 1.x ends a line only at LF and takes a token only when a space
+follows it: `stgtp 3 50\n` reaches it with one argument and is ignored, and a
+line without any space (`gproto\n`) makes it run the command of the previous
+request again.
+
+Firmware 2.x accepts that form and also: CR, LF or CR LF as terminator, one or
+more spaces between tokens and no trailing space. A line that is not
+terminated within 100 ms after its last byte is dropped (counted in `gstat`
+parseErr), so the bytes of a request cut off by an ESP restart do not spoil
+the next request. The examples below leave out the trailing space.
 
 - v2 replies are space-separated decimal integers without a trailing space.
 - Numbers must be plain decimal digits; a sign, a fraction or a value outside
@@ -37,11 +53,12 @@ gets no reply (except `svmov`).
 
 ### `gproto` – protocol version
 
-    > gproto
+    > gproto␠
     < gproto 2
 
-Firmware 1.x does not answer. An ESP sends `gproto` once after the STM
-answered `gvers`; on a timeout it stays in v1 mode.
+Firmware 1.x does not answer `gproto␠\n` (no v1 command starts with
+`gprot`). An ESP sends it once after the STM answered `gvers`; on a timeout
+it stays in v1 mode.
 
 ### `gvlvx idx` – extended valve data
 
@@ -148,8 +165,8 @@ adapter releases.
 | resets | resets since the last power-on (0 after power-on or brown-out) |
 | bootReason | cause of the last reset: 0 unknown, 1 power-on, 2 reset pin (e.g. by the ESP), 3 software (`reset`, after flashing), 4 independent watchdog, 5 window watchdog, 6 low power, 7 brown-out |
 | rxOverflow | request lines dropped because they were too long |
-| parseErr | request lines dropped because of invalid characters or more than 5 arguments |
-| eepState | 0 ok, 1 write pending, 2 the last write failed, 3 the EEPROM could not be read at start-up (defaults in use, changes are not stored) |
+| parseErr | request lines dropped because of invalid characters, more than 5 arguments, or no terminator within 100 ms |
+| eepState | 0 ok, 1 write pending, 2 the last write failed (retried after 30 s, 60 s, ... up to every hour), 3 the EEPROM could not be read (defaults in use for what could not be read, nothing is written; the read is retried like a write, and once it succeeds the values changed meanwhile are kept and stored, the rest is taken from the EEPROM) |
 
 An uptime smaller than in the previous reply means the STM restarted.
 
@@ -166,43 +183,68 @@ range loads its default (17, 17, 30, 3000, 2).
 
 ## Changed behaviour of v1 commands
 
-- `smotc low high sop [minCnt [maxRetr]]`: all values are checked against the
-  `gmotx` table. Valid: reply `smotc` as before. Out of range, not a number or
-  fewer than 3 values: reply `smotc err` and nothing is changed (1.x stored
-  unchecked values, or ignored the request without a reply). More than 5
-  values: no reply (dropped like every request with too many arguments). The
-  factors are limited to 10..40, the range 1.x kept across a restart: 1.x
-  `smotc` also took 5..9 and 41..50 (the legacy web page offers 0.5..5.0) and
-  used them until the next start, then fell back to 17. Such a value stored
-  in the EEPROM by 1.x still loads 17. A factor below 10 puts the end-stop
-  threshold under the running current and stops every move at once.
-- `staln idx` / `staln 255`: the calibration starts as soon as the valve state
-  machine is idle; 1.x waited until any target had changed since the start.
-- Calibration requests (`staln`, time trigger, movement trigger) that a move
-  of the same valve overwrote while it was running are renewed after the
-  move; 1.x lost them (the time trigger then waited another learning time, a
-  movement trigger left the valve ignoring `stgtp` until then). A time
-  trigger that fires while the valve is calibrating is satisfied by that
-  calibration.
+- `smotc low high sop [minCnt [maxRetr]]`: every value is checked against its
+  range in the `gmotx` table. All in range: reply `smotc` as before. A value
+  out of range is not taken (its field keeps the current value), the values in
+  range sent with it are applied and stored, and the reply is `smotc err`
+  (1.x stored unchecked values). The legacy ESP always sends all five values
+  and ignores `smotc err`, so a factor out of range does not lose a new start
+  % or repetition count saved with it. Not a number or fewer than 3 values:
+  `smotc err`, nothing is changed. More than 5 values: no reply (dropped like
+  every request with too many arguments). The factors are limited to 10..40,
+  the range 1.x kept across a restart: 1.x `smotc` also took 5..9 and 41..50
+  (the legacy web page offers 0.5..5.0) and used them until the next start,
+  then fell back to 17. Such a value stored in the EEPROM by 1.x still loads
+  17. A factor below 10 puts the end-stop threshold under the running current
+  and stops every move at once.
+- `stlnm n`: 0 switches the movement trigger off, 50..65534 are taken as
+  they are, 1..49 are stored as 50 and larger values as 65534 (`gtlnm` shows
+  the value in use). The same range is loaded at start-up, so the value
+  survives a restart; 1.x took any value but loaded only 50..65534 and fell
+  back to 2000 otherwise (also for 0).
+- `eepst`: `eepst 1` only when the configuration is stored; `eepst 0` while a
+  write is pending and also while writing fails or is disabled after a failed
+  read (1.x replied 1 in these cases). `gstat` eepState tells the cause.
+- `staop idx` / `staop 255`: a failed (4) or blocked (9) valve only gets the
+  target 100 (counted in `cmdRejected`) and is not moved until a calibration
+  (1.x drove it to the end stop and reported idle without a calibration).
+- `staln idx` / `staln 255` and the movement trigger: the calibration starts
+  as soon as the valve state machine is idle; 1.x waited until any target had
+  changed since the start (the time trigger still waits for it).
+- Requests that change the status or position of a valve (`staln`, `staop`,
+  `sdetvlv 255`, time and movement trigger) take effect when no valve moves,
+  so the end of a running move no longer overwrites them. 1.x lost them:
+  the time trigger then waited another learning time, a movement trigger or
+  `staln` left the valve ignoring `stgtp` until then, and `sdetvlv 255`
+  during a move left that valve untested at a wrong position. `gvlvd` shows
+  the new status up to about 0.2 s after the request, or after the running
+  move. A time trigger that fires while the valve is calibrating is
+  satisfied by that calibration.
 - `gvlvd`, `gvlst`: a valve whose calibration failed keeps status 9 (blocked).
   1.x continued with the counts of the failed pass and reported idle.
 - Position of failed (4) and blocked (9) valves: the STM no longer sets
   `actual = target` without moving the motor; the position stays where it
-  was, and every new target is counted in `cmdRejected`. A normal move that
-  ends with a timeout leaves the position unchanged (1.x reported the target).
-  Open-circuit valves (6) keep the 1.x behaviour (position = target).
+  was. The target the fault left behind (the target of the move that timed
+  out, the target kept through a blocked calibration) is not counted; every
+  later target change is counted in `cmdRejected` and, like any target
+  change, lets the calibrations of valves found at start-up begin. A normal
+  move that ends with a timeout leaves the position unchanged (1.x reported
+  the target). Open-circuit valves (6) keep the 1.x behaviour (position =
+  target).
 - The EEPROM configuration gets a layout version 2 extension block behind the
   1.x fields (0x013C); 1.x images load with defaults for the new fields, and
   1.x firmware ignores the block.
 
 ## Calibration and end-stop detection
 
-- End-stop thresholds are `max(meanCur, 15 mA) × factor` for every move. The
-  closing stroke of a calibration uses the learned mean current too (1.x used
-  a fixed 20 mA, i.e. 34 mA with factor 1.7). For a valve with a learned mean
-  current of 16–17 mA this lowers the closing threshold from 34 mA to about
-  28 mA; enable the breakaway escalation (`scalx`) or raise the high/low
-  factor if valves then block.
+- End-stop thresholds are `max(meanCur, 15 mA) × factor` for normal moves,
+  service moves use their own threshold. The closing strokes of a calibration
+  use `max(meanCur, 20 mA) × factor`: never below the fixed 20 mA × factor
+  (34 mA with factor 1.7) that 1.x used for the measured closing stroke, and
+  higher for a valve whose learned mean current is above 20 mA (1.x kept
+  34 mA for it too). The opening stroke uses `max(meanCur, 15 mA) × factor`
+  (1.x: the learned mean without a floor). If valves still block, enable the breakaway
+  escalation (`scalx`) or raise the high/low factor.
 - The mean current is learned only from a successful calibration pass, from
   strokes with at least 4 samples (about 2 s of running); otherwise the
   previous value stays.

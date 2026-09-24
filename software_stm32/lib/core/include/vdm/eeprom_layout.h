@@ -45,8 +45,4 @@ ExtensionState decodeExtension(const uint8_t (&raw)[kExtensionBlockSize], Stored
 // number of bytes to write.
 size_t encodeExtension(const StoredExtension& ext, uint8_t (&out)[kExtensionBlockSize]);
 
-// learn-after-movements as stored by 1.x: 50..65534, otherwise the default.
-constexpr uint16_t kLearnMovementsDefault = 2000;
-uint16_t sanitizeLearnMovements(uint16_t stored);
-
 }  // namespace vdm

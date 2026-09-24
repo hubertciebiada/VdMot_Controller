@@ -1,7 +1,10 @@
 #include <stdint.h>
 
+#include <initializer_list>
+
 #include "doctest.h"
 #include "vdm/calibration.h"
+#include "vdm/move_classifier.h"
 
 using vdm::CalibrationVerdict;
 using vdm::EscalationConfig;
@@ -15,6 +18,28 @@ TEST_CASE("endStopBound: learned mean times factor, 15 mA floor (S01)") {
   CHECK(vdm::endStopBound(16, 10) == 160);
   CHECK(vdm::endStopBound(65535, 50) == 65535 * 50);
   CHECK(vdm::endStopBound(20, 0) == 0);
+}
+
+TEST_CASE("endStopBound: an explicit floor") {
+  CHECK(vdm::endStopBound(16, 17, 20) == 340);
+  CHECK(vdm::endStopBound(20, 17, 20) == 340);
+  CHECK(vdm::endStopBound(25, 17, 20) == 425);
+  CHECK(vdm::endStopBound(0, 17, 0) == 0);
+}
+
+TEST_CASE("calibrationFloor: closing strokes never below the 1.x closing threshold") {
+  CHECK(vdm::kCalibrationCloseFloor_mA == 20);
+  CHECK(vdm::calibrationFloor(vdm::kDirClose) == 20);
+  CHECK(vdm::calibrationFloor(vdm::kDirOpen) == vdm::kMeanCurrentFloor_mA);
+
+  // owner's valves: learned mean 16..17 mA, factor 1.7; 1.x closed at 34 mA
+  for (uint16_t mean : {16, 17}) {
+    const int32_t closing = vdm::endStopBound(mean, 17, vdm::calibrationFloor(vdm::kDirClose));
+    CHECK(closing == 340);
+    CHECK(vdm::endStopBound(mean, 17, vdm::calibrationFloor(vdm::kDirOpen)) == mean * 17);
+  }
+  // a valve that needs more current than 20 mA keeps its learned mean
+  CHECK(vdm::endStopBound(24, 17, vdm::calibrationFloor(vdm::kDirClose)) == 408);
 }
 
 TEST_CASE("escalation config validation") {

@@ -357,11 +357,11 @@ static uint32_t learned_travel (int v, uint8_t dir) {
 }
 
 
-// end-stop bounds from the learned mean current (S01: 15 mA floor), optionally escalated
-static void set_move_bounds (int v, uint8_t repetition) {
+// end-stop bounds from the learned mean current (S01: floor of at least 15 mA), optionally escalated
+static void set_move_bounds (int v, uint16_t floor_mA, uint8_t repetition) {
   const uint16_t mean = (uint16_t) (myvalvemots[v].meancurrent > 0xFFFF ? 0xFFFF : myvalvemots[v].meancurrent);
-  move_bound_high = vdm::escalatedBound(vdm::endStopBound(mean, currentbound_high_fac), repetition, calib_escalation);
-  move_bound_low = -vdm::escalatedBound(vdm::endStopBound(mean, currentbound_low_fac), repetition, calib_escalation);
+  move_bound_high = vdm::escalatedBound(vdm::endStopBound(mean, currentbound_high_fac, floor_mA), repetition, calib_escalation);
+  move_bound_low = -vdm::escalatedBound(vdm::endStopBound(mean, currentbound_low_fac, floor_mA), repetition, calib_escalation);
 }
 
 
@@ -385,7 +385,7 @@ static void prepare_normal_move (int v, uint8_t dir, byte change) {
   move_req.expectedTravelPct = expected;
   move_req.learnedTravel = learned_travel(v, dir);
   move_kind = MOVE_NORMAL;
-  set_move_bounds(v, 0);
+  set_move_bounds(v, vdm::kMeanCurrentFloor_mA, 0);
 }
 
 
@@ -397,7 +397,7 @@ static void prepare_learn_stroke (int v, uint8_t dir, bool full) {
   move_req.expectedTravelPct = full ? 100 : 0;
   move_req.learnedTravel = learned_travel(v, dir);
   move_kind = MOVE_LEARN;
-  set_move_bounds(v, calibRetries);
+  set_move_bounds(v, vdm::calibrationFloor(dir), calibRetries);
 }
 
 
@@ -826,7 +826,8 @@ void valve_loop () {
                       // kept until the pass is accepted (S02)
                       open_mean_mA = stroke_mean_mA;
                       open_mean_samples = stroke_mean_samples;
-                      // third: closing completely and count rotations, threshold from the learned mean current (S01)
+                      // third: closing completely and count rotations, threshold from the learned mean current
+                      // but not below the 1.x closing threshold (S01)
                       isr_counter=0;
                       myvalvemots[valveindex].status = VLV_STATE_CLOSING;
                       prepare_learn_stroke(valveindex, DIR_CLOSE, true);
@@ -1563,6 +1564,17 @@ void callback_motorstop () {
 // returns state of application  state machine
 enum ASTATE valve_getstate () {
   return valvestate;
+}
+
+
+// the valve state machine is idle and no command is pending: no valve moves until the main loop
+// hands over the next command, so until then the main loop may change the state of any valve
+bool valve_idle () {
+  const uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  const bool idle = valvestate == A_IDLE && command == '\0';
+  __set_PRIMASK(primask);
+  return idle;
 }
 
 

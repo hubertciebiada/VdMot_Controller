@@ -1,10 +1,16 @@
 #include "vdm/calibration.h"
 
+#include "vdm/move_classifier.h"
+
 namespace vdm {
 
-int32_t endStopBound(uint16_t meanCurrent_mA, uint8_t factor) {
-  const uint16_t mean = meanCurrent_mA < kMeanCurrentFloor_mA ? kMeanCurrentFloor_mA : meanCurrent_mA;
+int32_t endStopBound(uint16_t meanCurrent_mA, uint8_t factor, uint16_t floor_mA) {
+  const uint16_t mean = meanCurrent_mA < floor_mA ? floor_mA : meanCurrent_mA;
   return static_cast<int32_t>(mean) * factor;
+}
+
+uint16_t calibrationFloor(uint8_t dir) {
+  return dir == kDirClose ? kCalibrationCloseFloor_mA : kMeanCurrentFloor_mA;
 }
 
 bool escalationValid(const EscalationConfig& c) {

@@ -102,6 +102,7 @@ byte valve_setup ();
 void valve_pins_safe ();
 
 enum ASTATE valve_getstate ();
+bool valve_idle ();             // idle and no command pending (see motor.cpp)
 int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force=false);
 // service move: dir vdm::kDirOpen/kDirClose, counts 1..10000, end-stop threshold maxmA 5..60
 int16_t appsetservice(unsigned int valveindex, uint8_t dir, uint16_t counts, uint8_t maxmA);

@@ -45,13 +45,22 @@ constexpr MotorParams kMotorParamsDefault{
 // True if every field is inside its range.
 bool motorParamsValid(const MotorParams& p);
 
+bool sameMotorParams(const MotorParams& a, const MotorParams& b);
+
 // Replaces every out-of-range field by its default (EEPROM load).
 MotorParams sanitizeMotorParams(const MotorParams& p);
 
+enum class ParamsRequest : uint8_t {
+  Applied,   // every supplied value was in range and is applied
+  Partial,   // at least one value was out of range: its field is unchanged, the others are applied
+  Rejected,  // argc outside 3..5: nothing is applied
+};
+
 // A parsed smotc request: the first three values are mandatory, minCounts and
 // maxRetries are optional (argc 3..5) and keep their current value if absent.
-// Returns false, and leaves `inOut` untouched, if argc is outside 3..5 or any
-// supplied value is outside its range.
-bool applyMotorParamsRequest(MotorParams& inOut, uint8_t argc, const uint32_t (&values)[5]);
+// Each supplied value is checked against its own range. A value out of range
+// never reaches `inOut`, but it does not drop the valid values sent with it:
+// the legacy ESP always sends all five values and ignores `smotc err`.
+ParamsRequest applyMotorParamsRequest(MotorParams& inOut, uint8_t argc, const uint32_t (&values)[5]);
 
 }  // namespace vdm

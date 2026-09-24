@@ -32,8 +32,10 @@
 #include "hardware.h"
 #include "I2C_eeprom.h"		// freat library from https://github.com/RobTillaart/I2C_EEPROM
 #include "motor.h"
+#include "app.h"
 #include "vdm/eeprom_layout.h"
 #include "vdm/replies_v2.h"
+#include "vdm/retry_backoff.h"
 
 //#define EEPROM_DEBUG(...)
 //#define EEPROM_DEBUG 	Serial3.print
@@ -55,14 +57,26 @@ I2C_eeprom eeprom(DEVICEADDRESS, EE24LC64MAXBYTES);
 
 struct eeprom_layout eep_content;
 
-#define EEP_READ_ATTEMPTS		3		// per block at startup
+#define EEP_READ_ATTEMPTS		3		// per block
 #define EEP_WRITE_ATTEMPTS		3		// per change, one attempt per eepromloop() run
+#define EEP_RETRY_FIRST_S		30		// a failed read or write is retried after 30 s, 60 s, ... up to 1 h
+#define EEP_RETRY_MAX_S			3600
 
-// the layout could not be read completely at startup: RAM holds 0xFF fallbacks for the missing
-// fields, and writing the layout back would destroy the configuration still stored in the EEPROM
+// the layout could not be read completely: RAM holds 0xFF fallbacks for the missing fields, and
+// writing the layout back would destroy the configuration still stored in the EEPROM. The read is
+// retried; once it succeeds the fields changed meanwhile are merged in and writing is enabled again.
 static bool eep_read_failed = false;
-// the last change could not be written (all attempts failed); cleared by the next successful write
+// the last change could not be written (all attempts failed); retried, cleared by a successful write
 static bool eep_write_failed = false;
+// set while the current read has hit an unreadable block
+static bool eep_read_error = false;
+// fields changed in RAM (EEP_CHANGED_*) and not written yet
+static uint8_t eep_changed_fields = 0;
+// eepromloop() runs once per second, so the ticks are seconds
+static vdm::RetryBackoff eep_retry(EEP_RETRY_FIRST_S, EEP_RETRY_MAX_S);
+
+static bool eeprom_read_image (struct eeprom_layout* lay);
+static void eeprom_reread ();
 
 // size of the 1.x layout from EE_GENERALDATA_ADR: base block, sensor slots, tail
 static_assert(EE_GENERALDATA_ADR + 33 + (2 * ACTUATOR_COUNT + ADDITIONAL_SENSOR_COUNT) * 8 + 4 == vdm::kExtensionAddress,
@@ -148,6 +162,12 @@ int16_t eepromloop() {
                     if (eep_content.status == EEP_CHANGED) {
 						writedelaycnt++;						
 					}
+					// retry of a failed read or write
+					else if (eep_retry.tick()) {
+						if (eep_read_failed) eeprom_reread();
+						else if (eep_write_failed) eepromstate = E_WRITECFG;
+						else eep_retry.succeeded();
+					}
 
 					if (writedelaycnt > 2) {		// write to eeprom not earlier than after 5 s 
 						writedelaycnt=0;
@@ -166,19 +186,23 @@ int16_t eepromloop() {
 		case E_WRITECFG:
 					
 					if (eep_read_failed) {
-						// changes stay in RAM until the next start reads the EEPROM successfully
-						EEPROM_DEBUG("eeprom not written, layout was not read at startup\r\n");
+						// changes stay in RAM (eep_changed_fields) until a read of the EEPROM succeeds
+						EEPROM_DEBUG("eeprom not written, layout was not read\r\n");
 						eep_content.status = EEP_VALID;
 					}
 					else if (eeprom_write_layout (&eep_content) == 0) {
 						writeattempts = 0;
 						eep_write_failed = false;
+						eep_changed_fields = 0;
+						eep_retry.succeeded();
 						eep_content.status = EEP_VALID;
 					}
-					else if (++writeattempts >= EEP_WRITE_ATTEMPTS) {
-						// after the last failed attempt give up, a pending write must not block a reset for ever
+					else if (eep_write_failed || ++writeattempts >= EEP_WRITE_ATTEMPTS) {
+						// give up for now, a pending write must not block a reset for ever;
+						// retried with backoff (a retry that fails gives up at once)
 						writeattempts = 0;
 						eep_write_failed = true;
+						eep_retry.failed();
 						eep_content.status = EEP_VALID;
 					}
 					// otherwise EEP_CHANGED remains and the write is retried after the write delay
@@ -376,25 +400,80 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 
 
 // reads a block with retries; if it cannot be read the buffer is filled with 0xFF like an
-// erased EEPROM, so the range checks at startup fall back to the defaults instead of using
-// stack garbage. After the first unreadable block the bus is not used again (each failed
-// transfer blocks for up to ~0.2 s) and writing the layout back is disabled.
+// erased EEPROM, so the range checks fall back to the defaults instead of using stack garbage.
+// After the first unreadable block the bus is not used again in this read (each failed transfer
+// blocks for up to ~0.2 s).
 static void eeprom_read_block (uint16_t address, uint8_t *buf, uint16_t length) {
-	for (uint8_t attempt = 0; !eep_read_failed && attempt < EEP_READ_ATTEMPTS; attempt++) {
+	for (uint8_t attempt = 0; !eep_read_error && attempt < EEP_READ_ATTEMPTS; attempt++) {
 		if (eeprom.readBlock(address, buf, length) == length) return;
 	}
-	if (!eep_read_failed) EEPROM_DEBUG("read error, using defaults\r\n");
-	eep_read_failed = true;
+	if (!eep_read_error) EEPROM_DEBUG("read error, using defaults\r\n");
+	eep_read_error = true;
 	memset(buf, 0xFF, length);
 }
 
 
 //----------------------------------------------------------------------------
 //
-// reads eeprom layout from eeprom
+// reads eeprom layout from eeprom at startup; if a block cannot be read, writing is disabled
+// and the read is retried by eepromloop()
 //
-//	returns 0 if mark was found
+//	returns 0 on success, -1 if a block could not be read
 int16_t eeprom_read_layout (struct eeprom_layout* lay) {
+	const bool ok = eeprom_read_image(lay);
+
+	eep_read_failed = !ok;
+	if (ok) eep_retry.succeeded();
+	else eep_retry.failed();
+	lay->status = EEP_VALID;
+	return ok ? 0 : -1;
+}
+
+
+// copies the fields changed in RAM (EEP_CHANGED_*) from ram into stored
+static void eeprom_merge_changes (struct eeprom_layout &stored, const struct eeprom_layout &ram, uint8_t fields) {
+	if (fields & EEP_CHANGED_SENSORS) {
+		memcpy(stored.owsensors1, ram.owsensors1, sizeof(stored.owsensors1));
+		memcpy(stored.owsensors2, ram.owsensors2, sizeof(stored.owsensors2));
+		memcpy(stored.owsensors, ram.owsensors, sizeof(stored.owsensors));
+	}
+	if (fields & EEP_CHANGED_MOVEMENTS) stored.numberOfMovements = ram.numberOfMovements;
+	if (fields & EEP_CHANGED_MOTOR) {
+		stored.currentbound_low_fac = ram.currentbound_low_fac;
+		stored.currentbound_high_fac = ram.currentbound_high_fac;
+		stored.startOnPower = ram.startOnPower;
+		stored.noOfMinCounts = ram.noOfMinCounts;
+		stored.maxCalibRetries = ram.maxCalibRetries;
+	}
+	if (fields & EEP_CHANGED_ESCALATION) stored.escalation = ram.escalation;
+}
+
+
+// retry of a failed read: the stored configuration is taken over, except the fields changed
+// since (they are newer and get written), and writing is enabled again
+static void eeprom_reread () {
+	static struct eeprom_layout stored;		// static: keeps the layout off the main loop stack
+
+	if (!eeprom_read_image(&stored)) {
+		eep_retry.failed();
+		return;
+	}
+	EEPROM_DEBUG("eeprom read after failure\r\n");
+	eeprom_merge_changes(stored, eep_content, eep_changed_fields);
+	stored.status = eep_changed_fields ? EEP_CHANGED : EEP_VALID;
+	eep_content = stored;
+	eep_read_failed = false;
+	eep_retry.succeeded();
+	app_load_config();
+}
+
+
+//----------------------------------------------------------------------------
+//
+// reads the eeprom layout into lay (lay->status is not changed)
+//
+//	returns true if every block could be read
+static bool eeprom_read_image (struct eeprom_layout* lay) {
 
 	uint8_t buf[100];
 	uint16_t* pb;
@@ -404,6 +483,7 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 
 	EEPROM_DEBUG("Read eeprom layout from eeprom...");
 
+	eep_read_error = false;
 	address = EE_GENERALDATA_ADR;
 
 	// first read base layout
@@ -504,15 +584,15 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 	if (extstate == vdm::ExtensionState::Legacy) EEPROM_DEBUG("layout 1.x, defaults for new fields...");
 	else if (extstate == vdm::ExtensionState::Corrupt) EEPROM_DEBUG("extension damaged, defaults for new fields...");
 
-	eep_content.status = EEP_VALID;
 	EEPROM_DEBUG("finished\r\n");
 
-	return 0;
+	return !eep_read_error;
 }
 
 // call everytime some eeprom content was changed
-void eeprom_changed () {
+void eeprom_changed (uint8_t fields) {
 
+	eep_changed_fields |= fields;
 	eep_content.status = EEP_CHANGED;
 
 }

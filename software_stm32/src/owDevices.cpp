@@ -33,7 +33,6 @@
 #include <Wire.h>
 #include "../lib/OneWire/OneWire.cpp"
 #include <DallasTemperature.h>
-#include <ArduinoJson.h>            // library https://github.com/bblanchon/ArduinoJson
 #include "owDevices.h"
 #include "DS2438.h"
 #include "app.h"
@@ -307,32 +306,31 @@ void temperature_loop() {
 }
 
 
-void get_sensordata (unsigned int index, char *buffer, int buflen) {
-
-  DynamicJsonDocument doc(1024);      // buffer size should be enough for about 22 sensors
-  String testjson;
-  String AddressStr;
- 
+// prints {"cnt":n,"sns":[{"temp":t,"add":"28 ff .. .."},...]} (the format of the former
+// ArduinoJson output) straight to out: no heap, no size limit, every sensor is listed
+void print_sensordata (Print &out) {
+  static const char hex[] = "0123456789abcdef";
   const int count = noOfDS18Devices < MAXONEWIRECNT ? noOfDS18Devices : MAXONEWIRECNT;
 
-  doc["cnt"] = count;
-
+  out.print("{\"cnt\":");
+  out.print(count, DEC);
+  if (count > 0) out.print(",\"sns\":[");
   for (int i=0; i<count; i++)
-  {     
-    doc["sns"][i]["temp"] = tempsensors[i].temperature;
-
-    AddressStr = "";
+  {
+    if (i > 0) out.print(',');
+    out.print("{\"temp\":");
+    out.print(tempsensors[i].temperature, DEC);
+    out.print(",\"add\":\"");
     for (uint8_t x = 0; x < 8; x++)
     {
-      if (tempsensors[i].address[x] < 16) AddressStr += '0';
-      AddressStr += String(tempsensors[i].address[x], HEX);
-      if (x<7) AddressStr += ' ';
+      out.print(hex[tempsensors[i].address[x] >> 4]);
+      out.print(hex[tempsensors[i].address[x] & 0x0F]);
+      if (x<7) out.print(' ');
     }
-    doc["sns"][i]["add"] = AddressStr;
+    out.print("\"}");
   }
-
-  serializeJson(doc, buffer, buflen);
-  doc.clear();
+  if (count > 0) out.print(']');
+  out.println('}');
 }
 
 void temp_command(int command) {
