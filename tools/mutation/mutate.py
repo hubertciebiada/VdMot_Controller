@@ -186,7 +186,8 @@ def generate(path: str, rel: str) -> list[Mutant]:
         expr = m.group(1).strip()
         if expr in ("true", "false", "0", "1", "nullptr"):
             continue
-        add(m.start(1), "retval", m.group(1), "0")
+        # original text from src, not clean: string/char literals are blanked in clean
+        add(m.start(1), "retval", src[m.start(1):m.end(1)], "0")
 
     muts.sort(key=lambda x: (x.line, x.col, x.op, x.replacement))
     return muts
@@ -197,7 +198,9 @@ def apply(src: str, mut: Mutant) -> str | None:
     idx = mut.line - 1
     line = lines[idx]
     c = mut.col - 1
-    if line[c:c + len(mut.original)] != mut.original:
+    pos = sum(len(l) for l in lines[:idx]) + c
+    # compare against the whole text: a retval expression may span several lines
+    if src[pos:pos + len(mut.original)] != mut.original:
         return None
     if mut.op == "negcond":
         # wrap whole condition: find matching ')' across the rest of the file
@@ -212,8 +215,7 @@ def apply(src: str, mut: Mutant) -> str | None:
                 if depth == 0:
                     break
         return head + "(!(" + rest[1:j] + "))" + rest[j + 1:]
-    lines[idx] = line[:c] + mut.replacement + line[c + len(mut.original):]
-    return "".join(lines)
+    return src[:pos] + mut.replacement + src[pos + len(mut.original):]
 
 
 def run(cmd: str, cwd: str, timeout: int) -> tuple[int, str]:

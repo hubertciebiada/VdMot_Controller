@@ -1,2 +1,3 @@
 *.cache.json
 *.cache.json.tmp
+*.report.json
