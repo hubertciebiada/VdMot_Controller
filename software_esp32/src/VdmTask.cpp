@@ -69,6 +69,7 @@ CVdmTask::CVdmTask()
   taskIdwaitForFinishQueue=TASKMGR_INVALIDID;
   restartStmApp=TASKMGR_INVALIDID;
   stmOtaStarted=false;
+  stmFlashActive=false;
   setFactoryCfgState=idle;
   for (uint8_t picIdx=0; picIdx<ACTUATOR_COUNT; picIdx++) {
             taskIdPiControl[picIdx]=TASKMGR_INVALIDID;
@@ -104,6 +105,7 @@ void CVdmTask::init()
 void CVdmTask::startMqtt(uint32_t interval)
 {
     uint32_t thisInterval = 100;
+    if (stmFlashActive) return;     // the ESP restarts after the STM update
     if (taskIdMqtt==TASKMGR_INVALIDID) {
         if (interval >= 100) thisInterval = interval;
         VdmNet.mqttBroker();
@@ -115,11 +117,14 @@ void CVdmTask::startMqtt(uint32_t interval)
 
 void CVdmTask::startApp()
 {
-    if (taskIdStm32Ota!=TASKMGR_INVALIDID) {
-        // an STM update is still running (e.g. started before the delayed first
-        // start of the app): leave it alone, the flasher calls startApp() when done
-        if (Stm32.updateRunning()) return;
+    if (stmFlashActive) {
+        // An STM update was requested or is running (e.g. the delayed first start
+        // of the app comes during the request's delay, before the flasher task
+        // exists): the app must not use the UART, the flasher calls startApp()
+        // when done.
+        if ((taskIdStm32Ota==TASKMGR_INVALIDID) || Stm32.updateRunning()) return;
         deleteTask (&taskIdStm32Ota);
+        stmFlashActive=false;
         delay (1000);       // wait to finish task; 
       //  taskIdStm32Ota=TASKMGR_INVALIDID; 
         Services.restartSystem(false);
@@ -142,10 +147,23 @@ bool CVdmTask::startStm32Ota(uint8_t command,String thisFileName)
     if (stmOtaStarted || (taskIdResetSystem!=TASKMGR_INVALIDID) ||
         (taskIdwaitForFinishQueue!=TASKMGR_INVALIDID)) return false;
     stmOtaStarted=true;     // never cleared, the ESP restarts afterwards
+    stmFlashActive=true;    // startApp()/startMqtt() and restarts wait for the flasher
 
     taskManager.setTaskEnabled (taskIdApp,false);
     taskManager.setTaskEnabled (taskIdMqtt,false);
     delay (1000);           // wait to finish task;
+    // a restart scheduled from another task while this request was being
+    // checked: nothing is erased yet, so give up
+    if ((taskIdResetSystem!=TASKMGR_INVALIDID) || (taskIdwaitForFinishQueue!=TASKMGR_INVALIDID)) {
+        stmFlashActive=false;
+        disOrEnableTask (taskIdApp,true);
+        disOrEnableTask (taskIdMqtt,true);
+        return false;
+    }
+    // a startApp()/startMqtt() that was already past its check may have
+    // created the task meanwhile
+    disOrEnableTask (taskIdApp,false);
+    disOrEnableTask (taskIdMqtt,false);
 
     Stm32.STM32ota_setup();
     Stm32.STM32ota_start(command,thisFileName);

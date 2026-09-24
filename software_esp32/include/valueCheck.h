@@ -38,39 +38,35 @@
 *END************************************************************************/
 
 
-
 #pragma once
 
-#include "globals.h"
-#include "VdmConfig.h" 
+// Pure value parsing and range checks, free of Arduino headers so that they
+// can be unit tested on the host (test/native).
 
-#define getNtpHour  3
-#define getNtpMin   5
+#include <stdint.h>
 
-typedef struct {
-  bool tempFailed; 
-  bool messengerSent;
-  uint8_t timeOut;        
-} TEMPSTATES; 
+// Temperatures are handled in 0.1 degree steps; readings at or below this
+// value are STM sentinels (-500 no value, -1270 read error), never temperatures.
+#define TEMP_SENTINEL_MAX   (-500)
+// a sensor offset is limited to +/- 10.0 degrees (in 0.1 degree steps)
+#define TEMP_OFFSET_MAX     100
 
-class CServices
-{
-public:
-  CServices();
-  void servicesLoop();
-  void runOnce();
-  void runOnceDelayed10();
-  void runOnceDelayed60();
-  bool restartSystem(bool waitQueueFinished=true);
-  void restartStmApp(uint32_t ms);
-  void checkServiceValves();
-  void checkDS18();
-  void valvesSetLearn();
-  void checkGetNtp();
-  void GetLastTargetValues();
-  bool serviceValvesStarted;
-private:
-  TEMPSTATES tempStates[TEMP_SENSORS_COUNT];
-};
+// Parses a decimal number ("50", " 50.5 ", "5e1"); leading and trailing
+// white space is allowed, anything else (empty, hex, inf, nan, junk) is rejected.
+bool parseDouble(const char* s, double* value);
 
-extern CServices Services;
+// Converts to long, truncating a fractional part; false when not finite or
+// out of range for long.
+bool doubleToLong(double d, long* value);
+
+// Parses an integer or a decimal number (truncated), see parseDouble.
+bool parseLong(const char* s, long* value);
+
+// Converts a sensor offset in degrees to 0.1 degree steps, clamped to
+// +/- TEMP_OFFSET_MAX; false when not finite.
+bool tempOffsetToTenths(double degrees, int* tenths);
+
+// Adds an offset (0.1 degree steps, clamped to +/- TEMP_OFFSET_MAX, so an
+// offset stored by an older firmware is bounded too) to a reading. Sentinels
+// pass unchanged, and a valid reading never becomes a sentinel or wraps.
+int16_t addTempOffset(int16_t value, int offset);

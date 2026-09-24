@@ -39,6 +39,8 @@
 
 
 #include <stdint.h>
+#include <float.h>
+#include <math.h>
 #include <VdmNet.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -95,46 +97,54 @@ CServerServices ServerServices;
 // server handles --------------------------------------------------
 
 
-void restart (JsonObject doc)
+int restart (JsonObject doc)
 {  
-  Services.restartSystem(false);
+  // refused while the STM is being flashed, the flasher restarts the ESP when done
+  return Services.restartSystem(false) ? 200 : 409;
 }
 
-void writeConfig (JsonObject doc)
+int writeConfig (JsonObject doc)
 {  
   VdmConfig.writeConfig(true);
+  return 200;
 }
 
-void resetConfig (JsonObject doc)
+int resetConfig (JsonObject doc)
 {  
   VdmConfig.resetConfig(true);
+  return 200;
 }
 
-void restoreConfig (JsonObject doc)
+int restoreConfig (JsonObject doc)
 {  
   VdmConfig.restoreConfig(true);
+  return 200;
 }
 
-void setClearFS (JsonObject doc)
+int setClearFS (JsonObject doc)
 {  
   VdmTask.startClearFS();
+  return 200;
 }
 
-void setGetFS (JsonObject doc)
+int setGetFS (JsonObject doc)
 {  
   VdmTask.startGetFS();
+  return 200;
 }
 
-void fileDelete (JsonObject doc)
+int fileDelete (JsonObject doc)
 {  
   if (!doc["file"].isNull()) {
     VdmSystem.fileDelete(doc["file"]);
   }
+  return 200;
 }
 
-void scanTSensors (JsonObject doc)
+int scanTSensors (JsonObject doc)
 {  
   StmApp.scanTemps();
+  return 200;
 }
 
 // "valve": 1..ACTUATOR_COUNT, or 255 / missing for all valves
@@ -150,35 +160,42 @@ bool getValveIndex (JsonObject doc, uint8_t* index)
   return true;
 }
 
-void valvesCalibration (JsonObject doc)
+int valvesCalibration (JsonObject doc)
 {  
   uint8_t index;
-  if (getValveIndex(doc,&index)) StmApp.valvesCalibration(index);
+  if (!getValveIndex(doc,&index)) return 400;
+  StmApp.valvesCalibration(index);
+  return 200;
 }
 
-void valvesAssembly (JsonObject doc)
+int valvesAssembly (JsonObject doc)
 {  
   uint8_t index;
-  if (getValveIndex(doc,&index)) StmApp.valvesAssembly(index);
+  if (!getValveIndex(doc,&index)) return 400;
+  StmApp.valvesAssembly(index);
+  return 200;
 }
 
-void valvesDetect (JsonObject doc)
+int valvesDetect (JsonObject doc)
 {  
   StmApp.valvesDetect();
+  return 200;
 }
 
-void writeValvesControl (JsonObject doc)
+int writeValvesControl (JsonObject doc)
 {  
   VdmConfig.writeValvesControlConfig(false,VdmTask.restartPiTask);
   Mqtt.forceReconnect=true;
+  return 200;
 }
 
-void mqttReconnect (JsonObject doc)
+int mqttReconnect (JsonObject doc)
 {  
   Mqtt.disconnect();
+  return 200;
 }
 
-void scanWifi (JsonObject doc)
+int scanWifi (JsonObject doc)
 {  
   #ifdef netDebugWIFI
     UART_DBG.println("server servíces cmd : scan wifi "+String(VdmTask.taskIdScanWiFi));
@@ -191,16 +208,18 @@ void scanWifi (JsonObject doc)
       #endif
       VdmTask.startScanWifi();
   }
+  return 200;
 }
 
-void sysLogSave (JsonObject doc)
+int sysLogSave (JsonObject doc)
 {  
   VdmConfig.writeSysLogValues();
   VdmNet.syslogStarted=false;
   VdmNet.startSysLog();
+  return 200;
 }
 
-void discoveryHA (JsonObject doc)
+int discoveryHA (JsonObject doc)
 {  
   if (Mqtt.hadState==HAD_IDLE) {
     if (!doc["actionHA"].isNull()) 
@@ -208,47 +227,56 @@ void discoveryHA (JsonObject doc)
     else Mqtt.actionHA = HA_DISCOVERY_ONLY;
     Mqtt.hadState=HAD_STARTED;
   }
+  return 200;
 }
 
-// returns false when the valve number or a given target (0..100 %) is invalid
+// Returns false, and changes nothing, when the valve number or any given value
+// is invalid: target 0..100 %, ctrlValue/ctrlTarget finite float numbers, ctrlDynOffs
+// -128..127. The web UI posts input field values as strings.
 bool CServerServices::postSetValve (JsonObject doc)
 {
-  uint8_t index;
-  bool ok=true;
-  if (!doc["valve"].isNull()) {
-    index=(doc["valve"].as<uint8_t>())-1;
-    if (index<ACTUATOR_COUNT) {
-      if (VdmConfig.configFlash.valvesConfig.valveConfig[index].active) {
-        if (!doc["value"].isNull()) {
-          // the web UI posts the input field value as a string
-          long target;
-          if (jsonToLong(doc["value"],&target) && (target>=0) && (target<=100)) {
-            StmApp.actuators[index].target_position = target;
-          } else ok=false;
-        }
-      }
-      if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].controlFlags.active) {
-        if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].valueSource==3) {
-          if (!doc["ctrlValue"].isNull()) PiControl[index].value = doc["ctrlValue"];
-          #ifdef EnvDevelop
-            UART_DBG.println("ctrlValue : "+String(PiControl[index].value));
-          #endif
-          jsonSetValveReceived=true;
-        }
-        if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].targetSource==1) {
-          if (!doc["ctrlTarget"].isNull()) {
-            PiControl[index].target = doc["ctrlTarget"];
-            #ifdef EnvDevelop
-            UART_DBG.println("ctrlTarget : "+String(PiControl[index].target));
-            #endif
-            jsonSetValveReceived=true;
-          }
-          if (!doc["ctrlDynOffs"].isNull()) PiControl[index].dynOffset = doc["ctrlDynOffs"];
-        }
-      }
-    } else ok=false;
+  if (doc["valve"].isNull()) return true;
+  long valve;
+  if (!jsonToLong(doc["valve"],&valve) || (valve<1) || (valve>ACTUATOR_COUNT)) return false;
+  uint8_t index=valve-1;
+
+  bool hasTarget=!doc["value"].isNull();
+  bool hasCtrlValue=!doc["ctrlValue"].isNull();
+  bool hasCtrlTarget=!doc["ctrlTarget"].isNull();
+  bool hasDynOffs=!doc["ctrlDynOffs"].isNull();
+  long target=0;
+  long dynOffs=0;
+  double ctrlValue=0;
+  double ctrlTarget=0;
+  if (hasTarget && (!jsonToLong(doc["value"],&target) || (target<0) || (target>100))) return false;
+  // both are stored as float
+  if (hasCtrlValue && (!jsonToDouble(doc["ctrlValue"],&ctrlValue) || (fabs(ctrlValue)>FLT_MAX))) return false;
+  if (hasCtrlTarget && (!jsonToDouble(doc["ctrlTarget"],&ctrlTarget) || (fabs(ctrlTarget)>FLT_MAX))) return false;
+  if (hasDynOffs && (!jsonToLong(doc["ctrlDynOffs"],&dynOffs) || (dynOffs<INT8_MIN) || (dynOffs>INT8_MAX))) return false;
+
+  if (VdmConfig.configFlash.valvesConfig.valveConfig[index].active) {
+    if (hasTarget) StmApp.actuators[index].target_position = target;
   }
-  return ok;
+  if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].controlFlags.active) {
+    if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].valueSource==3) {
+      if (hasCtrlValue) PiControl[index].value = ctrlValue;
+      #ifdef EnvDevelop
+        UART_DBG.println("ctrlValue : "+String(PiControl[index].value));
+      #endif
+      jsonSetValveReceived=true;
+    }
+    if (VdmConfig.configFlash.valvesControlConfig.valveControlConfig[index].targetSource==1) {
+      if (hasCtrlTarget) {
+        PiControl[index].target = ctrlTarget;
+        #ifdef EnvDevelop
+        UART_DBG.println("ctrlTarget : "+String(PiControl[index].target));
+        #endif
+        jsonSetValveReceived=true;
+      }
+      if (hasDynOffs) PiControl[index].dynOffset = dynOffs;
+    }
+  }
+  return true;
 }
 
 String getContentType(String filename) 
@@ -444,31 +472,27 @@ void handleStmUpdStatus(AsyncWebServerRequest *request)
 }
 
 
-bool handleCmd(JsonObject doc) 
+// returns the HTTP status of the command, 404 when there is no such command
+int handleCmd(JsonObject doc) 
 { 
-  typedef void (*fp)(JsonObject doc);
+  typedef int (*fp)(JsonObject doc);
   fp  fpList[] = {&restart,&writeConfig,&resetConfig,&restoreConfig,&fileDelete,&setGetFS,
                   &setClearFS,&scanTSensors,&valvesCalibration,&valvesAssembly,&valvesDetect,&writeValvesControl,&mqttReconnect,&sysLogSave,&discoveryHA,&scanWifi} ;
 
   char const *names[]=  {"reboot", "saveCfg","resetCfg","restoreCfg","fDelete","getFS",
                         "clearFS","scanTempSensors","vCalib","vAssembly","valvesDetect","vCtrlSave","mqttReconnect","sysLogSave","discoveryHA","scanWifi",NULL};
   char const **p;
-  bool found = false;
 
   if (doc["action"].is<const char*>()) {      // a non-string action would give NULL
     const char* d=doc["action"].as<const char*>();
     uint8_t i=0;
   
     for (p=names; *p!=NULL; p++) {
-      if (strcmp(d, *p)==0) {
-        fpList[i](doc);
-        found=true;
-        break;
-      }
+      if (strcmp(d, *p)==0) return fpList[i](doc);
       i++;
     }
   }
-  return (found);
+  return 404;
 }
 
 // LittleFS paths must be absolute
@@ -482,10 +506,20 @@ String uploadFilePath(const String& filename)
 // real name (and never replaces a good file of that name)
 static const char uploadTempSuffix[] = ".part";
 
-// the request handler answers; a non-NULL _tempObject marks a failed upload
+// The request handler answers from a status byte in _tempObject (freed with the
+// request). It is allocated before the first file is opened, so recording a
+// failure never needs memory; without it nothing is written and the request
+// is answered as failed, as is a request without a file.
+enum { uploadOk = 0, uploadFailed = 1 };
+
+bool uploadSucceeded(AsyncWebServerRequest *request)
+{
+  return (request->_tempObject != NULL) && (*(uint8_t*)request->_tempObject == uploadOk);
+}
+
 void markUploadFailed(AsyncWebServerRequest *request)
 {
-  if (request->_tempObject == NULL) request->_tempObject = malloc(1);
+  if (request->_tempObject != NULL) *(uint8_t*)request->_tempObject = uploadFailed;
 }
 
 void handleUploadFile(AsyncWebServerRequest *request, const String& filename, size_t index, 
@@ -499,6 +533,11 @@ void handleUploadFile(AsyncWebServerRequest *request, const String& filename, si
       UART_DBG.println("file has arguments : "+String(request->args()));
       UART_DBG.println("filename : "+thisFileName);
     #endif
+    if (request->_tempObject == NULL) {
+      request->_tempObject = malloc(sizeof(uint8_t));
+      if (request->_tempObject == NULL) return;    // out of memory: answered as failed
+      *(uint8_t*)request->_tempObject = uploadOk;
+    }
     if (SPIFFS.exists(tempFileName)) SPIFFS.remove(tempFileName);   // left by an earlier interrupted upload
     request->_tempFile = SPIFFS.open(tempFileName, "w");
     if (!request->_tempFile) markUploadFailed(request);
@@ -527,8 +566,12 @@ void handleUploadFile(AsyncWebServerRequest *request, const String& filename, si
       String thisFileName = uploadFilePath(filename);
       String tempFileName = thisFileName + uploadTempSuffix;
       request->_tempFile.close();
-      if (SPIFFS.exists(thisFileName)) SPIFFS.remove(thisFileName);
-      if (!SPIFFS.rename(tempFileName, thisFileName)) {
+      // LittleFS replaces an existing file atomically: the old file stays until
+      // the new one is complete. Remove it first only if that did not work.
+      bool renamed = SPIFFS.rename(tempFileName, thisFileName);
+      if (!renamed && SPIFFS.exists(thisFileName) && SPIFFS.remove(thisFileName))
+        renamed = SPIFFS.rename(tempFileName, thisFileName);
+      if (!renamed) {
         SPIFFS.remove(tempFileName);
         markUploadFailed(request);
       }
@@ -594,8 +637,8 @@ void  CServerServices::initServer()
   
   server.on("/fupload", HTTP_POST, [](AsyncWebServerRequest *request) {
       // called once after the upload (also when the request carried no file)
-      if (request->_tempObject != NULL) request->send(500, tp, "Upload failed");
-      else request->send(200, aj, Web.getFSDir());
+      if (uploadSucceeded(request)) request->send(200, aj, Web.getFSDir());
+      else request->send(500, tp, "Upload failed");
     },
       [](AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data,
                     size_t len, bool final) {handleUploadFile(request, filename, index, data, len, final);}
@@ -697,9 +740,11 @@ AsyncCallbackJsonWebHandler* valvesControlCfgHandler = new AsyncCallbackJsonWebH
   AsyncCallbackJsonWebHandler* cmdHandler = new AsyncCallbackJsonWebHandler("/cmd", [](AsyncWebServerRequest *request, JsonVariant &json) {
     if (json.is<JsonObject>()) {
       JsonObject&& jsonObj = json.as<JsonObject>();
-      if (handleCmd (jsonObj))
-        request->send(200, aj, resOk);
-      else request->send(200, tp, "Cmd not found");
+      int status = handleCmd (jsonObj);
+      if (status == 200) request->send(200, aj, resOk);
+      else if (status == 400) request->send(400, tp, "Invalid valve");
+      else if (status == 409) request->send(409, tp, "Refused: STM update running");
+      else request->send(200, tp, "Cmd not found");       // answered with 200 as always
     } else request->send(400, tp, "Not an object");
   });
   server.addHandler(cmdHandler);

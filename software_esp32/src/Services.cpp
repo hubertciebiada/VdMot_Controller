@@ -190,10 +190,20 @@ void CServices::GetLastTargetValues()
   }
 }
 
-void CServices::restartSystem(bool waitQueueFinished) {
+// Returns false when the restart is refused: while the STM is being flashed a
+// restart would leave it erased or half written. The flasher restarts the ESP
+// when it is done, so a refused restart (e.g. after saving the config) is only
+// deferred.
+bool CServices::restartSystem(bool waitQueueFinished) {
   #ifdef EnvDevelop
     UART_DBG.println("restart System ");
   #endif
+  if (VdmTask.stmFlashActive) {
+    #ifdef EnvDevelop
+      UART_DBG.println("restart deferred, STM update running");
+    #endif
+    return false;
+  }
   
   if (StmApp.waitEEPFinished) {
     StmApp.eepState=EEP_REQUEST; 
@@ -237,6 +247,7 @@ void CServices::restartSystem(bool waitQueueFinished) {
               ESP.restart();
             });
     }
+  return true;
 }
 
 void CServices::restartStmApp(uint32_t ms) {

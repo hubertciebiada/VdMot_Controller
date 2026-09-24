@@ -54,6 +54,7 @@
 #include "stm32.h"
 #include "Queue.h"
 #include "Messenger.h"
+#include "valueCheck.h"
 
 #define     MAX_CMD_LEN     10
 #define     MAX_ARG_LEN     120
@@ -165,9 +166,9 @@ int16_t CStmApp::ConvertCF(int16_t cValue)
     }
 } 
 
-int16_t CStmApp::getTOffset(uint8_t tIdx)
+int CStmApp::getTOffset(uint8_t tIdx)
 {
-    int16_t result = 0;
+    int result = 0;
     if ((tIdx>0) && (tIdx<=TEMP_SENSORS_COUNT)) {
         result = VdmConfig.configFlash.tempsConfig.tempConfig[tIdx-1].offset;
     } 
@@ -507,8 +508,6 @@ void  CStmApp::app_check_data()
         found = false;
 
         if (stmStatus==STM_NOT_READY) stmStatus=STM_READY;
-        stmFailed=false;
-        appTimeOuts=0;      // the STM answers: only consecutive timeouts count
         // devide buffer into command and data
 		// ****************************************
 
@@ -634,8 +633,8 @@ void  CStmApp::app_check_data()
                     // STM sentinels (-500 no value, -1270 read error) must stay <= -500
                     int16_t t1=atoi(argptr[4]);
                     int16_t t2=atoi(argptr[5]);
-                    actuators[idx].temp1 = (t1<=-500) ? t1 : ConvertCF(t1)+getTOffset(actuators[idx].tIdx1);
-                    actuators[idx].temp2 = (t2<=-500) ? t2 : ConvertCF(t2)+getTOffset(actuators[idx].tIdx2);
+                    actuators[idx].temp1 = (t1<=-500) ? t1 : addTempOffset(ConvertCF(t1),getTOffset(actuators[idx].tIdx1));
+                    actuators[idx].temp2 = (t2<=-500) ? t2 : addTempOffset(ConvertCF(t2),getTOffset(actuators[idx].tIdx2));
                     if (argcnt >= 10) {
                         actuators[idx].movements = atoi(argptr[6]);   
                         actuators[idx].opening_count = atoi(argptr[7]);
@@ -747,7 +746,7 @@ void  CStmApp::app_check_data()
                     strlcpy(temps[idx].id,argptr[0],sizeof(temps[idx].id));
                     int16_t cValue=atoi(argptr[1]);
                     if (cValue<=-500) temps[idx].temperature=cValue;    // STM sentinel, keep as "failed"
-                    else temps[idx].temperature=ConvertCF(cValue)+VdmConfig.configFlash.tempsConfig.tempConfig[idx].offset;
+                    else temps[idx].temperature=addTempOffset(ConvertCF(cValue),VdmConfig.configFlash.tempsConfig.tempConfig[idx].offset);
                 } 
                 tempIndex++;
                 
@@ -999,8 +998,13 @@ void  CStmApp::app_check_data()
             appState=APP_IDLE;
         }
 
-        if (expectedLine) expectedReply[0]='\0';
-        else {
+        if (expectedLine) {
+            expectedReply[0]='\0';
+            // the STM answers in time: only consecutive timeouts count. A late
+            // reply or noise must not hide a STM that never answers in time.
+            stmFailed=false;
+            appTimeOuts=0;
+        } else {
             appState=stateBefore;
             if (VdmConfig.configFlash.netConfig.syslogLevel>=VISMODE_DETAIL) {
                 syslog.log(LOG_DEBUG, "STMApp:stray reply >" + String(cmd) + "< while waiting for >" + String(expectedReply) + "<");

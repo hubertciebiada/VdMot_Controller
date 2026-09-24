@@ -91,6 +91,7 @@ public:
   TsetFactoryCfgState setFactoryCfgState;
   bool restartPiTask;
   bool stmOtaStarted;       // an STM update was started in this boot
+  volatile bool stmFlashActive;  // from the STM update request until the flasher has finished
   bool piTaskInitiated;
 
   bool sendMessenger;

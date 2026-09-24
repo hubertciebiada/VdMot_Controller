@@ -219,7 +219,7 @@ private:
   void app_web_cmd_check();
   void setSensorIndex(uint8_t valveIndex,char* sensor1,char* sensor2); 
   int16_t ConvertCF(int16_t cValue);
-  int16_t getTOffset(uint8_t tIdx);
+  int getTOffset(uint8_t tIdx);
   bool checkNewTarget();
 
   bool fastQueueMode;

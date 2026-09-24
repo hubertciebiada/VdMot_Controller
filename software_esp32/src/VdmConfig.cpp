@@ -41,6 +41,7 @@
 #include <stdint.h>
 #include "VdmConfig.h"
 #include "helper.h"
+#include "valueCheck.h"
 #include "VdmTask.h"
 #include "web.h"
 #include "Services.h"
@@ -718,7 +719,13 @@ void CVdmConfig::postTempsCfg (JsonObject doc)
     if (!doc["temps"][idx]["name"].isNull()) copyJsonString(configFlash.tempsConfig.tempConfig[i].name,doc["temps"][idx]["name"],sizeof(configFlash.tempsConfig.tempConfig[i].name));
     if (!doc["temps"][idx]["id"].isNull()) copyJsonString(configFlash.tempsConfig.tempConfig[i].ID,doc["temps"][idx]["id"],sizeof(configFlash.tempsConfig.tempConfig[i].ID));
     if (!doc["temps"][idx]["active"].isNull()) configFlash.tempsConfig.tempConfig[i].active=doc["temps"][idx]["active"];
-    if (!doc["temps"][idx]["offset"].isNull()) configFlash.tempsConfig.tempConfig[i].offset=lroundf(10*(doc["temps"][idx]["offset"].as<float>())) ;
+    if (!doc["temps"][idx]["offset"].isNull()) {
+      // keep the stored offset when the new one is not a number; clamped to +/- 10.0
+      double offset;
+      int tenths;
+      if (jsonToDouble(doc["temps"][idx]["offset"],&offset) && tempOffsetToTenths(offset,&tenths))
+        configFlash.tempsConfig.tempConfig[i].offset=tenths;
+    }
     idx++;
   }
 }

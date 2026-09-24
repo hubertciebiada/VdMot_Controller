@@ -57,12 +57,15 @@
     #include "esp_int_wdt.h"
     #include "esp_task_wdt.h"
     #include "Services.h"
+    #include "VdmTask.h"
 #endif
 
 #include "Hash.h"
 #include <AsyncWebServer_WT32_ETH01.h>
 #include "WT32AsyncOTA.h"
 #include "FS.h"
+
+static const char stmBusyError[] = "STM update running";
 
 
 
@@ -130,7 +133,7 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
         // the request handler is triggered after the upload has finished... 
         // create the response, add header, and send response
         bool ok = _updateOk;
-        int code = ok ? 200 : ((_updateError != NULL) ? 400 : 500);
+        int code = ok ? 200 : ((_updateError == stmBusyError) ? 409 : ((_updateError != NULL) ? 400 : 500));
         const char* text = ok ? "OK" : ((_updateError != NULL) ? _updateError : "FAIL");
         _updateOk = false;
         _updateError = NULL;
@@ -139,7 +142,9 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
         response->addHeader("Connection", "close");
         response->addHeader("Access-Control-Allow-Origin", "*");
         request->send(response);
-        if (ok) restart();      // only boot a complete, verified image
+        // only boot a complete, verified image; while the STM is being flashed
+        // (started during this upload) the flasher restarts the ESP when done
+        if (ok && !VdmTask.stmFlashActive) restart();
     }, [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
         //Upload handler chunks in data
         if(_authRequired){
@@ -153,6 +158,12 @@ void CWT32AsyncOTA::begin(AsyncWebServer *server, const char* userName, const ch
         _updateOk = false;
         _updateError = NULL;
         if (Update.isRunning()) Update.abort();     // left over from an interrupted upload
+
+        // restarting into the new image would cut off the STM update
+        if (VdmTask.stmFlashActive) {
+            _updateError = stmBusyError;
+            return;
+        }
 
         if(!request->hasParam("MD5", true)) {
             _updateError = "MD5 parameter missing";
