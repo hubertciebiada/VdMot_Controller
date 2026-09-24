@@ -1,153 +1,252 @@
 name: Build firmware
 
-# Reproducible firmware builds for the hc-version branch.
-#   - ESP32 (WT32-ETH01) : env wt32-eth01_release + a digest-less image variant
-#   - STM32 (BlackPill F401, C2/C3/C4 hardware) : env STM32_release_C2
-# Everything (PlatformIO core, esptool, platforms, lib_deps) is pinned so a CI
-# build byte-matches a local build. On a v* tag both binaries are attached to a
-# GitHub Release.
+# VdMot Revamped CI/CD (hc-version + the revamped/* PR stack).
+#   native     : host unit tests of the pure-logic cores (STM + new ESP), ASan/UBSan, -Werror
+#   mutation   : mutation testing of the cores. PR/push: changed core files only;
+#                weekly + manual: everything. Kill cache is kept between runs.
+#                Informational (does not block a release): a full ESP run takes hours.
+#   stm32      : all release envs (F401 + F411, HW C1 + C2)
+#   esp32      : new firmware (software_esp32_revamped) + legacy firmware (software_esp32)
+#   release    : tag v*-revamped -> packaged VdMot Revamped release (tools/release/package.py)
+#   release-legacy : any other v* tag -> legacy ESP + STM C2 binaries, as before
+# Everything is pinned (PlatformIO core, esptool, platforms, lib_deps) so a CI
+# build byte-matches a local build.
 
 on:
   push:
-    branches:
-      - hc-version
-    tags:
-      - 'v*'
+    branches: [hc-version, 'revamped/**']
+    tags: ['v*']
+  pull_request:
+    branches: [hc-version, 'revamped/**']
+  schedule:
+    - cron: '17 3 * * 1'        # weekly full mutation run
   workflow_dispatch:
+    inputs:
+      full_mutation:
+        description: Run mutation testing on every core file
+        type: boolean
+        default: false
 
-# esptool 4.11.0 is verified to produce a byte-identical --dont-append-digest
-# image to the platform-bundled tool; PlatformIO 6.1.19 is the pinned core.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   PIO_VERSION: "6.1.19"
   ESPTOOL_VERSION: "4.11.0"
-  APP_PARTITION_BYTES: "1310720"
+  APP_PARTITION_BYTES: "1310720"      # app0/app1 in the default partition table (unchanged, OTA-compatible)
+  APP_SIZE_BUDGET_BYTES: "1228800"    # revamped firmware keeps 80 KB headroom
 
 jobs:
-  esp32:
-    name: ESP32 (WT32-ETH01)
-    runs-on: ubuntu-latest
+  native:
+    name: Native tests (${{ matrix.project }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [software_stm32, software_esp32_revamped]
     steps:
       - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S ${{ matrix.project }}/test/native -B build/${{ matrix.project }} -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build/${{ matrix.project }} -j 4
+      - name: Test
+        run: ctest --test-dir build/${{ matrix.project }} --output-on-failure
+      - name: Mutation tool self-test
+        if: matrix.project == 'software_stm32'
+        run: bash tools/mutation/selftest.sh
 
+  mutation:
+    name: Mutation (${{ matrix.target }})
+    needs: native
+    if: "!startsWith(github.ref, 'refs/tags/')"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [stm32, esp32]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-
-      - name: Cache PlatformIO
+          python-version: "3.12"
+      - name: Restore kill cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.platformio
-            ~/.cache/pip
-          key: pio-esp32-${{ hashFiles('software_esp32/platformio.ini') }}
-          restore-keys: pio-esp32-
-
-      - name: Install PlatformIO + esptool
-        run: python -m pip install --upgrade "platformio==${PIO_VERSION}" "esptool==${ESPTOOL_VERSION}"
-
-      - name: Extract firmware version
-        id: ver
+          path: tools/mutation/${{ matrix.target }}.cache.json
+          key: mutation-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: mutation-${{ matrix.target }}-
+      - name: Select files
+        id: sel
         run: |
-          VER=$(sed -n "s/^firmware_version = '\"\(.*\)\"'.*/\1/p" software_esp32/platformio.ini | head -1)
-          if [ -z "$VER" ]; then echo "::error::could not parse firmware_version"; exit 1; fi
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "firmware version: $VER"
-
-      - name: Build ESP32 release
-        working-directory: software_esp32
-        run: pio run -e wt32-eth01_release
-
-      - name: Generate digest-less image
-        working-directory: software_esp32/.pio/build/wt32-eth01_release
-        run: |
-          python -m esptool --chip esp32 elf2image \
-            --flash_mode dio --flash_freq 80m --flash_size 4MB \
-            --dont-append-digest \
-            -o firmware_nodigest.bin firmware.elf
-
-      - name: Assert image fits app partition
-        working-directory: software_esp32/.pio/build/wt32-eth01_release
-        run: |
-          SIZE=$(stat -c%s firmware.bin)
-          echo "firmware.bin = $SIZE bytes (limit ${APP_PARTITION_BYTES})"
-          if [ "$SIZE" -gt "${APP_PARTITION_BYTES}" ]; then
-            echo "::error::firmware.bin ($SIZE B) exceeds app partition (${APP_PARTITION_BYTES} B)"
-            exit 1
+          FULL=false
+          case "${{ github.event_name }}" in
+            schedule) FULL=true ;;
+            workflow_dispatch) FULL="${{ inputs.full_mutation }}" ;;
+          esac
+          if [ "$FULL" = "true" ]; then
+            echo "args=" >> "$GITHUB_OUTPUT"; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-
-      - name: Stage named artifacts
-        working-directory: software_esp32/.pio/build/wt32-eth01_release
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            BASE=$(git rev-parse HEAD~1)
+          fi
+          FILES=$(python3 tools/mutation/mutate.py --config tools/mutation/${{ matrix.target }}.json --changed-since "$BASE")
+          if [ -z "$FILES" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "No core files changed." >> "$GITHUB_STEP_SUMMARY"; else
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "args=--files $FILES" >> "$GITHUB_OUTPUT"; fi
+      - name: Mutation testing
+        if: steps.sel.outputs.run == 'true'
         run: |
-          V="${{ steps.ver.outputs.version }}"
-          cp firmware.bin          "ESP32_firmware_${V}.bin"
-          cp firmware_nodigest.bin "ESP32_firmware_${V}_nodigest.bin"
-          ls -l ESP32_firmware_*.bin
-
+          set -o pipefail
+          python3 tools/mutation/mutate.py --config tools/mutation/${{ matrix.target }}.json --jobs 4 ${{ steps.sel.outputs.args }} | tee mutation-${{ matrix.target }}.md
+      - name: Summary
+        if: always() && steps.sel.outputs.run == 'true'
+        run: grep -v '^\[' mutation-${{ matrix.target }}.md >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
+        if: always() && steps.sel.outputs.run == 'true'
         with:
-          name: esp32-firmware
-          path: software_esp32/.pio/build/wt32-eth01_release/ESP32_firmware_*.bin
-          if-no-files-found: error
+          name: mutation-${{ matrix.target }}
+          path: |
+            mutation-${{ matrix.target }}.md
+            tools/mutation/${{ matrix.target }}.report.json
+          if-no-files-found: ignore
 
   stm32:
-    name: STM32 (BlackPill F401, C2)
-    runs-on: ubuntu-latest
+    name: STM32 ${{ matrix.env }}
+    needs: native
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [STM32_release_C1, STM32_release_C2, STM32F411_release_C1, STM32F411_release_C2]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-
-      - name: Cache PlatformIO
-        uses: actions/cache@v4
+          python-version: "3.12"
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.platformio
             ~/.cache/pip
           key: pio-stm32-${{ hashFiles('software_stm32/platformio.ini') }}
           restore-keys: pio-stm32-
-
-      - name: Install PlatformIO
-        run: python -m pip install --upgrade "platformio==${PIO_VERSION}"
-
-      - name: Build STM32 release C2
+      - run: python -m pip install "platformio==${PIO_VERSION}"
+      - name: Build
         working-directory: software_stm32
-        run: pio run -e STM32_release_C2
-
-      - name: Stage named artifact
-        working-directory: software_stm32/.pio/build/STM32_release_C2
+        run: pio run -e ${{ matrix.env }}
+      - name: Stage
         run: |
-          cp firmware.bin STM32_C2_firmware.bin
-          ls -l STM32_C2_firmware.bin
-
+          mkdir -p out
+          cp software_stm32/.pio/build/${{ matrix.env }}/firmware.bin out/${{ matrix.env }}.bin
+          echo "${{ matrix.env }}: $(stat -c%s out/${{ matrix.env }}.bin) B" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: stm32-firmware
-          path: software_stm32/.pio/build/STM32_release_C2/STM32_C2_firmware.bin
+          name: stm32-${{ matrix.env }}
+          path: out/*.bin
+          if-no-files-found: error
+
+  esp32:
+    name: ESP32 ${{ matrix.name }}
+    needs: native
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: revamped
+            dir: software_esp32_revamped
+            env: wt32-eth01_revamped
+          - name: legacy
+            dir: software_esp32
+            env: wt32-eth01_release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-esp32-${{ matrix.name }}-${{ hashFiles(format('{0}/platformio.ini', matrix.dir)) }}
+          restore-keys: pio-esp32-${{ matrix.name }}-
+      - run: python -m pip install "platformio==${PIO_VERSION}" "esptool==${ESPTOOL_VERSION}"
+      - name: Build
+        working-directory: ${{ matrix.dir }}
+        run: pio run -e ${{ matrix.env }}
+      - name: Digest-less image and size check
+        working-directory: ${{ matrix.dir }}/.pio/build/${{ matrix.env }}
+        run: |
+          python -m esptool --chip esp32 elf2image --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            --dont-append-digest -o firmware_nodigest.bin firmware.elf
+          SIZE=$(stat -c%s firmware.bin)
+          LIMIT=${APP_PARTITION_BYTES}
+          [ "${{ matrix.name }}" = "revamped" ] && LIMIT=${APP_SIZE_BUDGET_BYTES}
+          echo "firmware.bin = $SIZE B (limit $LIMIT)" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$SIZE" -le "$LIMIT" ] || { echo "::error::firmware.bin ($SIZE B) exceeds $LIMIT B"; exit 1; }
+      - name: Stage
+        run: |
+          mkdir -p out
+          cp ${{ matrix.dir }}/.pio/build/${{ matrix.env }}/firmware.bin out/esp32-${{ matrix.name }}.bin
+          cp ${{ matrix.dir }}/.pio/build/${{ matrix.env }}/firmware_nodigest.bin out/esp32-${{ matrix.name }}_nodigest.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32-${{ matrix.name }}
+          path: out/*.bin
           if-no-files-found: error
 
   release:
-    name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [esp32, stm32]
-    runs-on: ubuntu-latest
+    name: Publish VdMot Revamped release
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')
+    needs: [native, stm32, esp32]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package
+        run: python3 tools/release/package.py --artifacts artifacts --tag "${{ github.ref_name }}" --out dist
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRE=""
+          [[ "${{ github.ref_name }}" == *-rc* ]] && PRE="--prerelease"
+          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+            --title "VdMot Revamped ${{ github.ref_name }}" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
+
+  release-legacy:
+    name: Publish legacy release
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-revamped')
+    needs: [stm32, esp32]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -t FILES < <(find artifacts -type f -name '*.bin' | sort)
-          if [ "${#FILES[@]}" -eq 0 ]; then echo "::error::no artifacts to release"; exit 1; fi
-          printf 'attaching: %s\n' "${FILES[@]}"
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes \
-            "${FILES[@]}"
+          mkdir dist
+          cp artifacts/esp32-legacy/esp32-legacy.bin dist/ESP32_firmware.bin
+          cp artifacts/esp32-legacy/esp32-legacy_nodigest.bin dist/ESP32_firmware_nodigest.bin
+          cp artifacts/stm32-STM32_release_C2/STM32_release_C2.bin dist/STM32_C2_firmware.bin
+          cp artifacts/stm32-STM32F411_release_C2/STM32F411_release_C2.bin dist/STM32F411_C2_firmware.bin
+          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" --generate-notes dist/*
