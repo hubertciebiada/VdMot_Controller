@@ -26,6 +26,10 @@ on:
         description: Run mutation testing on every core file
         type: boolean
         default: false
+      release_tag:
+        description: "Publish a VdMot Revamped release from this ref, e.g. v2.0.0-revamped (creates the tag)"
+        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -204,11 +208,15 @@ jobs:
 
   release:
     name: Publish VdMot Revamped release
-    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')
+    if: >-
+      (startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && contains(inputs.release_tag, '-revamped'))
     needs: [native, stm32, esp32]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -218,15 +226,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Package
-        run: python3 tools/release/package.py --artifacts artifacts --tag "${{ github.ref_name }}" --out dist
+        run: python3 tools/release/package.py --artifacts artifacts --tag "$TAG" --out dist
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           PRE=""
-          [[ "${{ github.ref_name }}" == *-rc* ]] && PRE="--prerelease"
-          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
-            --title "VdMot Revamped ${{ github.ref_name }}" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
+          [[ "$TAG" == *-rc* ]] && PRE="--prerelease"
+          # on a manual run the tag does not exist yet: gh creates it at the built commit
+          gh release create "$TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "VdMot Revamped $TAG" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
 
   release-legacy:
     name: Publish legacy release
