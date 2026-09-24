@@ -11,3 +11,8 @@ Hardware-free logic lives in `lib/core` (no Arduino headers) and is tested on th
 host with doctest, `-Wall -Wextra -Werror` and AddressSanitizer/UBSan:
 
     cmake -S test/native -B build/native && cmake --build build/native -j 2 && ctest --test-dir build/native --output-on-failure
+
+## Protocol
+
+The UART protocol to the ESP32 is v1 plus the v2 commands described in
+[PROTOCOL_V2.md](PROTOCOL_V2.md) (diagnostics, service move, breakaway escalation).
