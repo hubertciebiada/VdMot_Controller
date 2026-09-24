@@ -19,6 +19,8 @@ bool checkBasicAuth(const char* header, size_t len, const char* user, const char
 // Brute-force limiter: after maxFailures failed attempts within windowMs,
 // every attempt is refused for lockoutMs (HTTP 429), regardless of the
 // credentials. One global counter (the device has one account).
+// maxFailures 0 disables the limiter. A success clears the failure count.
+// Expired windows and lockouts are cleared lazily by locked()/onResult().
 class AuthLimiter {
  public:
   explicit AuthLimiter(uint8_t maxFailures = 10, uint32_t windowMs = 60000,
@@ -32,9 +34,11 @@ class AuthLimiter {
   uint8_t maxFailures_;
   uint32_t windowMs_;
   uint32_t lockoutMs_;
-  uint32_t failures_ = 0;
+  void expire(uint32_t nowMs) const;
+
+  mutable uint32_t failures_ = 0;
   uint32_t windowStartMs_ = 0;
-  bool lockedOut_ = false;
+  mutable bool lockedOut_ = false;
   uint32_t lockStartMs_ = 0;
 };
 
