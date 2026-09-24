@@ -26,6 +26,11 @@ constexpr uint8_t kCalFlagLastFailed = 0x08;  // the last calibration did not su
 // running wins over requested
 uint8_t composeCalState(bool running, bool requested, bool earlyWarn, bool lastFailed);
 
+// gvlvx status in the gvlvd encoding: valve status, bit 7 (0x80) set while a
+// calibration is requested or running (the calibration flag of the valve)
+constexpr uint8_t kStatusCalibrationBit = 0x80;
+uint8_t encodeValveStatus(uint8_t status, bool calibration);
+
 struct ValveExtReply {
   uint8_t index;
   uint8_t status;

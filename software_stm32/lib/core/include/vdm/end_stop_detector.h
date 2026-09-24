@@ -10,11 +10,15 @@ namespace vdm {
 class EndStopDetector {
  public:
   // Samples ignored after the motor start (inrush); the filter is held at 0.
+  // All limits below compare the filtered current, so none of them can trip
+  // during the inrush time, and after it the filter (alpha 0.02) needs some
+  // tens of samples to reach them (firmware 1.x behaves the same).
   static constexpr uint16_t kInrushSamples = 250;
-  // Safety limit: more than kSafetyConsecutive consecutive samples above it trip.
+  // Safety limit: more than kSafetyConsecutive consecutive filtered samples
+  // above it trip.
   static constexpr int32_t kSafetyLimit = 600;
   static constexpr uint8_t kSafetyConsecutive = 10;
-  // Hard limit: a single sample above it trips.
+  // Hard limit: the first filtered sample above it trips.
   static constexpr int32_t kHardLimit = 1000;
 
   enum class Trip : uint8_t {

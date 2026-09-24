@@ -52,6 +52,20 @@ TEST_CASE("EndStopDetector: filter held at 0 during the inrush time") {
   CHECK(d.current() == 18);  // 900 * 0.02
 }
 
+TEST_CASE("EndStopDetector: no limit is active during the inrush time") {
+  // documented in PROTOCOL_V2.md: safety and hard limit use the filtered current
+  EndStopDetector d;
+  d.arm(-340, 340);
+  for (int i = 0; i < 250; ++i) {
+    CHECK(d.sample(100000) == Trip::None);
+    CHECK(d.overCount() == 0);
+  }
+  CHECK(d.trip() == Trip::None);
+  CHECK(d.peak() == 0);
+  // the first filtered sample: 2000 (0.02 x 100000) is above both limits
+  CHECK(d.sample(100000) == Trip::Hard);
+}
+
 TEST_CASE("EndStopDetector: bound trip after the filter crosses the threshold") {
   EndStopDetector d;
   d.arm(-340, 340);

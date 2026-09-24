@@ -126,7 +126,7 @@ TEST_CASE("gstat, gcalx, gmotx, gproto") {
 
   StaticBufWriter<vdm::kMotorLimitsReplyMaxLen + 1> m;
   REQUIRE(vdm::formatMotorLimits(m));
-  CHECK(std::string(m.c_str()) == "gmotx 5 50 5 50 0 100 0 60000 0 2");
+  CHECK(std::string(m.c_str()) == "gmotx 10 40 10 40 0 100 0 60000 0 2");
 
   StaticBufWriter<16> g;
   REQUIRE(vdm::formatProtocolVersion(g));
@@ -163,4 +163,16 @@ TEST_CASE("composeCalState: state in bits 0..1, flags above") {
   CHECK(vdm::composeCalState(false, false, false, true) == 8);
   CHECK(vdm::composeCalState(true, true, true, true) == 14);
   CHECK((vdm::composeCalState(false, true, true, true) & vdm::kCalStateMask) == vdm::kCalStateRequested);
+}
+
+TEST_CASE("encodeValveStatus: gvlvd encoding, bit 7 while calibrating") {
+  CHECK(vdm::encodeValveStatus(1, false) == 1);
+  CHECK(vdm::encodeValveStatus(8, true) == 0x88);
+  CHECK(vdm::encodeValveStatus(9, true) == 0x89);
+  CHECK(vdm::encodeValveStatus(0, true) == 0x80);
+  // same result as the gvlvd handler, which ORs the bit into the raw status
+  for (unsigned s = 0; s <= 0xFF; ++s) {
+    CHECK(vdm::encodeValveStatus(static_cast<uint8_t>(s), false) == s);
+    CHECK(vdm::encodeValveStatus(static_cast<uint8_t>(s), true) == (s | 0x80u));
+  }
 }

@@ -634,27 +634,27 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_GETVLVEXT)) {
 		if (req.argc() == 1 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x)) {
-			struct valve_diag diag;
+			struct valve_snapshot snap;
 			vdm::ValveExtReply data;
 
-			valve_get_diag(x, diag);
-			const bool requested = myvalvemots[x].calibration || myvalves[x].forcedLearn
-				|| myvalvemots[x].status == VLV_STATE_PRESENT;
+			// one copy: a calibration pass or the end of a move changes several fields at once
+			valve_get_snapshot(x, snap);
+			const bool requested = app_learn_pending(x, snap.status, snap.calibration != 0);
 
 			data.index = (uint8_t) x;
-			data.status = myvalvemots[x].status;
-			data.position = myvalvemots[x].actual_position;
-			data.target = myvalvemots[x].target_position;
-			data.meanCurrent = (uint16_t) (myvalvemots[x].meancurrent > 0xFFFF ? 0xFFFF : myvalvemots[x].meancurrent);
-			data.openingCount = myvalvemots[x].opening_count;
-			data.closingCount = myvalvemots[x].closing_count;
-			data.deadzoneCount = myvalvemots[x].deadzone_count;
-			data.calibRetries = myvalvemots[x].calibRetries;
-			data.movements = myvalves[x].movements;
-			data.calState = vdm::composeCalState(myvalvemots[x].calibActive != 0, requested, diag.earlyWarn, diag.lastCalFailed);
-			data.earlyStops = diag.earlyStops;
+			data.status = vdm::encodeValveStatus(snap.status, snap.calibration != 0);
+			data.position = snap.actual_position;
+			data.target = snap.target_position;
+			data.meanCurrent = (uint16_t) (snap.meancurrent > 0xFFFF ? 0xFFFF : snap.meancurrent);
+			data.openingCount = snap.opening_count;
+			data.closingCount = snap.closing_count;
+			data.deadzoneCount = snap.deadzone_count;
+			data.calibRetries = snap.calibRetries;
+			data.movements = snap.movements;
+			data.calState = vdm::composeCalState(snap.calibActive != 0, requested, snap.diag.earlyWarn, snap.diag.lastCalFailed);
+			data.earlyStops = snap.diag.earlyStops;
 			data.cmdRejected = myvalves[x].cmdRejected;
-			data.last = diag.last;
+			data.last = snap.diag.last;
 
 			sendReply(vdm::formatValveExt(replyLine, data));
 		}
@@ -673,7 +673,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	}
 
 	// service move: svmov idx dir counts maxmA -> "svmov idx ok" / "svmov idx err code"
-	// code 1: invalid arguments, 2: valve state machine busy
+	// code 1: invalid arguments, 2: valve state machine busy, 3: calibration of the valve pending
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_SERVICEMOVE)) {
 		uint8_t dir = 0, maxmA = 0;
@@ -685,7 +685,8 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 			&& req.argU8(1, vdm::kDirOpen, vdm::kDirClose, dir)
 			&& req.argU16(2, SVMOV_COUNTS_MIN, SVMOV_COUNTS_MAX, counts)
 			&& req.argU8(3, SVMOV_MAXMA_MIN, SVMOV_MAXMA_MAX, maxmA)) {
-			error = app_service_move(x, dir, counts, maxmA) == 0 ? 0 : 2;
+			const int16_t result = app_service_move(x, dir, counts, maxmA);
+			error = result == 0 ? 0 : (result == -3 ? 3 : 2);
 		}
 		sendReply(vdm::formatIndexedResult(replyLine, APP_PRE_SERVICEMOVE, index, error));
 	}

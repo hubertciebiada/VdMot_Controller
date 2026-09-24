@@ -43,6 +43,10 @@ uint8_t composeCalState(bool running, bool requested, bool earlyWarn, bool lastF
   return v;
 }
 
+uint8_t encodeValveStatus(uint8_t status, bool calibration) {
+  return calibration ? static_cast<uint8_t>(status | kStatusCalibrationBit) : status;
+}
+
 bool formatValveExt(BufWriter& out, const ValveExtReply& r) {
   return Line(out, "gvlvx")
       .u(r.index)

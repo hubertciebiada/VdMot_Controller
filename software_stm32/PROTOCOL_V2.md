@@ -51,7 +51,7 @@ answered `gvers`; on a timeout it stays in v1 mode.
 | field | meaning |
 |---|---|
 | idx | valve 0..11 |
-| status | valve status as in `gvlst` (1 idle, 2 opening, 3 closing, 4 failed, 5 unknown, 6 open circuit, 7 full open requested, 8 present / calibration pending, 9 blocked); without the calibration bit 0x80 of `gvlvd` |
+| status | valve status in the `gvlvd` encoding: bits 0..6 as in `gvlst` (1 idle, 2 opening, 3 closing, 4 failed, 5 unknown, 6 open circuit, 7 full open requested, 8 present / calibration pending, 9 blocked), bit 7 (0x80) the calibration flag of `gvlvd` (a calibration requested by `staln` or the movement trigger, or running) |
 | pos | believed position 0..100 % |
 | target | target position 0..100 % as stored on the STM |
 | meanCur | learned mean motor current in mA (20 until the first successful calibration) |
@@ -59,7 +59,7 @@ answered `gvers`; on a timeout it stays in v1 mode.
 | dc | cc − oc, may be negative |
 | cr | failed calibration passes of the last calibration |
 | moves | position changes since the last calibration (as `gvlvd`) |
-| calState | bits 0..1: 0 idle, 1 calibration requested, 2 calibration running; bit 2 (4): early end stop since the last successful calibration; bit 3 (8): the last calibration did not succeed |
+| calState | bit field, values 0..15: bits 0..1: 0 idle, 1 calibration requested, 2 calibration running; bit 2 (4): early end stop since the last successful calibration; bit 3 (8): the last calibration did not succeed. A client reads the state as `calState & 3` and the flags separately |
 | earlyStops | early end stops of normal moves since start-up (see below) |
 | cmdRejected | target changes the STM did not execute because the valve is failed (4) or blocked (9), since start-up |
 | lastDir | direction of the last move: 0 open, 1 close |
@@ -91,7 +91,7 @@ evaluated by the end-stop detection). Kept in RAM only.
 |---|---|---|
 | dir | 0, 1 | 0 open, 1 close |
 | counts | 1..10000 | pulses to move |
-| maxmA | 5..60 | end-stop threshold in mA for this move (the 60 mA safety limit and the 100 mA hard limit stay active) |
+| maxmA | 5..60 | end-stop threshold in mA for this move (the 60 mA safety limit and the 100 mA hard limit stay active; like every limit they are not checked during the first 250 ms, see below) |
 
     > svmov 2 1 500 40
     < svmov 2 ok
@@ -100,7 +100,11 @@ evaluated by the end-stop detection). Kept in RAM only.
 
 Error codes: 1 invalid arguments (idx is -1 if it was not a valid valve
 index), 2 valve state machine busy (a move or calibration is running or a
-command is pending). The move starts within about 1 s; its result is reported
+command is pending), 3 a calibration of the valve is pending (status 8,
+calibration bit set, or a `staln`, time or movement trigger not started yet;
+this includes a valve found at start-up until its first calibration): the
+calibration would start right after the move and undo it. A client must
+accept -1 as idx. The move starts within about 1 s; its result is reported
 by `gvlvx` (lastStop 1 = all pulses moved, 2 = threshold reached) and
 `gprof`.
 
@@ -152,7 +156,7 @@ An uptime smaller than in the previous reply means the STM restarted.
 ### `gmotx` – ranges of the motor parameters
 
     > gmotx
-    < gmotx 5 50 5 50 0 100 0 60000 0 2
+    < gmotx 10 40 10 40 0 100 0 60000 0 2
 
 Minimum and maximum of each `smotc` value in `smotc` order: low factor, high
 factor (tenths: 17 = 1.7 × mean current), start-on-power %, minimum pulses
@@ -166,12 +170,20 @@ range loads its default (17, 17, 30, 3000, 2).
   `gmotx` table. Valid: reply `smotc` as before. Out of range, not a number or
   fewer than 3 values: reply `smotc err` and nothing is changed (1.x stored
   unchecked values, or ignored the request without a reply). More than 5
-  values: no reply (dropped like every request with too many arguments). Values 5..9 and
-  41..50 of the factors now survive a restart (1.x fell back to 17 at the next
-  start).
+  values: no reply (dropped like every request with too many arguments). The
+  factors are limited to 10..40, the range 1.x kept across a restart: 1.x
+  `smotc` also took 5..9 and 41..50 (the legacy web page offers 0.5..5.0) and
+  used them until the next start, then fell back to 17. Such a value stored
+  in the EEPROM by 1.x still loads 17. A factor below 10 puts the end-stop
+  threshold under the running current and stops every move at once.
 - `staln idx` / `staln 255`: the calibration starts as soon as the valve state
   machine is idle; 1.x waited until any target had changed since the start.
-  A request that a running move overwrote is renewed.
+- Calibration requests (`staln`, time trigger, movement trigger) that a move
+  of the same valve overwrote while it was running are renewed after the
+  move; 1.x lost them (the time trigger then waited another learning time, a
+  movement trigger left the valve ignoring `stgtp` until then). A time
+  trigger that fires while the valve is calibrating is satisfied by that
+  calibration.
 - `gvlvd`, `gvlst`: a valve whose calibration failed keeps status 9 (blocked).
   1.x continued with the counts of the failed pass and reported idle.
 - Position of failed (4) and blocked (9) valves: the STM no longer sets
@@ -200,7 +212,14 @@ range loads its default (17, 17, 30, 3000, 2).
   calibration (time trigger, movement trigger or `staln`).
 - The 60 mA safety limit trips after more than 10 consecutive 1 ms samples
   above it (1.x counted samples over the whole move, so short spikes in a long
-  move added up to a false end stop). The 100 mA hard limit trips at once.
+  move added up to a false end stop). The 100 mA hard limit trips at the
+  first sample above it.
+- Every limit (end-stop thresholds, 60 mA safety limit, 100 mA hard limit)
+  compares the filtered current (first-order filter, alpha 0.02). The filter
+  is held at 0 during the first 250 ms after a motor start (inrush), so no
+  limit trips then, not even for a jammed or shorted motor, and after it the
+  filter needs some tens of milliseconds to reach a limit. This is the 1.x
+  behaviour; the firmware has no current protection in that window.
 - A move to an end stop (0 %/100 % target) that stops at a threshold or the
   safety limit after less than half of the travel expected from the learned
   stroke is an early end stop: `lastStop` 3 (or 6), `earlyStops` + 1 and

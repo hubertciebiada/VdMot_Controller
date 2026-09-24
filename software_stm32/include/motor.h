@@ -119,8 +119,25 @@ struct valve_diag {
   bool lastCalFailed;           // the last calibration did not succeed
 };
 
+// the fields gvlvx reports, copied together: the valve state machine changes several of
+// them in one step (a calibration pass, the end of a move)
+struct valve_snapshot {
+  struct valve_diag diag;
+  unsigned int opening_count;
+  unsigned int closing_count;
+  int deadzone_count;
+  unsigned int meancurrent;
+  unsigned int movements;
+  byte status;
+  byte actual_position;
+  byte target_position;
+  uint8_t calibration;
+  uint8_t calibRetries;
+  uint8_t calibActive;
+};
+
 // consistent copies, safe to call from the main loop
-void valve_get_diag (unsigned int valveindex, struct valve_diag &out);
+void valve_get_snapshot (unsigned int valveindex, struct valve_snapshot &out);
 void valve_get_profile (unsigned int valveindex, vdm::ProfileRecorder &out);
 
 // motor parameters (smotc/gmotc): RAM values and their EEPROM mirror

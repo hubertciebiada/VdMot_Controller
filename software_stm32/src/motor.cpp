@@ -183,7 +183,7 @@ static uint16_t stroke_mean_mA = 0;       // mean current of the last stroke tha
 static uint16_t stroke_mean_samples = 0;
 static vdm::ProfileRecorder move_profile;
 
-// per valve diagnostics; written by valve_loop (TIM2), read via valve_get_diag()/valve_get_profile()
+// per valve diagnostics; written by valve_loop (TIM2), read via valve_get_snapshot()/valve_get_profile()
 struct valve_record {
   struct valve_diag diag;
   vdm::ProfileRecorder profile;
@@ -314,14 +314,26 @@ void motor_set_escalation (const vdm::EscalationConfig &config) {
 }
 
 
-void valve_get_diag (unsigned int valveindex, struct valve_diag &out) {
+void valve_get_snapshot (unsigned int valveindex, struct valve_snapshot &out) {
   if (valveindex >= ACTUATOR_COUNT) {
-    out = valve_diag();
+    out = valve_snapshot();
     return;
   }
+  volatile valvemotor &mot = myvalvemots[valveindex];
   const uint32_t primask = __get_PRIMASK();
   __disable_irq();
-  out = valve_records[valveindex].diag;
+  out.diag = valve_records[valveindex].diag;
+  out.opening_count = mot.opening_count;
+  out.closing_count = mot.closing_count;
+  out.deadzone_count = mot.deadzone_count;
+  out.meancurrent = mot.meancurrent;
+  out.movements = myvalves[valveindex].movements;
+  out.status = mot.status;
+  out.actual_position = mot.actual_position;
+  out.target_position = mot.target_position;
+  out.calibration = mot.calibration;
+  out.calibRetries = mot.calibRetries;
+  out.calibActive = mot.calibActive;
   __set_PRIMASK(primask);
 }
 

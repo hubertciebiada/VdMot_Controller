@@ -51,8 +51,18 @@ static void app_start_learn (unsigned int valve) {
   if (appsetaction(CMD_A_LEARN, valve, 0) != 0) return;
   myvalvemots[valve].calibState = calibInProgress;
   myvalves[valve].forcedLearn = 0;
+  myvalves[valve].timedLearn = 0;
   myvalves[valve].svcHold = 0;
   myvalves[valve].rejectedTarget = VALVE_NO_TARGET;
+}
+
+
+// a calibration of the valve is requested and has not ended yet (staln, time or movement
+// trigger, a found valve after the start); status and calibration as read by the caller
+bool app_learn_pending (uint16_t valve, byte status, bool calibration) {
+  if (valve >= ACTUATOR_COUNT) return false;
+  return calibration || myvalves[valve].forcedLearn || myvalves[valve].timedLearn
+    || status == VLV_STATE_PRESENT;
 }
 
 
@@ -62,8 +72,11 @@ void app_target_changed (uint16_t valve) {
 }
 
 
-// svmov: 0 accepted, -1 invalid arguments, -2 valve state machine busy
+// svmov: 0 accepted, -1 invalid arguments, -2 valve state machine busy, -3 calibration pending
+// (the calibration would start right after the move and undo it)
 int16_t app_service_move (uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA) {
+  if (valve >= ACTUATOR_COUNT) return -1;
+  if (app_learn_pending(valve, myvalvemots[valve].status, myvalvemots[valve].calibration)) return -3;
   const int16_t result = appsetservice(valve, dir, counts, maxmA);
   if (result == 0) myvalves[valve].svcHold = SVMOV_HOLD_10S;
   return result;
@@ -85,6 +98,7 @@ int16_t app_setup (void) {
       myvalves[x].cmdRejected = 0;
       myvalves[x].rejectedTarget = VALVE_NO_TARGET;
       myvalves[x].forcedLearn = 0;
+      myvalves[x].timedLearn = 0;
       myvalves[x].svcHold = 0;
       // distribute learn timing equaly over valve slots
       myvalves[x].learn_time = (unsigned int) (((long)LEARN_AFTER_TIME_DEFAULT * ((long)x+1)) / (long)ACTUATOR_COUNT);  
@@ -152,8 +166,13 @@ int16_t app_loop (void) {
             app_start_learn(lastvalve);
           }
 
-          // a learn request that a running move overwrote (the move ended with its own status) is renewed
-          else if (myvalves[lastvalve].forcedLearn && myvalvemots[lastvalve].status != VLV_STATE_UNKNOWN) {
+          // a learn request that a running move of the valve overwrote (the move ended with its own
+          // status) is renewed; without it the time trigger would wait another learning_time and a
+          // movement trigger would keep the valve's targets locked (calibration flag) until then
+          else if ((myvalves[lastvalve].forcedLearn || myvalves[lastvalve].timedLearn
+                    || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
+                   && myvalvemots[lastvalve].status != VLV_STATE_UNKNOWN
+                   && myvalvemots[lastvalve].status != VLV_STATE_PRESENT) {
             myvalvemots[lastvalve].status = VLV_STATE_PRESENT;
           }
 
@@ -238,7 +257,12 @@ byte app_10s_loop () {
     for (x=0; x< ACTUATOR_COUNT; x++) { 
       if(myvalves[x].learn_time <= 10) {
         myvalves[x].learn_time = learning_time;
-        myvalvemots[x].status = VLV_STATE_PRESENT;     // mark state as unknown, next set target req will do a learning cycle
+        // a calibration of the valve that runs now satisfies the trigger; otherwise the request is
+        // also kept in timedLearn, because a move of the valve that is running now ends with its
+        // own status and overwrites PRESENT (app_loop renews it)
+        if (myvalvemots[x].calibState == calibInProgress) continue;
+        myvalves[x].timedLearn = 1;
+        myvalvemots[x].status = VLV_STATE_PRESENT;     // next set target req will do a learning cycle
         #ifdef appDebug
           COMM_DBG.print("App: Valve "); 
           COMM_DBG.print(x, 10); 

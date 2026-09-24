@@ -27,11 +27,11 @@ TEST_CASE("ParamRange::contains is inclusive") {
   CHECK_FALSE(r.contains(0xFFFFFFFFu));
 }
 
-TEST_CASE("range table matches the web page and the 1.x start-up defaults") {
-  CHECK(vdm::kLowFacRange.min == 5);
-  CHECK(vdm::kLowFacRange.max == 50);
-  CHECK(vdm::kHighFacRange.min == 5);
-  CHECK(vdm::kHighFacRange.max == 50);
+TEST_CASE("range table matches the 1.x start-up limits and defaults") {
+  CHECK(vdm::kLowFacRange.min == 10);
+  CHECK(vdm::kLowFacRange.max == 40);
+  CHECK(vdm::kHighFacRange.min == 10);
+  CHECK(vdm::kHighFacRange.max == 40);
   CHECK(vdm::kStartOnPowerRange.max == 100);
   CHECK(vdm::kMinCountsRange.max == 60000);
   CHECK(vdm::kMaxRetriesRange.max == 2);
@@ -42,20 +42,20 @@ TEST_CASE("range table matches the web page and the 1.x start-up defaults") {
 
 TEST_CASE("motorParamsValid checks every field at both ends") {
   CHECK(vdm::motorParamsValid(valid()));
-  CHECK(vdm::motorParamsValid(MotorParams{5, 5, 0, 0, 0}));
-  CHECK(vdm::motorParamsValid(MotorParams{50, 50, 100, 60000, 2}));
+  CHECK(vdm::motorParamsValid(MotorParams{10, 10, 0, 0, 0}));
+  CHECK(vdm::motorParamsValid(MotorParams{40, 40, 100, 60000, 2}));
 
   MotorParams p = valid();
-  p.lowFac = 4;
+  p.lowFac = 9;
   CHECK_FALSE(vdm::motorParamsValid(p));
   p = valid();
-  p.lowFac = 51;
+  p.lowFac = 41;
   CHECK_FALSE(vdm::motorParamsValid(p));
   p = valid();
-  p.highFac = 4;
+  p.highFac = 9;
   CHECK_FALSE(vdm::motorParamsValid(p));
   p = valid();
-  p.highFac = 51;
+  p.highFac = 41;
   CHECK_FALSE(vdm::motorParamsValid(p));
   p = valid();
   p.startOnPower = 101;
@@ -75,9 +75,15 @@ TEST_CASE("sanitizeMotorParams replaces only out-of-range fields") {
   const MotorParams erased{0xFF, 0xFF, 0xFF, 0xFFFF, 0xFF};
   CHECK(same(vdm::sanitizeMotorParams(erased), vdm::kMotorParamsDefault));
 
-  // 1.x accepted 5..9 and 41..50 with smotc but dropped them at the next start
-  CHECK(vdm::sanitizeMotorParams(MotorParams{5, 50, 30, 3000, 2}).lowFac == 5);
-  CHECK(vdm::sanitizeMotorParams(MotorParams{5, 50, 30, 3000, 2}).highFac == 50);
+  // 1.x smotc stored 5..9 and 41..50 but 1.x dropped them at the next start;
+  // an upgrade must not bring them into effect (factor 8 would stop every move)
+  for (uint8_t f : {5, 8, 9, 41, 50}) {
+    const MotorParams r = vdm::sanitizeMotorParams(MotorParams{f, f, 30, 3000, 2});
+    CHECK(r.lowFac == 17);
+    CHECK(r.highFac == 17);
+  }
+  CHECK(vdm::sanitizeMotorParams(MotorParams{10, 40, 30, 3000, 2}).lowFac == 10);
+  CHECK(vdm::sanitizeMotorParams(MotorParams{10, 40, 30, 3000, 2}).highFac == 40);
 
   const MotorParams mixed{4, 30, 101, 60000, 3};
   const MotorParams s = vdm::sanitizeMotorParams(mixed);
@@ -106,19 +112,20 @@ TEST_CASE("applyMotorParamsRequest: optional minCounts and retries") {
   REQUIRE(vdm::applyMotorParamsRequest(p, 4, v4));
   CHECK(same(p, MotorParams{10, 20, 55, 100, 1}));
 
-  const uint32_t v5[5] = {5, 50, 100, 60000, 2};
+  const uint32_t v5[5] = {10, 40, 100, 60000, 2};
   REQUIRE(vdm::applyMotorParamsRequest(p, 5, v5));
-  CHECK(same(p, MotorParams{5, 50, 100, 60000, 2}));
+  CHECK(same(p, MotorParams{10, 40, 100, 60000, 2}));
 
-  const uint32_t v0[5] = {5, 5, 0, 0, 0};
+  const uint32_t v0[5] = {10, 10, 0, 0, 0};
   REQUIRE(vdm::applyMotorParamsRequest(p, 5, v0));
-  CHECK(same(p, MotorParams{5, 5, 0, 0, 0}));
+  CHECK(same(p, MotorParams{10, 10, 0, 0, 0}));
 }
 
 TEST_CASE("applyMotorParamsRequest: any out-of-range value rejects the whole request") {
   const uint32_t cases[][5] = {
-      {4, 20, 50, 3000, 2},  {51, 20, 50, 3000, 2}, {17, 4, 50, 3000, 2},
-      {17, 51, 50, 3000, 2}, {17, 20, 101, 3000, 2}, {17, 20, 50, 60001, 2},
+      {9, 20, 50, 3000, 2},  {41, 20, 50, 3000, 2}, {17, 9, 50, 3000, 2},
+      {17, 41, 50, 3000, 2}, {5, 20, 50, 3000, 2},  {17, 50, 50, 3000, 2},
+      {17, 20, 101, 3000, 2}, {17, 20, 50, 60001, 2},
       {17, 20, 50, 3000, 3}, {0xFFFFFFFFu, 20, 50, 3000, 2},
   };
   for (const auto& c : cases) {

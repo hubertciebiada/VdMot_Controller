@@ -56,6 +56,7 @@ int16_t app_set_valvelearning(uint16_t valve);
 void app_scan_valves();
 int16_t app_set_valveopen(uint16_t valve);
 void app_target_changed(uint16_t valve);
+bool app_learn_pending(uint16_t valve, byte status, bool calibration);
 int16_t app_service_move(uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA);
 int16_t app_match_sensors();
 void reset_check();
@@ -91,6 +92,7 @@ struct valve {
   uint16_t cmdRejected;       // target changes not executed because the valve is FAILED or BLOCKS
   byte rejectedTarget;        // target counted last in cmdRejected, VALVE_NO_TARGET if none
   uint8_t forcedLearn;        // staln: learn without waiting for a target change
+  uint8_t timedLearn;         // time trigger: learn at the next target change (after firstchange)
   uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls)
   //struct valvemotor valvemot;
 };

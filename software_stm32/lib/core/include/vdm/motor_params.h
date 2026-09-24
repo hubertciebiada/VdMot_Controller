@@ -15,12 +15,16 @@ struct ParamRange {
 };
 
 // One table for smotc, the EEPROM load at start-up and gmotx.
-//  - end-stop factors are tenths (17 = 1.7 x mean current), web page 0.5..5.0
+//  - end-stop factors are tenths (17 = 1.7 x mean current); 10..40 is what 1.x
+//    kept across a restart. A factor below 10 puts the threshold under the
+//    running current, so every move would stop at once; 1.x smotc took 5..50
+//    but loaded only 10..40 at start-up, and an EEPROM written by it may hold
+//    such a value: it loads the default like any other out-of-range value.
 //  - startOnPower is the position in % assumed and targeted after a start
 //  - minCounts is the minimum number of pulses of a calibration stroke
 //  - maxRetries is the number of calibration repetitions before BLOCKS
-constexpr ParamRange kLowFacRange{5, 50, 17};
-constexpr ParamRange kHighFacRange{5, 50, 17};
+constexpr ParamRange kLowFacRange{10, 40, 17};
+constexpr ParamRange kHighFacRange{10, 40, 17};
 constexpr ParamRange kStartOnPowerRange{0, 100, 30};
 constexpr ParamRange kMinCountsRange{0, 60000, 3000};
 constexpr ParamRange kMaxRetriesRange{0, 2, 2};
