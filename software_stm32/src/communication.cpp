@@ -35,6 +35,7 @@
 #include "communication.h"
 #include "owDevices.h"
 #include "eeprom.h"
+#include "sysstat.h"
 #include "DallasTemperature.h"
 #include "vdm/arg_parser.h"
 #include "vdm/buf_writer.h"
@@ -60,6 +61,7 @@
 #define NO_SENSOR_ADDRESS		"00-00-00-00-00-00-00-00"
 
 static vdm::StaticLineAssembler<COMM_LINE_SIZE> commLine;
+static uint32_t commTooManyArgs = 0;		// requests dropped for too many arguments (gstat parseErr)
 
 // longest reply (gprof), static to keep it off the main loop stack
 static vdm::StaticBufWriter<vdm::kProfileReplyMaxLen + 1> replyLine;
@@ -621,6 +623,112 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		COMM_SER.println(" ");			
 	} 
 
+	// protocol version (v2 feature detection)
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETPROTOCOL)) {
+		sendReply(vdm::formatProtocolVersion(replyLine));
+	}
+
+	// extended valve data: gvlvx idx status pos target meanCur oc cc dc cr moves calState earlyStops
+	//                      cmdRejected lastDir lastReq lastCnt lastStop lastPeak lastMs
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETVLVEXT)) {
+		if (req.argc() == 1 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x)) {
+			struct valve_diag diag;
+			vdm::ValveExtReply data;
+
+			valve_get_diag(x, diag);
+			const bool requested = myvalvemots[x].calibration || myvalves[x].forcedLearn
+				|| myvalvemots[x].status == VLV_STATE_PRESENT;
+
+			data.index = (uint8_t) x;
+			data.status = myvalvemots[x].status;
+			data.position = myvalvemots[x].actual_position;
+			data.target = myvalvemots[x].target_position;
+			data.meanCurrent = (uint16_t) (myvalvemots[x].meancurrent > 0xFFFF ? 0xFFFF : myvalvemots[x].meancurrent);
+			data.openingCount = myvalvemots[x].opening_count;
+			data.closingCount = myvalvemots[x].closing_count;
+			data.deadzoneCount = myvalvemots[x].deadzone_count;
+			data.calibRetries = myvalvemots[x].calibRetries;
+			data.movements = myvalves[x].movements;
+			data.calState = vdm::composeCalState(myvalvemots[x].calibActive != 0, requested, diag.earlyWarn, diag.lastCalFailed);
+			data.earlyStops = diag.earlyStops;
+			data.cmdRejected = myvalves[x].cmdRejected;
+			data.last = diag.last;
+
+			sendReply(vdm::formatValveExt(replyLine, data));
+		}
+		else commdbg_println("gvlvx: invalid arguments");
+	}
+
+	// current profile of the last move: gprof idx n c1:m1 ... cn:mn
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETPROFILE)) {
+		if (req.argc() == 1 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x)) {
+			static vdm::ProfileRecorder profile;		// static: keeps 136 bytes off the stack
+			valve_get_profile(x, profile);
+			sendReply(vdm::formatProfile(replyLine, (uint8_t) x, profile));
+		}
+		else commdbg_println("gprof: invalid arguments");
+	}
+
+	// service move: svmov idx dir counts maxmA -> "svmov idx ok" / "svmov idx err code"
+	// code 1: invalid arguments, 2: valve state machine busy
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_SERVICEMOVE)) {
+		uint8_t dir = 0, maxmA = 0;
+		uint16_t counts = 0;
+		const int32_t index = (req.argc() >= 1 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x)) ? (int32_t) x : -1;
+		uint8_t error = 1;
+
+		if (index >= 0 && req.argc() == 4
+			&& req.argU8(1, vdm::kDirOpen, vdm::kDirClose, dir)
+			&& req.argU16(2, SVMOV_COUNTS_MIN, SVMOV_COUNTS_MAX, counts)
+			&& req.argU8(3, SVMOV_MAXMA_MIN, SVMOV_MAXMA_MAX, maxmA)) {
+			error = app_service_move(x, dir, counts, maxmA) == 0 ? 0 : 2;
+		}
+		sendReply(vdm::formatIndexedResult(replyLine, APP_PRE_SERVICEMOVE, index, error));
+	}
+
+	// breakaway escalation: scalx enable stepPct maxmA
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_SETCALESC)) {
+		vdm::EscalationConfig config;
+		const bool valid = req.argc() == 3
+			&& req.argU8(0, 0, 1, config.enable)
+			&& req.argU8(1, 0, vdm::kEscalationStepMax, config.stepPct)
+			&& req.argU8(2, vdm::kEscalationMaxmAMin, vdm::kEscalationMaxmAMax, config.maxmA);
+
+		if (valid) {
+			motor_set_escalation(config);
+			eeprom_changed();
+		}
+		sendReply(vdm::formatResult(replyLine, APP_PRE_SETCALESC, valid));
+	}
+
+	else if(req.is(APP_PRE_GETCALESC)) {
+		sendReply(vdm::formatEscalation(replyLine, motor_get_escalation()));
+	}
+
+	// health: gstat uptime_s resets bootReason rxOverflow parseErr eepState
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETSTATUS)) {
+		vdm::StatReply stat;
+		stat.uptimeSeconds = sysstat_uptime_s();
+		stat.resets = sysstat_resets();
+		stat.bootReason = (uint8_t) sysstat_boot_reason();
+		stat.rxOverflow = commLine.overflowCount();
+		stat.parseErrors = commLine.malformedCount() + commTooManyArgs;
+		stat.eepromState = eeprom_state();
+		sendReply(vdm::formatStat(replyLine, stat));
+	}
+
+	// ranges of the smotc values
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETMOTLIMITS)) {
+		sendReply(vdm::formatMotorLimits(replyLine));
+	}
+
 	// unknown commands are ignored without reply (protocol v1)
 }
 
@@ -649,7 +757,10 @@ int16_t communication_loop (void) {
 			communication_dispatch(req);
 			result = 0;
 		}
-		else if (req.tooManyArgs()) commdbg_println("comm: too many arguments");
+		else if (req.tooManyArgs()) {
+			commTooManyArgs++;
+			commdbg_println("comm: too many arguments");
+		}
 		commLine.release();
 	}
 

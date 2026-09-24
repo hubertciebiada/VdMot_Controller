@@ -39,6 +39,7 @@
 #include "owDevices.h"
 #include "eeprom.h"
 #include "otasupport.h"
+#include "sysstat.h"
 #include "STM32TimerInterrupt.h"      
 #include <IWatchdog.h>
 #ifdef useCan
@@ -74,6 +75,7 @@ void loop_system();
 
 
 void setup() {
+  sysstat_capture_reset();
   valve_pins_safe();
   BootSetup();
 }
@@ -128,7 +130,7 @@ void setup_system() {
   //JumpToBootloader();
 
   // the ESP may only flash the STM in the boot window before (BootLoop), the IWDG cannot be stopped
-  const bool watchdogReset = IWatchdog.isReset(true);
+  const bool watchdogReset = sysstat_boot_reason() == vdm::BootReason::IndependentWatchdog;
   IWatchdog.begin(WATCHDOG_TIMEOUT_US);
 
   i2c_bus_recover();
@@ -227,6 +229,8 @@ void loop_system() {
 
   int16_t recvcmd;
   
+  sysstat_loop();
+
 
   // 1000 ms loop
   if ((millis()-loop_1000ms) > (uint32_t) 1000 ) {  

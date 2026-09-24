@@ -77,6 +77,16 @@ extern void comm_print_valve_sensor_ids (Print &out, uint16_t valve, char delimi
 #define APP_PRE_SOFTRESET           "reset"     
 #define APP_PRE_EEPSTATE            "eepst"     // new eeprom state : 1 = ready, 0 = write pending
 
+// protocol v2 (see PROTOCOL_V2.md)
+#define APP_PRE_GETPROTOCOL         "gproto"    // protocol version
+#define APP_PRE_GETVLVEXT           "gvlvx"     // extended valve data and last move
+#define APP_PRE_GETPROFILE          "gprof"     // current profile of the last move
+#define APP_PRE_SERVICEMOVE         "svmov"     // service move
+#define APP_PRE_SETCALESC           "scalx"     // set breakaway escalation
+#define APP_PRE_GETCALESC           "gcalx"     // get breakaway escalation
+#define APP_PRE_GETSTATUS           "gstat"     // health
+#define APP_PRE_GETMOTLIMITS        "gmotx"     // ranges of the smotc values
+
 #define APP_PRE_GETACTUALPOS       	"gactp"     // not implemented
 #define APP_PRE_GETMEANCURR        	"gmenc"     // not implemented
 
