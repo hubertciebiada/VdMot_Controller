@@ -1,3 +1,5 @@
+> This fork ships **VdMot Revamped** (unofficial) — see [docs/revamped/README.md](docs/revamped/README.md)
+
 # VdMot_Controller
 This is a controller for HmIP-VdMot actuators.
 
