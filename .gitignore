@@ -6,3 +6,7 @@
 
 ## native unit test builds (CMake) ########
 software_stm32/build/
+
+## mutation tool: local kill cache and reports ########
+tools/mutation/*.cache.json
+tools/mutation/*.report.json
