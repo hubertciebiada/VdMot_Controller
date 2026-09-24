@@ -748,3 +748,21 @@ TEST_CASE("NetWatchdog: the wait grows with every restart of one outage") {
   CHECK_FALSE(one.update(false, 0));
   CHECK_FALSE(one.update(false, 0xFFFFFFFFu));
 }
+
+TEST_CASE("NetWatchdog: fires once per outage even when the grown wait passes too") {
+  NetWatchdog w;
+  w.configure(1);
+  CHECK_FALSE(w.update(false, 0));
+  CHECK_FALSE(w.update(false, 59999));
+  CHECK(w.update(false, 60000));
+  CHECK(w.restartsInOutage() == 1);
+  CHECK(w.waitMs() == 4u * 60000u);
+  // Same outage, no restart happened: the grown wait (4 min) passes as well.
+  CHECK_FALSE(w.update(false, 240000));
+  CHECK_FALSE(w.update(false, 3600000));
+  CHECK(w.restartsInOutage() == 1);
+  // Network back and lost again: a new outage fires again after 1 min.
+  CHECK_FALSE(w.update(true, 3600001));
+  CHECK_FALSE(w.update(false, 3600002));
+  CHECK(w.update(false, 3660002));
+}

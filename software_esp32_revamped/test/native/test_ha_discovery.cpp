@@ -756,3 +756,21 @@ TEST_CASE("discovery fuzz: random context bytes never overflow or emit bad JSON 
   }
   CHECK(messages > 1000);
 }
+
+TEST_CASE("discovery: a volt unit of the full 8 characters is kept whole") {
+  static DiscoveryContext c;
+  c = DiscoveryContext{};
+  base(c);
+  volt(c, 0, "v1", "Pump", "kWh/m3ab", "26-11-22-33-44-55-66-29");
+  REQUIRE(strlen(c.volts[0].unit) == 8);
+  const std::vector<Msg> v = all(c);
+  const Msg* m = find(v, "homeassistant/sensor/VdMot/volts_v1/config");
+  REQUIRE(m != nullptr);
+  CHECK(has(m->json, "\"unit_of_measurement\":\"kWh/m3ab\""));
+  // Unterminated unit field: cut to 8 characters.
+  memset(c.volts[0].unit, 'u', sizeof c.volts[0].unit);
+  const std::vector<Msg> w = all(c);
+  m = find(w, "homeassistant/sensor/VdMot/volts_v1/config");
+  REQUIRE(m != nullptr);
+  CHECK(has(m->json, "\"unit_of_measurement\":\"uuuuuuuu\","));
+}

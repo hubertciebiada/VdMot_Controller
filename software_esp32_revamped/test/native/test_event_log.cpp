@@ -674,3 +674,16 @@ TEST_CASE("parseSeverity fuzz: random bytes only ever match a case-folded name")
   }
   CHECK(matches > 250);  // the bias really produced hits
 }
+
+TEST_CASE("event message: a one-character text counts as text") {
+  char buf[160];
+  Event e = makeEvent(EventCode::Boot, Severity::Info, kNoValve, 1, 3, "x");
+  formatEventMessage(e, buf, sizeof buf);
+  CHECK(std::string(buf) == "boot (reset poweron, count 3, fw x)");
+  e = makeEvent(EventCode::Boot, Severity::Info, kNoValve, 1, 3, "");
+  formatEventMessage(e, buf, sizeof buf);
+  CHECK(std::string(buf) == "boot (reset poweron, count 3)");
+  e = makeEvent(EventCode::ConfigSaved, Severity::Info, kNoValve, 7, 0, "y");
+  formatEventMessage(e, buf, sizeof buf);
+  CHECK(std::string(buf) == "config saved (revision 7, y)");
+}

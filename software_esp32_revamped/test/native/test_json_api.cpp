@@ -777,3 +777,17 @@ TEST_CASE("api: router fuzz") {
     CHECK((r.valve == kNoValve || r.valve < kValveCount));
   }
 }
+
+TEST_CASE("status JSON: all-ones addresses are written in full") {
+  StatusSnapshot s;
+  s.ip = 0xFFFFFFFFu;
+  s.mask = 0xFFFFFFFFu;
+  s.gateway = 0xFEFFFFFFu;
+  s.dns = 0xFFFFFFFEu;
+  static char buf[4096];
+  JsonWriter jw(buf, sizeof buf);
+  REQUIRE(writeStatusJson(jw, s));
+  const std::string j(buf, jw.length());
+  CHECK(j.find("\"ip\":\"255.255.255.255\",\"mask\":\"255.255.255.255\","
+               "\"gw\":\"255.255.255.254\",\"dns\":\"254.255.255.255\"") != std::string::npos);
+}

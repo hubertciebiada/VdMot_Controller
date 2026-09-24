@@ -823,3 +823,27 @@ TEST_CASE("publish scheduler: parameter clamping") {
   CHECK_FALSE(d.takeFullPublish(9999));
   CHECK(d.takeFullPublish(10000));
 }
+
+TEST_CASE("topics: a topic that stops fitting part-way leaves an empty string") {
+  TopicContext s;
+  copyString(s.station, sizeof s.station, "VdMot");
+  char buf[16];
+  // "VdMot/valves/1/target" needs 22 bytes: main and head fit, the tail not.
+  memset(buf, 'X', sizeof buf);
+  CHECK(buildTopic(s, Topic::ValveTarget, "1", buf, sizeof buf) == 0);
+  CHECK(buf[0] == '\0');
+  memset(buf, 'X', sizeof buf);
+  CHECK(buildTargetCommandTopic(s, "1", buf, sizeof buf) == 0);
+  CHECK(buf[0] == '\0');
+  char fit[32];
+  CHECK(buildTopic(s, Topic::ValveTarget, "1", fit, sizeof fit) > 0);
+}
+
+TEST_CASE("topics: an empty inbound topic is rejected before looking at its bytes") {
+  TopicContext s;
+  copyString(s.station, sizeof s.station, "VdMot");
+  const char* t = "/VdMot/valves/1/target/set";
+  CHECK(parseTargetCommandTopic(s, t, 0, nullptr) == -1);
+  CHECK(parseTargetCommandTopic(s, t, strlen(t), nullptr) == 0);
+  CHECK(parseTargetCommandTopic(s, t, 1, nullptr) == -1);
+}
