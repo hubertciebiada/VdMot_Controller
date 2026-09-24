@@ -1,0 +1,69 @@
+// Classification of a finished motor move (stop reason, early end stop) and
+// the per-move record reported by gvlvx. Hardware-free.
+#pragma once
+
+#include <stdint.h>
+
+namespace vdm {
+
+// Wire values of gvlvx lastStop.
+enum class StopReason : uint8_t {
+  None = 0,               // no move since start-up
+  Target = 1,             // requested pulse count reached
+  EndStop = 2,            // current above the end-stop threshold
+  EarlyEndStop = 3,       // end stop after less than half of the expected travel
+  Timeout = 4,            // motor ran too long without an end stop
+  Undercurrent = 5,       // no motor current (open circuit)
+  SafetyOvercurrent = 6,  // safety or hard current limit
+  Aborted = 7,            // move could not be started / was cancelled
+};
+
+// What the motor layer saw when the move ended.
+enum class MotorStop : uint8_t {
+  None = 0,
+  CountReached,
+  EndStop,
+  SafetyOvercurrent,
+  Undercurrent,
+  Timeout,
+  Aborted,
+};
+
+enum MoveDirection : uint8_t { kDirOpen = 0, kDirClose = 1 };
+
+// Pulse count meaning "run until an end stop".
+constexpr uint16_t kRunToEndStop = 0xFFFF;
+
+struct MoveRequest {
+  uint8_t dir;               // MoveDirection
+  uint16_t requestedCounts;  // kRunToEndStop for a move to an end stop
+  // For a move to an end stop: expected travel in % of the full stroke
+  // (100 = full travel); 0 disables the early end stop check.
+  uint8_t expectedTravelPct;
+  // Full stroke learned by the last successful calibration, 0 = unknown.
+  uint32_t learnedTravel;
+};
+
+struct MoveResult {
+  uint8_t dir;
+  uint16_t requestedCounts;
+  uint16_t countedCounts;
+  uint8_t stopReason;   // StopReason
+  uint16_t peakCurrent;  // 0.1 mA, largest filtered |current|
+  uint32_t durationMs;
+};
+
+struct MoveClassification {
+  StopReason reason;
+  bool early;  // end stop (threshold or safety) before half of the expected travel
+};
+
+// Early: a move to an end stop that ended at an end stop (threshold or safety
+// limit) after less than 50 % of learnedTravel * expectedTravelPct / 100.
+// A safety stop keeps reason SafetyOvercurrent but may still be early.
+MoveClassification classifyMove(const MoveRequest& req, MotorStop stop, uint32_t counted);
+
+MoveResult makeMoveResult(const MoveRequest& req, StopReason reason, uint32_t counted,
+                          int32_t peak, uint32_t durationMs);
+
+}  // namespace vdm
