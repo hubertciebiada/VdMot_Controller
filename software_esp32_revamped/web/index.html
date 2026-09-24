@@ -3,34 +3,222 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>VdMot Revamped</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<header>
-  <h1 id="station">VdMot</h1>
-  <div class="chips">
-    <span class="chip" id="net">net</span>
-    <span class="chip" id="link">stm</span>
-    <span class="chip" id="mqtt">mqtt</span>
-  </div>
-  <div class="meta"><span id="time"></span> &middot; up <span id="uptime"></span></div>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="brand"><h1 id="station">VdMot</h1><span class="muted small">Revamped</span></div>
+  <ul class="chips" aria-label="Connection state">
+    <li><span class="chip" id="st-net">net</span></li>
+    <li><span class="chip" id="st-link">STM</span></li>
+    <li><span class="chip" id="st-mqtt">MQTT</span></li>
+    <li hidden id="st-cal-li"><span class="chip info" id="st-cal">calibrating</span></li>
+  </ul>
+  <p class="meta">
+    <span><span class="sr">Device time </span><b id="st-time">-</b></span>
+    <span>up <b id="st-uptime">-</b></span>
+    <span>ESP <b id="st-esp">-</b></span>
+    <span>STM <b id="st-stm">-</b></span>
+  </p>
+  <span class="spacer"></span>
+  <button type="button" id="theme">Theme: auto</button>
 </header>
-<nav>
+<nav class="tabs" aria-label="Sections">
   <a href="#valves">Valves</a>
   <a href="#sensors">Sensors</a>
-  <a href="#events">Events</a>
+  <a href="#events">Events<span class="dot" id="ev-dot" hidden><span class="sr"> (new)</span></span></a>
   <a href="#settings">Settings</a>
   <a href="#maintenance">Maintenance</a>
 </nav>
-<main>
-  <section id="valves"><h2>Valves</h2><div id="valve-list" class="cards"></div></section>
-  <section id="sensors"><h2>Sensors</h2><div id="sensor-list"></div></section>
-  <section id="events"><h2>Events</h2><ol id="event-list" class="events"></ol></section>
-  <section id="settings"><h2>Settings</h2><p class="muted">Network, MQTT, names, sensor mapping, calibration schedule, motor parameters, breakaway, login.</p></section>
-  <section id="maintenance"><h2>Maintenance</h2><p class="muted">ESP update, STM flashing, reboot, STM reset, config/log export.</p></section>
+<div id="banner" class="banner" role="alert" hidden></div>
+<main id="main" tabindex="-1">
+
+<section id="v-valves" aria-labelledby="h-valves" hidden>
+  <div class="bar">
+    <h2 id="h-valves">Valves</h2>
+    <div class="summary muted" id="valve-summary" aria-live="polite"></div>
+    <span class="grow"></span>
+    <label class="inline small"><input type="checkbox" id="show-inactive"> Show inactive</label>
+  </div>
+  <div id="valve-list" class="cards"></div>
+</section>
+
+<section id="v-sensors" aria-labelledby="h-sensors" hidden>
+  <div class="bar">
+    <h2 id="h-sensors">Sensors</h2>
+    <span class="grow"></span>
+    <button type="button" id="scan-bus">Scan 1-Wire bus</button>
+  </div>
+  <h3>Temperatures</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Slot</th><th>Name</th><th class="r">Temp</th><th>Valve</th><th>State</th><th class="r">Raw</th><th class="r">Age</th><th>1-Wire id</th></tr></thead>
+    <tbody id="temps-body"></tbody>
+  </table></div>
+  <h3 style="margin-top:16px">Voltages</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Slot</th><th>Name</th><th class="r">Value</th><th>State</th><th class="r">Raw</th><th class="r">Age</th><th>1-Wire id</th></tr></thead>
+    <tbody id="volts-body"></tbody>
+  </table></div>
+</section>
+
+<section id="v-events" aria-labelledby="h-events" hidden>
+  <div class="bar">
+    <h2 id="h-events">Events</h2>
+    <label class="inline small">Severity
+      <select id="ev-sev">
+        <option value="debug">debug+</option>
+        <option value="info" selected>info+</option>
+        <option value="warning">warning+</option>
+        <option value="error">error+</option>
+        <option value="critical">critical</option>
+      </select>
+    </label>
+    <label class="inline small">Valve <select id="ev-valve"><option value="">all</option></select></label>
+    <label class="inline small"><input type="checkbox" id="ev-live" checked> Live</label>
+    <span class="grow"></span>
+    <a class="btn" href="/api/log" download="vdmot-events.log">Download log</a>
+  </div>
+  <p class="small muted" id="ev-info" aria-live="polite"></p>
+  <ol class="events" id="ev-list" aria-label="Events, newest first"></ol>
+</section>
+
+<section id="v-settings" aria-labelledby="h-settings" hidden>
+  <div class="bar"><h2 id="h-settings">Settings</h2><span class="grow"></span>
+    <button type="button" id="cfg-reload">Reload</button></div>
+  <form id="cfg-form" class="cfg" novalidate></form>
+  <form id="motor-form" class="cfg" novalidate></form>
+</section>
+
+<section id="v-maintenance" aria-labelledby="h-maint" hidden>
+  <div class="bar"><h2 id="h-maint">Maintenance</h2></div>
+  <div class="cols">
+    <div class="panel"><h3>ESP32</h3><dl class="info" id="info-esp"></dl></div>
+    <div class="panel"><h3>STM32</h3><dl class="info" id="info-stm"></dl></div>
+  </div>
+  <div class="cols">
+    <div class="panel" id="p-ota">
+      <h3>ESP firmware update</h3>
+      <p class="small muted">Upload an ESP32 application image (<span class="mono">.bin</span>). The MD5 is computed here and checked by the device before the new image is activated. The ESP restarts; the STM and the valves keep running. A new image that does not come up healthy is rolled back automatically.</p>
+      <div class="row"><label for="ota-file" class="sr">ESP firmware file</label><input type="file" id="ota-file" accept=".bin,application/octet-stream"></div>
+      <p class="small" id="ota-info" aria-live="polite"></p>
+      <progress id="ota-prog" max="100" value="0" hidden aria-label="ESP upload progress"></progress>
+      <div class="row" style="margin-top:8px"><button type="button" class="primary" id="ota-go" disabled>Upload and restart</button></div>
+    </div>
+    <div class="panel" id="p-stm">
+      <h3>STM firmware</h3>
+      <p class="small muted">Upload an STM32 image (max 512 KiB), then flash it. Valves stop moving while flashing (about a minute); targets are re-sent afterwards.</p>
+      <div class="row"><label for="stm-file" class="sr">STM firmware file</label><input type="file" id="stm-file" accept=".bin,application/octet-stream"></div>
+      <p class="small" id="stm-file-info" aria-live="polite"></p>
+      <progress id="stm-up-prog" max="100" value="0" hidden aria-label="STM image upload progress"></progress>
+      <div class="row" style="margin-top:8px"><button type="button" id="stm-up-go" disabled>Upload image</button></div>
+      <div class="tbl-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>Image</th><th class="r">Size</th><th>Version</th><th>CRC32</th><th></th></tr></thead>
+        <tbody id="stm-images"></tbody>
+      </table></div>
+      <div id="flash-status" style="margin-top:10px" aria-live="polite"></div>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="panel">
+      <h3>Restart and reset</h3>
+      <div class="row">
+        <button type="button" id="btn-reboot">Restart ESP</button>
+        <button type="button" class="danger" id="btn-stm-reset">Reset STM</button>
+      </div>
+      <p class="small muted" style="margin-top:8px">Restarting the ESP never resets the STM. Resetting the STM makes every valve recalibrate.</p>
+    </div>
+    <div class="panel">
+      <h3>Valves and sensors</h3>
+      <div class="row">
+        <button type="button" id="btn-cal-all">Calibrate all</button>
+        <button type="button" id="btn-asm-all">Assembly position (all)</button>
+        <button type="button" id="btn-detect">Detect valves</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>MQTT</h3>
+      <div class="row">
+        <button type="button" id="btn-mqtt-rc">Reconnect</button>
+        <button type="button" data-disc="republish">Re-send HA discovery</button>
+        <button type="button" data-disc="delete">Delete HA discovery</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Backup</h3>
+      <div class="row">
+        <a class="btn" href="/api/config/export" download="vdmot-config.json">Export config</a>
+        <a class="btn" href="/api/log" download="vdmot-events.log">Export log</a>
+        <label class="btn" for="cfg-import">Import config&hellip;</label>
+        <input type="file" id="cfg-import" accept=".json,application/json" class="sr">
+      </div>
+      <p class="small muted" style="margin-top:8px">Exports never contain passwords; an import keeps the stored ones.</p>
+    </div>
+    <div class="panel">
+      <h3>Factory reset</h3>
+      <p class="small muted">Erases the configuration of this firmware and restarts. Legacy settings are not imported again.</p>
+      <button type="button" class="danger" id="btn-factory">Factory reset&hellip;</button>
+    </div>
+  </div>
+</section>
 </main>
-<footer>VdMot Revamped &middot; ESP <span id="esp-version"></span> &middot; STM <span id="stm-version"></span></footer>
+<footer>VdMot Revamped &middot; ESP <span id="ft-esp">-</span> &middot; STM <span id="ft-stm">-</span></footer>
+
+<dialog id="dlg-confirm" aria-labelledby="dc-title">
+  <form method="dialog">
+    <h2 id="dc-title">Confirm</h2>
+    <p id="dc-text"></p>
+    <div id="dc-extra"></div>
+    <div class="field" id="dc-typed" hidden>
+      <label for="dc-input" id="dc-input-label"></label>
+      <input id="dc-input" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </div>
+    <div class="btns">
+      <button type="button" data-close>Cancel</button>
+      <button value="ok" class="primary" id="dc-ok">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-move" aria-labelledby="dm-title">
+  <form method="dialog" id="dm-form" novalidate>
+    <h2 id="dm-title">Service move</h2>
+    <p class="small muted">Moves the motor by a number of counts with a current limit, outside the normal target control. Use it to free a stuck valve or to test a head. The result appears as the last move.</p>
+    <fieldset><legend>Direction</legend>
+      <label class="inline"><input type="radio" name="dir" value="open" checked> Open</label>
+      <label class="inline" style="margin-left:16px"><input type="radio" name="dir" value="close"> Close</label>
+    </fieldset>
+    <div class="grid">
+      <div class="field"><label for="dm-counts">Counts (1-10000)</label>
+        <input id="dm-counts" type="number" inputmode="numeric" min="1" max="10000" step="1" value="200" required aria-describedby="dm-counts-e">
+        <span class="err-msg" id="dm-counts-e"></span></div>
+      <div class="field"><label for="dm-ma">Current limit, mA (5-60)</label>
+        <input id="dm-ma" type="number" inputmode="numeric" min="5" max="60" step="1" value="30" required aria-describedby="dm-ma-e">
+        <span class="err-msg" id="dm-ma-e"></span></div>
+    </div>
+    <label class="inline"><input type="checkbox" id="dm-ack"> I understand the motor moves without end-stop calibration.</label>
+    <div class="btns">
+      <button type="button" data-close>Cancel</button>
+      <button value="ok" class="primary" id="dm-go" disabled>Move</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-profile" aria-labelledby="dp-title">
+  <form method="dialog">
+    <h2 id="dp-title">Current profile</h2>
+    <div id="dp-body"></div>
+    <div class="btns">
+      <button type="button" id="dp-refresh">Read from STM</button>
+      <button value="close" class="primary">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 <script src="/app.js"></script>
 </body>
 </html>
