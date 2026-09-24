@@ -1872,3 +1872,246 @@ TEST_CASE("config: decode fuzz") {
     }
   }
 }
+
+// ---- mutation-driven cases -------------------------------------------------
+
+TEST_CASE("config: tzPosix NoSpace rule checks every byte, '~' allowed") {
+  Config c;
+  setDefaults(c);
+  CHECK(set(c, "time.tzPosix", S(" CET-1")) == SetResult::OutOfRange);
+  CHECK(set(c, "time.tzPosix", S("\x7f" "CET")) == SetResult::OutOfRange);
+  CHECK(set(c, "time.tzPosix", S("CET-1 ")) == SetResult::OutOfRange);
+  CHECK(set(c, "time.tzPosix", S("~")) == SetResult::Ok);
+  CHECK(std::string(c.time.tzPosix) == "~");
+  CHECK(set(c, "time.tzPosix", S("!A~")) == SetResult::Ok);
+  CHECK(validateConfig(c, nullptr, 0));
+  c.time.tzPosix[0] = ' ';
+  char path[40];
+  CHECK_FALSE(validateConfig(c, path, sizeof path));
+  CHECK(std::string(path) == "time.tzPosix");
+}
+
+TEST_CASE("config: numeric strings are parsed within their length only") {
+  Config c;
+  setDefaults(c);
+  // "-5" cut to "-": not a number, even though a digit follows in memory.
+  CHECK(set(c, "mqtt.minDelayS", SL("-5", 1)) == SetResult::WrongType);
+  // "1." cut to "1": a number, the '.' outside the length does not count.
+  CHECK(set(c, "mqtt.minDelayS", SL("1.", 1)) == SetResult::Ok);
+  CHECK(c.mqtt.minDelayS == 1);
+  CHECK(set(c, "mqtt.minDelayS", SL("2e", 1)) == SetResult::Ok);
+  CHECK(c.mqtt.minDelayS == 2);
+  CHECK(set(c, "mqtt.minDelayS", SL("30", 1)) == SetResult::Ok);
+  CHECK(c.mqtt.minDelayS == 3);
+  CHECK(set(c, "mqtt.minDelayS", SL("4.5", 3)) == SetResult::WrongType);
+  CHECK(set(c, "mqtt.minDelayS", SL("4.0", 3)) == SetResult::Ok);
+  CHECK(c.mqtt.minDelayS == 4);
+  CHECK(set(c, "mqtt.minDelayS", SL("5e0", 2)) == SetResult::WrongType);
+  CHECK(set(c, "mqtt.minDelayS", SL("6e+", 3)) == SetResult::WrongType);
+  CHECK(set(c, "mqtt.minDelayS", SL("7e+0", 4)) == SetResult::Ok);
+  CHECK(c.mqtt.minDelayS == 7);
+}
+
+namespace {
+// Applies only the first `len` bytes of `full`; the rest stays readable in
+// memory, so reading past `len` would change the result.
+PatchResult patchCut(Config& c, const std::string& full, size_t len, std::string* pathOut) {
+  char path[80];
+  memset(path, 'x', sizeof path);
+  const PatchResult r = applyConfigJson(c, full.data(), len, path, sizeof path);
+  *pathOut = path;
+  return r;
+}
+std::string at(size_t n) { return "@" + std::to_string(n); }
+}  // namespace
+
+TEST_CASE("config patch: nothing after `len` is read") {
+  Config c;
+  setDefaults(c);
+  std::string p;
+  // Trailing whitespace beyond len.
+  CHECK(patchCut(c, "{} ", 2, &p) == PatchResult::Ok);
+  CHECK(patchCut(c, "{}\t\n", 3, &p) == PatchResult::Ok);
+  // A literal cut by len.
+  const std::string lit = "{\"persistLog\":true}";
+  const size_t t = lit.find("true");
+  CHECK(patchCut(c, lit, t + 3, &p) == PatchResult::Malformed);
+  CHECK(p == at(t));
+  // The literal ends exactly at len: accepted, the object is unterminated.
+  CHECK(patchCut(c, lit, t + 4, &p) == PatchResult::Malformed);
+  CHECK(p == at(t + 4));
+  const std::string lf = "{\"persistLog\":false}";
+  const size_t f = lf.find("false");
+  CHECK(patchCut(c, lf, f + 4, &p) == PatchResult::Malformed);
+  CHECK(p == at(f));
+  CHECK(patchCut(c, lf, f + 5, &p) == PatchResult::Malformed);
+  CHECK(p == at(f + 5));
+  const std::string ln = "{\"persistLog\":null}";
+  const size_t n = ln.find("null");
+  CHECK(patchCut(c, ln, n + 3, &p) == PatchResult::Malformed);
+  CHECK(p == at(n));
+}
+
+TEST_CASE("config patch: \\u escapes cut by len") {
+  Config c;
+  setDefaults(c);
+  std::string p;
+  const std::string s = "{\"station\":\"\\u0041\"}";
+  const size_t h = s.find("0041");
+  for (size_t k = 0; k < 4; ++k) {
+    CAPTURE(k);
+    CHECK(patchCut(c, s, h + k, &p) == PatchResult::Malformed);
+    CHECK(p == at(h));
+  }
+  // All four digits inside len: the string is unterminated at len.
+  CHECK(patchCut(c, s, h + 4, &p) == PatchResult::Malformed);
+  CHECK(p == at(h + 4));
+  CHECK(patch(c, s, &p) == PatchResult::Ok);
+  CHECK(std::string(c.station) == "A");
+
+  // Surrogate pair: the low half must be inside len.
+  const std::string sp = "{\"station\":\"\\uD83D\\uDE00\"}";
+  const size_t lo = sp.find("\\uDE00");
+  CHECK(patchCut(c, sp, lo, &p) == PatchResult::Malformed);
+  CHECK(p == at(lo));
+  CHECK(patchCut(c, sp, lo + 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(lo));
+  CHECK(patchCut(c, sp, lo + 2, &p) == PatchResult::Malformed);
+  CHECK(p == at(lo + 2));
+  CHECK(patchCut(c, sp, lo + 6, &p) == PatchResult::Malformed);
+  CHECK(p == at(lo + 6));
+}
+
+TEST_CASE("config patch: \\u escapes encode exact UTF-8") {
+  struct Case {
+    const char* esc;
+    const char* utf8;
+  };
+  const Case cases[] = {
+      {"\\u00a0", "\xc2\xa0"},
+      {"\\u07ff", "\xdf\xbf"},
+      {"\\u0800", "\xe0\xa0\x80"},
+      {"\\u20ac", "\xe2\x82\xac"},
+      {"\\uffff", "\xef\xbf\xbf"},
+      {"\\uD800\\uDC00", "\xf0\x90\x80\x80"},
+      {"\\uD83D\\uDE00", "\xf0\x9f\x98\x80"},
+      {"\\uDBFF\\uDFFF", "\xf4\x8f\xbf\xbf"},
+      {"\\uD8C0\\uDC01", "\xf1\x80\x80\x81"},
+      {"\\u0041\\u007e", "A~"},
+  };
+  for (const Case& k : cases) {
+    CAPTURE(k.esc);
+    Config c;
+    setDefaults(c);
+    std::string p;
+    CHECK(patch(c, std::string("{\"station\":\"") + k.esc + "\"}", &p) == PatchResult::Ok);
+    CHECK(std::string(c.station) == k.utf8);
+  }
+}
+
+TEST_CASE("config export: all-ones addresses are written in full") {
+  Config c;
+  setDefaults(c);
+  REQUIRE(set(c, "net.mask", S("255.255.255.255")) == SetResult::Ok);
+  REQUIRE(set(c, "syslog.server", S("255.255.255.254")) == SetResult::Ok);
+  const std::string j = exportJson(c);
+  CHECK(j.find("\"mask\":\"255.255.255.255\"") != std::string::npos);
+  CHECK(j.find("\"server\":\"255.255.255.254\"") != std::string::npos);
+}
+
+TEST_CASE("config patch: syntax errors at len report the exact offset") {
+  Config c;
+  setDefaults(c);
+  std::string p;
+  // Escape backslash is the last byte inside len.
+  const std::string e = "{\"station\":\"a\\n\"}";
+  const size_t bs = e.find('\\');
+  CHECK(patchCut(c, e, bs + 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(bs + 1));
+  // A number cut by len: digits after len are not part of it.
+  const std::string num = "{\"persistLog\":12}";
+  const size_t d = num.find('1');
+  CHECK(patchCut(c, num, d + 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(d + 1));
+  // Value missing: the string after len is not read.
+  const std::string st = "{\"station\":\"x\"}";
+  const size_t colon = st.find(':');
+  CHECK(patchCut(c, st, colon + 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(colon + 1));
+  // Object cut after '{', after a key, before ':'.
+  CHECK(patchCut(c, "{}", 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(1));
+  CHECK(patchCut(c, "{\"a\":1}", 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(1));
+  CHECK(patchCut(c, "{\"a\":1}", 4, &p) == PatchResult::Malformed);
+  CHECK(p == at(4));
+  CHECK(patchCut(c, "{\"a\" :1}", 5, &p) == PatchResult::Malformed);
+  CHECK(p == at(5));
+  CHECK(patchCut(c, "[]", 1, &p) == PatchResult::Malformed);
+  CHECK(p == at(0));
+  CHECK(patchCut(c, "{\"valves\":[]}", 11, &p) == PatchResult::Malformed);
+  CHECK(p == at(11));
+}
+
+TEST_CASE("config patch: empty keys and keys with NUL name nothing") {
+  Config c;
+  setDefaults(c);
+  std::string p;
+  CHECK(patch(c, "{\"net\":{\"\":1}}", &p) == PatchResult::UnknownKey);
+  CHECK(p == "net");
+  CHECK(patch(c, "{\"net\":{\"dhcp\\u0000\":true}}", &p) == PatchResult::UnknownKey);
+  CHECK(p == "net");
+  CHECK(patch(c, "{\"\":{\"station\":\"x\"}}", &p) == PatchResult::UnknownKey);
+  CHECK(p == "");
+  CHECK(patch(c, "{\"\":1}", &p) == PatchResult::UnknownKey);
+  CHECK(p == "");
+}
+
+TEST_CASE("config binary: a string length past the payload is not read") {
+  // Header + a 1-byte payload that announces a 20-char station name. The
+  // buffer is exactly 13 bytes (ASan catches any read past it).
+  std::vector<uint8_t> b = {'V', 'D', 'M', 'C', 1, 0, 1, 0, 20, 0, 0, 0, 0};
+  fixCrc(b);
+  const std::vector<uint8_t> exact(b.begin(), b.end());
+  Config out;
+  CHECK(decodeConfig(exact.data(), exact.size(), out) == DecodeResult::Invalid);
+  // Same with a 4-byte field read past a 2-byte payload (station "" + iface).
+  Config c;
+  setDefaults(c);
+  const std::vector<uint8_t> full = encode(c);
+  std::vector<uint8_t> cut(full.begin(), full.begin() + 8 + 2);
+  cut[6] = 2;
+  cut[7] = 0;
+  cut.resize(cut.size() + 4);
+  fixCrc(cut);
+  const std::vector<uint8_t> exact2(cut.begin(), cut.end());
+  CHECK(decodeConfig(exact2.data(), exact2.size(), out) == DecodeResult::Invalid);
+  // Payload cut right after the length byte of a 12-char string, deep in the
+  // blob: the 12 bytes must not be read from beyond the payload.
+  Config other = c;
+  REQUIRE(std::string(c.time.ntpServer) == "pool.ntp.org");
+  other.time.ntpServer[0] = 'x';
+  const size_t off = diffOffset(c, other) - 1;  // ntpServer length byte
+  REQUIRE(full[off] == strlen(c.time.ntpServer));
+  std::vector<uint8_t> deep(full.begin(), full.begin() + static_cast<long>(off) + 1);
+  const size_t payload = deep.size() - 8;
+  deep[6] = static_cast<uint8_t>(payload);
+  deep[7] = static_cast<uint8_t>(payload >> 8);
+  deep.resize(deep.size() + 4);
+  fixCrc(deep);
+  const std::vector<uint8_t> exact3(deep.begin(), deep.end());
+  CHECK(decodeConfig(exact3.data(), exact3.size(), out) == DecodeResult::Invalid);
+}
+
+TEST_CASE("config binary: an unterminated string is encoded at most cap-1 bytes") {
+  Config c;
+  setDefaults(c);
+  memset(c.station, 'x', sizeof c.station);  // no NUL inside the array
+  std::vector<uint8_t> b(kConfigBlobMax);
+  const size_t n = encodeConfig(c, b.data(), b.size());
+  REQUIRE(n > 0);
+  CHECK(b[8] == sizeof c.station - 1);
+  Config out;
+  CHECK(decodeConfig(b.data(), n, out) == DecodeResult::Ok);
+  CHECK(std::string(out.station) == std::string(sizeof c.station - 1, 'x'));
+}

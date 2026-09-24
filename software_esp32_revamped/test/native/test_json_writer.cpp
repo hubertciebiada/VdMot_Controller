@@ -450,3 +450,19 @@ TEST_CASE("json writer: random call sequences stay bounded") {
     CHECK(jw.length() < (cap ? cap : 1));
   }
 }
+
+TEST_CASE("JsonWriter: a key whose ':' does not fit fails at once") {
+  char buf[5];
+  JsonWriter jw(buf, sizeof buf);
+  jw.beginObject();
+  REQUIRE(jw.ok());
+  jw.key("a");  // "{\"a\"" fits, the ':' does not
+  CHECK_FALSE(jw.ok());
+  CHECK(std::string(buf) == "{");
+  char buf6[6];
+  JsonWriter ok6(buf6, sizeof buf6);
+  ok6.beginObject();
+  ok6.key("a");
+  CHECK(ok6.ok());
+  CHECK(std::string(buf6) == "{\"a\":");
+}

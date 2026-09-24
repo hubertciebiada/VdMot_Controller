@@ -1323,3 +1323,17 @@ TEST_CASE("legacy: fuzz - the result always validates") {
     CHECK((r.rejected == 0) == (r.firstRejected[0] == '\0'));
   }
 }
+
+TEST_CASE("legacy: a one-character WiFi password is repaired, not reset to defaults") {
+  FakeNvs n;
+  n.putStr("netCfg", "ssid", "home");
+  n.putStr("netCfg", "pwd", "1");
+  n.putStr("sysCfg", "stName", "keep");
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.net.ssid).empty());
+  CHECK(std::string(c.net.wifiPassword).empty());
+  CHECK(std::string(c.station) == "keep");
+  CHECK(first(r) == "netCfg/pwd");
+  CHECK(r.rejected == 1);
+}

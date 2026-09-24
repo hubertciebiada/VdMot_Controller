@@ -800,3 +800,17 @@ TEST_CASE("planner: onVersion does nothing while the protocol is unknown") {
   p.onVersion(true);
   CHECK(p.protocol() == 2);
 }
+
+TEST_CASE("planner: a re-probe answered with protocol 1 does not re-arm the re-probe") {
+  PollPlanner p;
+  p.requestResync();
+  uint32_t now = 0;
+  runResync(p, now, 0);  // probe timed out: v1
+  REQUIRE(p.protocol() == 1);
+  p.onVersion(true);  // re-probe #1
+  REQUIRE(p.resyncActive());
+  runResync(p, now, 1);  // this time the STM answers "1"
+  CHECK(p.protocol() == 1);
+  p.onVersion(true);  // only a successful v2 probe re-arms it
+  CHECK_FALSE(p.resyncActive());
+}

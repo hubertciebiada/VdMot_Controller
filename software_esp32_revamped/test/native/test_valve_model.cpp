@@ -1320,3 +1320,46 @@ TEST_CASE("SensorModel volt list and data") {
   CHECK(isZero(s.volt(1).id));
   CHECK(s.temp(0).raw == kTempUnassigned);
 }
+
+TEST_CASE("applySensorTemps: only the second sensor changes") {
+  SensorModel s;
+  OneWireList l;
+  l.count = 2;
+  l.hasList = true;
+  l.ids[0] = idWithCrc(1);
+  l.ids[1] = idWithCrc(2);
+  s.applyTempList(l, 0);
+  auto read = [&](uint8_t bus, int16_t raw, uint32_t now) {
+    TempData td;
+    td.valid = true;
+    td.id = l.ids[bus];
+    td.value = raw;
+    s.applyTempData(bus, td, now);
+  };
+  ValveModel m;
+  m.setActiveMask(0x001);
+  ValveSensors vs;
+  vs.isList = true;
+  vs.ids[0][0] = idWithCrc(1);
+  vs.ids[0][1] = idWithCrc(2);
+  m.applyValveSensors(vs, nullptr, 0);
+  const uint32_t rev0 = m.valve(0).revision;
+  // Sensor 1 not read yet (stays unassigned, equal to the old temp2).
+  read(1, 215, 1000);
+  m.applySensorTemps(s, 1000, 60000);
+  CHECK(m.valve(0).temp1 == kTempUnassigned);
+  CHECK(m.valve(0).temp2 == 215);
+  CHECK(m.valve(0).revision == rev0 + 1);
+  // temp1 unchanged, temp2 changes again.
+  read(1, 220, 2000);
+  m.applySensorTemps(s, 2000, 60000);
+  CHECK(m.valve(0).temp1 == kTempUnassigned);
+  CHECK(m.valve(0).temp2 == 220);
+  CHECK(m.valve(0).revision == rev0 + 2);
+  // temp1 changes to the old temp2 value, temp2 unchanged.
+  read(0, 220, 3000);
+  m.applySensorTemps(s, 3000, 60000);
+  CHECK(m.valve(0).temp1 == 220);
+  CHECK(m.valve(0).temp2 == 220);
+  CHECK(m.valve(0).revision == rev0 + 3);
+}

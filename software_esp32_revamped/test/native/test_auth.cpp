@@ -213,3 +213,162 @@ TEST_CASE("AuthLimiter with maxFailures 0 never locks") {
   CHECK_FALSE(l.locked(100));
   CHECK(l.failuresInWindow() == 0);
 }
+
+// ---- mutation-driven cases -------------------------------------------------
+
+TEST_CASE("checkBasicAuth decodes the whole base64 alphabet exactly") {
+  // '+' (62) and '/' (63) round-trip.
+  CHECK(check("Basic dTo+Pj4/Pz8=", "u", ">>>???"));
+  CHECK_FALSE(check("Basic dTo+Pj4/Pz8=", "u", ">>>?" "?>"));
+  // Deterministic random credentials: every alphabet character appears; each
+  // must decode to its exact value (a wrong value changes the password).
+  static const char kAlpha[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  bool seen[64] = {};
+  uint32_t seed = 0xC0FFEEu;
+  char pwd[80];
+  char cred[90];
+  char enc[140];
+  char hdr[160];
+  for (int round = 0; round < 400; ++round) {
+    seed = seed * 1103515245u + 12345u;
+    const size_t len = 1 + (seed >> 16) % 70;
+    for (size_t i = 0; i < len; ++i) {
+      seed = seed * 1103515245u + 12345u;
+      char c = static_cast<char>(1 + (seed >> 16) % 255);
+      if (c == ':') c = ';';
+      pwd[i] = c;
+    }
+    pwd[len] = '\0';
+    snprintf(cred, sizeof cred, "u:%s", pwd);
+    b64(cred, strlen(cred), enc);
+    for (const char* p = enc; *p; ++p) {
+      const char* hit = strchr(kAlpha, *p);
+      if (hit != nullptr && *p != '\0') seen[hit - kAlpha] = true;
+    }
+    snprintf(hdr, sizeof hdr, "Basic %s", enc);
+    CHECK(check(hdr, "u", pwd));
+    // Replacing any non-padding character by another alphabet character
+    // changes the decoded bytes or sets padding bits: never accepted.
+    const size_t el = strlen(enc);
+    const size_t pos = (seed >> 8) % el;
+    if (hdr[6 + pos] != '=') {
+      const char* at = strchr(kAlpha, hdr[6 + pos]);
+      hdr[6 + pos] = kAlpha[(at - kAlpha + 1 + (seed >> 20) % 63) % 64];
+      CHECK_FALSE(check(hdr, "u", pwd));
+    }
+  }
+  for (int i = 0; i < 64; ++i) CHECK_MESSAGE(seen[i], "alphabet char not covered: ", kAlpha[i]);
+}
+
+TEST_CASE("checkBasicAuth rejects invalid characters instead of decoding them as zero") {
+  // An invalid character must fail the decode, not act as value 0 ('A').
+  char enc[32];
+  char hdr[48];
+  b64("AAA:pw", 6, enc);  // QUFBOnB3
+  snprintf(hdr, sizeof hdr, "Basic %s", enc);
+  CHECK(check(hdr, "AAA", "pw"));
+  // Replace each character in turn by an invalid one: never accepted.
+  for (size_t i = 6; i < strlen(hdr); ++i) {
+    const char saved = hdr[i];
+    static const char kBad[] = {'*', '.', '-', '_', ' ', '\x80', '@', '[', '`', '{'};
+    for (const char bad : kBad) {
+      hdr[i] = bad;
+      CHECK_FALSE(check(hdr, "AAA", "pw"));
+    }
+    hdr[i] = saved;
+  }
+  // An 'A' (value 0) replaced by an invalid char must not decode as 'A'.
+  b64("u:p\x01" "ab", 6, enc);  // dTpwAWFi
+  snprintf(hdr, sizeof hdr, "Basic %s", enc);
+  REQUIRE(strchr(hdr + 6, 'A') != nullptr);
+  CHECK(check(hdr, "u", "p\x01" "ab"));
+  *strchr(hdr + 6, 'A') = '!';
+  CHECK_FALSE(check(hdr, "u", "p\x01" "ab"));
+}
+
+TEST_CASE("checkBasicAuth uses only `len` bytes: a non multiple of 4 is refused") {
+  // "admin:pwX" -> YWRtaW46cHdY (no padding). Only 11 of its 12 characters
+  // are inside `len`: must not decode the 12th.
+  const char* h = "Basic YWRtaW46cHdY";
+  CHECK(checkBasicAuth(h, 18, "admin", "pwX"));
+  CHECK_FALSE(checkBasicAuth(h, 17, "admin", "pwX"));
+  CHECK_FALSE(checkBasicAuth(h, 17, "admin", "pw"));
+}
+
+TEST_CASE("checkBasicAuth: an invalid group after valid ones rejects all of it") {
+  CHECK_FALSE(check("Basic YWRtaW46cHdY****", "admin", "pwX"));
+  CHECK_FALSE(check("Basic YWRtaW46cHdYcH*=", "admin", "pwX"));
+}
+
+TEST_CASE("checkBasicAuth: non-zero padding bits reject the whole credential") {
+  // "u:pw" -> dTpwdw== ; "u:pwd" -> dTpwd2Q= ; +1 on the last data char sets
+  // a padding bit.
+  CHECK(check("Basic dTpwdw==", "u", "pw"));
+  CHECK_FALSE(check("Basic dTpwdx==", "u", "pw"));
+  CHECK_FALSE(check("Basic dTpwdx==", "u", "p"));
+  CHECK(check("Basic dTpwd2Q=", "u", "pwd"));
+  CHECK_FALSE(check("Basic dTpwd2R=", "u", "pwd"));
+  CHECK_FALSE(check("Basic dTpwd2R=", "u", "p"));
+  // No padding at all: the last group is complete.
+  CHECK(check("Basic YWRtaW46cHdY", "admin", "pwX"));
+}
+
+TEST_CASE("checkBasicAuth checks every scheme character") {
+  CHECK_FALSE(check("Xasic YWRtaW46cHc=", "admin", "pw"));
+  CHECK_FALSE(check("Bxsic YWRtaW46cHc=", "admin", "pw"));
+  CHECK_FALSE(check("Baxic YWRtaW46cHc=", "admin", "pw"));
+  CHECK_FALSE(check("Basxc YWRtaW46cHc=", "admin", "pw"));
+  CHECK_FALSE(check("BasicXYWRtaW46cHc=", "admin", "pw"));
+  CHECK_FALSE(check("Zasic YWRtaW46cHc=", "admin", "pw"));
+}
+
+TEST_CASE("checkBasicAuth splits at a colon in the first byte") {
+  // ":a:b" -> OmE6Yg== : user is empty (never matches), password "a:b".
+  CHECK_FALSE(check("Basic OmE6Yg==", ":a", "b"));
+  CHECK_FALSE(check("Basic OmE6Yg==", "a", "b"));
+  // A NUL as the very first decoded byte is refused: "\0u:pw" -> AHU6cHc=
+  CHECK_FALSE(check("Basic AHU6cHc=", "u", "pw"));
+}
+
+TEST_CASE("checkBasicAuth: 130-byte credentials against a longer password") {
+  // The comparison must never read past the decoded bytes (ASan-checked).
+  char pwd[140];
+  memset(pwd, 'p', 129);
+  pwd[129] = '\0';
+  char cred[160];
+  snprintf(cred, sizeof cred, "u:%.128s", pwd);
+  REQUIRE(strlen(cred) == 130);
+  char enc[256];
+  char hdr[300];
+  b64(cred, 130, enc);
+  snprintf(hdr, sizeof hdr, "Basic %s", enc);
+  CHECK_FALSE(check(hdr, "u", pwd));
+  pwd[128] = '\0';
+  CHECK(check(hdr, "u", pwd));
+}
+
+TEST_CASE("AuthLimiter: a single failure also expires with its window") {
+  AuthLimiter l(3, 1000, 5000);
+  l.onResult(false, 0);
+  CHECK(l.failuresInWindow() == 1);
+  l.onResult(false, 1000);  // window from 0 has expired
+  CHECK(l.failuresInWindow() == 1);
+  l.onResult(false, 1500);
+  CHECK_FALSE(l.locked(1500));
+  CHECK(l.failuresInWindow() == 2);
+  l.onResult(false, 1999);
+  CHECK(l.locked(1999));
+}
+
+TEST_CASE("AuthLimiter: lockout shorter than the window clears the count") {
+  AuthLimiter l(2, 10000, 1000);
+  l.onResult(false, 0);
+  l.onResult(false, 10);
+  CHECK(l.locked(10));
+  CHECK(l.locked(1009));
+  CHECK_FALSE(l.locked(1010));
+  CHECK(l.failuresInWindow() == 0);
+  l.onResult(false, 1020);
+  CHECK_FALSE(l.locked(1020));
+  CHECK(l.failuresInWindow() == 1);
+}
