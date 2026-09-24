@@ -47,7 +47,7 @@ bool BufWriter::append(const char* s) {
 bool BufWriter::append(char c) { return appendRaw(&c, 1); }
 
 bool BufWriter::appendUnsigned(uint32_t v) {
-  char digits[10];
+  char digits[10];  // NOMUTATE: buffer size; all indexing uses sizeof(digits), so a larger buffer is unobservable
   size_t n = 0;
   do {
     digits[sizeof(digits) - 1 - n] = static_cast<char>('0' + v % 10);
@@ -58,7 +58,7 @@ bool BufWriter::appendUnsigned(uint32_t v) {
 }
 
 bool BufWriter::appendSigned(int32_t v) {
-  char text[11];
+  char text[11];  // NOMUTATE: buffer size; all indexing uses sizeof(text), so a larger buffer is unobservable
   size_t n = 0;
   // Magnitude via unsigned arithmetic so INT32_MIN does not overflow.
   uint32_t magnitude = v < 0 ? 0u - static_cast<uint32_t>(v) : static_cast<uint32_t>(v);

@@ -118,3 +118,39 @@ TEST_CASE("makeMoveResult: fields and saturation") {
 
   CHECK(vdm::makeMoveResult(o, StopReason::Aborted, 0, -5, 0).peakCurrent == 0);
 }
+
+TEST_CASE("classifyMove: the early check only applies to a run to the end stop") {
+  // a counted move with a learned travel is never early, whatever it counted
+  const MoveRequest r{vdm::kDirClose, 500, 100, 4000};
+  const auto c = vdm::classifyMove(r, MotorStop::EndStop, 0);
+  CHECK_FALSE(c.early);
+  CHECK(c.reason == StopReason::EndStop);
+}
+
+TEST_CASE("classifyMove: a learned travel of 1 count is a learned travel") {
+  // expected 1 * 100 / 100 = 1 count, 0 counted -> 0 < 1: early
+  const auto c = vdm::classifyMove(toEnd(100, 1), MotorStop::EndStop, 0);
+  CHECK(c.early);
+  CHECK(c.reason == StopReason::EarlyEndStop);
+  // no learned travel: never early
+  CHECK_FALSE(vdm::classifyMove(toEnd(100, 0), MotorStop::EndStop, 0).early);
+}
+
+TEST_CASE("classifyMove: the expected travel is capped at exactly 100 %") {
+  // pct 200 counts as 100: expected 1000, early below 500 counted
+  // pct 101 is above 100 as well: expected 1000, not 1010
+  CHECK(vdm::classifyMove(toEnd(101, 1000), MotorStop::EndStop, 499).early);
+  CHECK_FALSE(vdm::classifyMove(toEnd(101, 1000), MotorStop::EndStop, 500).early);
+  CHECK(vdm::classifyMove(toEnd(200, 1000), MotorStop::EndStop, 499).early);
+  CHECK_FALSE(vdm::classifyMove(toEnd(200, 1000), MotorStop::EndStop, 500).early);
+  CHECK(vdm::classifyMove(toEnd(100, 1000), MotorStop::EndStop, 499).early);
+  CHECK_FALSE(vdm::classifyMove(toEnd(100, 1000), MotorStop::EndStop, 500).early);
+  CHECK(vdm::classifyMove(toEnd(99, 1000), MotorStop::EndStop, 494).early);
+  CHECK_FALSE(vdm::classifyMove(toEnd(99, 1000), MotorStop::EndStop, 495).early);
+}
+
+TEST_CASE("makeMoveResult: a peak of 1 is kept, only <= 0 reads 0") {
+  CHECK(vdm::makeMoveResult(partial(10), StopReason::Target, 10, 1, 0).peakCurrent == 1);
+  CHECK(vdm::makeMoveResult(partial(10), StopReason::Target, 10, 0, 0).peakCurrent == 0);
+  CHECK(vdm::makeMoveResult(partial(10), StopReason::Target, 10, -1, 0).peakCurrent == 0);
+}
