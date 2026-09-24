@@ -195,7 +195,7 @@ void configure(uint8_t syslogLevel, uint32_t syslogServer, uint16_t syslogPort, 
   gSyslogServer = syslogServer;
   gSyslogPort = syslogPort;
   gPersist = persist;
-  vdm::copyString(gHostname, sizeof gHostname, hostname);
+  vdm::buildHostname(hostname, gHostname, sizeof gHostname);  // syslog HOSTNAME: no spaces
 }
 
 void service(bool netUp) {

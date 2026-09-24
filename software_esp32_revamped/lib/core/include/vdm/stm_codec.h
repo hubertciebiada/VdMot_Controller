@@ -246,7 +246,17 @@ struct TargetReply {  // gtgtp v pos
 // gvlvx (v2), 19 fields after the command:
 // idx status pos target meanCur oc cc dc cr moves calState earlyStops
 // cmdRejected lastDir lastReq lastCnt lastStop lastPeak lastMs
-// `status` uses the gvlvd encoding (bit 7 = calibrating).
+// `status` uses the gvlvd encoding, but its bit 7 is not the calibration
+// state in v2: the STM sets it only for staln and the movement trigger, and
+// keeps it set until that calibration ends. calState (0..15 on the wire) is
+// authoritative: bits 0..1 the phase, bits 2..3 sticky flags.
+constexpr uint8_t kCalStateIdle = 0;
+constexpr uint8_t kCalStateRequested = 1;
+constexpr uint8_t kCalStateRunning = 2;
+constexpr uint8_t kCalStateMask = 0x03;
+constexpr uint8_t kCalFlagEarlyStop = 0x04;   // early end stop since the last good calibration
+constexpr uint8_t kCalFlagLastFailed = 0x08;  // the last calibration did not succeed
+constexpr uint8_t kCalFlagMask = kCalFlagEarlyStop | kCalFlagLastFailed;
 enum class StopReason : uint8_t {
   None = 0,
   Target = 1,
@@ -270,7 +280,11 @@ struct MoveResult {
 
 struct ValveEx {
   uint8_t valve = 0;
-  uint8_t status = 0;
+  uint8_t status = 0;       // raw & 0x7F
+  // A calibration runs (calState Running) or was asked for by staln or the
+  // movement trigger (status bit 7). Requested alone (calState 1 without bit
+  // 7: time trigger queued, or a valve found at start-up that calibrates on
+  // its first target change) is not "calibrating": it can last for days.
   bool calibrating = false;
   uint8_t position = 0;     // 0..100
   uint8_t target = 0;       // 0..100, the STM's current target
@@ -280,7 +294,8 @@ struct ValveEx {
   int32_t deadZone = 0;
   uint8_t calibRetries = 0;
   uint32_t moves = 0;
-  uint8_t calState = 0;     // 0 idle, 1 started, 2 in progress
+  uint8_t calState = 0;     // phase: raw & kCalStateMask (0 idle, 1 requested, 2 running)
+  uint8_t calFlags = 0;     // raw & kCalFlagMask
   uint32_t earlyStops = 0;
   uint32_t cmdRejected = 0;
   MoveResult lastMove;

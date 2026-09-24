@@ -333,6 +333,20 @@ class Importer {
         elemNameActive("valvesCfg", "valves", "valves", i, blob + i * kValveElem);
       }
     }
+    importCalib();
+  }
+
+  // The legacy web UI offered hour 0..24, and the legacy firmware fired when
+  // tm_hour == hourOfCalib: 24 (or any larger stored value) meant "never".
+  // Here that is dayMask 0; dayOfCalib is then irrelevant.
+  void importCalib() {
+    int64_t hour;
+    if (readInt("valvesCfg", "hourOfCalib", hour) && hour >= 24 && hour <= UINT8_MAX) {
+      setInt("calib.dayMask", 0) ? imported() : rejected("valvesCfg", "hourOfCalib");
+      int64_t day;
+      if (readInt("valvesCfg", "dayOfCalib", day)) imported();
+      return;
+    }
     intKey("valvesCfg", "dayOfCalib", "calib.dayMask");
     intKey("valvesCfg", "hourOfCalib", "calib.hour");
   }
@@ -412,7 +426,8 @@ class Importer {
       n.dhcp = true;  // an incomplete static setup would leave the device unreachable
       rejected("netCfg", "dhcp");
     }
-    if (n.ssid[0] != '\0' && strlen(n.wifiPassword) < 8) {
+    const size_t pwdLen = strlen(n.wifiPassword);
+    if (n.ssid[0] != '\0' && pwdLen > 0 && pwdLen < 8) {  // "" = open network
       n.ssid[0] = '\0';
       n.wifiPassword[0] = '\0';
       rejected("netCfg", "pwd");

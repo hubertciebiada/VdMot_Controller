@@ -51,9 +51,7 @@ enum class CommandType : uint8_t {
   Detect,             // stdet 255
   ScanSensors,        // stons, then lists
   SetValveSensors,    // valve, ids[2]; followed by masns + gvlon 255
-  SetMotorChars,      // motor
-  SetLearnMovements,  // learnMovements
-  SetBreakaway,       // breakaway (v2)
+  SetMotorSettings,   // motor / learnMovements / breakaway (v2), each if its has* flag
   ServiceMove,        // valve, dir, counts, maxmA (v2)
   RequestProfile,     // valve (v2)
   ResetStm,           // NRST pulse by the user
@@ -68,8 +66,13 @@ struct Command {
   uint8_t pos = 0;
   vdm::TargetSource source = vdm::TargetSource::None;
   vdm::OneWireId ids[2];
+  // SetMotorSettings: one command, so a request is queued completely or not
+  // at all even while other tasks submit concurrently.
+  bool hasMotor = false;
   vdm::MotorChars motor;
+  bool hasLearnMovements = false;
   uint16_t learnMovements = 0;
+  bool hasBreakaway = false;
   vdm::Breakaway breakaway;
   vdm::MoveDir dir = vdm::MoveDir::Open;
   uint16_t counts = 0;
@@ -83,10 +86,10 @@ struct Command {
 // Depth of the FreeRTOS queue into the STM task.
 constexpr size_t kCommandQueueDepth = 16;
 // Non-blocking; false when the queue is full (caller answers 503 / logs).
+// A request that needs several STM commands is one Command (see
+// SetMotorSettings): web, mqtt and app submit concurrently, so free space
+// checked before several submits would not stay free.
 bool submit(const Command& cmd);
-// Free entries in the queue (a handler that submits several commands checks
-// this first so a request is applied completely or not at all).
-size_t queueSpace();
 // STM task side: next command, false when none.
 bool receive(Command& out);
 
@@ -116,6 +119,9 @@ struct StmSnapshot {
   vdm::Breakaway breakaway;
   bool haveStatus = false;
   vdm::StmStatus status;
+  // Link Up, re-sync finished and the 30 s sensor grace over: valve sensor
+  // assignments and temperatures reflect the STM (HA first-run cleanup).
+  bool sensorsSettled = false;
   uint32_t lineOverflows = 0;
   uint32_t lineMalformed = 0;
   vdm::FlashStatus flash;
@@ -129,6 +135,8 @@ void readStmSnapshot(StmSnapshot& out);
 // Cheap accessors (no snapshot copy).
 vdm::LinkState stmLinkState();
 bool stmFlashActive();   // flasher running (UART owned by it)
+// STM task, right after the flasher started (the snapshot follows later).
+void markStmFlashActive();
 uint32_t stmSnapshotRevision();  // changes whenever a new snapshot is published
 uint8_t stmProtocol();   // 0 unknown, 1, 2
 // STM task only.

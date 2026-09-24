@@ -78,7 +78,8 @@ uint32_t diffValve(const ValveState& a, const ValveState& b) {
     m |= kChangeCounters;
   }
   if (a.calibRetries != b.calibRetries) m |= kChangeCalibRetries;
-  if (a.calState != b.calState || a.earlyStops != b.earlyStops || a.cmdRejected != b.cmdRejected) {
+  if (a.calState != b.calState || a.calFlags != b.calFlags || a.earlyStops != b.earlyStops ||
+      a.cmdRejected != b.cmdRejected) {
     m |= kChangeExtended;
   }
   if (a.moveSeq != b.moveSeq) m |= kChangeLastMove;
@@ -190,6 +191,7 @@ void ValveModel::applyValveEx(const ValveEx& d, uint32_t nowMs) {
   v.moves = d.moves;
   v.hasExtended = true;
   v.calState = d.calState;
+  v.calFlags = d.calFlags;
   v.earlyStops = d.earlyStops;
   v.cmdRejected = d.cmdRejected;
   // A counter below its baseline means an STM reboot went unnoticed.
@@ -280,11 +282,31 @@ void ValveModel::applyValveSensors(const ValveSensors& s, const OneWireId* slotI
   }
 }
 
+void ValveModel::applySensorTemps(const SensorModel& sensors, uint32_t nowMs,
+                                  uint32_t maxAgeMs) {
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    ValveState& v = v_[i];
+    int16_t raw[2] = {kTempUnassigned, kTempUnassigned};
+    for (uint8_t k = 0; k < 2; ++k) {
+      const int bus = sensors.findTemp(v.sensorId[k]);  // -1 for a zero id
+      if (bus >= 0 && sensors.tempFresh(static_cast<uint8_t>(bus), nowMs, maxAgeMs)) {
+        raw[k] = sensors.temp(static_cast<uint8_t>(bus)).raw;
+      }
+    }
+    if (raw[0] == v.temp1 && raw[1] == v.temp2) continue;
+    const ValveState before = v;
+    v.temp1 = raw[0];
+    v.temp2 = raw[1];
+    commit(i, before);
+  }
+}
+
 bool ValveModel::nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos) {
   for (uint8_t n = 0; n < kValveCount; ++n) {
     const uint8_t i = static_cast<uint8_t>((pushCursor_ + n) % kValveCount);
     ValveState& v = v_[i];
-    if (!isActive(i) || !v.known || !v.desiredValid || v.calibrating) continue;
+    if (!isActive(i) || !v.known || !v.desiredValid) continue;
+    if (v.calibrating && holdWhileCalibrating_) continue;
     const uint32_t sincePush = elapsedMs(nowMs, v.lastPushMs);
     const bool rearm = v.sync == TargetSync::Failed;
     if (rearm) {
@@ -310,6 +332,16 @@ bool ValveModel::nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos) {
     return true;
   }
   return false;
+}
+
+void ValveModel::onTargetPushDropped(uint8_t valve, uint32_t nowMs) {
+  (void)nowMs;
+  if (valve >= kValveCount || v_[valve].sync != TargetSync::AwaitAck) return;
+  ValveState& v = v_[valve];
+  const ValveState before = v;
+  v.sync = TargetSync::Pending;
+  if (v.pushAttempts > 0) --v.pushAttempts;
+  commit(valve, before);
 }
 
 void ValveModel::onTargetAck(uint8_t valve, uint32_t nowMs) {

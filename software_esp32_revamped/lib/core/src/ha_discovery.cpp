@@ -217,14 +217,18 @@ Describe describeCommon(const DiscoveryContext& ctx, uint16_t k, Entity& e) {
   return Describe::Ok;
 }
 
-Describe describeValve(const DiscoveryContext& ctx, uint8_t v, uint16_t k, Entity& e) {
+// `keepUnknown`: describe the temp entities of a valve whose sensors are not
+// known yet (stale check only; never published on a guess).
+Describe describeValve(const DiscoveryContext& ctx, uint8_t v, uint16_t k, Entity& e,
+                       bool keepUnknown) {
   const DiscoveryContext::Valve& valve = ctx.valves[v];
   const ValveDef& d = kValveDefs[k];
   if (!valve.active) return Describe::Skip;
+  const bool unknown = keepUnknown && !valve.tempsKnown;
   switch (d.gate) {
     case Gate::Always: break;
-    case Gate::Temp1: if (!valve.hasTemp1) return Describe::Skip; break;
-    case Gate::Temp2: if (!valve.hasTemp2) return Describe::Skip; break;
+    case Gate::Temp1: if (!valve.hasTemp1 && !unknown) return Describe::Skip; break;
+    case Gate::Temp2: if (!valve.hasTemp2 && !unknown) return Describe::Skip; break;
     case Gate::Diag: if (!ctx.publishDiag) return Describe::Skip; break;
     case Gate::NewDiag: if (!ctx.newDiag) return Describe::Skip; break;
   }
@@ -357,11 +361,13 @@ Describe describeTail(const DiscoveryContext& ctx, uint16_t k, Entity& e) {
   return stateTopic(ctx, t, nullptr, e) ? Describe::Ok : Describe::Error;
 }
 
-Describe describe(const DiscoveryContext& ctx, uint16_t pos, Entity& e) {
+Describe describe(const DiscoveryContext& ctx, uint16_t pos, Entity& e,
+                  bool keepUnknown = false) {
   if (pos < kValvesFirst) return describeCommon(ctx, pos, e);
   if (pos < kTempsFirst) {
     const uint16_t r = pos - kValvesFirst;
-    return describeValve(ctx, static_cast<uint8_t>(r / kValveKinds), r % kValveKinds, e);
+    return describeValve(ctx, static_cast<uint8_t>(r / kValveKinds), r % kValveKinds, e,
+                         keepUnknown);
   }
   if (pos < kVoltsFirst) return describeTemp(ctx, static_cast<uint8_t>(pos - kTempsFirst), e);
   if (pos < kTailFirst) return describeVolt(ctx, static_cast<uint8_t>(pos - kVoltsFirst), e);
@@ -530,7 +536,7 @@ bool discoveryTopicIsCurrent(const DiscoveryContext& ctx, const char* topic, siz
   DiscoveryMessage msg;
   for (uint16_t pos = 0; pos < kEntityCount; ++pos) {
     Entity e;
-    if (describe(ctx, pos, e) != Describe::Ok) continue;
+    if (describe(ctx, pos, e, true) != Describe::Ok) continue;
     if (!buildConfigTopic(station, e.comp, e.objectId, msg)) continue;
     if (strlen(msg.topic) == len && memcmp(msg.topic, topic, len) == 0) return true;
   }

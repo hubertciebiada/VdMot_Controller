@@ -4,6 +4,7 @@
 #include <ESPmDNS.h>
 #include <ETH.h>
 #include <WiFi.h>
+#include <esp_attr.h>
 #include <esp_sntp.h>
 #include <freertos/FreeRTOS.h>
 #include <string.h>
@@ -27,6 +28,23 @@ constexpr uint32_t kWifiFallbackMs = 30000;     // Auto: WiFi after 30 s without
 constexpr uint32_t kWifiBackoffMinMs = 5000;
 constexpr uint32_t kWifiBackoffMaxMs = 60000;
 
+// NetWatchdog restarts of the outage in progress, kept across software
+// restarts (RTC slow memory is not cleared by esp_restart() or a panic;
+// after power-on it holds garbage, hence the check word).
+constexpr uint32_t kRtcMagic = 0x564E5744;  // "VNWD"
+RTC_NOINIT_ATTR uint32_t gRtcWdMagic;
+RTC_NOINIT_ATTR uint32_t gRtcWdRestarts;
+
+uint8_t loadOutageRestarts() {
+  if (gRtcWdMagic != kRtcMagic || gRtcWdRestarts > UINT8_MAX) return 0;
+  return static_cast<uint8_t>(gRtcWdRestarts);
+}
+
+void storeOutageRestarts(uint8_t n) {
+  gRtcWdRestarts = n;
+  gRtcWdMagic = kRtcMagic;
+}
+
 portMUX_TYPE gMux = portMUX_INITIALIZER_UNLOCKED;
 // Written from the system event task (flags only), read by the app task.
 volatile bool gEthLink = false;
@@ -45,8 +63,7 @@ bool gEthStarted = false;
 bool gWifiStarted = false;
 uint32_t gEthDownSinceMs = 0;
 bool gEthDownKnown = false;
-uint32_t gWifiRetryAtMs = 0;
-uint32_t gWifiBackoffMs = kWifiBackoffMinMs;
+vdm::Backoff gWifiBackoff(kWifiBackoffMinMs, kWifiBackoffMaxMs);
 uint32_t gSyncSeen = 0;
 bool gTimeSyncedOnce = false;
 int64_t gClockRefEpoch = 0;  // wall clock at the previous service() call
@@ -202,9 +219,11 @@ void checkTimeSync(uint32_t nowMs) {
 
 void begin(const vdm::Config& cfg) {
   gCfg = cfg;
-  vdm::copyString(gHostname, sizeof gHostname, cfg.station[0] ? cfg.station : "VdMot");
+  // DHCP/mDNS need a host name; the station name may hold spaces and UTF-8.
+  vdm::buildHostname(cfg.station, gHostname, sizeof gHostname);
   gStaticIp = !cfg.net.dhcp;
   gWatchdog.configure(cfg.net.reconnectTimeoutMin);
+  gWatchdog.setRestartsInOutage(loadOutageRestarts());
   WiFi.onEvent(onEvent);
   if (cfg.net.iface != vdm::NetInterface::Wifi) {
     gEthStarted = ETH.begin(board::kEthPhyAddr, board::kEthPhyPower, board::kEthMdc,
@@ -242,13 +261,11 @@ void service(uint32_t nowMs) {
       wifiWanted() && !eth &&
       (gCfg.net.iface == vdm::NetInterface::Wifi || !gEthStarted ||
        (gEthDownKnown && vdm::elapsedMs(nowMs, gEthDownSinceMs) >= kWifiFallbackMs));
-  if (gWifiUp) {
-    gWifiBackoffMs = kWifiBackoffMinMs;
-  } else if (wifiNeeded && vdm::timeReached(nowMs, gWifiRetryAtMs)) {
+  if (gWifiUp || !wifiNeeded) {
+    gWifiBackoff.reset();
+  } else if (gWifiBackoff.due(nowMs)) {
     startWifi();
-    gWifiRetryAtMs = nowMs + gWifiBackoffMs;
-    gWifiBackoffMs =
-        gWifiBackoffMs >= kWifiBackoffMaxMs / 2 ? kWifiBackoffMaxMs : gWifiBackoffMs * 2;
+    gWifiBackoff.onFailure(nowMs);  // counts as failed until gWifiUp
   }
 
   const bool up = isUp();
@@ -256,7 +273,11 @@ void service(uint32_t nowMs) {
     gMdnsStarted = MDNS.begin(gHostname);
     if (gMdnsStarted) MDNS.addService("http", "tcp", 80);
   }
-  if (gWatchdog.update(up, nowMs)) ota::requestRestart(2, 1000);
+  const bool restart = gWatchdog.update(up, nowMs);
+  if (gWatchdog.restartsInOutage() != loadOutageRestarts()) {
+    storeOutageRestarts(gWatchdog.restartsInOutage());
+  }
+  if (restart) ota::requestRestart(2, 1000);
 }
 
 bool isUp() {

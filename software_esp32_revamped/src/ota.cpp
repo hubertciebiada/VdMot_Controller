@@ -33,6 +33,7 @@ size_t gUploadWritten = 0;
 portMUX_TYPE gMux = portMUX_INITIALIZER_UNLOCKED;
 bool gRestartPending = false;
 uint32_t gRestartAtMs = 0;
+uint8_t gRestartReason = 0;
 
 bool pendingVerify() {
   const esp_partition_t* running = esp_ota_get_running_partition();
@@ -186,6 +187,7 @@ void requestRestart(uint8_t reason, uint32_t delayMs) {
   if (!gRestartPending) {
     gRestartPending = true;
     gRestartAtMs = millis() + delayMs;
+    gRestartReason = reason;
     first = true;
   }
   portEXIT_CRITICAL(&gMux);
@@ -202,15 +204,23 @@ bool restartPending() {
   return p;
 }
 
-void serviceRestart(uint32_t nowMs) {
+void serviceRestart(uint32_t nowMs, bool netUp) {
   portENTER_CRITICAL(&gMux);
   const bool due = gRestartPending && vdm::timeReached(nowMs, gRestartAtMs);
+  const uint8_t reason = gRestartReason;
   portEXIT_CRITICAL(&gMux);
   if (!due) return;
   // An ESP OTA still being written would be lost anyway; the flasher is the
   // exception: never restart in the middle of an STM flash (the STM would be
   // left half-erased). Retry every pass until it is done.
   if (app::stmFlashActive()) return;
+  // Reboot button, network/station settings (0) or factory reset (3) right
+  // after an update: without this the bootloader would boot the old image.
+  if (gValidator.confirmBeforeRestart(reason == 0 || reason == 3, netUp) &&
+      esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+    logger::log(vdm::EventCode::AppMarkedValid, vdm::kNoValve,
+                static_cast<int32_t>(app::uptimeS()));
+  }
   logger::service(false);  // flush the log file before going down
   esp_restart();
 }

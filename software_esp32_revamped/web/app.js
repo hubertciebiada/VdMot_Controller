@@ -383,7 +383,8 @@ const STATE_TXT = { nodata: "no data", fullopen: "full open", novalve: "no valve
 const HEALTH = { blocked: ["blocked", "err"], failed: ["failed", "err"], noValve: ["no valve", "warn"],
   calibRetries: ["calibration retries", "warn"], earlyStop: ["early stop", "warn"],
   cmdRejected: ["commands rejected", "warn"], stale: ["no fresh data", "warn"],
-  targetUnconfirmed: ["target not confirmed", "warn"], tempFailed: ["sensor failed", "warn"] };
+  targetUnconfirmed: ["target not confirmed", "warn"], tempFailed: ["sensor failed", "warn"],
+  calEarlyStop: ["early end stop since calibration", "warn"], calLastFailed: ["last calibration failed", "err"] };
 const STOP_TXT = { none: "–", target: "target reached", endstop: "end stop", early_endstop: "early end stop",
   timeout: "timeout", undercurrent: "no motor current", safety_overcurrent: "over-current limit", aborted: "aborted" };
 const SYNC_TXT = { pending: "target pending", await_ack: "sending target", await_verify: "verifying target",
@@ -446,8 +447,9 @@ function updateCard(c, v) {
   setText(c.name, v.name || "Valve " + c.i);
   setChip(c.state, v.active ? STATE_TXT[key] || key : "inactive", v.active ? STATE_CLS[key] || "" : "");
   const ext = v.ext && typeof v.ext === "object" ? v.ext : null;
+  // ext.calState is the phase only (0 idle, 1 requested, 2 running); the flags are separate.
   c.cal.hidden = !(v.calibrating || (ext && ext.calState > 0));
-  if (!c.cal.hidden) setText(c.cal, v.calibrating || (ext && ext.calState === 2) ? "calibrating" : "calibration queued");
+  if (!c.cal.hidden) setText(c.cal, v.calibrating || (ext && ext.calState >= 2) ? "calibrating" : "calibration queued");
   const syncTxt = v.active ? SYNC_TXT[v.sync] : undefined;
   c.sync.hidden = !syncTxt;
   if (syncTxt) setChip(c.sync, syncTxt, v.sync === "failed" ? "err" : "warn");
@@ -482,6 +484,8 @@ function updateCard(c, v) {
     (isNum(x.temp) ? x.temp.toFixed(1) + " °C" : "no reading")).join(", ") : "");
   c.temps.hidden = !sensors.length;
   const flags = Array.isArray(v.health) ? v.health.filter((f) => HEALTH[f]) : [];
+  if (ext && ext.calEarlyStop === true) flags.push("calEarlyStop");
+  if (ext && ext.calLastFailed === true) flags.push("calLastFailed");
   const fk = flags.join();
   if (c.fk !== fk) {
     c.fk = fk;
@@ -824,10 +828,10 @@ $("ev-live").addEventListener("change", () => kick(pEvents));
 // ------------------------------------------------------------------ settings
 
 // Field definition: [key, label, type, a, b, rule, hint]
-//   str: a..b chars, rule; int: a..b; num: a..b (float); sel: a = options;
-//   secret: a..b chars; ip/mask/bool/id/days: no extra.
-const RULE_MSG = { safe: "ASCII without + # / \" \\ and no space at either end",
-  print: "printable ASCII only", nospace: "printable ASCII without spaces", nocolon: "printable ASCII without ':'",
+//   str: a..b UTF-8 bytes, rule; int: a..b; num: a..b (float); sel: a = options;
+//   secret: a..b bytes; ip/mask/bool/id/days: no extra.
+const RULE_MSG = { safe: "no + # / \" \\ or control characters",
+  print: "no control characters", nospace: "printable ASCII without spaces", nocolon: "no ':' or control characters",
   host: "host name (letters, digits, '-', '.') or IPv4 address" };
 const GROUPS = [
   ["Station and network", "Changes in this group restart the ESP; the STM keeps running.", [
@@ -839,7 +843,7 @@ const GROUPS = [
     ["net.gateway", "Gateway", "ip"],
     ["net.dns", "DNS server", "ip"],
     ["net.ssid", "WiFi SSID", "str", 0, 32, "print"],
-    ["net.wifiPassword", "WiFi password", "secret", 0, 63],
+    ["net.wifiPassword", "WiFi password", "secret", 0, 63, "", "Empty for an open network"],
     ["net.reconnectTimeoutMin", "Restart after network loss (min)", "int", 0, 240, "", "0 = never"]]],
   ["Time", "", [
     ["time.ntpServer", "NTP server", "str", 0, 64, "host", "Empty disables time sync"],
@@ -908,11 +912,13 @@ function maskOk(b) {
   const n = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0, inv = ~n >>> 0;
   return ((inv & (inv + 1)) >>> 0) === 0;
 }
+// Lengths are checked in UTF-8 bytes, like the firmware (legacy char buffers).
+function utf8Len(v) { return new TextEncoder().encode(v).length; }
 function ruleOk(rule, v) {
-  if (!/^[\x20-\x7e]*$/.test(v)) return false;
+  if (/[\x00-\x1f\x7f-\x9f]/.test(v)) return false;
   switch (rule) {
-    case "safe": return !/[+#/"\\]/.test(v) && !/^ | $/.test(v);
-    case "nospace": return !v.includes(" ");
+    case "safe": return !/[+#/"\\]/.test(v);
+    case "nospace": return /^[\x21-\x7e]*$/.test(v);
     case "nocolon": return !v.includes(":");
     case "host":
       if (v === "") return true;
@@ -964,13 +970,13 @@ function readField(f) {
     }
     case "secret": {
       const v = el.value;
-      if (v.length > f.b) return { err: "At most " + f.b + " characters" };
+      if (utf8Len(v) > f.b) return { err: "At most " + f.b + " bytes" };
       if (!ruleOk("print", v)) return { err: RULE_MSG.print };
       return { v };
     }
     default: {  // str
-      const v = el.value;
-      if (v.length < f.a || v.length > f.b) return { err: f.a === f.b ? f.a + " characters" : (f.a ? f.a + "–" + f.b : "At most " + f.b) + " characters" };
+      const v = el.value, n = utf8Len(v);
+      if (n < f.a || n > f.b) return { err: (f.a ? f.a + "–" + f.b : "At most " + f.b) + " bytes (UTF-8)" };
       if (!ruleOk(f.rule, v)) return { err: RULE_MSG[f.rule] || "Invalid" };
       return { v };
     }
@@ -1279,8 +1285,8 @@ function validateSettings() {
   const ssid = val("net.ssid");
   const wp = CF.get("net.wifiPassword");
   if (ssid) {
-    if (wp.el.value !== "" && wp.el.value.length < 8) need("net.wifiPassword", "8–63 characters");
-    else if (!secretSet("net.wifiPassword")) need("net.wifiPassword", "Required when an SSID is set");
+    // Empty (not set) = open network.
+    if (wp.el.value !== "" && utf8Len(wp.el.value) < 8) need("net.wifiPassword", "8–63 bytes, or empty for an open network");
   }
   if (val("net.iface") === 2 && !ssid) need("net.ssid", "Required for WiFi");
   if (val("syslog.level") > 0 && val("syslog.server") === "0.0.0.0") need("syslog.server", "Required when syslog is on");

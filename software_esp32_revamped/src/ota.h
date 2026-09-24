@@ -37,7 +37,10 @@ const char* uploadError();
 // first request wins; later ones are ignored.
 void requestRestart(uint8_t reason, uint32_t delayMs);
 bool restartPending();
-// App task: performs a requested restart when due (log flushed first).
-void serviceRestart(uint32_t nowMs);
+// App task: performs a requested restart when due (log flushed first). A
+// user/config restart (reasons 0 and 3) of an image still pending
+// verification with the network up confirms the image first, so it is not
+// rolled back (vdm::OtaValidator::confirmBeforeRestart).
+void serviceRestart(uint32_t nowMs, bool netUp);
 
 }  // namespace ota

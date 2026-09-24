@@ -74,10 +74,13 @@ TEST_CASE("main topic") {
   CHECK(std::string(buf) == "My Station/");  // raw, like legacy
   buildMainTopic(ctxOf("abcdefghijklmnopqrst"), buf, sizeof buf);
   CHECK(std::string(buf) == "abcdefghijklmnopqrst/");
-  for (const char* bad : {"a+b", "a#", "a/b", " a", "a ", "q\"", "b\\"}) {
+  for (const char* bad : {"a+b", "a#", "a/b", "q\"", "b\\", "a\xc3", "\x80"}) {
     CHECK(buildMainTopic(ctxOf(bad), buf, sizeof buf) == 0);
     CHECK(buf[0] == '\0');
   }
+  // Raw like legacy: UTF-8 and spaces at either end.
+  buildMainTopic(ctxOf("Fu\xc3\x9f" "boden "), buf, sizeof buf);
+  CHECK(std::string(buf) == "Fu\xc3\x9f" "boden /");
   TopicContext unterminated;
   memset(unterminated.station, 'x', sizeof unterminated.station);
   CHECK(buildMainTopic(unterminated, buf, sizeof buf) == 0);
@@ -108,9 +111,14 @@ TEST_CASE("segments") {
   CHECK(buildSegment("0123456789", 0, buf, sizeof buf) == 10);
   CHECK(buildSegment("0123456789a", 0, buf, sizeof buf) == 0);
   CHECK(buf[0] == '\0');
-  for (const char* bad : {"a/b", "a+", "#", " a", "a ", "x\"", "x\\", "\x7f"}) {
+  for (const char* bad : {"a/b", "a+", "#", "x\"", "x\\", "\x7f", "\xc3", "\xed\xa0\x80"}) {
     CHECK(buildSegment(bad, 0, buf, sizeof buf) == 0);
   }
+  // Legacy mapping: spaces (also at either end) become '_', UTF-8 stays.
+  CHECK(buildSegment("Bad ", 0, buf, sizeof buf) == 4);
+  CHECK(std::string(buf) == "Bad_");
+  CHECK(buildSegment(" K\xc3\xbc" "che", 0, buf, sizeof buf) == 7);
+  CHECK(std::string(buf) == "_K\xc3\xbc" "che");
   char small[3];
   CHECK(buildSegment("abc", 0, small, sizeof small) == 0);
   CHECK(small[0] == '\0');

@@ -529,14 +529,27 @@ TEST_CASE("config: station name") {
   CHECK(set(c, "station", S("a#b")) == SetResult::OutOfRange);
   CHECK(set(c, "station", S("a\"b")) == SetResult::OutOfRange);
   CHECK(set(c, "station", S("a\\b")) == SetResult::OutOfRange);
-  CHECK(set(c, "station", S(" ab")) == SetResult::OutOfRange);
-  CHECK(set(c, "station", S("ab ")) == SetResult::OutOfRange);
   CHECK(set(c, "station", S("a\tb")) == SetResult::OutOfRange);
-  CHECK(set(c, "station", S("a\xc3\xa4")) == SetResult::OutOfRange);
+  CHECK(set(c, "station", S("a\x7f")) == SetResult::OutOfRange);
+  CHECK(set(c, "station", S("a\xc2\x85")) == SetResult::OutOfRange);  // C1 control
+  CHECK(set(c, "station", S("a\xc3")) == SetResult::OutOfRange);      // truncated UTF-8
+  CHECK(set(c, "station", S("a\xe4")) == SetResult::OutOfRange);      // Latin-1, not UTF-8
   CHECK(set(c, "station", SL("ab\0c", 4)) == SetResult::OutOfRange);
   CHECK(set(c, "station", I(5)) == SetResult::WrongType);
   CHECK(set(c, "station", B(true)) == SetResult::WrongType);
   CHECK(std::string(c.station) == "12345678901234567890");
+  // Legacy names are kept as they are: UTF-8 and spaces at either end.
+  CHECK(set(c, "station", S("Fu\xc3\x9f" "boden")) == SetResult::Ok);
+  CHECK(std::string(c.station) == "Fu\xc3\x9f" "boden");
+  CHECK(set(c, "station", S(" ab")) == SetResult::Ok);
+  CHECK(set(c, "station", S("ab ")) == SetResult::Ok);
+  CHECK(std::string(c.station) == "ab ");
+  // 20 bytes: 10 two-byte characters fit, the 21st byte does not.
+  CHECK(set(c, "station", S("\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4"
+                            "\xc3\xa4\xc3\xa4")) == SetResult::Ok);
+  CHECK(set(c, "station", S("x\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4"
+                            "\xc3\xa4\xc3\xa4")) == SetResult::OutOfRange);
+  CHECK(set(c, "station", S("12345678901234567890")) == SetResult::Ok);
   // Only `len` bytes are used.
   CHECK(set(c, "station", SL("abcdef", 3)) == SetResult::Ok);
   CHECK(std::string(c.station) == "abc");
@@ -558,7 +571,11 @@ TEST_CASE("config: item names and units") {
   CHECK(set(c, "volts.1.unit", S("123456789")) == SetResult::OutOfRange);
   CHECK(set(c, "volts.1.unit", S("")) == SetResult::Ok);
   CHECK(set(c, "volts.1.unit", S("m#")) == SetResult::OutOfRange);
-  CHECK(set(c, "valves.2.name", S(" x")) == SetResult::OutOfRange);
+  CHECK(set(c, "valves.2.name", S(" x")) == SetResult::Ok);  // legacy: segment "_x"
+  CHECK(set(c, "valves.2.name", S("K\xc3\xbc" "che")) == SetResult::Ok);
+  CHECK(std::string(c.valves[1].name) == "K\xc3\xbc" "che");
+  CHECK(set(c, "volts.1.unit", S("\xc2\xb0" "C")) == SetResult::Ok);
+  CHECK(set(c, "volts.1.unit", S("\xb0" "C")) == SetResult::OutOfRange);
 }
 
 TEST_CASE("config: network strings, hosts and time zone") {
@@ -805,6 +822,8 @@ TEST_CASE("config: validation reports every cross-field rule with its path") {
   CHECK(validatePath(c) == "OK");
 
   strcpy(c.net.ssid, "w");
+  CHECK(validatePath(c) == "OK");  // open network
+  strcpy(c.net.wifiPassword, "1");
   CHECK(validatePath(c) == "net.wifiPassword");
   strcpy(c.net.ssid, "wlan");
   strcpy(c.net.wifiPassword, "1234567");
@@ -1278,10 +1297,10 @@ TEST_CASE("config: patch round trip of an export") {
   const std::string j = exportJson(full);
   Config c;
   // Secrets are not exported: without them the import fails validation
-  // (wifi ssid without password).
+  // (web user without password; an ssid without password is an open network).
   std::string path;
   CHECK(patch(c, j, &path) == PatchResult::Invalid);
-  CHECK(path == "net.wifiPassword");
+  CHECK(path == "web.password");
 
   Config d = full;  // same secrets present -> exact round trip
   CHECK(patch(d, j, &path) == PatchResult::Ok);
@@ -1388,14 +1407,25 @@ TEST_CASE("config: patch string decoding") {
   CHECK(patch(c, "{\"web\":{\"user\":\"q\\\"\",\"password\":\"\\\\\"}}") == PatchResult::Ok);
   CHECK(std::string(c.web.user) == "q\"");
   CHECK(std::string(c.web.password) == "\\");
-  // Control characters and non-ASCII decode fine but fail the field rules.
-  const char* rejected[] = {"\\n", "\\r", "\\t", "\\b", "\\f", "\\u0000", "\\u00e4",
-                            "\\u20ac", "\\ud83d\\ude00", "\xc3\xa4"};
+  // Control characters decode fine but fail the field rules.
+  const char* rejected[] = {"\\n", "\\r", "\\t", "\\b", "\\f", "\\u0000", "\\u007f",
+                            "\\u0085", "\xc2\x85", "\xc3", ":"};
   for (const char* r : rejected) {
     CAPTURE(r);
     CHECK(patch(c, std::string("{\"web\":{\"user\":\"a") + r + "\"}}", &path) ==
           PatchResult::OutOfRange);
     CHECK(path == "web.user");
+  }
+  // UTF-8, raw or escaped, is text.
+  const char* accepted[][2] = {{"\\u00e4", "\xc3\xa4"},
+                               {"\\u20ac", "\xe2\x82\xac"},
+                               {"\\ud83d\\ude00", "\xf0\x9f\x98\x80"},
+                               {"\xc3\xa4", "\xc3\xa4"}};
+  for (const auto& a : accepted) {
+    CAPTURE(a[0]);
+    CHECK(patch(c, std::string("{\"web\":{\"user\":\"a") + a[0] + "\"}}", &path) ==
+          PatchResult::Ok);
+    CHECK(std::string(c.web.user) == std::string("a") + a[1]);
   }
   // Keys are decoded too.
   CHECK(patch(c, "{\"c\\u0061lib\":{\"\\u0068our\":7}}") == PatchResult::Ok);

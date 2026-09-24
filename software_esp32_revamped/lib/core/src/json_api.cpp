@@ -325,6 +325,8 @@ void writeValve(JsonWriter& jw, uint8_t index, const ValveView& v, uint32_t nowM
   if (st.hasExtended) {
     jw.beginObject();
     jw.kv("calState", static_cast<uint32_t>(st.calState));
+    jw.kv("calEarlyStop", (st.calFlags & kCalFlagEarlyStop) != 0);
+    jw.kv("calLastFailed", (st.calFlags & kCalFlagLastFailed) != 0);
     jw.kv("earlyStops", st.earlyStops);
     jw.kv("cmdRejected", st.cmdRejected);
     jw.key("lastMove");

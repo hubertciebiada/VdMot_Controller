@@ -53,8 +53,10 @@ bool gBodyOverflow = false;
 AsyncWebServerRequest* gBodyOwner = nullptr;
 
 // Requests whose body was refused while it arrived (answered in
-// handleRequest). A mark is cleared when its request starts a new body, so
-// a recycled request address never inherits a stale mark.
+// handleRequest). A mark is cleared when its request starts a new body and
+// when it disconnects (every request ends that way, also one that never
+// reached handleRequest), so a recycled request address never inherits a
+// stale mark.
 struct Mark {
   AsyncWebServerRequest* req;
   uint16_t code;
@@ -164,7 +166,15 @@ void sendDocument(AsyncWebServerRequest* req, int code, F build,
   sendSlot(req, code, slot, jw.length(), attachment);
 }
 
+void clearMark(AsyncWebServerRequest* req) {
+  for (Mark& m : gMarks) {
+    if (m.req == req) m = Mark{nullptr, 0, nullptr};
+  }
+}
+
+// Only for a request that owns nothing else (its onDisconnect is free).
 void mark(AsyncWebServerRequest* req, uint16_t code, const char* error) {
+  req->onDisconnect([req]() { clearMark(req); });
   for (Mark& m : gMarks) {
     if (m.req == nullptr || m.req == req) {
       m = Mark{req, code, error};
@@ -172,12 +182,6 @@ void mark(AsyncWebServerRequest* req, uint16_t code, const char* error) {
     }
   }
   gMarks[0] = Mark{req, code, error};  // table full: the oldest mark is stale
-}
-
-void clearMark(AsyncWebServerRequest* req) {
-  for (Mark& m : gMarks) {
-    if (m.req == req) m = Mark{nullptr, 0, nullptr};
-  }
 }
 
 bool takeMark(AsyncWebServerRequest* req, Mark& out) {
@@ -423,7 +427,7 @@ void handleStatus(AsyncWebServerRequest* req) {
   s.dns = ni.dns;
   memcpy(s.mac, ni.mac, sizeof s.mac);
   s.wifiRssi = ni.rssi;
-  vdm::copyString(s.hostname, sizeof s.hostname, gCfg.station);
+  vdm::buildHostname(gCfg.station, s.hostname, sizeof s.hostname);
   const mqtt::Status ms = mqtt::status();
   s.mqtt = ms.state;
   s.mqttRc = ms.rc;
@@ -832,8 +836,8 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
   static const char* const kRoot[] = {"motor", "learnMovements", "breakaway"};
   if (!onlyKeys(o, kRoot, 3))
     return sendError(req, 400, "unknown_key", "motor/learnMovements/breakaway");
-  app::Command cmds[3];
-  size_t n = 0;
+  app::Command cmd;
+  cmd.type = app::CommandType::SetMotorSettings;
 
   JsonVariantConst mv = o["motor"];
   if (!mv.isNull()) {
@@ -863,8 +867,8 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
     mc.maxCalibRetries = static_cast<uint8_t>(reps);
     mc.fieldCount = 5;
     if (!vdm::motorCharsValid(mc)) return sendError(req, 400, "out_of_range", "motor");
-    cmds[n].type = app::CommandType::SetMotorChars;
-    cmds[n++].motor = mc;
+    cmd.hasMotor = true;
+    cmd.motor = mc;
   }
   int64_t learn = 0;
   if (!intField(o, "learnMovements", 0, 65534, learn, false) ||
@@ -872,8 +876,8 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
     return sendError(req, 400, "out_of_range", "learnMovements 0 or 50..65534");
   }
   if (!o["learnMovements"].isNull()) {
-    cmds[n].type = app::CommandType::SetLearnMovements;
-    cmds[n++].learnMovements = static_cast<uint16_t>(learn);
+    cmd.hasLearnMovements = true;
+    cmd.learnMovements = static_cast<uint16_t>(learn);
   }
   JsonVariantConst bv = o["breakaway"];
   if (!bv.isNull()) {
@@ -896,13 +900,13 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
     ba.stepPct = static_cast<uint8_t>(step);
     ba.maxmA = static_cast<uint8_t>(maxmA);
     if (!vdm::breakawayValid(ba)) return sendError(req, 400, "out_of_range", "breakaway");
-    cmds[n].type = app::CommandType::SetBreakaway;
-    cmds[n++].breakaway = ba;
+    cmd.hasBreakaway = true;
+    cmd.breakaway = ba;
   }
-  if (n == 0) return sendError(req, 400, "bad_request", "nothing to set");
-  // All or nothing: only submit when every command fits into the queue.
-  if (app::queueSpace() < n) return sendError(req, 503, "queue_full", "STM command queue full");
-  for (size_t i = 0; i < n; ++i) app::submit(cmds[i]);
+  if (!cmd.hasMotor && !cmd.hasLearnMovements && !cmd.hasBreakaway) {
+    return sendError(req, 400, "bad_request", "nothing to set");
+  }
+  if (!app::submit(cmd)) return sendError(req, 503, "queue_full", "STM command queue full");
   sendAccepted(req);
 }
 
@@ -948,6 +952,7 @@ void handleFlash(AsyncWebServerRequest* req, bool hasBody) {
     return sendError(req, 400, "bad_request", "image, mode normal|blank, force");
   }
   if (uploadBusy()) return sendError(req, 409, "busy", "upload or flash running");
+  if (ota::restartPending()) return sendError(req, 409, "restarting", "ESP restart pending");
   storage::ImageEntry e;
   if (!storage::findImage(name, e)) return sendError(req, 404, "not_found", name);
   if (!e.scanned) return sendError(req, 409, "validating", "image check pending, retry");

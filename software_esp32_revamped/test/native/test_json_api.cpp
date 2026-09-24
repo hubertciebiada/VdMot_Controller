@@ -256,6 +256,7 @@ TEST_CASE("api: valves document") {
   st.health = kHealthBlocked | kHealthStale | kHealthTempFailed;
   st.hasExtended = true;
   st.calState = 2;
+  st.calFlags = kCalFlagLastFailed;
   st.earlyStops = 3;
   st.cmdRejected = 4;
   st.lastMove.dir = MoveDir::Close;
@@ -298,7 +299,8 @@ TEST_CASE("api: valves document") {
       ",\"stmTarget\":50,\"meanCur\":12,\"moves\":100,\"oc\":20,\"cc\":21,\"dc\":-3,\"cr\":1,"
       "\"health\":[\"blocked\",\"stale\",\"tempFailed\"],\"age\":5,"
       "\"sensors\":[{\"slot\":3,\"name\":\"Flur\",\"temp\":21.5},{\"slot\":7,\"name\":\"\","
-      "\"temp\":null}],\"ext\":{\"calState\":2,\"earlyStops\":3,\"cmdRejected\":4,"
+      "\"temp\":null}],\"ext\":{\"calState\":2,\"calEarlyStop\":false,"
+      "\"calLastFailed\":true,\"earlyStops\":3,\"cmdRejected\":4,"
       "\"lastMove\":{\"dir\":\"close\",\"req\":3000,\"cnt\":1500,\"stop\":" +
       q(stopReasonName(StopReason::EarlyEndStop)) +
       ",\"peak\":12.3,\"ms\":4567},\"moveSeq\":9}},"
@@ -315,7 +317,8 @@ TEST_CASE("api: valves document") {
       ",\"stmTarget\":null,\"meanCur\":0,\"moves\":0,\"oc\":0,\"cc\":0,\"dc\":0,\"cr\":0,"
       "\"health\":[\"blocked\",\"failed\",\"noValve\",\"calibRetries\",\"earlyStop\","
       "\"cmdRejected\",\"stale\",\"targetUnconfirmed\",\"tempFailed\"],\"age\":10,\"sensors\":[],"
-      "\"ext\":{\"calState\":0,\"earlyStops\":0,\"cmdRejected\":0,\"lastMove\":{\"dir\":\"open\","
+      "\"ext\":{\"calState\":0,\"calEarlyStop\":false,\"calLastFailed\":false,"
+      "\"earlyStops\":0,\"cmdRejected\":0,\"lastMove\":{\"dir\":\"open\","
       "\"req\":0,\"cnt\":0,\"stop\":" + q(stopReasonName(StopReason::None)) +
       ",\"peak\":0.0,\"ms\":0},\"moveSeq\":0}}]}";
   CHECK(j == expected);

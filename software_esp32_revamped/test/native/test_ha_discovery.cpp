@@ -379,7 +379,7 @@ TEST_CASE("discovery refuses a missing or unsafe station") {
   c = DiscoveryContext{};
   base(c);
   valve(c, 0, "1");
-  for (const char* bad : {"", "a+b", "a/b", " x"}) {
+  for (const char* bad : {"", "a+b", "a/b", "x\xc3"}) {
     copyString(c.topics.station, sizeof c.topics.station, bad);
     DiscoveryIterator it(c);
     DiscoveryMessage m;
@@ -596,6 +596,38 @@ TEST_CASE("stale-topic check for legacy /HADiscovery.cfg lines") {
   // len is authoritative.
   const char line[] = "homeassistant/text/VdMot/ip/configXYZ";
   CHECK(discoveryTopicIsCurrent(c, line, strlen(line) - 3));
+}
+
+TEST_CASE("stale-topic check keeps valve temp configs while the sensors are unknown") {
+  static DiscoveryContext c;
+  c = DiscoveryContext{};
+  base(c);
+  valve(c, 0, "Bad_1", false);  // no temps reported (yet)
+  valve(c, 1, "Flur", false);
+  c.valves[1].active = false;
+  const std::string t1 = "homeassistant/sensor/VdMot/valves_temp1_Bad_1/config";
+  const std::string t2 = "homeassistant/sensor/VdMot/valves_temp2_Bad_1/config";
+  CHECK_FALSE(current(c, t1));  // known: no sensor -> stale
+  CHECK_FALSE(current(c, t2));
+  c.valves[0].tempsKnown = false;  // STM data not settled: never deleted on a guess
+  c.valves[1].tempsKnown = false;
+  CHECK(current(c, t1));
+  CHECK(current(c, t2));
+  CHECK_FALSE(current(c, "homeassistant/sensor/VdMot/valves_temp1_Flur/config"));  // inactive
+  CHECK(current(c, "homeassistant/valve/VdMot/valves_target_Bad_1/config"));
+  // ... but nothing is published for them.
+  DiscoveryIterator it(c);
+  DiscoveryMessage m;
+  static char buf[kDiscoveryPayloadMax + 1];
+  size_t n = 0;
+  for (;;) {
+    JsonWriter jw(buf, sizeof buf);
+    if (!it.next(m, jw)) break;
+    ++n;
+    CHECK(std::string(m.topic) != t1);
+    CHECK(std::string(m.topic) != t2);
+  }
+  CHECK(n > 0);
 }
 
 TEST_CASE("stale-topic check fuzz: only exact current topics match") {

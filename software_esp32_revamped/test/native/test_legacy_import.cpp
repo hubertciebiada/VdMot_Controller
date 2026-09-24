@@ -822,12 +822,99 @@ TEST_CASE("legacy: calibration schedule keys") {
   CHECK(c.calib.dayMask == 0);
   CHECK(c.calib.hour == 0);
   n.putInt("valvesCfg", "dayOfCalib", 128);
-  n.putInt("valvesCfg", "hourOfCalib", 24);  // the legacy UI allowed 24
+  n.putInt("valvesCfg", "hourOfCalib", 23);
   r = importLegacyConfig(n, c);
   CHECK(c.calib.dayMask == 9);
-  CHECK(c.calib.hour == 0);
-  CHECK(r.rejected == 2);
+  CHECK(c.calib.hour == 23);
+  CHECK(r.rejected == 1);
   CHECK(first(r) == "valvesCfg/dayOfCalib");
+  n.putInt("valvesCfg", "hourOfCalib", -1);
+  r = importLegacyConfig(n, c);
+  CHECK(r.rejected == 2);
+  CHECK(c.calib.dayMask == 9);
+  CHECK(c.calib.hour == 0);
+
+  // Hour 24 (the legacy UI allowed it; tm_hour never matches) meant "never":
+  // no scheduled calibration, whatever the days say.
+  for (int64_t hour : {int64_t{24}, int64_t{25}, int64_t{255}}) {
+    CAPTURE(hour);
+    for (int64_t days : {int64_t{9}, int64_t{128}}) {
+      FakeNvs h;
+      h.putInt("valvesCfg", "dayOfCalib", days);
+      h.putInt("valvesCfg", "hourOfCalib", hour);
+      Config d;
+      r = importLegacyConfig(h, d);
+      CHECK(d.calib.dayMask == 0);
+      CHECK(d.calib.hour == 0);
+      CHECK(r.imported == 2);
+      CHECK(r.rejected == 0);
+    }
+  }
+  FakeNvs h;
+  h.putInt("valvesCfg", "hourOfCalib", 24);  // days missing
+  Config d;
+  r = importLegacyConfig(h, d);
+  CHECK(d.calib.dayMask == 0);
+  CHECK(r.imported == 1);
+  h.putInt("valvesCfg", "hourOfCalib", 256);  // not a legacy value
+  d = Config{};
+  r = importLegacyConfig(h, d);
+  CHECK(d.calib.dayMask == 9);
+  CHECK(r.rejected == 1);
+}
+
+TEST_CASE("legacy: names and texts are kept byte for byte (UTF-8, edge spaces)") {
+  FakeNvs n;
+  n.putStr("sysCfg", "stName", "Fu\xc3\x9f" "boden");
+  auto v = valvesBlob();
+  setValve(v, 0, "K\xc3\xbc" "che", 1);      // 6 bytes
+  setValve(v, 1, "Bad ", 1);               // trailing space: segment "Bad_"
+  setValve(v, 2, "\xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f\xc3\xa4", 1);  // 10 bytes
+  n.putBlob("valvesCfg", "valves", v);
+  auto vb = voltsBlob();
+  setVolt(vb, 0, "Vorlauf", 0, 0.0f, 1.0f, "\xc2\xb0" "C", "");
+  n.putBlob("voltsCfg", "volts", vb);
+  n.putStr("netCfg", "ssid", "G\xc3\xa4ste");
+  n.putStr("netCfg", "pwd", "p\xc3\xa4sswort");
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(r.rejected == 0);
+  CHECK(std::string(c.station) == "Fu\xc3\x9f" "boden");
+  CHECK(std::string(c.valves[0].name) == "K\xc3\xbc" "che");
+  CHECK(std::string(c.valves[1].name) == "Bad ");
+  CHECK(std::string(c.valves[2].name) == "\xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f\xc3\xa4");
+  CHECK(std::string(c.volts[0].unit) == "\xc2\xb0" "C");
+  CHECK(std::string(c.net.ssid) == "G\xc3\xa4ste");
+  CHECK(std::string(c.net.wifiPassword) == "p\xc3\xa4sswort");
+  char path[48];
+  CHECK(validateConfig(c, path, sizeof path));
+
+  // Bytes that are not UTF-8 (a truncated sequence) are still rejected.
+  FakeNvs bad;
+  auto bv = valvesBlob();
+  setValve(bv, 0, "Kueche\xc3", 1);
+  bad.putBlob("valvesCfg", "valves", bv);
+  bad.putStr("sysCfg", "stName", "St\xe4tion");  // Latin-1
+  Config b;
+  const ImportReport rb = importLegacyConfig(bad, b);
+  CHECK(rb.rejected == 2);
+  CHECK(std::string(b.valves[0].name).empty());
+  CHECK(std::string(b.station) == "VdMot");
+}
+
+TEST_CASE("legacy: an open WiFi network (empty password) is kept") {
+  FakeNvs n;
+  n.putInt("netCfg", "ethwifi", 2);
+  n.putStr("netCfg", "ssid", "Guest");
+  n.putStr("netCfg", "pwd", "");
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(r.rejected == 0);
+  CHECK(std::string(c.net.ssid) == "Guest");
+  CHECK(c.net.wifiPassword[0] == '\0');
+  CHECK(c.net.iface == NetInterface::Wifi);
+  char path[48];
+  CHECK(validateConfig(c, path, sizeof path));
 }
 
 TEST_CASE("legacy: valves blob") {
@@ -1160,7 +1247,7 @@ TEST_CASE("legacy: first rejected key is kept, counting continues") {
   FakeNvs n;
   n.putStr("sysCfg", "stName", "");
   n.putInt("netCfg", "ethwifi", 9);
-  n.putInt("valvesCfg", "hourOfCalib", 99);
+  n.putInt("valvesCfg", "hourOfCalib", 256);
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
   CHECK(r.rejected == 3);

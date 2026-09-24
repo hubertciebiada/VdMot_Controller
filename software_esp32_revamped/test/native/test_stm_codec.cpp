@@ -1,6 +1,7 @@
 // stm_codec: command table, request builders (golden lines), reply parser
 // (every v1 and v2 reply, malformed input, fuzz), reply matching, helpers.
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <string>
@@ -1059,6 +1060,7 @@ TEST_CASE("codec: gvlvx golden") {
   CHECK(x.calibRetries == 1);
   CHECK(x.moves == 57);
   CHECK(x.calState == 2);
+  CHECK(x.calFlags == 0);
   CHECK(x.earlyStops == 7);
   CHECK(x.cmdRejected == 3);
   CHECK(x.lastMove.dir == MoveDir::Close);
@@ -1071,7 +1073,7 @@ TEST_CASE("codec: gvlvx golden") {
 
   REQUIRE(parse(gvlvxLine(1, "9"), r) == ParseStatus::Ok);
   CHECK(r.valveEx.status == 9);
-  CHECK_FALSE(r.valveEx.calibrating);
+  CHECK(r.valveEx.calibrating);  // calState 2: running, bit 7 does not matter
   REQUIRE(parse(gvlvxLine(13, "0"), r) == ParseStatus::Ok);
   CHECK(r.valveEx.lastMove.dir == MoveDir::Open);
   REQUIRE(parse(gvlvxLine(16, "7"), r) == ParseStatus::Ok);
@@ -1082,15 +1084,64 @@ TEST_CASE("codec: gvlvx golden") {
   CHECK(r.valveEx.calState == 0);
 }
 
+TEST_CASE("codec: gvlvx calState is a bit field; calibrating follows it") {
+  // Examples of software_stm32/PROTOCOL_V2.md (revamped STM 2.x).
+  Reply r;
+  REQUIRE(parse("gvlvx 3 9 0 30 17 3567 3610 43 2 12 8 1 4 1 65535 102 3 356 2140", r) ==
+          ParseStatus::Ok);
+  CHECK(r.valveEx.valve == 3);
+  CHECK(r.valveEx.status == 9);
+  CHECK(r.valveEx.calState == kCalStateIdle);
+  CHECK(r.valveEx.calFlags == kCalFlagLastFailed);
+  CHECK_FALSE(r.valveEx.calibrating);
+  CHECK(r.valveEx.earlyStops == 1);
+
+  struct Case {
+    const char* status;
+    const char* cal;
+    uint8_t state;
+    uint8_t flags;
+    bool calibrating;
+  };
+  const Case cases[] = {
+      {"1", "0", 0, 0, false},
+      // requested by the time trigger / a valve found at start-up: bit 7 clear
+      {"8", "1", 1, 0, false},
+      // requested by staln or the movement trigger: bit 7 set
+      {"129", "1", 1, 0, true},
+      // running without bit 7 (time trigger, first target change)
+      {"1", "2", 2, 0, true},
+      {"1", "6", 2, kCalFlagEarlyStop, true},
+      {"1", "10", 2, kCalFlagLastFailed, true},
+      {"129", "14", 2, kCalFlagEarlyStop | kCalFlagLastFailed, true},
+      {"1", "4", 0, kCalFlagEarlyStop, false},
+      {"9", "12", 0, kCalFlagEarlyStop | kCalFlagLastFailed, false},
+      {"1", "13", 1, kCalFlagEarlyStop | kCalFlagLastFailed, false},
+      {"1", "15", 3, kCalFlagEarlyStop | kCalFlagLastFailed, false},
+  };
+  for (const Case& c : cases) {
+    CAPTURE(c.status);
+    CAPTURE(c.cal);
+    std::string line = gvlvxLine(10, c.cal);
+    line.replace(line.find(" 130 "), 5, std::string(" ") + c.status + " ");
+    REQUIRE(parse(line, r) == ParseStatus::Ok);
+    CHECK(r.valveEx.status == (atoi(c.status) & 0x7F));
+    CHECK(r.valveEx.calState == c.state);
+    CHECK(r.valveEx.calFlags == c.flags);
+    CHECK(r.valveEx.calibrating == c.calibrating);
+  }
+  CHECK(parse(gvlvxLine(10, "16"), r) == ParseStatus::OutOfRange);
+}
+
 TEST_CASE("codec: gvlvx field ranges") {
   // Max accepted and first rejected value per field.
   const char* maxOk[19] = {"11",   "255",        "100",        "100",        "65535",
                            "4294967295", "4294967295", "2147483647", "255", "4294967295",
-                           "2",    "4294967295", "4294967295", "1",          "4294967295",
+                           "15",   "4294967295", "4294967295", "1",          "4294967295",
                            "4294967295", "7", "65535", "4294967295"};
   const char* tooBig[19] = {"12",   "256",        "101",        "101",        "65536",
                             "4294967296", "4294967296", "2147483648", "256", "4294967296",
-                            "3",    "4294967296", "4294967296", "2",          "4294967296",
+                            "16",   "4294967296", "4294967296", "2",          "4294967296",
                             "4294967296", "8", "65536", "4294967296"};
   for (int f = 0; f < 19; ++f) {
     CAPTURE(f);
@@ -1428,7 +1479,8 @@ void checkInvariants(const std::string& line, ParseStatus st, const Reply& r) {
   REQUIRE(r.valveEx.valve < kValveCount);
   REQUIRE(r.valveEx.position <= 100);
   REQUIRE(r.valveEx.target <= 100);
-  REQUIRE(r.valveEx.calState <= 2);
+  REQUIRE(r.valveEx.calState <= kCalStateMask);
+  REQUIRE((r.valveEx.calFlags & ~kCalFlagMask) == 0);
   REQUIRE(static_cast<uint8_t>(r.valveEx.lastMove.stop) <= 7);
   REQUIRE(static_cast<uint8_t>(r.valveEx.lastMove.dir) <= 1);
   REQUIRE(r.target.valve < kValveCount);

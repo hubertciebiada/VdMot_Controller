@@ -40,6 +40,7 @@ ValveEx ex(uint8_t valve, uint8_t target, uint32_t early = 0, uint32_t rejected 
   d.calibRetries = 1;
   d.moves = 99;
   d.calState = 2;
+  d.calFlags = kCalFlagEarlyStop;
   d.earlyStops = early;
   d.cmdRejected = rejected;
   return d;
@@ -134,6 +135,7 @@ TEST_CASE("diffValve reports exactly the changed groups") {
       {[](ValveState& s) { s.deadZone = -1; }, kChangeCounters},
       {[](ValveState& s) { s.calibRetries = 1; }, kChangeCalibRetries},
       {[](ValveState& s) { s.calState = 1; }, kChangeExtended},
+      {[](ValveState& s) { s.calFlags = kCalFlagLastFailed; }, kChangeExtended},
       {[](ValveState& s) { s.earlyStops = 1; }, kChangeExtended},
       {[](ValveState& s) { s.cmdRejected = 1; }, kChangeExtended},
       {[](ValveState& s) { s.moveSeq = 1; }, kChangeLastMove},
@@ -492,6 +494,86 @@ TEST_CASE("pushes wait for calibration and skip inactive valves") {
   CHECK(m.valve(1).sync == TargetSync::Pending);
 }
 
+TEST_CASE("v2: targets are pushed to calibrating valves when not held") {
+  ValveModel m;
+  m.setActiveMask(0x001);
+  ValveEx x = ex(0, 30);  // calState 2: running
+  x.calibrating = true;
+  m.applyValveEx(x, 0);
+  REQUIRE(m.setDesiredTarget(0, 70, TargetSource::Mqtt, 0));
+  uint8_t v = 99, p = 99;
+  CHECK_FALSE(m.nextTargetPush(100, v, p));  // default: held like 1.x
+  m.setHoldTargetsWhileCalibrating(false);
+  REQUIRE(m.nextTargetPush(200, v, p));
+  CHECK(v == 0);
+  CHECK(p == 70);
+  m.onTargetAck(0, 250);
+  x.target = 70;
+  m.applyValveEx(x, 300);  // the STM keeps the target while calibrating
+  CHECK(m.valve(0).sync == TargetSync::Synced);
+  CHECK(m.isBusy(0));      // still calibrating: fast polling
+  m.setHoldTargetsWhileCalibrating(true);
+  REQUIRE(m.setDesiredTarget(0, 71, TargetSource::Mqtt, 400));
+  CHECK_FALSE(m.nextTargetPush(10000, v, p));
+}
+
+TEST_CASE("a push that could not be queued goes back to Pending") {
+  ValveModel m = syncedModel();
+  REQUIRE(m.setDesiredTarget(0, 80, TargetSource::Web, 2000));
+  uint8_t v = 99, p = 99;
+  REQUIRE(m.nextTargetPush(3000, v, p));
+  CHECK(m.valve(0).pushAttempts == 1);
+  const uint32_t rev = m.valve(0).revision;
+  m.onTargetPushDropped(0, 3000);
+  CHECK(m.valve(0).sync == TargetSync::Pending);
+  CHECK(m.valve(0).pushAttempts == 0);
+  CHECK(m.valve(0).revision == rev + 1);
+  CHECK(m.isBusy(0));
+  // Retried after pushRetryMs, and dropping forever never reaches Failed.
+  CHECK_FALSE(m.nextTargetPush(4999, v, p));
+  uint32_t now = 5000;
+  for (int i = 0; i < 20; ++i, now += 2000) {
+    REQUIRE(m.nextTargetPush(now, v, p));
+    CHECK(p == 80);
+    m.onTargetPushDropped(0, now);
+    CHECK(m.valve(0).sync == TargetSync::Pending);
+  }
+  CHECK(m.valve(0).health == 0);
+  // Queued at last: the normal cycle continues.
+  REQUIRE(m.nextTargetPush(now, v, p));
+  CHECK(m.valve(0).pushAttempts == 1);
+  m.onTargetAck(0, now);
+  m.applyTarget(target(0, 80), now);
+  CHECK(m.valve(0).sync == TargetSync::Synced);
+
+  // Only a valve in AwaitAck is affected; bad indices are ignored.
+  const uint32_t rev2 = m.valve(0).revision;
+  m.onTargetPushDropped(0, now);
+  m.onTargetPushDropped(12, now);
+  CHECK(m.valve(0).sync == TargetSync::Synced);
+  CHECK(m.valve(0).revision == rev2);
+}
+
+TEST_CASE("a dropped retry of a Failed delivery keeps the flag and attempt count at 0") {
+  ValveModel m = syncedModel();
+  REQUIRE(m.setDesiredTarget(0, 90, TargetSource::Web, 2000));
+  uint8_t v, p;
+  uint32_t now = 3000;
+  for (int i = 0; i < 5; ++i, now += 2000) {
+    REQUIRE(m.nextTargetPush(now, v, p));
+    m.onTargetTimeout(0, now);
+  }
+  REQUIRE(m.valve(0).sync == TargetSync::Failed);
+  now += 300000;
+  REQUIRE(m.nextTargetPush(now, v, p));  // re-armed retry
+  m.onTargetPushDropped(0, now);
+  CHECK(m.valve(0).sync == TargetSync::Pending);
+  CHECK(m.valve(0).pushAttempts == 0);
+  CHECK((m.valve(0).health & kHealthTargetUnconfirmed) != 0);
+  REQUIRE(m.nextTargetPush(now + 2000, v, p));
+  CHECK(m.valve(0).pushAttempts == 1);
+}
+
 TEST_CASE("target pushes rotate round robin over valves") {
   ValveModel m;
   m.setActiveMask(0x0FFF);
@@ -669,6 +751,7 @@ TEST_CASE("applyValveEx: extended data, baselines, moveSeq and read-back") {
   CHECK(v.calibRetries == 1);
   CHECK(v.moves == 99);
   CHECK(v.calState == 2);
+  CHECK(v.calFlags == kCalFlagEarlyStop);
   CHECK(v.earlyStops == 3);
   CHECK(v.cmdRejected == 4);
   CHECK(v.earlyStopsAtBoot == 3);
@@ -822,6 +905,76 @@ TEST_CASE("applyValveSensors resolves ids to config slots") {
   CHECK(m.valve(1).sensorSlot[0] == 0);
   m.applyValveSensors(list, slots, 0);
   CHECK(m.valve(1).sensorSlot[0] == 0);
+}
+
+TEST_CASE("applySensorTemps: v2 valve temperatures from gvlon + goned") {
+  SensorModel s;
+  OneWireList l;
+  l.count = 3;
+  l.hasList = true;
+  l.ids[0] = idWithCrc(1);
+  l.ids[1] = idWithCrc(2);
+  l.ids[2] = idWithCrc(3);
+  s.applyTempList(l, 0);
+  auto read = [&](uint8_t bus, int16_t raw, uint32_t now) {
+    TempData td;
+    td.valid = true;
+    td.id = l.ids[bus];
+    td.value = raw;
+    s.applyTempData(bus, td, now);
+  };
+
+  ValveModel m;
+  m.setActiveMask(0x00F);
+  ValveSensors vs;
+  vs.isList = true;
+  vs.ids[0][0] = idWithCrc(1);
+  vs.ids[0][1] = idWithCrc(2);
+  vs.ids[1][0] = idWithCrc(3);
+  vs.ids[2][0] = idWithCrc(7);  // garbage id (not on the bus)
+  m.applyValveSensors(vs, nullptr, 0);
+
+  // Nothing read yet: nothing to publish.
+  const uint32_t rev0 = m.valve(0).revision;
+  m.applySensorTemps(s, 1000, 60000);
+  CHECK(m.valve(0).temp1 == kTempUnassigned);
+  CHECK(m.valve(0).revision == rev0);
+
+  read(0, 215, 1000);
+  read(1, -1270, 1000);  // the STM reports a read error for this sensor
+  read(2, 199, 1000);
+  m.applySensorTemps(s, 2000, 60000);
+  CHECK(m.valve(0).temp1 == 215);
+  CHECK(m.valve(0).temp2 == -1270);
+  CHECK(m.valve(0).revision == rev0 + 1);
+  CHECK((m.valve(0).health & kHealthTempFailed) != 0);
+  CHECK(m.valve(1).temp1 == 199);
+  CHECK(m.valve(1).temp2 == kTempUnassigned);  // zero id
+  CHECK(m.valve(2).temp1 == kTempUnassigned);  // not on the bus
+  CHECK(m.valve(3).temp1 == kTempUnassigned);
+  // Unchanged readings: no revision bump.
+  m.applySensorTemps(s, 3000, 60000);
+  CHECK(m.valve(0).revision == rev0 + 1);
+  CHECK((diffValve(ValveState{}, m.valve(1)) & kChangeTemp1) != 0);
+
+  // Stale readings stop counting; fresh ones come back.
+  read(0, 216, 50000);
+  m.applySensorTemps(s, 61001, 60000);
+  CHECK(m.valve(0).temp1 == 216);
+  CHECK(m.valve(0).temp2 == kTempUnassigned);
+  CHECK(m.valve(1).temp1 == kTempUnassigned);
+  CHECK((m.valve(0).health & kHealthTempFailed) == 0);
+
+  // A sensor that left the bus (list re-read without it).
+  l.count = 1;
+  s.applyTempList(l, 62000);
+  m.applySensorTemps(s, 62000, 60000);
+  CHECK(m.valve(0).temp1 == 216);
+  read(0, 217, 63000);
+  vs.ids[0][0] = idWithCrc(2);  // re-assigned to a sensor that is gone
+  m.applyValveSensors(vs, nullptr, 0);
+  m.applySensorTemps(s, 63000, 60000);
+  CHECK(m.valve(0).temp1 == kTempUnassigned);
 }
 
 TEST_CASE("health flags per condition and activity") {

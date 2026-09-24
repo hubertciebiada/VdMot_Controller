@@ -31,7 +31,7 @@ struct NetConfig {
   bool dhcp = true;
   uint32_t ip = 0, mask = 0, gateway = 0, dns = 0;  // legacy uint32 layout (parseIpv4)
   char ssid[33] = {0};                // 1..32 chars (802.11 limit) or "" = WiFi off
-  char wifiPassword[kSecretMax + 1] = {0};  // 8..63 chars (WPA2) when ssid set
+  char wifiPassword[kSecretMax + 1] = {0};  // "" (open network) or 8..63 chars (WPA2)
   uint8_t reconnectTimeoutMin = 5;    // legacy netConnTO; 0 = never restart the ESP
 };
 
@@ -126,10 +126,11 @@ void setDefaults(Config& c);
 // Validation of a whole config. Returns true when every field is within its
 // documented range and the cross-field rules hold:
 //  - static IP: when !dhcp, ip/mask/gateway non-zero and mask contiguous;
-//  - ssid set -> wifiPassword 8..63 chars; iface Wifi -> ssid set;
+//  - ssid set -> wifiPassword "" (open network) or 8..63 chars; iface Wifi
+//    -> ssid set;
 //  - syslog level > 0 -> server != 0 and port != 0;
 //  - web: user and password both empty or both non-empty; user without ':'
-//    (HTTP Basic); ssid printable ASCII;
+//    (HTTP Basic); ssid and secrets printable text (ASCII or UTF-8);
 //  - mqtt mode != Off -> host valid (isHostName or IPv4), port != 0;
 //    minDelayS <= publishIntervalS; mode MqttHa -> separate == true;
 //  - names: isSafeName (station 1..20, others 0..10); duplicate non-empty
