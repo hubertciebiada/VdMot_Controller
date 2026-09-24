@@ -30,7 +30,8 @@ void begin(const vdm::Config& cfg);
 // App task, every second: state/IP refresh (NetUp/NetDown events), WiFi as
 // fallback after 30 s without Ethernet IP (Auto) with reconnect back-off
 // 5 s .. 60 s, WiFi off again once Ethernet has an IP, mDNS announce,
-// NetWatchdog (legacy netConnTO) -> ota::requestRestart(2).
+// NetWatchdog (legacy netConnTO, wait growing per restart of one outage)
+// -> ota::requestRestart(2).
 void service(uint32_t nowMs);
 
 bool isUp();

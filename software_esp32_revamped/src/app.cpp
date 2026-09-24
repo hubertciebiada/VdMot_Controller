@@ -164,7 +164,7 @@ void appTask(void*) {
     }
     logger::service(net::isUp());
     storage::service();
-    ota::serviceRestart(now);
+    ota::serviceRestart(now, net::isUp());
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -182,10 +182,6 @@ bool submit(const Command& cmd) {
   return gQueue != nullptr && xQueueSend(gQueue, &cmd, 0) == pdTRUE;
 }
 
-size_t queueSpace() {
-  return gQueue != nullptr ? static_cast<size_t>(uxQueueSpacesAvailable(gQueue)) : 0;
-}
-
 bool receive(Command& out) {
   return gQueue != nullptr && xQueueReceive(gQueue, &out, 0) == pdTRUE;
 }
@@ -200,6 +196,8 @@ void readStmSnapshot(StmSnapshot& out) {
 vdm::LinkState stmLinkState() { return gLinkState; }
 
 bool stmFlashActive() { return gFlashActive; }
+
+void markStmFlashActive() { gFlashActive = true; }
 
 uint8_t stmProtocol() { return gProto; }
 

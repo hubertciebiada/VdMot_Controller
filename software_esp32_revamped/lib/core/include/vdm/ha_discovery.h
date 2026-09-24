@@ -33,6 +33,10 @@ struct DiscoveryContext {
     char segment[kSegmentMax + 1] = {0};  // buildSegment()
     bool hasTemp1 = false;           // STM reports an assigned sensor 1
     bool hasTemp2 = false;
+    // False while the STM has not reported this valve's sensors yet (link
+    // re-sync not settled): hasTemp1/2 are then a guess, and
+    // discoveryTopicIsCurrent() keeps the valve's temp1/temp2 configs.
+    bool tempsKnown = true;
   } valves[kValveCount];
   struct Sensor {
     bool active = false;             // configured, active, id present
@@ -106,7 +110,9 @@ class DropListIterator {
 
 // True when `topic` (a line of the legacy /HADiscovery.cfg) is produced by
 // the current DiscoveryIterator; lines that are not get deleted on the next
-// "delete stale" run (renamed station/valves, dropped entities).
+// "delete stale" run (renamed station/valves, dropped entities). The temp1/
+// temp2 configs of an active valve without tempsKnown count as current: a
+// deletion on a guess would drop the HA registry entry (renames, areas).
 bool discoveryTopicIsCurrent(const DiscoveryContext& ctx, const char* topic, size_t len);
 
 }  // namespace vdm

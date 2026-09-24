@@ -12,6 +12,8 @@
 
 namespace vdm {
 
+class SensorModel;
+
 // Legacy text for a status value (MQTT plain-text payloads, spec 03 §5.2):
 // 0 "", 1 "idle", 2 "opens", 3 "closes", 4 "failed", 5 "unknown",
 // 6 "no valve", 7 "full open", 8 "connected", 9 "blocked", >= 10 "".
@@ -69,7 +71,8 @@ struct ValveState {
   uint8_t calibRetries = 0;
   // v2 only (hasExtended)
   bool hasExtended = false;
-  uint8_t calState = 0;
+  uint8_t calState = 0;            // kCalState* phase
+  uint8_t calFlags = 0;            // kCalFlag* bits
   uint32_t earlyStops = 0;
   uint32_t cmdRejected = 0;
   uint32_t earlyStopsAtBoot = 0;   // first value seen after ESP boot / STM reboot
@@ -104,7 +107,7 @@ enum ValveChange : uint32_t {
   kChangeTemp2 = 1u << 5,
   kChangeCounters = 1u << 6,     // moves, openCount, closeCount, deadZone
   kChangeCalibRetries = 1u << 7,
-  kChangeExtended = 1u << 8,     // calState, earlyStops, cmdRejected
+  kChangeExtended = 1u << 8,     // calState, calFlags, earlyStops, cmdRejected
   kChangeLastMove = 1u << 9,     // moveSeq
   kChangeSync = 1u << 10,
   kChangeSensors = 1u << 11,
@@ -147,12 +150,27 @@ class ValveModel {
   void applyTarget(const TargetReply& t, uint32_t nowMs);
   // gvlon; ids resolved to config slots with resolveTempSlot().
   void applyValveSensors(const ValveSensors& s, const OneWireId* slotIds, uint8_t slotCount);
+  // Protocol v2 polls gvlvx, which has no temperatures, instead of gvlvd:
+  // temp1/temp2 come from the gvlon assignment and the goned readings. Per
+  // sensor: the raw reading (sentinels included) of the assigned sensor when
+  // it is on the bus and was read within maxAgeMs, else kTempUnassigned (not
+  // assigned, garbage id, not listed or read yet, stale: nothing to publish).
+  void applySensorTemps(const SensorModel& sensors, uint32_t nowMs, uint32_t maxAgeMs);
+
+  // Whether a calibrating valve gets no stgtp (default true). STM 1.x acks
+  // a target during a calibration but drops it; protocol v2 takes it and
+  // ends the calibration at the newest target.
+  void setHoldTargetsWhileCalibrating(bool hold) { holdWhileCalibrating_ = hold; }
 
   // Target delivery driven by the stm_link task:
   // Next stgtp to send: a valve in Pending (or Failed past failedRetryMs),
-  // active, known, not calibrating, pushRetryMs since the last push. Round
-  // robin over valves. Moves that valve to AwaitAck and counts the attempt.
+  // active, known, not calibrating (only while held, see above),
+  // pushRetryMs since the last push. Round robin over valves. Moves that
+  // valve to AwaitAck and counts the attempt.
   bool nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos);
+  // The stgtp handed out by nextTargetPush() could not be queued: back to
+  // Pending, the attempt is not counted; the next try waits pushRetryMs.
+  void onTargetPushDropped(uint8_t valve, uint32_t nowMs);
   void onTargetAck(uint8_t valve, uint32_t nowMs);      // -> AwaitVerify
   void onTargetTimeout(uint8_t valve, uint32_t nowMs);  // -> Pending, or Failed after maxPushAttempts
   // Valve whose read-back is due (AwaitVerify). The caller enqueues gtgtp
@@ -187,6 +205,7 @@ class ValveModel {
   ValveState v_[kValveCount];
   uint16_t active_ = 0;
   uint8_t pushCursor_ = 0;
+  bool holdWhileCalibrating_ = true;
   uint32_t staleRefMs_[kValveCount] = {};  // last gvlvd/gvlvx, or first tick while active
   bool staleRefValid_[kValveCount] = {};
   bool stale_[kValveCount] = {};           // latched until the next valve data

@@ -44,7 +44,8 @@ uint32_t lastSeq();
 size_t readSince(uint32_t sinceSeq, vdm::Event* out, size_t maxOut, uint32_t& nextSince);
 
 // Sink configuration (from Config): syslog level/server/port, file on/off,
-// syslog HOSTNAME field.
+// syslog HOSTNAME field (the station name, made a host name with
+// vdm::buildHostname).
 void configure(uint8_t syslogLevel, uint32_t syslogServer, uint16_t syslogPort, bool persist,
                const char* hostname);
 

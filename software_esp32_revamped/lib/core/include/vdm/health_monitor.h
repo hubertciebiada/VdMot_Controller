@@ -134,6 +134,15 @@ class OtaValidator {
   // Call every second. Returns MarkValid / Rollback exactly once, then
   // NotPending forever.
   Decision update(bool netUp, bool linkUp, uint32_t nowMs);
+  // A restart is about to happen. The bootloader treats any reset of a
+  // pending image as a failed boot and rolls back, so a restart the user
+  // asked for through this firmware (reboot button, network settings,
+  // factory reset) with the network up now confirms the image: that request
+  // proves more than the timer. Returns true (and ends pending) when the
+  // caller must mark the image valid first. Other restarts (network
+  // watchdog, rollback) keep the rollback.
+  bool confirmBeforeRestart(bool userRequested, bool netUp);
+  bool pending() const { return pending_; }
 
  private:
   uint32_t confirmMs_, networkOnlyMs_, giveUpMs_;
@@ -145,16 +154,32 @@ class OtaValidator {
 
 // Network watchdog (legacy netConnTO): the ESP restarts after `minutes`
 // consecutive minutes without an IP address. 0 disables it. The first
-// minutes after boot count as well (a device that never gets a link keeps
-// restarting every N minutes, like the legacy firmware).
+// minutes after boot count as well.
+// Unlike the legacy firmware (a restart every N minutes for as long as the
+// outage lasts), the wait grows by kGrowth with every watchdog restart of the
+// same outage, up to kMaxWaitMin: each ESP restart also resets the STM
+// (IO15 strap, specs/06 §5.2), stopping motors and recalibrating every valve,
+// and restarting again does not fix a switch that is off. The glue keeps
+// restartsInOutage() across software restarts (RTC memory).
 class NetWatchdog {
  public:
+  static constexpr uint32_t kGrowth = 4;
+  static constexpr uint32_t kMaxWaitMin = 24 * 60;
+
   void configure(uint8_t minutes);
-  // Call once per second. True = restart the ESP now (returned once).
+  // Watchdog restarts earlier in the outage that is still going on at boot
+  // (0 after power-on or once the network was up).
+  void setRestartsInOutage(uint8_t n) { restarts_ = n; }
+  uint8_t restartsInOutage() const { return restarts_; }
+  // Wait before the next restart: minutes * kGrowth^restarts, capped.
+  uint32_t waitMs() const;
+  // Call once per second. True = restart the ESP now (returned once per
+  // outage and configure(); counts the restart).
   bool update(bool netUp, uint32_t nowMs);
 
  private:
   uint8_t minutes_ = 0;
+  uint8_t restarts_ = 0;
   bool down_ = true;
   uint32_t downSinceMs_ = 0;
   bool fired_ = false;

@@ -17,6 +17,7 @@
 #include "boot_alloc.h"
 #include "board.h"
 #include "logger.h"
+#include "ota.h"
 #include "storage.h"
 
 namespace stm_link {
@@ -186,6 +187,16 @@ void startFlash(const app::Command& c, uint32_t now) {
     logger::log(vdm::EventCode::StmFlashFailed, vdm::kNoValve, 0, 0, "busy");
     return;
   }
+  // An ESP restart would cut the flash run (STM half-erased, in reset or in
+  // 8E1). A restart is due at the earliest 1 s after it was requested, and
+  // the flag is raised right after this check, before anything here can
+  // block, so ota::serviceRestart() either made us refuse or sees the flag.
+  if (ota::restartPending()) {
+    logger::log(vdm::EventCode::StmFlashFailed, vdm::kNoValve, 0, 0, "restart pending");
+    return;
+  }
+  app::markStmFlashActive();  // not only with the next snapshot (<= 100 ms)
+  gDirty = true;              // a refused start below publishes "idle" again
   if (!gImage.open(c.image)) {
     logger::log(vdm::EventCode::StmFlashFailed, vdm::kNoValve,
                 static_cast<int32_t>(vdm::FlashError::ImageRead), 0, c.image);
@@ -204,7 +215,6 @@ void startFlash(const app::Command& c, uint32_t now) {
   gLines.reset();
   vdm::copyString(gSnap.flashImage, sizeof gSnap.flashImage, c.image);
   gSnap.flash = gFlasher.status();
-  gDirty = true;
   logger::log(vdm::EventCode::StmFlashStarted, vdm::kNoValve,
               static_cast<int32_t>(gImage.size()), 0, c.image);
 }
@@ -252,23 +262,29 @@ void handleCommand(const app::Command& c, uint32_t now) {
         gPlanner.requestValveSensors();
       }
       break;
-    case app::CommandType::SetMotorChars:
-      if (vdm::buildSetMotorChars(c.motor, r) && enqueue(r, vdm::Priority::User)) {
-        gPlanner.requestMotorParams();
+    case app::CommandType::SetMotorSettings: {
+      // All or nothing on the link queue too: Poll entries make room, so
+      // only queued User/Config requests count.
+      const size_t need = (c.hasMotor ? 1u : 0u) + (c.hasLearnMovements ? 1u : 0u) +
+                          (c.hasBreakaway && gPlanner.protocol() >= 2 ? 1u : 0u);
+      const size_t held = gLink.queued(vdm::Priority::User) + gLink.queued(vdm::Priority::Config);
+      if (held + need > vdm::LinkPolicy::kQueueCapacity) {
+        logger::log(vdm::EventCode::StmQueueFull, vdm::kNoValve,
+                    static_cast<int32_t>(vdm::Cmd::Smotc));
+        break;
       }
-      break;
-    case app::CommandType::SetLearnMovements:
-      if (vdm::buildSetLearnMovements(c.learnMovements, r) && enqueue(r, vdm::Priority::User)) {
-        gPlanner.requestMotorParams();
+      bool any = false;
+      if (c.hasMotor && vdm::buildSetMotorChars(c.motor, r)) any |= enqueue(r, vdm::Priority::User);
+      if (c.hasLearnMovements && vdm::buildSetLearnMovements(c.learnMovements, r)) {
+        any |= enqueue(r, vdm::Priority::User);
       }
-      break;
-    case app::CommandType::SetBreakaway:
       // v2 only: a v1 STM would ignore it (the web answers 409 before).
-      if (gPlanner.protocol() >= 2 && vdm::buildSetBreakaway(c.breakaway, r) &&
-          enqueue(r, vdm::Priority::User)) {
-        gPlanner.requestMotorParams();
+      if (c.hasBreakaway && gPlanner.protocol() >= 2 && vdm::buildSetBreakaway(c.breakaway, r)) {
+        any |= enqueue(r, vdm::Priority::User);
       }
+      if (any) gPlanner.requestMotorParams();
       break;
+    }
     case app::CommandType::ServiceMove:
       if (gPlanner.protocol() >= 2 &&
           vdm::buildServiceMove(c.valve, c.dir, c.counts, c.maxmA, r)) {
@@ -480,9 +496,18 @@ void readUart(uint32_t now) {
 void scheduleRequests(uint32_t now) {
   vdm::RequestLine r;
   uint8_t valve = 0, pos = 0;
+  // Unknown protocol (re-sync) is treated like 1.x.
+  gModel.setHoldTargetsWhileCalibrating(gPlanner.protocol() < 2);
   if (gLink.queued(vdm::Priority::Config) == 0) {
     if (gModel.nextTargetPush(now, valve, pos)) {
-      if (vdm::buildSetTarget(valve, pos, r)) enqueue(r, vdm::Priority::Config);
+      // A push that cannot be queued is retried after pushRetryMs; it is not
+      // logged (enqueue()) because that would repeat every 2 s while the
+      // queue stays full, the link counts it in queueFull.
+      vdm::EnqueueResult res = vdm::EnqueueResult::Invalid;
+      if (vdm::buildSetTarget(valve, pos, r)) res = gLink.enqueue(r, vdm::Priority::Config);
+      if (res != vdm::EnqueueResult::Queued && res != vdm::EnqueueResult::Coalesced) {
+        gModel.onTargetPushDropped(valve, now);
+      }
     } else if (gModel.nextVerify(valve)) {
       gPlanner.requestTarget(valve);
     }
@@ -588,6 +613,14 @@ void everySecond(uint32_t now) {
                                         ev, vdm::kMaxEventsPerUpdate));
   }
   if (!gFlasher.active()) checkSensors(now);
+  // v2 has no gvlvd: valve temperatures from gvlon + goned (v1: from gvlvd).
+  if (gPlanner.protocol() >= 2) gModel.applySensorTemps(gSensors, now, kSensorStaleMs);
+  const bool settled =
+      gLink.state(now) == vdm::LinkState::Up && !gPlanner.resyncActive() && !gSensorGrace;
+  if (settled != gSnap.sensorsSettled) {
+    gSnap.sensorsSettled = settled;
+    gDirty = true;
+  }
   for (uint8_t v = 0; v < vdm::kValveCount; ++v) {
     PendingMove& m = gServiceMoves[v];
     if (!m.active) continue;

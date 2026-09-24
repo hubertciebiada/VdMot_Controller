@@ -33,9 +33,9 @@ enum class Kind : uint8_t {
 
 enum class Rule : uint8_t {
   None,
-  Printable,  // 0x20..0x7E
+  Printable,  // isPrintableText: ASCII 0x20..0x7E and UTF-8 (SSIDs, secrets, like legacy)
   NoSpace,    // 0x21..0x7E
-  NoColon,    // printable without ':' (HTTP Basic user)
+  NoColon,    // Printable without ':' (HTTP Basic user)
   SafeName,   // isSafeName()
   Host,       // isHostName() or dotted IPv4
 };
@@ -302,13 +302,14 @@ bool stringRuleOk(const Field& f, const char* s, size_t len) {
   if (len < static_cast<size_t>(f.min) || len > static_cast<size_t>(f.max)) return false;
   if (f.rule == Rule::SafeName) return isSafeName(s, static_cast<size_t>(f.max), f.min == 0);
   if (f.rule == Rule::Host) return hostValid(s, len);
-  for (size_t i = 0; i < len; ++i) {
-    const char c = s[i];
-    if (c < 0x20 || c > 0x7E) return false;
-    if (f.rule == Rule::NoSpace && c == ' ') return false;
-    if (f.rule == Rule::NoColon && c == ':') return false;
+  if (f.rule == Rule::NoSpace) {
+    for (size_t i = 0; i < len; ++i) {
+      if (s[i] <= 0x20 || s[i] > 0x7E) return false;
+    }
+    return true;
   }
-  return true;
+  if (f.rule == Rule::NoColon && memchr(s, ':', len) != nullptr) return false;
+  return isPrintableText(s, len);
 }
 
 // Mask in the legacy layout (first octet in the low byte) is a run of ones
@@ -447,7 +448,8 @@ bool validateConfig(const Config& c, char* path, size_t pathCap) {
     if (n.gateway == 0) return failAt(po, kNet, "gateway");
   }
   const size_t pwdLen = strlen(n.wifiPassword);
-  if (n.ssid[0] != '\0' && pwdLen < 8) return failAt(po, kNet, "wifiPassword");
+  // Empty = open network (legacy WiFi.begin(ssid, "")); WPA2 needs 8..63.
+  if (n.ssid[0] != '\0' && pwdLen > 0 && pwdLen < 8) return failAt(po, kNet, "wifiPassword");
   if (n.iface == NetInterface::Wifi && n.ssid[0] == '\0') return failAt(po, kNet, "ssid");
 
   if (c.syslog.level > 0 && c.syslog.server == 0) return failAt(po, kSyslog, "server");
@@ -1011,9 +1013,8 @@ class PatchWalker {
   }
 
   // \uXXXX after the "\u" (pos_ at the first hex digit), incl. a following
-  // low surrogate for a high one. No config field accepts anything outside
-  // printable ASCII, so a non-ASCII character becomes one 0xFF byte that
-  // every field rule rejects (no UTF-8 encoding needed).
+  // low surrogate for a high one: the code point (names and secrets may be
+  // UTF-8, the field rules decide).
   bool unicodeEscape(uint32_t& ch) {
     uint32_t cp;
     if (!hex4(cp) || (cp >= 0xDC00 && cp <= 0xDFFF)) return false;
@@ -1022,9 +1023,37 @@ class PatchWalker {
       if (len_ - pos_ < 2 || s_[pos_] != '\\' || s_[pos_ + 1] != 'u') return false;
       pos_ += 2;
       if (!hex4(lo) || lo < 0xDC00 || lo > 0xDFFF) return false;
+      cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
     }
-    ch = cp < 0x80 ? cp : 0xFFu;  // NOMUTATE: 0x7F/0x80/0xFF are all rejected alike
+    ch = cp;
     return true;
+  }
+
+  // Appends code point `ch` as UTF-8, as far as it fits (a cut string is
+  // longer than every field anyway).
+  static void putUtf8(uint32_t ch, char* out, size_t cap, size_t& n) {
+    uint8_t b[4];
+    size_t k;
+    if (ch < 0x80) {
+      b[0] = static_cast<uint8_t>(ch);
+      k = 1;
+    } else if (ch < 0x800) {
+      b[0] = static_cast<uint8_t>(0xC0 | (ch >> 6));
+      b[1] = static_cast<uint8_t>(0x80 | (ch & 0x3F));
+      k = 2;
+    } else if (ch < 0x10000) {
+      b[0] = static_cast<uint8_t>(0xE0 | (ch >> 12));
+      b[1] = static_cast<uint8_t>(0x80 | ((ch >> 6) & 0x3F));
+      b[2] = static_cast<uint8_t>(0x80 | (ch & 0x3F));
+      k = 3;
+    } else {
+      b[0] = static_cast<uint8_t>(0xF0 | (ch >> 18));
+      b[1] = static_cast<uint8_t>(0x80 | ((ch >> 12) & 0x3F));
+      b[2] = static_cast<uint8_t>(0x80 | ((ch >> 6) & 0x3F));
+      b[3] = static_cast<uint8_t>(0x80 | (ch & 0x3F));
+      k = 4;
+    }
+    for (size_t i = 0; i < k && n < cap; ++i) out[n++] = static_cast<char>(b[i]);
   }
 
   // A string at pos_ (which is '"'). Decodes at most cap bytes into out and
@@ -1040,7 +1069,9 @@ class PatchWalker {
         return true;
       }
       uint32_t ch = c;
+      bool escaped = false;
       if (c == '\\') {
+        escaped = true;
         if (pos_ >= len_) return false;
         switch (s_[pos_++]) {
           case '"': ch = '"'; break;
@@ -1060,7 +1091,11 @@ class PatchWalker {
       } else if (c < 0x20) {
         return false;  // raw control characters are not allowed in JSON strings
       }
-      if (n < cap) out[n++] = static_cast<char>(ch);
+      if (escaped) {
+        putUtf8(ch, out, cap, n);
+      } else if (n < cap) {
+        out[n++] = static_cast<char>(ch);  // raw bytes (UTF-8) as they are
+      }
     }
     return false;  // unterminated
   }

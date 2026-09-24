@@ -41,7 +41,36 @@ constexpr int32_t kVadFailed = -1000;
 // Milliseconds elapsed from `since` to `now`, correct across one wrap.
 uint32_t elapsedMs(uint32_t now, uint32_t since);
 // True when `now` is at or after `deadline` (wrap-safe, horizon 2^31 ms).
+// Only for deadlines that are always checked soon after they are set; a
+// deadline that may sit unchecked for 24.8 days reads as "in the future"
+// again. Use Backoff (or elapsedMs() from a start time) for those.
 bool timeReached(uint32_t now, uint32_t deadline);
+
+// Retry pacing with exponential back-off (reconnects). Keeps the time of the
+// last attempt, not a deadline, so an attempt that is due stays due however
+// long nobody asked (e.g. a connection that was up for 30 days).
+class Backoff {
+ public:
+  // minMs >= 1; maxMs < minMs is raised to minMs.
+  Backoff(uint32_t minMs, uint32_t maxMs);
+  // True when armed (no failed attempt since reset()) or when the current
+  // delay has passed since the last failed attempt.
+  bool due(uint32_t nowMs) const;
+  // An attempt at nowMs failed: the next is due after the current delay,
+  // which then doubles up to maxMs.
+  void onFailure(uint32_t nowMs);
+  // Success, or a forced retry: due at once, delay back to minMs.
+  void reset();
+  uint32_t delayMs() const { return delay_; }  // wait after the next failure
+
+ private:
+  uint32_t min_;
+  uint32_t max_;
+  uint32_t delay_;      // wait after the next failure
+  uint32_t waitMs_ = 0; // wait after the last failure
+  uint32_t lastMs_ = 0;
+  bool armed_ = true;
+};
 
 // Broken-down local wall-clock time, filled by glue from localtime_r() after
 // the POSIX TZ string has been applied. `valid` is false until SNTP has set
@@ -68,11 +97,30 @@ bool copyString(char* dst, size_t cap, const char* src);
 // Length of `s` bounded by `max` (like strnlen; s may be null -> 0).
 size_t boundedLength(const char* s, size_t max);
 
+// Length (2..4) of the well-formed UTF-8 sequence starting at s[0] >= 0x80,
+// looking at no more than `avail` bytes; 0 when it is not one (stray
+// continuation byte, overlong form, surrogate, above U+10FFFF, truncated) or
+// when it encodes a C1 control (U+0080..U+009F).
+size_t utf8SequenceLength(const char* s, size_t avail);
+
+// Exactly `len` bytes of printable text: ASCII 0x20..0x7E and well-formed
+// UTF-8 without control characters (the JSON writer passes it through).
+bool isPrintableText(const char* s, size_t len);
+
 // Character policy for every user-supplied name that ends up in MQTT topics,
 // HA discovery or HTTP JSON (station, valve, sensor names, units):
-// printable ASCII 0x20..0x7E except '+', '#', '/', '"', '\\'. Length 0..maxLen
-// (0 only when allowEmpty). Leading/trailing spaces are rejected.
+// printable text (isPrintableText, so UTF-8 like "Küche" or "°C" is fine, as
+// in the legacy firmware) except '+', '#', '/', '"', '\\'. Length 0..maxLen
+// bytes (0 only when allowEmpty). Spaces are allowed anywhere; topic segments
+// map them to '_' like the legacy firmware (buildSegment).
 bool isSafeName(const char* s, size_t maxLen, bool allowEmpty);
+
+// Network host name (DHCP, mDNS, syslog) derived from the station name:
+// ASCII letters, digits, '-' and '_' are kept, every run of other bytes
+// (spaces, UTF-8, punctuation) becomes one '-', leading/trailing '-' are
+// dropped, at most cap - 1 chars. "VdMot" when nothing is left. Returns the
+// length (0 only for cap < 6).
+size_t buildHostname(const char* station, char* out, size_t cap);
 
 // Hostname/broker-host policy: 1..maxLen chars of [A-Za-z0-9.-], not starting
 // or ending with '-' or '.'. Used for the MQTT broker host and NTP server.

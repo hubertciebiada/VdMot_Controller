@@ -70,13 +70,16 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
   if (!before.calibrating && after.calibrating) {
     sink.add(EventCode::CalibStarted, valve, 0);
   } else if (before.calibrating && !after.calibrating) {
-    if (after.status == kStatusIdle) {
+    // v2 reports the outcome itself (calState bit 3); 1.x only by the status.
+    const bool failed = after.status == kStatusBlocked ||
+                        (after.hasExtended && (after.calFlags & kCalFlagLastFailed) != 0);
+    if (failed) {
+      sink.add(EventCode::CalibFailed, valve, after.calibRetries);
+      calibFailed = true;
+    } else if (after.status == kStatusIdle) {
       sink.add(EventCode::CalibOk, valve, static_cast<int32_t>(after.openCount),
                static_cast<int32_t>(after.closeCount));
       calibOk = true;
-    } else if (after.status == kStatusBlocked) {
-      sink.add(EventCode::CalibFailed, valve, after.calibRetries);
-      calibFailed = true;
     }
   }
   if ((before.calibrating || after.calibrating) && !calibFailed &&
@@ -308,6 +311,12 @@ OtaValidator::Decision OtaValidator::update(bool netUp, bool linkUp, uint32_t no
   return Decision::Wait;
 }
 
+bool OtaValidator::confirmBeforeRestart(bool userRequested, bool netUp) {
+  if (!pending_ || !userRequested || !netUp) return false;
+  pending_ = false;
+  return true;
+}
+
 // ---------------------------------------------------------------- NetWatchdog
 
 void NetWatchdog::configure(uint8_t minutes) {
@@ -315,10 +324,17 @@ void NetWatchdog::configure(uint8_t minutes) {
   fired_ = false;
 }
 
+uint32_t NetWatchdog::waitMs() const {
+  uint32_t min = minutes_;
+  for (uint8_t i = 0; i < restarts_ && min < kMaxWaitMin; ++i) min *= kGrowth;
+  return (min < kMaxWaitMin ? min : kMaxWaitMin) * 60000u;
+}
+
 bool NetWatchdog::update(bool netUp, uint32_t nowMs) {
   if (netUp) {
     down_ = false;
     fired_ = false;
+    restarts_ = 0;
     return false;
   }
   if (!started_ || !down_) {
@@ -328,8 +344,9 @@ bool NetWatchdog::update(bool netUp, uint32_t nowMs) {
     downSinceMs_ = nowMs;
   }
   if (minutes_ == 0 || fired_) return false;
-  if (elapsedMs(nowMs, downSinceMs_) < static_cast<uint32_t>(minutes_) * 60000u) return false;
+  if (elapsedMs(nowMs, downSinceMs_) < waitMs()) return false;
   fired_ = true;
+  if (restarts_ < UINT8_MAX) ++restarts_;
   return true;
 }
 

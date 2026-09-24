@@ -100,7 +100,8 @@ struct ValveView {
 //  "moves":..,"oc":..,"cc":..,"dc":..,"cr":..,"health":[..flag names..],
 //  "age":<s since last data>|null,
 //  "sensors":[{"slot":..,"name":"..","temp":21.5|null}, ...],
-//  "ext":null|{"calState":..,"earlyStops":..,"cmdRejected":..,
+//  "ext":null|{"calState":0..3,"calEarlyStop":..,"calLastFailed":..,
+//        "earlyStops":..,"cmdRejected":..,
 //        "lastMove":{"dir":"open","req":..,"cnt":..,"stop":"endstop","peak":..,"ms":..},
 //        "moveSeq":..}}, ... 12 entries always]}
 // One entry per view (the glue passes all 12), idx = array position + 1.

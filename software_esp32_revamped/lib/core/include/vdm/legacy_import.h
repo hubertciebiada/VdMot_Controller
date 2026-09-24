@@ -67,7 +67,8 @@ struct ImportReport {
 //    brokerMQToPos and brokerMQF bits 0/1 -> ignored.
 //    dataProt 2 with publishSeparate 0: imported as mode Mqtt (HA needs
 //    separate topics) and reported as rejected "protCfg/dataProt".
-//  valvesCfg/valves (blob 144), dayOfCalib, hourOfCalib (24 -> rejected)
+//  valvesCfg/valves (blob 144), dayOfCalib, hourOfCalib (24..255 meant
+//    "never" in the legacy firmware -> calib.dayMask 0, both keys imported)
 //  tempsCfg/temps (blob 1496): name, active, offset (clamped to +-10.0 C ->
 //    rejected if outside), ID (parseOneWireId; "" or all-zero -> empty slot)
 //  voltsCfg/volts (blob 480): name, active, offset, factor, unit, ID
@@ -78,8 +79,8 @@ struct ImportReport {
 // setConfigValue itself; a key that fails keeps the default. Afterwards
 // cross-field rules are enforced by clearing the offending optional feature,
 // each counted as rejected: incomplete static IP -> DHCP ("netCfg/dhcp");
-// ssid with a password shorter than 8 -> WiFi credentials cleared
-// ("netCfg/pwd"); WiFi-only without ssid -> auto ("netCfg/ethwifi"); syslog
+// ssid with a password of 1..7 chars -> WiFi credentials cleared
+// ("netCfg/pwd"; an empty password is an open network and kept); WiFi-only without ssid -> auto ("netCfg/ethwifi"); syslog
 // level without server -> 0; web user or password alone -> both cleared;
 // MQTT without broker -> off ("protCfg/brokerIp"); minDelay above the
 // publish interval -> clamped ("protCfg/brokerMD"); HA without separate

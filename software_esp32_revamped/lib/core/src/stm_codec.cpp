@@ -350,6 +350,7 @@ constexpr size_t kValveExFields = 19;
 ParseStatus parseValveEx(const Token* a, size_t argc, ValveEx& x) {
   if (argc != kValveExFields) return ParseStatus::BadArgCount;
   uint32_t raw{};
+  uint32_t cal{};
   uint32_t dir{};
   uint32_t stop{};
   MoveResult& m = x.lastMove;
@@ -364,7 +365,7 @@ ParseStatus parseValveEx(const Token* a, size_t argc, ValveEx& x) {
       {FieldType::I32, &x.deadZone, kI32Min, kI32Max},
       {FieldType::U8, &x.calibRetries, 0, kU8},
       {FieldType::U32, &x.moves, 0, kU32},
-      {FieldType::U8, &x.calState, 0, 2},
+      {FieldType::U32, &cal, 0, kCalStateMask | kCalFlagMask},
       {FieldType::U32, &x.earlyStops, 0, kU32},
       {FieldType::U32, &x.cmdRejected, 0, kU32},
       {FieldType::U32, &dir, 0, 1},
@@ -378,7 +379,9 @@ ParseStatus parseValveEx(const Token* a, size_t argc, ValveEx& x) {
   const ParseStatus st = readFields(a, f, kValveExFields);
   if (st != ParseStatus::Ok) return st;
   x.status = static_cast<uint8_t>(raw & 0x7F);
-  x.calibrating = (raw & 0x80) != 0;
+  x.calState = static_cast<uint8_t>(cal & kCalStateMask);
+  x.calFlags = static_cast<uint8_t>(cal & kCalFlagMask);
+  x.calibrating = x.calState == kCalStateRunning || (raw & 0x80) != 0;
   m.dir = static_cast<MoveDir>(dir);
   m.stop = static_cast<StopReason>(stop);
   return ParseStatus::Ok;

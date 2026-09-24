@@ -135,9 +135,10 @@ volatile bool gDiscoveryRequested = false;
 volatile DiscoveryAction gDiscoveryAction = DiscoveryAction::Publish;
 bool gOfflineSent = false;
 bool gConnected = false;
+// First-run HA cleanup waiting for the STM data (see cleanupReady()).
+bool gCleanupDeferred = false;
 
-uint32_t gBackoffMs = kBackoffMinMs;
-uint32_t gNextAttemptMs = 0;
+vdm::Backoff gBackoff(kBackoffMinMs, kBackoffMaxMs);
 
 void setState(vdm::MqttState s, int8_t rc) {
   portENTER_CRITICAL(&gMux);
@@ -669,6 +670,7 @@ void buildDiscoveryContext() {
     vdm::copyString(c.valves[i].segment, sizeof c.valves[i].segment, gSegments[i]);
     c.valves[i].hasTemp1 = gSnap.valves[i].temp1 != vdm::kTempUnassigned;
     c.valves[i].hasTemp2 = gSnap.valves[i].temp2 != vdm::kTempUnassigned;
+    c.valves[i].tempsKnown = gSnap.sensorsSettled && gSnap.valves[i].known;
   }
   for (uint8_t i = 0; i < vdm::kTempSlotCount; ++i) {
     const vdm::TempSlotConfig& s = gCfg.temps[i];
@@ -691,11 +693,27 @@ void buildDiscoveryContext() {
   }
 }
 
+// The first-run cleanup judges every legacy config against the current
+// entity set, and the valve temp entities depend on STM data that arrives
+// seconds after MQTT connects. It waits for the STM re-sync to settle, at
+// most kCleanupMaxWaitS after boot; valves whose sensors are still unknown
+// then keep their temp configs (ha_discovery tempsKnown).
+constexpr uint32_t kCleanupMaxWaitS = 600;
+
+bool cleanupReady() { return gSnap.sensorsSettled || app::uptimeS() >= kCleanupMaxWaitS; }
+
 // `cleanupOnly`: only the first-run deletion of legacy DROP/stale entities
-// (haDiscoveryOnConnect off); the current entities are left alone.
+// (haDiscoveryOnConnect off, or MQTT without HA: the legacy firmware let
+// both modes send discovery, R2 wants the DROP configs gone once); the
+// current entities are left alone.
 void startDiscovery(DiscoveryAction a, bool cleanupOnly = false) {
-  if (gCfg.mqtt.mode != vdm::MqttMode::MqttHa) return;
-  const bool cleanup = !storage::haCleanupDone();
+  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return;
+  if (gCfg.mqtt.mode != vdm::MqttMode::MqttHa && !cleanupOnly) return;
+  bool cleanup = !storage::haCleanupDone();
+  if (cleanup && !cleanupReady()) {
+    gCleanupDeferred = true;
+    cleanup = false;
+  }
   if (cleanupOnly && !cleanup) return;
   if (gLegacyFile) gLegacyFile.close();
   buildDiscoveryContext();
@@ -882,9 +900,8 @@ bool connect(uint32_t now) {
   setState(vdm::MqttState::Connected, 0);
   count(&Status::reconnects);
   logger::log(vdm::EventCode::MqttConnected);
-  if (gCfg.mqtt.mode == vdm::MqttMode::MqttHa) {
-    startDiscovery(DiscoveryAction::Publish, !gCfg.mqtt.haDiscoveryOnConnect);
-  }
+  startDiscovery(DiscoveryAction::Publish,
+                 gCfg.mqtt.mode != vdm::MqttMode::MqttHa || !gCfg.mqtt.haDiscoveryOnConnect);
   return true;
 }
 
@@ -945,17 +962,15 @@ void task(void*) {
     if (gReconnectRequested) {
       gReconnectRequested = false;
       disconnectClean();
-      gNextAttemptMs = now;
-      gBackoffMs = kBackoffMinMs;
+      gBackoff.reset();
     }
     if (!gClient.connected()) {
       onDisconnected();
-      if (vdm::timeReached(now, gNextAttemptMs)) {
+      if (gBackoff.due(now)) {
         if (connect(now)) {
-          gBackoffMs = kBackoffMinMs;
+          gBackoff.reset();
         } else {
-          gNextAttemptMs = app::nowMs() + gBackoffMs;
-          gBackoffMs = gBackoffMs >= kBackoffMaxMs / 2 ? kBackoffMaxMs : gBackoffMs * 2;
+          gBackoff.onFailure(app::nowMs());
         }
       }
       serviceEvents(now);
@@ -965,6 +980,9 @@ void task(void*) {
     if (gDiscoveryRequested) {
       gDiscoveryRequested = false;
       startDiscovery(gDiscoveryAction);
+    } else if (gDiscPhase == DiscPhase::Idle && gCleanupDeferred && cleanupReady()) {
+      gCleanupDeferred = false;
+      startDiscovery(DiscoveryAction::Publish, true);
     } else if (gDiscPhase == DiscPhase::Idle && gCfg.mqtt.mode == vdm::MqttMode::MqttHa &&
                gCfg.mqtt.haDiscoveryOnConnect && valveTempMask() != gDiscTempMask) {
       // A valve sensor appeared/disappeared after the last run (the STM

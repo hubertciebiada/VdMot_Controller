@@ -254,6 +254,11 @@ restarted once to probe again (`PollPlanner::onVersion`). `gvers` is parsed with
 | STM health (v2) | 10 s | `gstat` |
 | Version | 5 min | `gvers` |
 
+`gvlvx` carries no temperatures, so on v2 a valve's temp1/temp2 come from its
+`gvlon` assignment and the `goned` readings (`ValveModel::applySensorTemps`,
+once per second): the reading of the assigned sensor when it is on the bus
+and was read within 60 s, else "unassigned" (nothing published).
+
 Re-sync sequence (`ResyncStep`): `gproto`, `gvers`, `ghwin`, `gmotc`,
 `gtlnm`, `gcalx` (v2), `gonec 255`, `gowvc 255`, `gvlon 255`, `gvlst` (v1),
 then `gtgtp 0..11` (v1) or `gvlvx 0..11` (v2). It is interleaved with valve
@@ -274,17 +279,29 @@ Target delivery (`ValveModel`), per valve:
 ```
 Unknown --gtgtp/gvlvx--> Synced (desired := STM target, source stm)
 Synced --setDesiredTarget(new)--> Pending
-Pending --nextTargetPush (active, known, !calibrating, >= 2 s since last push)--> AwaitAck
+Pending --nextTargetPush (active, known, !calibrating on v1, >= 2 s since last push)--> AwaitAck
+AwaitAck --stgtp could not be queued (queue full)--> Pending (attempt not counted)
 AwaitAck --stgtp ack--> AwaitVerify --read-back equal--> Synced
                                      --read-back differs--> Pending
 AwaitAck --timeout--> Pending; after 5 pushes -> Failed (TargetNotConfirmed, kHealthTargetUnconfirmed)
 Failed --5 min--> Pending
 any --STM reboot/reset/flash--> Pending (desired kept) or Unknown (no desired)
 ```
-Read-back: `gtgtp` on v1, `gvlvx` on v2 (it carries the target). Because the
-STM drops `stgtp` during calibration, a Pending push waits while
-`calibrating` is true, and read-back mismatches are retried after the
-calibration ends. Inactive valves never get pushes, and
+Read-back: `gtgtp` on v1, `gvlvx` on v2 (it carries the target). Because
+STM 1.x drops `stgtp` during calibration, on v1 (and while the protocol is
+not known yet) a Pending push waits while `calibrating` is true, and
+read-back mismatches are retried after the calibration ends. STM 2.x takes a
+target during a calibration and ends the calibration there, so on v2 targets
+are pushed at once.
+
+`calibrating`: v1 is `gvlvd` status bit 7. On v2 the bit is set only for
+`staln` and the movement trigger, so it is `calState` phase 2 (running) or
+bit 7; phase 1 alone (time trigger queued, or a valve found at STM start-up
+that calibrates on its first target change) is shown as "calibration
+queued" and may last for days. `gvlvx` calState is split into the phase
+(bits 0..1) and the flags (bit 2 early end stop since the last good
+calibration, bit 3 last calibration failed); a v2 calibration that ends with
+bit 3 set is CalibFailed. Inactive valves never get pushes, and
 `setDesiredTarget` rejects them (HTTP 409, MQTT reject event).
 
 Health flags (`HealthFlag`), recomputed on every update:
@@ -322,15 +339,15 @@ request says to clear secrets. "Legacy source" is the NVS namespace/key that
 | Key | Type | Range / rule | Default | Legacy source |
 |---|---|---|---|---|
 | `schema` | int | read-only | 1 | - |
-| `station` | string | 1..20, `isSafeName` | `VdMot` | `sysCfg/stName` |
+| `station` | string | 1..20 bytes, `isSafeName` (UTF-8 and spaces allowed like legacy; DHCP/mDNS/syslog use `buildHostname`) | `VdMot` | `sysCfg/stName` |
 | `net.iface` | int | 0 auto, 1 ethernet, 2 wifi | 0 | `netCfg/ethwifi` |
 | `net.dhcp` | bool | | true | `netCfg/dhcp` |
 | `net.ip` | IPv4 | non-zero when !dhcp | 0.0.0.0 | `netCfg/staticIp` |
 | `net.mask` | IPv4 | contiguous, non-zero when !dhcp | 0.0.0.0 | `netCfg/mask` |
 | `net.gateway` | IPv4 | non-zero when !dhcp | 0.0.0.0 | `netCfg/gw` |
 | `net.dns` | IPv4 | any | 0.0.0.0 | `netCfg/dnsIp` |
-| `net.ssid` | string | 0..32 printable ASCII; required when iface = wifi | "" | `netCfg/ssid` |
-| `net.wifiPassword` | secret | 8..63 when ssid set | "" | `netCfg/pwd` |
+| `net.ssid` | string | 0..32 bytes printable text (ASCII or UTF-8); required when iface = wifi | "" | `netCfg/ssid` |
+| `net.wifiPassword` | secret | "" (open network) or 8..63 when ssid set | "" | `netCfg/pwd` |
 | `net.reconnectTimeoutMin` | int | 0..240 (0 = never restart) | 5 | `netCfg/netConnTO` |
 | `time.ntpServer` | host | 0..64, `isHostName` or IPv4; "" disables SNTP | `pool.ntp.org` | `netCfg/timeServer` |
 | `time.tzName` | string | 0..49 printable | `Europe/Berlin` | `tZCfg/tZ` |
@@ -526,7 +543,7 @@ re-send.
 | `<main>diag/valves/<V>/lastMove` | `{"dir":"open","req":N,"cnt":N,"stop":"endstop","peak":N,"ms":N}` (peak in 0.1 mA) | `retained` | v2, when `moveSeq` changes |
 | `<main>diag/valves/<V>/earlyStops` | int | `retained` | v2, on change |
 | `<main>diag/valves/<V>/cmdRejected` | int | `retained` | v2, on change |
-| `<main>diag/valves/<V>/calState` | 0 idle, 1 started, 2 in progress | `retained` | v2, on change |
+| `<main>diag/valves/<V>/calState` | 0 idle, 1 requested, 2 running (`gvlvx` calState bits 0..1) | `retained` | v2, on change |
 | `<main>diag/valves/<V>/profile` | `writeProfileJson` | never | v2, when a new `gprof` arrives |
 | `<main>diag/stm/proto` | 1 / 2 | `retained` | on change |
 | `<main>diag/stm/uptime` | seconds | `retained` | v2, every full publish |
@@ -546,7 +563,11 @@ Runs only in mode MQTT + HA. It is sent on every connect when
 request (`POST /api/mqtt/discovery`). The MQTT task sends one message per
 loop pass, 20 ms apart, calling `loop()` in between. The first run on a device
 (`vdmrev/haDrop` != 1) first walks `DropListIterator` and the stale lines of
-`/HADiscovery.cfg`, then sets `haDrop`.
+`/HADiscovery.cfg`, then sets `haDrop`. That cleanup also runs in mode MQTT
+(the legacy firmware sent discovery in both modes), and it waits until the
+STM data has settled (link Up, re-sync done, 30 s sensor grace; at most
+10 min after boot) because the valve temp entities depend on it; a valve
+whose sensors are still unknown then keeps its temp1/temp2 configs.
 
 Topic: `homeassistant/<component>/<station>/<objectId>/config`, retained.
 Common payload parts: `name`, `unique_id`, `state_topic`, `command_topic`
@@ -782,9 +803,17 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   1 s after the response.
 - Restarts always go through `ota::requestRestart(reason, delay)`, which logs
   `RebootRequested`, flushes the log file and calls `esp_restart()`. The STM
-  is never reset by an ESP restart.
+  is never reset by an ESP restart. A user restart (reboot, network/station
+  settings, factory reset) of an image still pending verification, with the
+  network up, marks the image valid first (the bootloader would roll back
+  otherwise); network-watchdog restarts keep the rollback. No STM flash
+  starts while a restart is pending (HTTP 409, and the STM task refuses).
 - Network watchdog (legacy `netConnTO`): `reconnectTimeoutMin` minutes
-  without an IP -> restart (reason 2). 0 disables it.
+  without an IP -> restart (reason 2). 0 disables it. Every further
+  watchdog restart in the same outage waits 4 times longer (5, 20, 80, 320,
+  1280 min, then every 24 h for the default 5), because each ESP restart
+  also resets the STM (IO15 strap). The count survives software restarts in
+  RTC memory and is cleared as soon as the network is up.
 - Factory reset: hold GPIO2 low for 1 s at boot, or
   `POST /api/system/factory-reset`. It erases `vdmrev` only (the legacy
   namespaces stay, and `imported` is set so they are not imported again).
