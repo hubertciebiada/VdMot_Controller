@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#include <initializer_list>
+
 #include "doctest.h"
 #include "vdm/end_stop_detector.h"
 
@@ -251,4 +253,97 @@ TEST_CASE("EndStopDetector: idle resets filter, keeps statistics until arm") {
   CHECK(d.peak() == 0);
   CHECK(d.trip() == Trip::None);
   CHECK(d.tripCurrent() == 0);
+}
+
+namespace {
+
+// Drives the filter with `raw` until it reads exactly `target` (after the inrush time).
+// Returns the trip of the sample that first reached target.
+Trip settleAt(EndStopDetector& d, int32_t raw, int32_t target) {
+  for (int i = 0; i < 250; ++i) d.sample(0);
+  Trip t = Trip::None;
+  for (int n = 0; d.current() != target; ++n) {
+    REQUIRE(n < 5000);
+    REQUIRE(d.current() < target);
+    t = d.sample(raw);
+  }
+  return t;
+}
+
+}  // namespace
+
+TEST_CASE("EndStopDetector: a filtered current of exactly the safety limit does not count") {
+  // raw 649 settles the filter at exactly 600 from below: (9800 * 600 + 200 * 649) / 10000 == 600
+  EndStopDetector d;
+  d.arm(-100000, 100000);
+  CHECK(settleAt(d, 649, 600) == Trip::None);
+  for (int i = 0; i < 50; ++i) {
+    CHECK(d.sample(649) == Trip::None);
+    CHECK(d.current() == 600);
+  }
+  CHECK(d.overCount() == 0);
+  CHECK(d.trip() == Trip::None);
+}
+
+TEST_CASE("EndStopDetector: a filtered current of exactly the hard limit is not a hard trip") {
+  // raw 1049 settles the filter at exactly 1000 (never above it)
+  EndStopDetector d;
+  d.arm(-100000, 100000);
+  CHECK(settleAt(d, 1049, 1000) == Trip::Safety);  // long above 600 on the way up
+  for (int i = 0; i < 50; ++i) {
+    CHECK(d.sample(1049) == Trip::Safety);
+    CHECK(d.current() == 1000);
+  }
+  CHECK(d.trip() == Trip::Safety);
+  CHECK(d.peak() == 1000);
+}
+
+TEST_CASE("EndStopDetector: a filtered current equal to the low bound is inside") {
+  EndStopDetector d;
+  d.arm(600, 100000);
+  // on the way up the filter is below the low bound: Bound; exactly at it: None
+  CHECK(settleAt(d, 649, 600) == Trip::None);
+  for (int i = 0; i < 20; ++i) CHECK(d.sample(649) == Trip::None);
+  CHECK(d.trip() == Trip::Bound);
+  CHECK(d.tripCurrent() == 12);  // first settled sample: 649 * 200 / 10000 == 12 < 600
+}
+
+TEST_CASE("EndStopDetector: the consecutive counter saturates at 255") {
+  EndStopDetector d;
+  d.arm(-100000, 100000);
+  for (int i = 0; i < 250 + 1000; ++i) d.sample(900);  // settles near 900: above 600, below 1000
+  REQUIRE(d.current() > 600);
+  REQUIRE(d.current() <= 1000);
+  CHECK(d.overCount() == 255);
+  d.sample(900);
+  CHECK(d.overCount() == 255);
+}
+
+TEST_CASE("EndStopDetector: raw samples are clamped to exactly +-100000") {
+  // reference: the same filter fed the clamp value itself
+  auto reference = [](int32_t clamped, int n) {
+    int32_t c = 0;
+    for (int i = 0; i < n; ++i) c = (c * 9800 + clamped * 200) / 10000;
+    return c;
+  };
+  for (int n : {1, 40, 2000}) {
+    CAPTURE(n);
+    EndStopDetector hi;
+    hi.arm(-1000000, 1000000);
+    EndStopDetector lo;
+    lo.arm(-1000000, 1000000);
+    for (int i = 0; i < 250; ++i) {
+      hi.sample(INT32_MAX);
+      lo.sample(INT32_MIN);
+    }
+    for (int i = 0; i < n; ++i) {
+      hi.sample(INT32_MAX);
+      lo.sample(INT32_MIN);
+    }
+    CHECK(hi.current() == reference(100000, n));
+    CHECK(lo.current() == reference(-100000, n));
+  }
+  // one step: 99999 would give 1999, 100000 gives 2000; after 40 steps 100001 differs as well
+  CHECK(reference(100000, 1) == 2000);
+  CHECK(reference(100000, 40) != reference(100001, 40));
 }

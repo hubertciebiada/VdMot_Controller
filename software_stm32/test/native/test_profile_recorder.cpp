@@ -174,3 +174,20 @@ TEST_CASE("ProfileRecorder: copy keeps the samples") {
   CHECK(q.size() == 3);
   CHECK(q.at(2).count == 2);
 }
+
+TEST_CASE("ProfileRecorder: after compaction the next grid point follows the last kept sample") {
+  ProfileRecorder p;
+  p.reset();
+  for (uint32_t c = 0; c <= 30; ++c) p.add(c, 1);
+  p.add(32, 1);  // 32 samples, full, last count 32
+  REQUIRE(p.size() == 32);
+  // 33 is on the spacing-1 grid, but after compaction to spacing 2 the next point is 34
+  p.add(33, 2);
+  CHECK(p.spacing() == 2);
+  CHECK(p.size() == 17);
+  CHECK(p.at(16).count == 32);
+  p.add(34, 3);
+  CHECK(p.size() == 18);
+  CHECK(p.at(17).count == 34);
+  CHECK(p.at(17).current == 3);
+}

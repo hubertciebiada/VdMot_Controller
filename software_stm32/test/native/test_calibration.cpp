@@ -132,3 +132,16 @@ TEST_CASE("learnMeanCurrent: only strokes with enough samples (S02)") {
   CHECK(vdm::learnMeanCurrent(20, 65535, 65535, 65535, 65535) == 65535);
   CHECK(vdm::learnMeanCurrent(20, 17, 0, 19, 0) == 20);
 }
+
+TEST_CASE("escalatedBound: the smallest positive bound still grows") {
+  // bound 1 is > 0: it escalates (1 * 200 / 100 = 2), only bound <= 0 is left alone
+  CHECK(vdm::escalatedBound(1, 1, EscalationConfig{1, 100, 60}) == 2);
+  CHECK(vdm::escalatedBound(1, 3, EscalationConfig{1, 100, 60}) == 4);
+}
+
+TEST_CASE("learnMeanCurrent: 1 mA is a valid stroke mean, 0 mA is not") {
+  const uint16_t n = vdm::kMinMeanSamples;
+  CHECK(vdm::learnMeanCurrent(20, 1, n, 0, n) == 1);
+  CHECK(vdm::learnMeanCurrent(20, 0, n, 1, n) == 1);
+  CHECK(vdm::learnMeanCurrent(20, 1, n, 3, n) == 2);
+}

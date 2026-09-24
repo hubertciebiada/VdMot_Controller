@@ -25,14 +25,14 @@ int hexValue(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
+  return -1;  // NOMUTATE: callers only test hexValue() < 0, so any negative sentinel (-1/-2) is indistinguishable
 }
 
 }  // namespace
 
 bool parseU32(const char* s, uint32_t lo, uint32_t hi, uint32_t& out) {
   if (s == nullptr) return false;
-  uint32_t value = 0;
+  uint32_t value = 0;  // NOMUTATE: initial value is dead; parseMagnitude() overwrites it on success and it is unused on failure
   if (!parseMagnitude(s, hi, value) || value < lo) return false;
   out = value;
   return true;
@@ -47,7 +47,7 @@ bool parseI32(const char* s, int32_t lo, int32_t hi, int32_t& out) {
   }
   // 2147483648 is representable only as a negative value.
   const uint32_t limit = negative ? 2147483648u : 2147483647u;
-  uint32_t magnitude = 0;
+  uint32_t magnitude = 0;  // NOMUTATE: initial value is dead; parseMagnitude() overwrites it on success and it is unused on failure
   if (!parseMagnitude(s, limit, magnitude)) return false;
   int32_t value;
   if (negative) {
@@ -62,7 +62,7 @@ bool parseI32(const char* s, int32_t lo, int32_t hi, int32_t& out) {
 
 bool parseOneWireAddress(const char* s, uint8_t (&out)[8]) {
   if (s == nullptr) return false;
-  uint8_t parsed[8];
+  uint8_t parsed[8];  // NOMUTATE: scratch array size; only indices 0..7 are written/read, a larger size is unobservable
   for (size_t i = 0; i < 8; ++i) {
     const char* p = s + i * 3;
     const int hi = hexValue(p[0]);

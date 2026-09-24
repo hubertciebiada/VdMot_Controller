@@ -174,3 +174,28 @@ TEST_CASE("Tokenizer: checked integer arguments") {
   CHECK_FALSE(t.argU8(1, 0, 99, b));
   CHECK(b == 11);
 }
+
+TEST_CASE("Tokenizer: default state before any parse") {
+  const Tokenizer t;
+  CHECK(t.argc() == 0);
+  CHECK_FALSE(t.tooManyArgs());
+  CHECK(std::string(t.command()).empty());
+  CHECK(std::string(t.arg(0)).empty());
+}
+
+TEST_CASE("Tokenizer: arguments of a previous line are not visible") {
+  char first[] = "c 1 2 -3";
+  char second[] = "c 1";
+  Tokenizer t;
+  REQUIRE(t.parse(first, 5));
+  REQUIRE(t.argc() == 3);
+  REQUIRE(t.parse(second, 5));
+  REQUIRE(t.argc() == 1);
+  CHECK(std::string(t.arg(1)).empty());
+  uint32_t u = 99;
+  CHECK_FALSE(t.argU32(1, 0, 10, u));
+  CHECK(u == 99);
+  int32_t s = 99;
+  CHECK_FALSE(t.argI32(1, -10, 10, s));
+  CHECK(s == 99);
+}

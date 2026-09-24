@@ -82,3 +82,24 @@ TEST_CASE("RetryBackoff: degenerate configurations stay usable") {
   huge.failed();
   CHECK(huge.interval() == 0xFFFFFFFFu);
 }
+
+TEST_CASE("RetryBackoff: doubling stops exactly at half the maximum") {
+  // 3 == 7 / 2 is not above half: it doubles to 6, then 6 > 3 jumps to the maximum
+  RetryBackoff b(3, 7);
+  b.failed();
+  CHECK(b.interval() == 3);
+  b.failed();
+  CHECK(b.interval() == 6);
+  b.failed();
+  CHECK(b.interval() == 7);
+
+  // an interval between a third and half of the maximum still doubles
+  RetryBackoff c(40, 200);
+  c.failed();
+  c.failed();
+  CHECK(c.interval() == 80);
+  c.failed();
+  CHECK(c.interval() == 160);
+  c.failed();
+  CHECK(c.interval() == 200);
+}
