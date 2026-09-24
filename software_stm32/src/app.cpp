@@ -45,6 +45,30 @@ unsigned int learning_movements = LEARN_AFTER_MOVEMENTS_DEFAULT;
 
 unsigned int reset_request = 0;
 
+
+// hands a calibration to the valve state machine
+static void app_start_learn (unsigned int valve) {
+  if (appsetaction(CMD_A_LEARN, valve, 0) != 0) return;
+  myvalvemots[valve].calibState = calibInProgress;
+  myvalves[valve].forcedLearn = 0;
+  myvalves[valve].svcHold = 0;
+  myvalves[valve].rejectedTarget = VALVE_NO_TARGET;
+}
+
+
+// a target request (stgtp) ends the hold of a service move, also when the target did not change
+void app_target_changed (uint16_t valve) {
+  if (valve < ACTUATOR_COUNT) myvalves[valve].svcHold = 0;
+}
+
+
+// svmov: 0 accepted, -1 invalid arguments, -2 valve state machine busy
+int16_t app_service_move (uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA) {
+  const int16_t result = appsetservice(valve, dir, counts, maxmA);
+  if (result == 0) myvalves[valve].svcHold = SVMOV_HOLD_10S;
+  return result;
+}
+
 int16_t app_setup (void) { 
 
   // init valve data
@@ -58,6 +82,10 @@ int16_t app_setup (void) {
       myvalves[x].sensorindex2 = VALVE_SENSOR_UNKNOWN;        // marks that no slot is selected
       myvalves[x].learn_movements = LEARN_AFTER_MOVEMENTS_DEFAULT;
       myvalves[x].movements = 0;
+      myvalves[x].cmdRejected = 0;
+      myvalves[x].rejectedTarget = VALVE_NO_TARGET;
+      myvalves[x].forcedLearn = 0;
+      myvalves[x].svcHold = 0;
       // distribute learn timing equaly over valve slots
       myvalves[x].learn_time = (unsigned int) (((long)LEARN_AFTER_TIME_DEFAULT * ((long)x+1)) / (long)ACTUATOR_COUNT);  
   }
@@ -73,11 +101,16 @@ int16_t app_setup (void) {
     COMM_DBG.println(learning_movements, DEC);
   #endif
 
-  noOfMinCounts = eep_content.noOfMinCounts;
-  if (noOfMinCounts > 60000) noOfMinCounts = 3000;
-  
-  maxCalibRetries = eep_content.maxCalibRetries;
-  if (maxCalibRetries > 2) maxCalibRetries = 2; 
+  // the range table of smotc also applies to the stored values (S07): each field that is out of
+  // range loads its default, and the EEPROM mirror is corrected so the next write stores valid values
+  vdm::MotorParams stored;
+  stored.lowFac = eep_content.currentbound_low_fac;
+  stored.highFac = eep_content.currentbound_high_fac;
+  stored.startOnPower = eep_content.startOnPower;
+  stored.minCounts = eep_content.noOfMinCounts;
+  stored.maxRetries = eep_content.maxCalibRetries;
+  motor_set_params(vdm::sanitizeMotorParams(stored));
+  motor_set_escalation(vdm::sanitizeEscalation(eep_content.escalation));
   return 0;
 }
 
@@ -110,17 +143,23 @@ int16_t app_loop (void) {
 
           // learn all present valves if any target change happened before
           // this keeps controller calm right after startup, otherwise controller would be busy for up to 12 valve learning times (10 min ?!)
-          else if(firstchange > 0 && myvalvemots[lastvalve].status == VLV_STATE_PRESENT)  {
+          // an explicit learn request (staln) does not wait for a target change (S08)
+          else if((firstchange > 0 || myvalves[lastvalve].forcedLearn) && myvalvemots[lastvalve].status == VLV_STATE_PRESENT)  {
             #ifdef appDebug
               COMM_DBG.print("App 1: learning started for valve "); 
               COMM_DBG.println(lastvalve, 10);
             #endif
-            myvalvemots[lastvalve].calibState = calibInProgress;
-            appsetaction(CMD_A_LEARN,lastvalve,0);        
+            app_start_learn(lastvalve);
+          }
+
+          // a learn request that a running move overwrote (the move ended with its own status) is renewed
+          else if (myvalves[lastvalve].forcedLearn && myvalvemots[lastvalve].status != VLV_STATE_UNKNOWN) {
+            myvalvemots[lastvalve].status = VLV_STATE_PRESENT;
           }
 
           // handle first found difference then break
-          else if (myvalvemots[lastvalve].actual_position != myvalvemots[lastvalve].target_position)
+          // (a valve moved by svmov is left where it is until the next target request or the hold time is over)
+          else if (myvalves[lastvalve].svcHold == 0 && myvalvemots[lastvalve].actual_position != myvalvemots[lastvalve].target_position)
           {
               #ifdef appDebug
                 COMM_DBG.print("App: target pos changed for valve "); 
@@ -138,11 +177,11 @@ int16_t app_loop (void) {
                   COMM_DBG.print("App 2: learning started for valve "); 
                   COMM_DBG.println(lastvalve, 10);
                 #endif
-                myvalvemots[lastvalve].calibState = calibInProgress;
-                appsetaction(CMD_A_LEARN,lastvalve,0);                  
+                app_start_learn(lastvalve);
               }
               else if ((myvalvemots[lastvalve].status != VLV_STATE_FAILED) && (myvalvemots[lastvalve].status != VLV_STATE_BLOCKS))
               {
+                myvalves[lastvalve].rejectedTarget = VALVE_NO_TARGET;
                 // should valve be opened
                 if(myvalvemots[lastvalve].target_position > myvalvemots[lastvalve].actual_position) {                  
                   if(myvalvemots[lastvalve].target_position == 100) appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0);
@@ -155,8 +194,13 @@ int16_t app_loop (void) {
                 }
               }
               else {
-                // do nothing and clear request
-                myvalvemots[lastvalve].actual_position = myvalvemots[lastvalve].target_position;
+                // the motor is not driven: the position stays as it is and the target is reported as
+                // rejected, once per target value (S04); a calibration (time trigger, staln) clears the fault
+                const byte target = myvalvemots[lastvalve].target_position;
+                if (myvalves[lastvalve].rejectedTarget != target) {
+                  myvalves[lastvalve].rejectedTarget = target;
+                  if (myvalves[lastvalve].cmdRejected < 0xFFFF) myvalves[lastvalve].cmdRejected++;
+                }
               }
           }
 
@@ -182,6 +226,10 @@ return 0;
 byte app_10s_loop () {
 
   unsigned int x = 0;
+
+  for (x=0; x< ACTUATOR_COUNT; x++) {
+    if (myvalves[x].svcHold) myvalves[x].svcHold--;
+  }
 
   // walk through valves and evaluate learning values
 
@@ -280,6 +328,8 @@ int16_t app_set_valvelearning(uint16_t valve) {
 
   if(valve < ACTUATOR_COUNT) {
    // myvalvemots[valve].actual_position = 0;     // fake some position deviation
+    myvalves[valve].forcedLearn = 1;
+    myvalves[valve].svcHold = 0;
     myvalvemots[valve].status = VLV_STATE_PRESENT; //VLV_STATE_UNKNOWN;
     myvalvemots[valve].calibration = true;
     myvalvemots[valve].calibState=calibStarted;
@@ -293,6 +343,8 @@ int16_t app_set_valvelearning(uint16_t valve) {
     for(uint8_t xx=0;xx<ACTUATOR_COUNT;xx++){
       if (myvalvemots[xx].connected) {
         //myvalvemots[xx].actual_position = 0;      // fake some position deviation
+        myvalves[xx].forcedLearn = 1;
+        myvalves[xx].svcHold = 0;
         myvalvemots[xx].status = VLV_STATE_PRESENT; //VLV_STATE_UNKNOWN;
         myvalvemots[xx].calibration = true;
         myvalvemots[xx].calibState=calibStarted;
@@ -316,6 +368,7 @@ void app_scan_valves()
     for(unsigned int xx=0;xx<ACTUATOR_COUNT;xx++){
       myvalvemots[xx].actual_position = 0;      // fake some position deviation
       myvalvemots[xx].status = VLV_STATE_UNKNOWN;
+      myvalves[xx].svcHold = 0;
     }
 }
 
@@ -328,6 +381,7 @@ int16_t app_set_valveopen(uint16_t valve) {
   if(valve < ACTUATOR_COUNT) {
     myvalvemots[valve].target_position = 100;
 		myvalvemots[valve].status = VLV_STATE_FULLOPEN;
+    myvalves[valve].svcHold = 0;
     return 0;
   }
   else if (valve == 255) {
@@ -335,6 +389,7 @@ int16_t app_set_valveopen(uint16_t valve) {
     for(unsigned int xx=0;xx<ACTUATOR_COUNT;xx++){
       myvalvemots[xx].target_position = 100;
 			myvalvemots[xx].status = VLV_STATE_FULLOPEN;
+      myvalves[xx].svcHold = 0;
     }
     return 0;
   }

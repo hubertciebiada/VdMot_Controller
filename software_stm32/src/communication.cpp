@@ -40,6 +40,7 @@
 #include "vdm/buf_writer.h"
 #include "vdm/line_assembler.h"
 #include "vdm/replies.h"
+#include "vdm/replies_v2.h"
 #include "vdm/settings.h"
 #include "vdm/tokenizer.h"
 #include <string.h>
@@ -59,6 +60,17 @@
 #define NO_SENSOR_ADDRESS		"00-00-00-00-00-00-00-00"
 
 static vdm::StaticLineAssembler<COMM_LINE_SIZE> commLine;
+
+// longest reply (gprof), static to keep it off the main loop stack
+static vdm::StaticBufWriter<vdm::kProfileReplyMaxLen + 1> replyLine;
+
+
+// sends the reply formatted into replyLine (nothing if it did not fit)
+static void sendReply (bool formatted)
+{
+	if (formatted) COMM_SER.println(replyLine.c_str());
+	replyLine.clear();
+}
 
 
 static void storeSensorAddress (struct ds1820_eeprom_layout &slot, const uint8_t *address)
@@ -178,6 +190,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		if (req.argc() == 2 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x) && req.argU8(1, 0, 100, pos)) {
 			if (!myvalvemots[x].calibration)  // wdu ???
 				myvalvemots[x].target_position = pos;
+			app_target_changed(x);
 			COMM_SER.println(APP_PRE_SETTARGETPOS);
 		}
 		else commdbg_println("invalid arguments");
@@ -475,40 +488,28 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 
 	// set motor characteristics
 	// low high startOnPower [noOfMinCounts [maxCalibRetries]]
+	// every value is checked against the range table (gmotx), out of range: "smotc err", nothing changed
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_SETMOTCHARS)) {
-		uint8_t low = 0, high = 0, onPower = 0, retries = 0;
-		uint16_t minCounts = 0;
+		uint32_t values[5] = {0, 0, 0, 0, 0};
+		vdm::MotorParams params = motor_get_params();
+		bool valid = req.argc() >= 3 && req.argc() <= 5;
 
 		commdbg_print("got set motor characteristics request ");
 
-		if (req.argc() >= 3
-			&& req.argU8(0, 5, 50, low)
-			&& req.argU8(1, 5, 50, high)
-			&& req.argU8(2, 0, 255, onPower)
-			&& (req.argc() < 4 || req.argU16(3, 0, 65535, minCounts))
-			&& (req.argc() < 5 || req.argU8(4, 0, 255, retries))) {
+		for (uint8_t i = 0; valid && i < req.argc(); i++) valid = req.argU32(i, 0, UINT32_MAX, values[i]);
+		valid = valid && vdm::applyMotorParamsRequest(params, req.argc(), values);
 
-			currentbound_low_fac = low;
-			currentbound_high_fac = high;
-			startOnPower = onPower;
-
-			eep_content.currentbound_low_fac = currentbound_low_fac;
-			eep_content.currentbound_high_fac = currentbound_high_fac;
-			eep_content.startOnPower = startOnPower;
-			if (req.argc() >= 4) {
-				noOfMinCounts = minCounts;
-				eep_content.noOfMinCounts = noOfMinCounts;	
-			}
-			if (req.argc() == 5) {
-				maxCalibRetries = retries;
-				eep_content.maxCalibRetries = maxCalibRetries;	
-			}
+		if (valid) {
+			motor_set_params(params);
 			eeprom_changed();
 			COMM_SER.println(APP_PRE_SETMOTCHARS);
 			commdbg_println("- valid");
 		}
-		else commdbg_println("- invalid arguments");
+		else {
+			sendReply(vdm::formatResult(replyLine, APP_PRE_SETMOTCHARS, false));
+			commdbg_println("- invalid arguments");
+		}
 	}
 
 

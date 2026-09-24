@@ -172,6 +172,8 @@
 // #error "EEPROM: adress for EE_SENSORDATA_ADR collides with EE_GENERALDATA_ADR"
 // #endif
 
+#include "vdm/calibration.h"
+
 enum EEP_STATE { EEP_INIT, EEP_VALID, EEP_CHANGED };
 
 struct ds1820_eeprom_layout {
@@ -195,6 +197,8 @@ struct eeprom_layout {
   uint8_t startOnPower;
   uint16_t noOfMinCounts;
   uint8_t maxCalibRetries;
+  // layout version 2 extension block (see vdm/eeprom_layout.h)
+  vdm::EscalationConfig escalation;     // breakaway escalation of calibration repetitions
 };
 
 

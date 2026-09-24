@@ -43,6 +43,8 @@
 
 #define VALVE_INIT_TEMPERATURE            -2000   // init value for struct value of temperature
 #define VALVE_SENSOR_UNKNOWN              65535   // marks that no sensor slot is selected
+#define VALVE_NO_TARGET                   255     // rejectedTarget: nothing rejected
+#define SVMOV_HOLD_10S                    30      // app_10s_loop calls (~11 s) a service moved valve is left alone
 
 
 int16_t app_setup (void);
@@ -53,6 +55,8 @@ int16_t app_set_learntime(uint32_t time);
 int16_t app_set_valvelearning(uint16_t valve);
 void app_scan_valves();
 int16_t app_set_valveopen(uint16_t valve);
+void app_target_changed(uint16_t valve);
+int16_t app_service_move(uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA);
 int16_t app_match_sensors();
 void reset_check();
 void reset_STM32();
@@ -84,6 +88,10 @@ struct valve {
 //   byte target_position;
 //   byte actual_position;
   byte statusm;
+  uint16_t cmdRejected;       // target changes not executed because the valve is FAILED or BLOCKS
+  byte rejectedTarget;        // target counted last in cmdRejected, VALVE_NO_TARGET if none
+  uint8_t forcedLearn;        // staln: learn without waiting for a target change
+  uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls)
   //struct valvemotor valvemot;
 };
 

@@ -32,6 +32,10 @@
 	#define _MOTOR_H
 
 #include "app.h"
+#include "vdm/calibration.h"
+#include "vdm/motor_params.h"
+#include "vdm/move_classifier.h"
+#include "vdm/profile_recorder.h"
 
 #define CMD_A_OPEN      'o'
 #define CMD_A_OPEN_END  'p'
@@ -40,6 +44,7 @@
 #define CMD_A_LEARN     'l'
 #define CMD_A_TARGET    't'
 #define CMD_A_TEST      'x'
+#define CMD_A_SERVICE   's'       // service move (svmov), parameters in appsetservice()
 
 #define VLV_STATE_IDLE      (byte) 0x01       // nothing to do
 #define VLV_STATE_OPENING   (byte) 0x02       // opens
@@ -72,6 +77,7 @@ struct valvemotor {
   CALIBSTATE calibState;
   uint8_t connected;
   uint8_t calibRetries;
+  uint8_t calibActive;             // a calibration of this valve is running (valve state machine)
 };
 
 // shared between the valve state machine (TIM2 interrupt) and the main loop
@@ -79,7 +85,8 @@ extern volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 
 enum ASTATE {
 A_INIT, A_IDLE, A_CLOSE, A_OPEN1, A_OPEN2, A_LEARN1, 
-A_LEARN2, A_LEARN3, A_LEARN4, A_SET, A_SET1, A_SET2, A_CLOSE1, A_CLOSE2, A_TEST };
+A_LEARN2, A_LEARN3, A_LEARN4, A_SET, A_SET1, A_SET2, A_CLOSE1, A_CLOSE2, A_TEST,
+A_SVC1, A_SVC2 };
 
 extern volatile enum ASTATE valvestate;
 extern volatile uint32_t valve_loop_ticks;     // incremented on every valve_loop run (watchdog heartbeat)
@@ -96,6 +103,33 @@ void valve_pins_safe ();
 
 enum ASTATE valve_getstate ();
 int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force=false);
+// service move: dir vdm::kDirOpen/kDirClose, counts 1..10000, end-stop threshold maxmA 5..60
+int16_t appsetservice(unsigned int valveindex, uint8_t dir, uint16_t counts, uint8_t maxmA);
+
+#define SVMOV_COUNTS_MIN    1
+#define SVMOV_COUNTS_MAX    10000
+#define SVMOV_MAXMA_MIN     5
+#define SVMOV_MAXMA_MAX     vdm::kSafetyLimit_mA
+
+// diagnostics of one valve, written by the valve state machine
+struct valve_diag {
+  vdm::MoveResult last;         // last move (normal, calibration stroke or service move)
+  uint16_t earlyStops;          // early end stops of normal moves since start-up
+  bool earlyWarn;               // early end stop since the last successful calibration
+  bool lastCalFailed;           // the last calibration did not succeed
+};
+
+// consistent copies, safe to call from the main loop
+void valve_get_diag (unsigned int valveindex, struct valve_diag &out);
+void valve_get_profile (unsigned int valveindex, vdm::ProfileRecorder &out);
+
+// motor parameters (smotc/gmotc): RAM values and their EEPROM mirror
+vdm::MotorParams motor_get_params ();
+void motor_set_params (const vdm::MotorParams &params);
+
+// breakaway escalation of calibration repetitions (scalx/gcalx)
+vdm::EscalationConfig motor_get_escalation ();
+void motor_set_escalation (const vdm::EscalationConfig &config);
 
 extern uint8_t currentbound_low_fac;      // lower current limit factor for detection of end stop
 extern uint8_t currentbound_high_fac;     // upper current limit factor for detection of end stop

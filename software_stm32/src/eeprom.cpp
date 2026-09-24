@@ -32,6 +32,8 @@
 #include "hardware.h"
 #include "I2C_eeprom.h"		// freat library from https://github.com/RobTillaart/I2C_EEPROM
 #include "motor.h"
+#include "vdm/eeprom_layout.h"
+#include "vdm/replies_v2.h"
 
 //#define EEPROM_DEBUG(...)
 //#define EEPROM_DEBUG 	Serial3.print
@@ -59,6 +61,12 @@ struct eeprom_layout eep_content;
 // the layout could not be read completely at startup: RAM holds 0xFF fallbacks for the missing
 // fields, and writing the layout back would destroy the configuration still stored in the EEPROM
 static bool eep_read_failed = false;
+// the last change could not be written (all attempts failed); cleared by the next successful write
+static bool eep_write_failed = false;
+
+// size of the 1.x layout from EE_GENERALDATA_ADR: base block, sensor slots, tail
+static_assert(EE_GENERALDATA_ADR + 33 + (2 * ACTUATOR_COUNT + ADDITIONAL_SENSOR_COUNT) * 8 + 4 == vdm::kExtensionAddress,
+	"the extension block must follow the 1.x layout");
 
 
 
@@ -162,9 +170,15 @@ int16_t eepromloop() {
 						EEPROM_DEBUG("eeprom not written, layout was not read at startup\r\n");
 						eep_content.status = EEP_VALID;
 					}
-					else if (eeprom_write_layout (&eep_content) == 0 || ++writeattempts >= EEP_WRITE_ATTEMPTS) {
+					else if (eeprom_write_layout (&eep_content) == 0) {
+						writeattempts = 0;
+						eep_write_failed = false;
+						eep_content.status = EEP_VALID;
+					}
+					else if (++writeattempts >= EEP_WRITE_ATTEMPTS) {
 						// after the last failed attempt give up, a pending write must not block a reset for ever
 						writeattempts = 0;
+						eep_write_failed = true;
 						eep_content.status = EEP_VALID;
 					}
 					// otherwise EEP_CHANGED remains and the write is retried after the write delay
@@ -348,6 +362,13 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 	buf[x++] =  lay->maxCalibRetries;
 	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
+	// layout version 2 extension, behind the 1.x fields
+	vdm::StoredExtension ext;
+	uint8_t extbuf[vdm::kExtensionBlockSize];
+	ext.escalation = lay->escalation;
+	x = (uint16_t) vdm::encodeExtension(ext, extbuf);
+	if (eeprom.writeBlock(vdm::kExtensionAddress, extbuf, x) != 0) return eeprom_write_failed();
+
 	EEPROM_DEBUG("finished\r\n");
 
 	return 0;
@@ -473,6 +494,16 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 	eeprom_read_block(address, buf, 1);
 	lay->maxCalibRetries = buf[0];
 	address++;
+
+	// layout version 2 extension; a 1.x image or a damaged block loads the defaults
+	uint8_t extbuf[vdm::kExtensionBlockSize];
+	vdm::StoredExtension ext;
+	eeprom_read_block(vdm::kExtensionAddress, extbuf, sizeof(extbuf));
+	const vdm::ExtensionState extstate = vdm::decodeExtension(extbuf, ext);
+	lay->escalation = ext.escalation;
+	if (extstate == vdm::ExtensionState::Legacy) EEPROM_DEBUG("layout 1.x, defaults for new fields...");
+	else if (extstate == vdm::ExtensionState::Corrupt) EEPROM_DEBUG("extension damaged, defaults for new fields...");
+
 	eep_content.status = EEP_VALID;
 	EEPROM_DEBUG("finished\r\n");
 
@@ -484,6 +515,15 @@ void eeprom_changed () {
 
 	eep_content.status = EEP_CHANGED;
 
+}
+
+
+// health of the configuration storage for gstat
+uint8_t eeprom_state () {
+	if (eep_read_failed) return vdm::kEepStateReadFailed;
+	if (eep_content.status == EEP_CHANGED) return vdm::kEepStatePending;
+	if (eep_write_failed) return vdm::kEepStateWriteFailed;
+	return vdm::kEepStateOk;
 }
 
 

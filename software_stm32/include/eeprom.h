@@ -40,6 +40,7 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay);
 int16_t eeprom_read_layout (struct eeprom_layout* lay);
 void eeprom_changed();
 bool eeprom_free();
+uint8_t eeprom_state();		// gstat eepState: vdm::kEepStateOk/Pending/WriteFailed/ReadFailed
 
 extern struct eeprom_layout eep_content;
 

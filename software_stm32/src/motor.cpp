@@ -37,6 +37,7 @@
 #include "app.h"
 #include "eeprom.h"
 #include "owDevices.h"
+#include "vdm/end_stop_detector.h"
 #include "vdm/stall_detector.h"
 
 
@@ -116,7 +117,6 @@ STM32Timer ITimer0(TIM1);
 //int counter;
 //unsigned long time;
 volatile int current_mA = 0;                     // current valve motor in 1/10 mA for normal mode
-volatile int current_mA_old = 0;                 // filter memory
 
 volatile int analog_current = 0;                 // current valve motor in 1/10 mA for test mode
 volatile int analog_current_old = 0;             // filter memory
@@ -143,23 +143,52 @@ volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 volatile char command = '\0';
 volatile int valvenr = 0;
 volatile byte poschangecmd = 0;
-unsigned int m_meancurrent = 0;           // mean current in mA
+volatile uint8_t svc_dir = 0;             // service move parameters, see appsetservice()
+volatile uint16_t svc_counts = 0;
+volatile uint8_t svc_maxmA = 0;
 
 uint8_t currentbound_low_fac = 17;        // lower current limit factor for detection of end stop
 uint8_t currentbound_high_fac = 17;       // upper current limit factor for detection of end stop
-
-int currentbound_low;                     // lower current limit for detection of end stop
-int currentbound_high;                    // upper current limit for detection of end stop
 
 uint8_t startOnPower = 50;
 uint16_t noOfMinCounts = NO_OF_MIN_COUNTS;
 uint8_t maxCalibRetries = 0;
 uint8_t calibRetries = 0;
 
+// written by the main loop with interrupts disabled, read by valve_loop (TIM2)
+static vdm::EscalationConfig calib_escalation = vdm::kEscalationDefault;
+
 //volatile uint32_t revcounter;
 
 static int undercurrcnt = 0;
 static int overcurrcnt = 0;
+
+// end-stop detection, fed by TimerHandler0 (TIM1); armed and read by the motor state machine
+// (TIM2). Both interrupts have the same priority and cannot preempt each other.
+static vdm::EndStopDetector endstop;
+
+// the move in progress (TIM2 context)
+#define MOVE_NORMAL   0           // position change requested by app_loop (counts for early stops)
+#define MOVE_LEARN    1           // calibration stroke
+#define MOVE_SERVICE  2           // service move (svmov)
+
+static vdm::MoveRequest move_req;
+static uint8_t move_kind = MOVE_NORMAL;
+static int32_t move_bound_low = 0;        // end-stop bounds for the next motor start, 1/10 mA
+static int32_t move_bound_high = 0;
+static uint32_t move_start_ms = 0;
+static vdm::MotorStop motor_stop_cause = vdm::MotorStop::None;
+static int last_turning_current = 0;      // current_mA at the last M_TURNING tick
+static uint16_t stroke_mean_mA = 0;       // mean current of the last stroke that ended at an end stop
+static uint16_t stroke_mean_samples = 0;
+static vdm::ProfileRecorder move_profile;
+
+// per valve diagnostics; written by valve_loop (TIM2), read via valve_get_diag()/valve_get_profile()
+struct valve_record {
+  struct valve_diag diag;
+  vdm::ProfileRecorder profile;
+};
+static struct valve_record valve_records[ACTUATOR_COUNT];
 
 // drives the valve PSU and motor enable outputs to their inactive level;
 // called right after reset, before the 3 s boot window
@@ -182,7 +211,7 @@ void valve_pins_safe () {
 }
 
 
-// call from setup function in main
+// call from setup function in main, after app_setup() loaded the motor parameters
 byte valve_setup () {
 
   // valve MUX relay
@@ -205,12 +234,6 @@ byte valve_setup () {
   // external interrupt for counting revs
   //attachInterrupt(digitalPinToInterrupt(REVINPIN),isr_counter,RISING);
 
-
- if ((eep_content.currentbound_low_fac>=10) && (eep_content.currentbound_low_fac<=40))
-    currentbound_low_fac = eep_content.currentbound_low_fac;
-  if ((eep_content.currentbound_high_fac>=10) && (eep_content.currentbound_high_fac<=40))
-    currentbound_high_fac = eep_content.currentbound_high_fac;
-  if (eep_content.startOnPower<=100) startOnPower=eep_content.startOnPower; else startOnPower=30;
   #ifdef motDebug
     COMM_DBG.print("Current end stop factor low: ");
     COMM_DBG.println((float) (currentbound_low_fac)/10,DEC);
@@ -222,9 +245,10 @@ byte valve_setup () {
   for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {
     myvalvemots[x].actual_position = startOnPower;
     myvalvemots[x].target_position = startOnPower;
-    myvalvemots[x].meancurrent = 20;       // 20 mA
+    myvalvemots[x].meancurrent = vdm::kMeanCurrentDefault_mA;
     myvalvemots[x].scaler = 89;
     myvalvemots[x].calibRetries = 0;
+    myvalvemots[x].calibActive = 0;
   }
 
   valvestate = A_INIT;
@@ -247,6 +271,182 @@ byte valve_setup () {
   return 0;
 }
 
+
+vdm::MotorParams motor_get_params () {
+  vdm::MotorParams p;
+  p.lowFac = currentbound_low_fac;
+  p.highFac = currentbound_high_fac;
+  p.startOnPower = startOnPower;
+  p.minCounts = noOfMinCounts;
+  p.maxRetries = maxCalibRetries;
+  return p;
+}
+
+
+// takes validated parameters into RAM and the EEPROM mirror (the caller decides about writing)
+void motor_set_params (const vdm::MotorParams &params) {
+  currentbound_low_fac = params.lowFac;
+  currentbound_high_fac = params.highFac;
+  startOnPower = params.startOnPower;
+  noOfMinCounts = params.minCounts;
+  maxCalibRetries = params.maxRetries;
+
+  eep_content.currentbound_low_fac = params.lowFac;
+  eep_content.currentbound_high_fac = params.highFac;
+  eep_content.startOnPower = params.startOnPower;
+  eep_content.noOfMinCounts = params.minCounts;
+  eep_content.maxCalibRetries = params.maxRetries;
+}
+
+
+vdm::EscalationConfig motor_get_escalation () {
+  return calib_escalation;
+}
+
+
+// takes a validated configuration into RAM and the EEPROM mirror
+void motor_set_escalation (const vdm::EscalationConfig &config) {
+  const uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  calib_escalation = config;
+  __set_PRIMASK(primask);
+  eep_content.escalation = config;
+}
+
+
+void valve_get_diag (unsigned int valveindex, struct valve_diag &out) {
+  if (valveindex >= ACTUATOR_COUNT) {
+    out = valve_diag();
+    return;
+  }
+  const uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  out = valve_records[valveindex].diag;
+  __set_PRIMASK(primask);
+}
+
+
+void valve_get_profile (unsigned int valveindex, vdm::ProfileRecorder &out) {
+  if (valveindex >= ACTUATOR_COUNT) {
+    out.reset();
+    return;
+  }
+  const uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  out = valve_records[valveindex].profile;
+  __set_PRIMASK(primask);
+}
+
+
+// full stroke of the last successful calibration in the direction of the move, 0 if unknown
+static uint32_t learned_travel (int v, uint8_t dir) {
+  const uint32_t travel = dir == DIR_OPEN ? myvalvemots[v].opening_count : myvalvemots[v].closing_count;
+  return (myvalvemots[v].scaler > 0 && travel >= vdm::kMinTravelCounts) ? travel : 0;
+}
+
+
+// end-stop bounds from the learned mean current (S01: 15 mA floor), optionally escalated
+static void set_move_bounds (int v, uint8_t repetition) {
+  const uint16_t mean = (uint16_t) (myvalvemots[v].meancurrent > 0xFFFF ? 0xFFFF : myvalvemots[v].meancurrent);
+  move_bound_high = vdm::escalatedBound(vdm::endStopBound(mean, currentbound_high_fac), repetition, calib_escalation);
+  move_bound_low = -vdm::escalatedBound(vdm::endStopBound(mean, currentbound_low_fac), repetition, calib_escalation);
+}
+
+
+// prepares a position change by `change` % (255: to the end stop)
+static void prepare_normal_move (int v, uint8_t dir, byte change) {
+  uint16_t requested = vdm::kRunToEndStop;
+  uint8_t expected = 0;
+
+  if (change == 255) {
+    const byte actual = myvalvemots[v].actual_position;
+    expected = dir == DIR_OPEN ? (byte) (100 - (actual > 100 ? 100 : actual)) : actual;
+  }
+  else {
+    const uint32_t counts = (uint32_t) myvalvemots[v].scaler * change;
+    requested = (uint16_t) (counts < vdm::kRunToEndStop ? counts : vdm::kRunToEndStop - 1);
+  }
+
+  isr_target = requested;
+  move_req.dir = dir;
+  move_req.requestedCounts = requested;
+  move_req.expectedTravelPct = expected;
+  move_req.learnedTravel = learned_travel(v, dir);
+  move_kind = MOVE_NORMAL;
+  set_move_bounds(v, 0);
+}
+
+
+// prepares a calibration stroke to the end stop; `full` if it starts at the opposite end stop
+static void prepare_learn_stroke (int v, uint8_t dir, bool full) {
+  isr_target = vdm::kRunToEndStop;       // max value to disable stopping
+  move_req.dir = dir;
+  move_req.requestedCounts = vdm::kRunToEndStop;
+  move_req.expectedTravelPct = full ? 100 : 0;
+  move_req.learnedTravel = learned_travel(v, dir);
+  move_kind = MOVE_LEARN;
+  set_move_bounds(v, calibRetries);
+}
+
+
+// prepares a service move: exact pulse count, fixed threshold of maxmA
+static void prepare_service_move (int v, uint8_t dir, uint16_t counts, uint8_t maxmA) {
+  isr_target = counts - 1;               // the motor stops on pulse isr_target + 1
+  move_req.dir = dir;
+  move_req.requestedCounts = counts;
+  move_req.expectedTravelPct = 0;
+  move_req.learnedTravel = learned_travel(v, dir);
+  move_kind = MOVE_SERVICE;
+  move_bound_high = (int32_t) maxmA * 10;
+  move_bound_low = -move_bound_high;
+}
+
+
+// records the move that just ended (S05)
+static void finish_move (int v) {
+  const uint32_t counted = isr_counter;
+  const vdm::MoveClassification c = vdm::classifyMove(move_req, motor_stop_cause, counted);
+  struct valve_record &rec = valve_records[v];
+
+  move_profile.finish(counted, endstop.trip() != vdm::EndStopDetector::Trip::None ? endstop.tripCurrent() : last_turning_current);
+  rec.profile = move_profile;
+  rec.diag.last = vdm::makeMoveResult(move_req, c.reason, counted, endstop.peak(), millis() - move_start_ms);
+  if (c.early && move_kind == MOVE_NORMAL) {
+    if (rec.diag.earlyStops < 0xFFFF) rec.diag.earlyStops++;
+    rec.diag.earlyWarn = true;
+  }
+}
+
+
+// records a move the motor state machine did not start
+static void record_refused_move (int v) {
+  struct valve_record &rec = valve_records[v];
+  rec.profile.reset();
+  rec.diag.last = vdm::makeMoveResult(move_req, vdm::StopReason::Aborted, 0, 0, 0);
+}
+
+
+// every way out of a calibration: clears the request so stgtp is accepted again
+static void learn_end (int v, bool success) {
+  myvalvemots[v].calibration = false;
+  myvalvemots[v].calibState = calibIdle;
+  myvalvemots[v].calibActive = 0;
+  valve_records[v].diag.lastCalFailed = !success;
+  if (success) valve_records[v].diag.earlyWarn = false;
+}
+
+
+// position after a service move: counted pulses converted with the learned scaler
+static void service_move_position (int v, uint32_t counted) {
+  const unsigned int scaler = myvalvemots[v].scaler;
+  if (scaler == 0) return;
+  const uint32_t pct = counted / scaler;
+  const byte delta = (byte) (pct > 100 ? 100 : pct);
+  if (move_req.dir == DIR_OPEN) myvalvemots[v].actual_position = position_add(myvalvemots[v].actual_position, delta);
+  else myvalvemots[v].actual_position = position_sub(myvalvemots[v].actual_position, delta);
+}
+
+
 void valve_loop () {
   byte temp = 0;
   
@@ -254,24 +454,23 @@ void valve_loop () {
 
   static unsigned int closing_count = 0;  
   static unsigned int opening_count = 0;
-  static int deadzone_count = 0;
+  static uint16_t open_mean_mA = 0;
+  static uint16_t open_mean_samples = 0;
 
-  static int idlecurrenttimer = 0;
-  
-  static unsigned int scaler = 0;
   static int valveindex = 0;
 
   static int waittimer = 0;
   static int psuofftimer = 0;
   static int locktimer = 0;
 
-  static enum ASTATE oldvalvestate;
+  static uint8_t svc_move_dir = 0;
+  static uint16_t svc_move_counts = 0;
+  static uint8_t svc_move_maxmA = 0;
+  static byte svc_prev_status = 0;
 
   valve_loop_ticks++;
 
   if(waittimer) waittimer--;
-
-  oldvalvestate = valvestate;
 
   switch (valvestate) {
     case A_INIT:  
@@ -347,6 +546,7 @@ void valve_loop () {
                     waittimer = WAIT_TIMER50; 
                     calibRetries = 0;
                     myvalvemots[valveindex].calibRetries=0;
+                    myvalvemots[valveindex].calibActive = 1;
                   }
                   else if (command == CMD_A_TEST) { 
                     #ifdef motDebug                   
@@ -357,6 +557,19 @@ void valve_loop () {
                     PSU_ON();
                     waittimer = WAIT_TIMER100;
                     psuofftimer = 0;
+                  }
+                  else if (command == CMD_A_SERVICE) {
+                    #ifdef motDebug
+                      COMM_DBG.print("A: cmd service move for valve ");
+                      COMM_DBG.println(valveindex, 10);
+                    #endif
+                    valvestate = A_SVC1;
+                    PSU_ON();
+                    waittimer = WAIT_TIMER50;
+                    psuofftimer = 0;
+                    svc_move_dir = svc_dir;
+                    svc_move_counts = svc_counts;
+                    svc_move_maxmA = svc_maxmA;
                   }
                   else {
                     valvestate = A_IDLE;
@@ -395,9 +608,7 @@ void valve_loop () {
 
     case A_OPEN1:  // start valve opening
                   if (!waittimer) {
-                    if(pos_change==255) isr_target = 65535;
-                    else isr_target = myvalvemots[valveindex].scaler * pos_change;
-                    m_meancurrent = myvalvemots[valveindex].meancurrent;
+                    prepare_normal_move(valveindex, DIR_OPEN, pos_change);
                     
                     if (motorcycle (valveindex, CMD_M_OPEN) == M_RES_OPENS) {
                       #ifdef motDebug
@@ -412,6 +623,7 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.print("A: cant open valve");                  
                       #endif
+                      record_refused_move(valveindex);
                       valvestate = A_IDLE;
                     }
                   }
@@ -423,6 +635,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: opened valve"); 
                     #endif                 
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].actual_position = position_add(myvalvemots[valveindex].actual_position, pos_change);
                     myvalvemots[valveindex].status = VLV_STATE_IDLE; 
@@ -434,6 +647,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: (A_OPEN2) undercurrent");
                     #endif
+                    finish_move(valveindex);
                     myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
                     myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                     valvestate = A_IDLE;
@@ -443,6 +657,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: opened valve to end stop");
                     #endif
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_IDLE;
                     myvalvemots[valveindex].actual_position = 100;
@@ -454,17 +669,16 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: opening valve failed, timeout");
                     #endif
+                    // the position is unknown: it stays as it was, app_loop reports the target as rejected (S04)
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_FAILED;
-                    myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                   }                                     
                   break;
 
     case A_CLOSE1:  // start valve closing
                   if (!waittimer) {
-                    if(pos_change==255) isr_target = 65535;
-                    else isr_target = myvalvemots[valveindex].scaler * pos_change;
-                    m_meancurrent = myvalvemots[valveindex].meancurrent;
+                    prepare_normal_move(valveindex, DIR_CLOSE, pos_change);
                     
                     if (motorcycle (valveindex, CMD_M_CLOSE) == M_RES_CLOSES) {
                       #ifdef motDebug
@@ -479,6 +693,7 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.print("A: cant close valve");                  
                       #endif
+                      record_refused_move(valveindex);
                       valvestate = A_IDLE;
                     }
                   }
@@ -490,6 +705,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: closed valve");
                     #endif
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_IDLE;
                     myvalvemots[valveindex].actual_position = position_sub(myvalvemots[valveindex].actual_position, pos_change);
@@ -501,6 +717,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: (A_CLOSE2) undercurrent");
                     #endif
+                    finish_move(valveindex);
                     myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
                     myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                     valvestate = A_IDLE;
@@ -510,6 +727,7 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: closed valve to end stop");
                     #endif
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_IDLE;
                     myvalvemots[valveindex].actual_position = 0;
@@ -521,9 +739,10 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A: closing valve failed, timeout");
                     #endif
+                    // the position is unknown: it stays as it was, app_loop reports the target as rejected (S04)
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_FAILED;
-                    myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                   }                   
                   break;                  
     
@@ -534,12 +753,11 @@ void valve_loop () {
                   // first: closing completely
                   undercurrcnt = 0;
                   overcurrcnt = 0;
+                  prepare_learn_stroke(valveindex, DIR_CLOSE, false);
                   motorcycle (valveindex, CMD_M_CLOSE);
                   myvalvemots[valveindex].status = VLV_STATE_CLOSING;
                   valvestate = A_LEARN2;
                   waittimer = WAIT_TIMER20;
-                  m_meancurrent = myvalvemots[valveindex].meancurrent;
-                  isr_target = 65535;       // max value to disable stopping
                   break;
 
     case A_LEARN2:  // goto start position
@@ -550,21 +768,23 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.println("A: closed valve before learning, now opening");                  
                       #endif
+                      finish_move(valveindex);
                       // second: opening completely and count rotations
                       isr_counter=0;
                       myvalvemots[valveindex].status = VLV_STATE_OPENING;
+                      prepare_learn_stroke(valveindex, DIR_OPEN, true);
                       motorcycle (valveindex, CMD_M_OPEN);
-                      isr_target = 65535;       // max value to disable stopping
                       valvestate = A_LEARN3;
-                      m_meancurrent = myvalvemots[valveindex].meancurrent;
                       waittimer = WAIT_TIMER20;
                     }
                     else if (temp == M_RES_NOCURRENT) {
                       #ifdef motDebug
                         COMM_DBG.println("A: (A_LEARN2) undercurrent");
                       #endif
+                      finish_move(valveindex);
                       myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
                       myvalvemots[valveindex].target_position = myvalvemots[valveindex].actual_position;
+                      learn_end(valveindex, false);
                       valvestate = A_IDLE;
                       isr_counter=0;
                     }
@@ -573,9 +793,10 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.println("A: closing valve failed, timeout");
                       #endif
+                      if (temp != M_RES_IDLE) finish_move(valveindex);
+                      learn_end(valveindex, false);
                       valvestate = A_IDLE;
                       myvalvemots[valveindex].status = VLV_STATE_FAILED;
-                      myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                     }           
                   }               
                   break;
@@ -588,20 +809,16 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.println("A: opened valve for learning, now closing again");                  
                       #endif
+                      finish_move(valveindex);
                       opening_count = isr_counter;   
-                      if(m_meancurrent > 0) {
-                        myvalvemots[valveindex].meancurrent = m_meancurrent;
-                        #ifdef motDebug
-                          COMM_DBG.print("A: learned mean current = "); 
-                          COMM_DBG.println(myvalvemots[valveindex].meancurrent);
-                        #endif
-                      }                 
-                      // third: closing completely and count rotations
+                      // kept until the pass is accepted (S02)
+                      open_mean_mA = stroke_mean_mA;
+                      open_mean_samples = stroke_mean_samples;
+                      // third: closing completely and count rotations, threshold from the learned mean current (S01)
                       isr_counter=0;
                       myvalvemots[valveindex].status = VLV_STATE_CLOSING;
+                      prepare_learn_stroke(valveindex, DIR_CLOSE, true);
                       motorcycle (valveindex, CMD_M_CLOSE);
-                      isr_target = 65535;       // max value to disable stopping
-                      m_meancurrent = 20;
                       valvestate = A_LEARN4;
                       waittimer = WAIT_TIMER20;
                     }          
@@ -609,8 +826,10 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.println("A: (A_LEARN3) undercurrent");
                       #endif
+                      finish_move(valveindex);
                       myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
                       myvalvemots[valveindex].target_position = myvalvemots[valveindex].actual_position;
+                      learn_end(valveindex, false);
                       valvestate = A_IDLE;
                       isr_counter=0;
                     }
@@ -619,9 +838,10 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.println("A: opening valve failed, timeout");
                       #endif
+                      if (temp != M_RES_IDLE) finish_move(valveindex);
+                      learn_end(valveindex, false);
                       valvestate = A_IDLE;
                       myvalvemots[valveindex].status = VLV_STATE_FAILED;
-                      myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                     }                
                   }              
                   break;
@@ -634,41 +854,40 @@ void valve_loop () {
                       #ifdef motDebug 
                         COMM_DBG.println("A: closed valve for learning");                  
                       #endif
+                      finish_move(valveindex);
                       closing_count = isr_counter;  
-                      if(m_meancurrent > 0) {
+                      myvalvemots[valveindex].actual_position = 0;    // because valve was closed completely
+
+                      const vdm::CalibrationVerdict verdict =
+                        vdm::evaluateCalibration(opening_count, closing_count, noOfMinCounts, calibRetries, maxCalibRetries);
+                      #ifdef motDebug
+                        COMM_DBG.print("A: counts open/close/min = "); COMM_DBG.print(opening_count);
+                        COMM_DBG.print(" "); COMM_DBG.print(closing_count);
+                        COMM_DBG.print(" "); COMM_DBG.println(noOfMinCounts);
+                      #endif
+
+                      if (verdict == vdm::CalibrationVerdict::Accept) {
+                        // only a successful pass changes the learned values (S02, S03)
+                        myvalvemots[valveindex].meancurrent = vdm::learnMeanCurrent((uint16_t) myvalvemots[valveindex].meancurrent,
+                          open_mean_mA, open_mean_samples, stroke_mean_mA, stroke_mean_samples);
+                        myvalvemots[valveindex].closing_count = closing_count;
+                        myvalvemots[valveindex].opening_count = opening_count;
+                        myvalvemots[valveindex].deadzone_count = (int) closing_count - (int) opening_count;
+                        myvalvemots[valveindex].scaler = opening_count / 100;
+                        myvalvemots[valveindex].status = VLV_STATE_IDLE;
+                        valve_records[valveindex].diag.lastCalFailed = false;
+                        valve_records[valveindex].diag.earlyWarn = false;
                         #ifdef motDebug
-                          COMM_DBG.print("A: learned mean current = "); 
-                          COMM_DBG.println(m_meancurrent);
+                          COMM_DBG.print("A: learned scaler = "); COMM_DBG.println(myvalvemots[valveindex].scaler);
+                          COMM_DBG.print("A: learned mean current = "); COMM_DBG.println(myvalvemots[valveindex].meancurrent);
                         #endif
-                        myvalvemots[valveindex].meancurrent = (myvalvemots[valveindex].meancurrent + m_meancurrent) / 2;                      
+                        valvestate = A_SET;
                       }                      
-                                          
-                      deadzone_count = (int) closing_count - (int) opening_count;
-                      scaler = opening_count / 100;
-                      #ifdef motDebug
-                        COMM_DBG.print("A: learned closing_count = "); COMM_DBG.println(closing_count);
-                        COMM_DBG.print("A: learned opening_count = "); COMM_DBG.println(opening_count);
-                        COMM_DBG.print("A: learned deadzone_count = "); COMM_DBG.println(deadzone_count);
-                        COMM_DBG.print("A: learned scaler = "); COMM_DBG.println(scaler);
-                        COMM_DBG.print("A: learned mean current = "); COMM_DBG.println(myvalvemots[valveindex].meancurrent);
-                      #endif
-                      myvalvemots[valveindex].closing_count = closing_count;
-                      myvalvemots[valveindex].opening_count = opening_count;
-                      myvalvemots[valveindex].deadzone_count = deadzone_count;
-                      myvalvemots[valveindex].scaler = scaler;
-                      myvalvemots[valveindex].actual_position = 0;    // because valve was closed completely  
-                      #ifdef motDebug
-                        COMM_DBG.print("A: counts = "); COMM_DBG.println(myvalvemots[valveindex].closing_count); 
-                        COMM_DBG.println(myvalvemots[valveindex].opening_count);  
-                        COMM_DBG.println(noOfMinCounts);                  
-                      #endif
-                      if ((closing_count<noOfMinCounts) || (opening_count<noOfMinCounts)) 
-                      { 
+                      else {
                         calibRetries++;
-                        myvalvemots[valveindex].calibRetries++;
-                        if (calibRetries>maxCalibRetries)
-                          myvalvemots[valveindex].status = VLV_STATE_BLOCKS;
-                        else {
+                        if (myvalvemots[valveindex].calibRetries < 255) myvalvemots[valveindex].calibRetries++;
+                                          
+                        if (verdict == vdm::CalibrationVerdict::Retry) {
                           valvestate = A_LEARN1;
                           PSU_ON(); 
                           psuofftimer = 0;
@@ -676,28 +895,27 @@ void valve_loop () {
                           #ifdef motDebug
                             COMM_DBG.print("A: calibration retry  = "); COMM_DBG.println(calibRetries); 
                           #endif
-                          break;
                         }
-
+                        else {
+                          // BLOCKS sticks: no positioning with the counts of a failed pass (S03)
+                          myvalvemots[valveindex].status = VLV_STATE_BLOCKS;
+                          learn_end(valveindex, false);
+                          valveindex = 255;
+                          valvestate = A_IDLE;
+                          #ifdef motDebug
+                            COMM_DBG.println("A: calibration failed, valve blocked");
+                          #endif
+                        }
                       }
-                      else  myvalvemots[valveindex].status = VLV_STATE_IDLE;
-                      
-                      #ifdef motDebug
-                        COMM_DBG.println(myvalvemots[valveindex].status); 
-                      #endif
-                      /*
-                      myvalvemots[valveindex].calibration = false;
-                      myvalvemots[valveindex].calibState=calibIdle;
-                      valveindex = 255;                                                                                  
-                      valvestate = A_IDLE;*/
-                      valvestate = A_SET;
                     }    
                     else if (temp == M_RES_NOCURRENT) {
                       #ifdef motDebug
                         COMM_DBG.println("A: (A_LEARN4) undercurrent");
                       #endif
+                      finish_move(valveindex);
                       myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
                       myvalvemots[valveindex].target_position = myvalvemots[valveindex].actual_position;
+                      learn_end(valveindex, false);
                                           
                       valveindex = 255;
                       valvestate = A_IDLE;
@@ -708,9 +926,10 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.println("A: closing valve failed, timeout");
                       #endif
+                      if (temp != M_RES_IDLE) finish_move(valveindex);
+                      learn_end(valveindex, false);
                       valvestate = A_IDLE;
                       myvalvemots[valveindex].status = VLV_STATE_FAILED;
-                      myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                     }        
                   }           
                   break;
@@ -722,8 +941,7 @@ void valve_loop () {
                   #endif
                   myvalvemots[valveindex].actual_position=0;
                   if (myvalvemots[valveindex].target_position==0) {
-                      myvalvemots[valveindex].calibration = false;
-                      myvalvemots[valveindex].calibState=calibIdle;
+                      learn_end(valveindex, true);
                       valveindex = 255;                                                                                  
                       valvestate = A_IDLE;
                   } else {
@@ -737,9 +955,7 @@ void valve_loop () {
 
      case A_SET1:  // start valve opening
                   if (!waittimer) {
-                    if(pos_change==255) isr_target = 65535;
-                    else isr_target = myvalvemots[valveindex].scaler * pos_change;
-                    m_meancurrent = myvalvemots[valveindex].meancurrent;
+                    prepare_normal_move(valveindex, DIR_OPEN, pos_change);
                     
                     if (motorcycle (valveindex, CMD_M_OPEN) == M_RES_OPENS) {
                       #ifdef motDebug
@@ -754,6 +970,8 @@ void valve_loop () {
                       #ifdef motDebug
                         COMM_DBG.print("A_SET1: cant open valve");                  
                       #endif
+                      record_refused_move(valveindex);
+                      learn_end(valveindex, true);
                       valvestate = A_IDLE;
                     }
                   }
@@ -765,13 +983,13 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A_SET2: opened valve"); 
                     #endif                 
+                    finish_move(valveindex);
                     myvalvemots[valveindex].actual_position = position_add(myvalvemots[valveindex].actual_position, pos_change);
                     #ifdef motDebug                   
                       COMM_DBG.print("A_SET2: new position "); COMM_DBG.println(myvalvemots[valveindex].actual_position);
                     #endif
                     myvalvemots[valveindex].status = VLV_STATE_IDLE; 
-                    myvalvemots[valveindex].calibration = false;
-                    myvalvemots[valveindex].calibState=calibIdle;
+                    learn_end(valveindex, true);
                     valveindex = 255;                                                                                  
                     valvestate = A_IDLE;
                   }
@@ -779,10 +997,10 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A_SET2: (A_OPEN2) undercurrent");
                     #endif
+                    finish_move(valveindex);
                     myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
                     myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
-                    myvalvemots[valveindex].calibration = false;
-                    myvalvemots[valveindex].calibState=calibIdle;
+                    learn_end(valveindex, true);
                     valvestate = A_IDLE;
                     isr_counter=0;
                   } 
@@ -790,11 +1008,11 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A_SET2: opened valve to end stop");
                     #endif
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_IDLE;
                     myvalvemots[valveindex].actual_position = 100;
-                    myvalvemots[valveindex].calibration = false;
-                    myvalvemots[valveindex].calibState=calibIdle;
+                    learn_end(valveindex, true);
                     #ifdef motDebug
                       COMM_DBG.print("A_SET2: new position "); COMM_DBG.println(myvalvemots[valveindex].actual_position);
                     #endif
@@ -803,11 +1021,10 @@ void valve_loop () {
                     #ifdef motDebug
                       COMM_DBG.println("A_SET2: opening valve failed, timeout");
                     #endif
+                    finish_move(valveindex);
                     valvestate = A_IDLE;
                     myvalvemots[valveindex].status = VLV_STATE_FAILED;
-                    myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
-                    myvalvemots[valveindex].calibration = false;
-                    myvalvemots[valveindex].calibState=calibIdle;
+                    learn_end(valveindex, true);
                   }                                     
                   break;
 
@@ -835,6 +1052,40 @@ void valve_loop () {
 
                       valvestate = A_IDLE;                    
                     }
+                  }
+                  break;
+
+    case A_SVC1:  // start service move (F03)
+                  if (!waittimer) {
+                    prepare_service_move(valveindex, svc_move_dir, svc_move_counts, svc_move_maxmA);
+                    svc_prev_status = myvalvemots[valveindex].status;
+
+                    if (motorcycle (valveindex, svc_move_dir == DIR_OPEN ? CMD_M_OPEN : CMD_M_CLOSE) ==
+                        (svc_move_dir == DIR_OPEN ? M_RES_OPENS : M_RES_CLOSES)) {
+                      myvalvemots[valveindex].status = svc_move_dir == DIR_OPEN ? VLV_STATE_OPENING : VLV_STATE_CLOSING;
+                      valvestate = A_SVC2;
+                      isr_counter = 0;
+                    }
+                    else {
+                      record_refused_move(valveindex);
+                      valvestate = A_IDLE;
+                    }
+                  }
+                  break;
+
+    case A_SVC2:  // wait for the end of the service move
+                  temp = motorcycle (valveindex, 0);
+                  if (temp == M_RES_STOP || temp == M_RES_ENDSTOP || temp == M_RES_NOCURRENT || temp == M_RES_ERROR) {
+                    finish_move(valveindex);
+                    // the pulses really turned: the position follows them, also after a threshold stop
+                    service_move_position(valveindex, isr_counter);
+                    // a fault or a pending request stays until a calibration clears it
+                    if (svc_prev_status != VLV_STATE_IDLE) myvalvemots[valveindex].status = svc_prev_status;
+                    else if (temp == M_RES_NOCURRENT) myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
+                    else if (temp == M_RES_ERROR) myvalvemots[valveindex].status = VLV_STATE_FAILED;
+                    else myvalvemots[valveindex].status = VLV_STATE_IDLE;
+                    valvestate = A_IDLE;
+                    isr_counter = 0;
                   }
                   break;
 
@@ -877,14 +1128,17 @@ byte motorcycle (int mvalvenr, byte cmd) {
  
   static int normalcurrcnt = 0;
 
-  static unsigned int meancurrent_cnt = 0;      // counts meancurrent values
+  static uint16_t meancurrent_cnt = 0;          // counts meancurrent values
   static long meancurrent_mem = 0;              // memory for meancurrent values
   byte result = 0;
 
   // target count reached (flag set by the EXTI handler, which must not run this state machine itself)
   if (isr_stop_request) {
     isr_stop_request = 0;
-    if (motorstate == M_TURNON || motorstate == M_TURNING) motorstate = M_STOP;
+    if (motorstate == M_TURNON || motorstate == M_TURNING) {
+      motorstate = M_STOP;
+      motor_stop_cause = vdm::MotorStop::CountReached;
+    }
   }
 
     switch (motorstate) {
@@ -978,6 +1232,14 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     isr_timer_go = 0;             // soft start handshake with TimerHandler0 starts from scratch
                     isr_timer_fin = 0;
                     turnoncnt = 0;
+                    // isr_turning is still 0: TimerHandler0 does not sample before the motor is switched on
+                    endstop.arm(move_bound_low, move_bound_high);
+                    move_profile.reset();
+                    motor_stop_cause = vdm::MotorStop::None;
+                    last_turning_current = 0;
+                    stroke_mean_mA = 0;
+                    stroke_mean_samples = 0;
+                    move_start_ms = millis();
                     result = M_RES_TURNING;
                     attachInterrupt(digitalPinToInterrupt(REVINPIN), isr_count, RISING);
                     break;
@@ -986,9 +1248,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     isr_turning = 1;
                     result = M_RES_TURNING;
                     isr_timer_go = 1;
-
-                    currentbound_low = (int) (m_meancurrent) * -1 * (int) (currentbound_low_fac); //10 * -3;
-                    currentbound_high = (int) (m_meancurrent) * (int) (currentbound_high_fac); //10 * 3;
 
                     meancurrent_mem = 0;
                     meancurrent_cnt = 0;
@@ -1010,6 +1269,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                         COMM_DBG.println("M: motor enable timeout");
                       #endif
                       motor_halt();
+                      motor_stop_cause = vdm::MotorStop::Aborted;
                       motorstate = M_IDLE;
                       result = M_RES_ERROR;
                     }
@@ -1027,6 +1287,9 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     if(debouncecnt<255) debouncecnt++;
                     if(testcnt<255) testcnt++;
 
+                    last_turning_current = current_mA;
+                    move_profile.add(isr_counter, last_turning_current);
+
                     if (debouncecnt > 3) {                      
                       // overcurrent detection
                       if(isr_overcurrentevent)         
@@ -1035,9 +1298,11 @@ byte motorcycle (int mvalvenr, byte cmd) {
                           motorstate = M_IDLE;
                           result = M_RES_ENDSTOP;
                           isr_overcurrentevent = 0;
+                          motor_stop_cause = endstop.trip() == vdm::EndStopDetector::Trip::Bound
+                            ? vdm::MotorStop::EndStop : vdm::MotorStop::SafetyOvercurrent;
 
-                          if (meancurrent_cnt > 0) m_meancurrent = abs(meancurrent_mem) / meancurrent_cnt / 10;
-                          else m_meancurrent = 0;
+                          stroke_mean_mA = vdm::strokeMeanCurrent((int32_t) meancurrent_mem, meancurrent_cnt);
+                          stroke_mean_samples = meancurrent_cnt;
                           #ifdef motDebug
                             COMM_DBG.print("M: Current: "); COMM_DBG.print(current_mA/10,10); COMM_DBG.println(" mA");
                             COMM_DBG.print("M: Cnt:     "); COMM_DBG.println(isr_counter, DEC);                                 
@@ -1078,6 +1343,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                           #endif
                           motor_halt();
                           normalcurrcnt = 0;
+                          motor_stop_cause = vdm::MotorStop::Timeout;
                           motorstate = M_IDLE;
                           result = M_RES_ERROR;
                         }                
@@ -1098,7 +1364,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                         COMM_DBG.print("M: Current: "); COMM_DBG.print(current_mA/10, 10); COMM_DBG.println(" mA");
                       #endif
                       meancurrent_mem += current_mA;
-                      meancurrent_cnt++;
+                      if (meancurrent_cnt < 0xFFFF) meancurrent_cnt++;
                     }
                     break;
                       
@@ -1107,6 +1373,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       COMM_DBG.println("M: state stop");    
                     #endif                                  
                     motor_halt();
+                    if (motor_stop_cause == vdm::MotorStop::None) motor_stop_cause = vdm::MotorStop::Aborted;
                     #ifdef motDebug
                       COMM_DBG.print("M: Cnt: ");  
                       COMM_DBG.println(isr_counter, DEC);                                 
@@ -1118,6 +1385,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
 
       case M_UNDERCURR:         
                     motor_halt();
+                    motor_stop_cause = vdm::MotorStop::Undercurrent;
                     #ifdef motDebug
                       COMM_DBG.println("M: state undercurrent detected (M_UNDERCURR), stopped");    
                     #endif                                  
@@ -1314,12 +1582,31 @@ int16_t appsetaction(char cmd, unsigned int valveindex, byte posdelta, bool forc
 }
 
 
+int16_t appsetservice(unsigned int valveindex, uint8_t dir, uint16_t counts, uint8_t maxmA) {
+  bool accepted = false;
+
+  if (valveindex >= ACTUATOR_COUNT || dir > DIR_CLOSE || counts < SVMOV_COUNTS_MIN || counts > SVMOV_COUNTS_MAX
+      || maxmA < SVMOV_MAXMA_MIN || maxmA > SVMOV_MAXMA_MAX) return -1;
+
+  const uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  if (valvestate == A_IDLE && command == '\0') {
+    svc_dir = dir;
+    svc_counts = counts;
+    svc_maxmA = maxmA;
+    valvenr = (int) valveindex;
+    command = CMD_A_SERVICE;      // last: valve_loop acts on the command
+    accepted = true;
+  }
+  __set_PRIMASK(primask);
+
+  return accepted ? 0 : -2;
+}
+
+
 void TimerHandler0()        // called every 1 ms
 {
   int analog_value;                     // current valve motor in 1/10 mA read by analog pin
-
-  static int debouncecnt = 0;           // to ignore motor inrush current
-  static int overcnt = 0;
 
   // current measurement
   analog_value = (int) ((( (int32_t) analogRead(ANINCURRENT) - (int32_t) analogRead(ANINREFHALF)) * ANINCURRENTGAIN) / 100);
@@ -1329,22 +1616,11 @@ void TimerHandler0()        // called every 1 ms
   analog_current_old = analog_current;
 
   if(isr_turning) {
-    //current_mA = analog_current;          // only update when turning, otherwise slower handling will read odd values
-    if (debouncecnt < 255) debouncecnt++;
+    // inrush time, filter, end-stop bounds, safety and hard limit (EndStopDetector)
+    const bool trip = endstop.sample(analog_value) != vdm::EndStopDetector::Trip::None;
+    current_mA = endstop.current();
 
-    // filter normal mode
-    if(debouncecnt > 250) {
-      current_mA = (int) (((int32_t) current_mA_old * 9800 + (int32_t) analog_value * 200) / 10000);
-      current_mA_old = current_mA;
-    }
-
-    if (current_mA > 600 || current_mA < -600) if(overcnt<255) overcnt++;
-
-    // overcurrent detection
-    if(current_mA > 1000 || current_mA < -1000 ||     // safety mechanismn
-      overcnt > 10 ||
-      (debouncecnt > 250 && (current_mA > currentbound_high || current_mA < currentbound_low)))
-    {
+    if (trip) {
       // stop motor immediately
       detachInterrupt(digitalPinToInterrupt(REVINPIN));                           
       ena_motor(0, 0);
@@ -1353,10 +1629,8 @@ void TimerHandler0()        // called every 1 ms
     }
   }
   else {
-    overcnt = 0;
-    debouncecnt = 0;
+    endstop.idle();
     current_mA = 0;
-    current_mA_old = 0;
   } 
 
   // ENA valve (soft start requested by M_TURNON and not cancelled since)

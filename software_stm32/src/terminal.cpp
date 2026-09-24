@@ -399,12 +399,11 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 		COMM_DBG.print("got set motor characteristics request ");
 
 		if(req.argc() == 2 && hasX && hasY) {
-			if (x>=5 && x<=50 && y>=5 && y<=50) {
-				currentbound_low_fac = (uint8_t) x;
-				currentbound_high_fac = (uint8_t) y;
+			vdm::MotorParams params = motor_get_params();
+			const uint32_t values[5] = {x, y, params.startOnPower, 0, 0};
 
-				eep_content.currentbound_low_fac = currentbound_low_fac;
-				eep_content.currentbound_high_fac = currentbound_high_fac;
+			if (vdm::applyMotorParamsRequest(params, 3, values)) {
+				motor_set_params(params);
 				eeprom_changed();
 				COMM_DBG.println("- valid");
 			}
