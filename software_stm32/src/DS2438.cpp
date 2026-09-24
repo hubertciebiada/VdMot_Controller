@@ -8,6 +8,7 @@
 
 
 #include "DS2438.h"
+#include "vdm/onewire_check.h"
 #include "hardware.h"
 
 //      OneWire commands
@@ -429,20 +430,21 @@ uint8_t DS2438::getConfigRegister()
 //
 //  PRIVATE
 //
-// reads page 0..7 including its CRC byte; false if the page is invalid or corrupted
+// reads page 0..7 including its CRC byte; false if no device answered the resets
+// or the page is corrupted (bad CRC, or all zero from a bus held low)
 bool DS2438::readScratchPad(uint8_t page)
 {
   if (page > 7) return false;
-  _oneWire->reset();
+  bool present = _oneWire->reset();
   _oneWire->select(_address);  
   _oneWire->write(DS2438_RECALL_SCRATCH, 0);
   _oneWire->write(page, 0);
-  _oneWire->reset();
+  present = _oneWire->reset() && present;
   _oneWire->select(_address);
   _oneWire->write(DS2438_READ_SCRATCH, 0);
   _oneWire->write(page, 0);
   for (uint8_t i = 0; i < 9; i++) _scratchPad[i] = _oneWire->read();
-  return _oneWire->crc8(_scratchPad, 8) == _scratchPad[8];
+  return present && vdm::isValidScratchpad(_scratchPad);
 }
 
 

@@ -110,7 +110,8 @@ void DallasTemperature::begin(void) {
 	devices = 0; // Reset the number of devices when we enumerate wire devices
 	ds18Count = 0; // Reset number of DS18xxx Family devices
 
-	while (_wire->search(deviceAddress)) {
+	// bounded: a disturbed bus can keep search() returning true (VdMot Revamped)
+	for (uint8_t pass = 0; pass < DALLAS_MAX_SEARCH_PASSES && _wire->search(deviceAddress); pass++) {
 
 		if (validAddress(deviceAddress)) {
 			devices++;

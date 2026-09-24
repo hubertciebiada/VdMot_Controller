@@ -18,6 +18,11 @@
 #define REQUIRESALARMS true
 #endif
 
+// upper bound of search passes in begin(), each pass finds at most one device
+#ifndef DALLAS_MAX_SEARCH_PASSES
+#define DALLAS_MAX_SEARCH_PASSES 64
+#endif
+
 #include <inttypes.h>
 #ifdef __STM32F1__
 #include <OneWireSTM.h>

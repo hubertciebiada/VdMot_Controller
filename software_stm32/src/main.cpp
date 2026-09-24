@@ -58,9 +58,16 @@
 // Init STM32 timer TIM2
 STM32Timer ITimer1(TIM2);
 
-// independent watchdog, fed by the main loop only while the valve state machine (TIM2) runs;
-// the longest blocking operations (1-Wire bus search, EEPROM write) take about one second at most
-#define WATCHDOG_TIMEOUT_US   4000000UL
+// independent watchdog, started once the boot window for STM flashing has passed and fed by the
+// main loop only while the valve state machine (TIM2) runs and makes progress.
+// The LSI clock of the IWDG may run at 17..47 kHz instead of 32 kHz, so 8 s nominal is 5.4..15 s real.
+// The longest blocking operations stay below 5 s, also on a faulty bus: 1-Wire enumeration
+// (2 searches of at most 64 passes, ~2 s), EEPROM layout write (~0.2 s, or up to ~0.3 s as it
+// stops at the first I2C error), EEPROM layout read (~0.1 s, or up to ~2 s as it stops after the
+// first block that fails 3 times). setup_system() feeds the watchdog between these steps.
+#define WATCHDOG_TIMEOUT_US   8000000UL
+
+#define I2C_RECOVERY_HALF_CLOCK_US  5     // 100 kHz
 
 void setup_system();
 void loop_system();
@@ -86,13 +93,48 @@ void loop() {
 }
 
 
+// A slave that was reset in the middle of a transfer (e.g. the EEPROM during a read when the STM
+// was reset) may hold SDA low forever. Clock SCL until it releases SDA, then send a STOP.
+static void i2c_bus_recover() {
+  pinMode(I2C_SDA_PIN, INPUT);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
+
+  for (uint8_t i = 0; i < 9 && digitalRead(I2C_SDA_PIN) == LOW; i++) {
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
+    digitalWrite(I2C_SCL_PIN, HIGH);
+    delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
+  }
+
+  // STOP: SDA rises while SCL is high
+  digitalWrite(I2C_SCL_PIN, LOW);
+  digitalWrite(I2C_SDA_PIN, LOW);
+  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
+  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
+
+  pinMode(I2C_SDA_PIN, INPUT);
+  pinMode(I2C_SCL_PIN, INPUT);
+}
+
+
 void setup_system() {
 
   //JumpToBootloader();
 
-  Wire.begin();
-  Wire.setSDA(I2C_SDA_PIN); // 
+  // the ESP may only flash the STM in the boot window before (BootLoop), the IWDG cannot be stopped
+  const bool watchdogReset = IWatchdog.isReset(true);
+  IWatchdog.begin(WATCHDOG_TIMEOUT_US);
+
+  i2c_bus_recover();
+  Wire.setSDA(I2C_SDA_PIN); // pins must be set before begin()
   Wire.setSCL(I2C_SCL_PIN); // 
+  Wire.begin();
 
   // while(1){
   // Wire.beginTransmission(0x71);
@@ -118,6 +160,7 @@ void setup_system() {
 
   // terminal for debug
   Terminal_Init();
+  if (watchdogReset) COMM_DBG.println("reset by watchdog");
 
   // serial communication to ESP32
   communication_setup();
@@ -132,11 +175,14 @@ void setup_system() {
   delay(500);
 
   // EEPROM
+  IWatchdog.reload();
   eepromsetup();
   eeprom_read_layout (&eep_content);
  
   // setup onewire temperature sensor at DS2482
+  IWatchdog.reload();
   temperature_setup();
+  IWatchdog.reload();
 
 
   // valve app setup
@@ -165,9 +211,6 @@ void setup_system() {
       COMM_DBG.println(F("Can't set ITimer1. Select another freq. or timer"));
     #endif
   }
-
-  if (IWatchdog.isReset(true)) COMM_DBG.println("reset by watchdog");
-  IWatchdog.begin(WATCHDOG_TIMEOUT_US);
 }
 
 
@@ -231,7 +274,7 @@ void loop_system() {
     loop_10ms = millis();  
 
     const uint32_t valveTicks = valve_loop_ticks;
-    if (valveTicks != lastValveTicks) {
+    if (valveTicks != lastValveTicks && !valve_loop_stalled) {
       lastValveTicks = valveTicks;
       IWatchdog.reload();
     }

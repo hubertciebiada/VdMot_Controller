@@ -83,6 +83,7 @@ A_LEARN2, A_LEARN3, A_LEARN4, A_SET, A_SET1, A_SET2, A_CLOSE1, A_CLOSE2, A_TEST 
 
 extern volatile enum ASTATE valvestate;
 extern volatile uint32_t valve_loop_ticks;     // incremented on every valve_loop run (watchdog heartbeat)
+extern volatile bool valve_loop_stalled;       // valve state machine stuck in one busy state (watchdog must starve)
 
 
 

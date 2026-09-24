@@ -1,7 +1,7 @@
 {
   "name": "vdm_core",
   "version": "2.0.0",
-  "description": "Hardware-free core logic of the VdMot STM32 firmware (line assembler, tokenizer, argument parsing, reply formatting)",
+  "description": "Hardware-free core logic of the VdMot STM32 firmware (line assembler, tokenizer, argument parsing, reply formatting, 1-Wire checks, stall detection)",
   "frameworks": "*",
   "platforms": "*",
   "build": {

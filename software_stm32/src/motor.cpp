@@ -37,6 +37,7 @@
 #include "app.h"
 #include "eeprom.h"
 #include "owDevices.h"
+#include "vdm/stall_detector.h"
 
 
 
@@ -54,6 +55,8 @@
 #define TIMEOUT_UNDERCURRENT     4*50           // cycles of "byte motorcycle (byte valvenr, byte cmd)"
 #define TIMEOUT_UNDERCURRENTTEST 4*20           // cycles of "byte motorcycle (byte valvenr, byte cmd)"
 #define THRESHOLD_UNDERCURRENT   20           // threshold for detecting undercurrent in 1/10 mA
+#define TIMEOUT_TURNON           10           // cycles of motorcycle() to wait for TimerHandler0 (1 ms) to enable the motor
+#define TIMEOUT_VALVESTATE       5*60*100     // 5 minutes with 10 ms cycle time, more than the longest valve state (one move <= ~123 s)
 
 
 // commands motor statemachine
@@ -88,6 +91,7 @@ byte motorcycle (int mvalvenr, byte cmd);
 byte appcycle(byte cmd, byte valvenr);
 
 void TimerHandler0();
+static void motor_halt ();
 
 #define MUX_SETTLE_TICKS  ((WAIT_MUX + 9) / 10)     // motorcycle() runs every 10 ms
 
@@ -103,6 +107,8 @@ static byte position_sub (byte position, byte delta) {
 
 volatile enum ASTATE valvestate;
 volatile uint32_t valve_loop_ticks = 0;
+volatile bool valve_loop_stalled = false;
+static vdm::StallDetector valve_stall(TIMEOUT_VALVESTATE);
 
 // Init STM32 timer TIM1
 STM32Timer ITimer0(TIM1);
@@ -562,7 +568,8 @@ void valve_loop () {
                       valvestate = A_IDLE;
                       isr_counter=0;
                     }
-                    else if (temp == M_RES_ERROR) {
+                    // stop: the counter ran out (isr_target 65535) without an end stop, idle: motor machine not running
+                    else if (temp == M_RES_ERROR || temp == M_RES_STOP || temp == M_RES_IDLE) {
                       #ifdef motDebug
                         COMM_DBG.println("A: closing valve failed, timeout");
                       #endif
@@ -607,7 +614,8 @@ void valve_loop () {
                       valvestate = A_IDLE;
                       isr_counter=0;
                     }
-                    else if (temp == M_RES_ERROR) {
+                    // stop: the counter ran out (isr_target 65535) without an end stop, idle: motor machine not running
+                    else if (temp == M_RES_ERROR || temp == M_RES_STOP || temp == M_RES_IDLE) {
                       #ifdef motDebug
                         COMM_DBG.println("A: opening valve failed, timeout");
                       #endif
@@ -695,7 +703,8 @@ void valve_loop () {
                       valvestate = A_IDLE;
                       isr_counter=0;
                     }     
-                    else if (temp == M_RES_ERROR) {
+                    // stop: the counter ran out (isr_target 65535) without an end stop, idle: motor machine not running
+                    else if (temp == M_RES_ERROR || temp == M_RES_STOP || temp == M_RES_IDLE) {
                       #ifdef motDebug
                         COMM_DBG.println("A: closing valve failed, timeout");
                       #endif
@@ -834,6 +843,10 @@ void valve_loop () {
                   break;  
   }
   if (valveindex<12) myvalvemots[valveindex].connected= (myvalvemots[valveindex].status != VLV_STATE_OPENCIR);
+
+  // a valve state that never ends stops feeding the watchdog (see loop_system)
+  valve_stall.tick((uint8_t) valvestate, valvestate == A_IDLE);
+  valve_loop_stalled = valve_stall.stalled();
 }
 
 
@@ -856,6 +869,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
   static byte settle_next = M_IDLE;
   static byte settle_result = M_RES_TURNING;
   static int settlecnt = 0;
+  static int turnoncnt = 0;
 
   static int cyclecnt = 0;
   static int debouncecnt = 0;
@@ -961,6 +975,9 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     debouncecnt = 0;
                     isr_stop_request = 0;
                     isr_overcurrentevent = 0;     // may be left over from the previous move
+                    isr_timer_go = 0;             // soft start handshake with TimerHandler0 starts from scratch
+                    isr_timer_fin = 0;
+                    turnoncnt = 0;
                     result = M_RES_TURNING;
                     attachInterrupt(digitalPinToInterrupt(REVINPIN), isr_count, RISING);
                     break;
@@ -987,6 +1004,15 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       isr_timer_fin = 0;
                       isr_timer_go = 0;
                     }
+                    // TimerHandler0 (TIM1) did not enable the motor
+                    else if (++turnoncnt > TIMEOUT_TURNON) {
+                      #ifdef motDebug
+                        COMM_DBG.println("M: motor enable timeout");
+                      #endif
+                      motor_halt();
+                      motorstate = M_IDLE;
+                      result = M_RES_ERROR;
+                    }
 
                     break;
 
@@ -1005,11 +1031,9 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       // overcurrent detection
                       if(isr_overcurrentevent)         
                       {                                         
-                          detachInterrupt(digitalPinToInterrupt(REVINPIN)); 
+                          motor_halt();
                           motorstate = M_IDLE;
                           result = M_RES_ENDSTOP;
-                          ena_motor(0, 0);
-                          isr_turning = 0;
                           isr_overcurrentevent = 0;
 
                           if (meancurrent_cnt > 0) m_meancurrent = abs(meancurrent_mem) / meancurrent_cnt / 10;
@@ -1052,12 +1076,10 @@ byte motorcycle (int mvalvenr, byte cmd) {
                           #ifdef motDebug          
                             COMM_DBG.println("M: normal turning timeout");            
                           #endif
-                          detachInterrupt(digitalPinToInterrupt(REVINPIN)); 
+                          motor_halt();
                           normalcurrcnt = 0;
                           motorstate = M_IDLE;
                           result = M_RES_ERROR;
-                          ena_motor(0, 0);
-                          isr_turning = 0;    
                         }                
                       }
                     
@@ -1084,9 +1106,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     #ifdef motDebug
                       COMM_DBG.println("M: state stop");    
                     #endif                                  
-                    detachInterrupt(digitalPinToInterrupt(REVINPIN));
-                    ena_motor(0, 0);
-                    isr_turning = 0;
+                    motor_halt();
                     #ifdef motDebug
                       COMM_DBG.print("M: Cnt: ");  
                       COMM_DBG.println(isr_counter, DEC);                                 
@@ -1097,12 +1117,10 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     break;
 
       case M_UNDERCURR:         
-                    detachInterrupt(digitalPinToInterrupt(REVINPIN));
+                    motor_halt();
                     #ifdef motDebug
                       COMM_DBG.println("M: state undercurrent detected (M_UNDERCURR), stopped");    
                     #endif                                  
-                    ena_motor(0, 0);
-                    isr_turning = 0;                   
                     motorstate = M_IDLE;
                     result = M_RES_NOCURRENT;                  
                     
@@ -1241,6 +1259,17 @@ void isr_count () {
 }
 
 
+// switches the motor off and cancels a soft start that TimerHandler0 has not done yet;
+// called by the motor state machine (TIM2)
+static void motor_halt () {
+  detachInterrupt(digitalPinToInterrupt(REVINPIN));
+  isr_turning = 0;
+  isr_timer_go = 0;       // before fin: TimerHandler0 enables the motor on go && !fin
+  isr_timer_fin = 0;
+  ena_motor(0, 0);
+}
+
+
 // call from isr to stop motor immediately
 // the state machine picks the stop up on its next run (TIM2), it is not reentrant
 void callback_motorstop () {
@@ -1264,7 +1293,8 @@ int16_t appsetaction(char cmd, unsigned int valveindex, byte posdelta, bool forc
     // valve_loop (TIM2) must see valve, position and command as one consistent set
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
-    if ((valvestate == A_IDLE) || force) {
+    // a command accepted earlier but not yet taken by valve_loop must not be overwritten
+    if ((valvestate == A_IDLE && command == '\0') || force) {
       valvenr = (int) valveindex;
       poschangecmd = posdelta;
       command = cmd;              // last: valve_loop acts on the command
@@ -1329,8 +1359,8 @@ void TimerHandler0()        // called every 1 ms
     current_mA_old = 0;
   } 
 
-  // ENA valve
-  if(isr_timer_go && !isr_timer_fin) {
+  // ENA valve (soft start requested by M_TURNON and not cancelled since)
+  if(isr_turning && isr_timer_go && !isr_timer_fin) {
     isr_timer_fin = 1;
     ena_motor(isr_valvenr, 1);
   }

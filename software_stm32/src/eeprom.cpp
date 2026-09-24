@@ -53,6 +53,13 @@ I2C_eeprom eeprom(DEVICEADDRESS, EE24LC64MAXBYTES);
 
 struct eeprom_layout eep_content;
 
+#define EEP_READ_ATTEMPTS		3		// per block at startup
+#define EEP_WRITE_ATTEMPTS		3		// per change, one attempt per eepromloop() run
+
+// the layout could not be read completely at startup: RAM holds 0xFF fallbacks for the missing
+// fields, and writing the layout back would destroy the configuration still stored in the EEPROM
+static bool eep_read_failed = false;
+
 
 
 void fill_buffer()
@@ -96,6 +103,7 @@ int16_t eepromsetup () {
 
 int16_t eepromloop() {
 	static int writedelaycnt = 0;
+	static int writeattempts = 0;
 
     #define E_INIT      0
     #define E_IDLE      1
@@ -149,9 +157,17 @@ int16_t eepromloop() {
 
 		case E_WRITECFG:
 					
-					eeprom_write_layout (&eep_content);
-
-					eep_content.status = EEP_VALID;					
+					if (eep_read_failed) {
+						// changes stay in RAM until the next start reads the EEPROM successfully
+						EEPROM_DEBUG("eeprom not written, layout was not read at startup\r\n");
+						eep_content.status = EEP_VALID;
+					}
+					else if (eeprom_write_layout (&eep_content) == 0 || ++writeattempts >= EEP_WRITE_ATTEMPTS) {
+						// after the last failed attempt give up, a pending write must not block a reset for ever
+						writeattempts = 0;
+						eep_content.status = EEP_VALID;
+					}
+					// otherwise EEP_CHANGED remains and the write is retried after the write delay
 					eepromstate = E_IDLE;
 
                     break;
@@ -223,11 +239,18 @@ uint8_t eeprom_mark (void) {
 
 
 
+// every I2C transfer on a disturbed bus costs up to ~0.2 s: stop at the first error
+static int16_t eeprom_write_failed () {
+	EEPROM_DEBUG("write error, aborted\r\n");
+	return -1;
+}
+
+
 //----------------------------------------------------------------------------
 //
 // writes eeprom layout to eeprom
 //
-//	returns 0 if mark was found
+//	returns 0 on success, -1 if an I2C write failed (the layout may be partly written)
 int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 
 	uint8_t buf[100];
@@ -260,7 +283,7 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 	x+=2; 
 
   	//eep.write(address, buf, x);
-	eeprom.writeBlock(address, buf, x);
+	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
 	// then write sensor data
 	address = EE_GENERALDATA_ADR + x;
@@ -277,7 +300,7 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 		buf[x++] = lay->owsensors1[scnt].romcode[0];
 		buf[x++] = lay->owsensors1[scnt].crc;
 
-		eeprom.writeBlock(address, buf, x);
+		if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
 		address += x;
 	}
@@ -294,7 +317,7 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 		buf[x++] = lay->owsensors2[scnt].romcode[0];
 		buf[x++] = lay->owsensors2[scnt].crc;
 
-		eeprom.writeBlock(address, buf, x);
+		if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
 		address += x;
 	}
@@ -311,7 +334,7 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 		buf[x++] = lay->owsensors[scnt].romcode[0];
 		buf[x++] = lay->owsensors[scnt].crc;
 
-		eeprom.writeBlock(address, buf, x);
+		if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
 		address += x;
 	}
@@ -323,7 +346,7 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 	*pb = lay->noOfMinCounts;
 	x+=2; 
 	buf[x++] =  lay->maxCalibRetries;
-	eeprom.writeBlock(address, buf, x);
+	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
 	EEPROM_DEBUG("finished\r\n");
 
@@ -331,11 +354,17 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 }
 
 
-// reads a block; on an I2C error the buffer is filled with 0xFF like an erased
-// EEPROM, so the range checks at startup fall back to the defaults instead of
-// using stack garbage
+// reads a block with retries; if it cannot be read the buffer is filled with 0xFF like an
+// erased EEPROM, so the range checks at startup fall back to the defaults instead of using
+// stack garbage. After the first unreadable block the bus is not used again (each failed
+// transfer blocks for up to ~0.2 s) and writing the layout back is disabled.
 static void eeprom_read_block (uint16_t address, uint8_t *buf, uint16_t length) {
-	if (eeprom.readBlock(address, buf, length) != length) memset(buf, 0xFF, length);
+	for (uint8_t attempt = 0; !eep_read_failed && attempt < EEP_READ_ATTEMPTS; attempt++) {
+		if (eeprom.readBlock(address, buf, length) == length) return;
+	}
+	if (!eep_read_failed) EEPROM_DEBUG("read error, using defaults\r\n");
+	eep_read_failed = true;
+	memset(buf, 0xFF, length);
 }
 
 

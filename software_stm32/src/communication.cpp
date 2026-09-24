@@ -40,6 +40,7 @@
 #include "vdm/buf_writer.h"
 #include "vdm/line_assembler.h"
 #include "vdm/replies.h"
+#include "vdm/settings.h"
 #include "vdm/tokenizer.h"
 #include <string.h>
 
@@ -380,7 +381,11 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	else if(req.is(APP_PRE_SETLEARNMOVEM)) {
 		commdbg_print("set valve learning movements to ");
 
-		if (req.argc() == 1 && req.argU16(0, 0, 65535, x) && app_set_learnmovements(x) == 0) {
+		// the ESP sends a uint32; v1 always replied, so cap instead of rejecting large counts
+		const bool valid = req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32);
+		if (valid) x = vdm::capLearnMovements(xu32);
+
+		if (valid && app_set_learnmovements(x) == 0) {
 			commdbg_println(x, DEC);
 			eep_content.numberOfMovements=x;
 			eeprom_changed();
