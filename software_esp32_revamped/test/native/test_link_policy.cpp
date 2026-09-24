@@ -1147,3 +1147,29 @@ TEST_CASE("link: an identical non-stgtp line keeps its retry count") {
   REQUIRE(lp.poll(now, c));
   CHECK(c.attempts == 3);
 }
+
+TEST_CASE("link: hold after ESP boot keeps the queue and counts no reset") {
+  LinkPolicy lp;
+  lp.enqueue(valveData(0), Priority::Poll);
+  lp.enqueue(setTarget(1, 50), Priority::Config);
+  lp.holdAfterEspBoot(1000);
+  CHECK(lp.state(1000) == LinkState::Booting);
+  CHECK(lp.queued() == 2);
+  CHECK(lp.stats().userResets == 0);
+  CHECK(lp.stats().policyResets == 0);
+  CHECK(lp.nextToSend(5999) == nullptr);
+  CHECK(lp.state(5999) == LinkState::Booting);
+  CHECK(lp.state(6000) == LinkState::Unknown);
+  CHECK(send(lp, 6000) == "stgtp 1 50 \r\n");
+}
+
+TEST_CASE("link: hold after ESP boot clears the failure counter and blocks R6") {
+  LinkPolicy lp(noRetry());
+  uint32_t now = 0;
+  failRequests(lp, now, 5, 20000);
+  REQUIRE(lp.shouldResetStm(now));
+  lp.holdAfterEspBoot(now);
+  CHECK(lp.stats().consecutiveTimeouts == 0);
+  CHECK_FALSE(lp.shouldResetStm(now));
+  CHECK(lp.state(now) == LinkState::Booting);
+}

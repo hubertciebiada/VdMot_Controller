@@ -137,6 +137,13 @@ class LinkPolicy {
   // first matching reply.
   void onStmReset(uint32_t nowMs, bool byPolicy);
 
+  // ESP boot: the IO15 strap pull-up holds NRST while the ESP boots
+  // (specs/06 §5.2), so the STM is most likely starting up as well. Enters
+  // Booting for bootHoldoffMs like onStmReset(), but counts no reset and
+  // keeps the queue. Without it the first gproto probe lands in the STM's
+  // start-up window, times out and selects protocol v1 for a v2 STM.
+  void holdAfterEspBoot(uint32_t nowMs);
+
   // Flasher takes/returns the UART. suspend() drops the outstanding request
   // and all queued entries (they are stale after a re-flash) and returns how
   // many were dropped; resume() enters Booting (the flasher reset the STM).

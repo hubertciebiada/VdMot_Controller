@@ -196,7 +196,7 @@ Line limit 63 chars. Replies up to 1023 chars (`kStmMaxLineLen`).
 | Slow timeout | 3000 ms | `stons`, `masns`, `stdet`, `reset`, `smotc`, `stvls` |
 | Retries | 2 | idempotent commands only (`cmdIsIdempotent`) |
 | Inter-request gap | 5 ms | after reply or timeout |
-| Boot hold-off | 5000 ms | after an ESP-initiated NRST pulse or flashing |
+| Boot hold-off | 5000 ms | after an ESP-initiated NRST pulse, flashing, or the ESP's own boot |
 | Down after | 5 consecutive timed-out attempts | |
 | Queue | 24 entries | User > Config > Poll, FIFO within a priority |
 
@@ -232,7 +232,12 @@ reset counter changes; v1 when a valve that had `oc` or `cc` > 0 reports
 
 Feature detection: the re-sync starts with `gproto`. The reply `gproto 2`
 selects v2 (`gvlvx`, `gstat`, `gcalx`, `gprof`, `svmov`, `scalx`). A timeout
-selects v1. v2 commands are never sent to a v1 STM. `gvers` is parsed with
+selects v1. v2 commands are never sent to a v1 STM. Because the IO15 strap
+pull-up holds NRST while the ESP boots (specs/06 §5.2), the link starts in
+Booting with the normal 5 s hold-off (`holdAfterEspBoot`, no reset counted),
+so the first probe does not hit the STM's start-up window. If a probe still
+timed out and `gvers` later reports a revamped version, the re-sync is
+restarted once to probe again (`PollPlanner::onVersion`). `gvers` is parsed with
 `parseVersion`. A version below `VDM_MIN_STM_VERSION` (1.4.0) raises
 `StmIncompatible` and a dashboard banner. The ESP keeps running in v1 mode.
 

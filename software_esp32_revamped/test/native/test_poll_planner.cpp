@@ -749,3 +749,54 @@ TEST_CASE("planner: a shrinking sensor count restarts the round robin at index 0
   CHECK(std::count(due.begin(), due.end(), "goned 1") == 1);
   CHECK(std::count(due.begin(), due.end(), "gowvd 1") == 1);
 }
+
+TEST_CASE("planner: a revamped gvers after a gproto timeout probes once more") {
+  PollPlanner p;
+  p.requestResync();
+  uint32_t now = 0;
+  CHECK(runResync(p, now, 0) == v1Steps());
+  REQUIRE(p.protocol() == 1);
+  p.onVersion(false);  // legacy STM: v1 is right
+  CHECK_FALSE(p.resyncActive());
+  p.onVersion(true);
+  CHECK(p.resyncActive());
+  CHECK(p.resyncStep() == ResyncStep::Proto);
+  CHECK(p.protocol() == 0);
+  // The STM stays silent again: v1, and no further probe for it.
+  CHECK(runResync(p, now, 0) == v1Steps());
+  CHECK(p.protocol() == 1);
+  p.onVersion(true);
+  CHECK_FALSE(p.resyncActive());
+}
+
+TEST_CASE("planner: a successful v2 probe re-arms the revamped re-probe") {
+  PollPlanner p;
+  p.requestResync();
+  uint32_t now = 0;
+  runResync(p, now, 0);
+  p.onVersion(true);                         // re-probe #1
+  CHECK(runResync(p, now, 2) == v2Steps());  // answered this time
+  CHECK(p.protocol() == 2);
+  p.onVersion(true);  // v2 already: nothing to do
+  CHECK_FALSE(p.resyncActive());
+  // Later the STM is re-flashed and its probe times out again.
+  p.requestResync();
+  runResync(p, now, 0);
+  REQUIRE(p.protocol() == 1);
+  p.onVersion(true);
+  CHECK(p.resyncActive());
+}
+
+TEST_CASE("planner: onVersion does nothing while the protocol is unknown") {
+  PollPlanner p;
+  p.requestResync();
+  RequestLine r;
+  REQUIRE(p.next(0, r));
+  CHECK(r.cmd == Cmd::Gproto);
+  p.onVersion(true);
+  CHECK(p.protocol() == 0);
+  CHECK(p.resyncStep() == ResyncStep::Proto);
+  p.setProtocol(2);
+  p.onVersion(true);
+  CHECK(p.protocol() == 2);
+}
