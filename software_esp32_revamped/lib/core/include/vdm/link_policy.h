@@ -86,9 +86,12 @@ class LinkPolicy {
   // FIFO within a priority. Coalescing, so repeated clicks/polls cannot fill
   // the queue:
   //  - stgtp for a valve already queued: the queued line is replaced by the
-  //    new one (latest target wins), position kept, tag updated -> Coalesced;
+  //    new one (latest target wins), position kept, tag updated, retry count
+  //    restarted (a queued retry becomes a fresh request) -> Coalesced;
   //  - any other byte-identical line already queued -> Coalesced (the higher
-  //    priority of the two is kept).
+  //    priority of the two is kept; a non-zero tag replaces the queued one).
+  // A raised entry moves behind the entries already queued at its new
+  // priority. The outstanding request is never coalesced with.
   // When the queue is full, the newest Poll entry is evicted to make room for
   // a User/Config request; a Poll request never evicts anything -> Full.
   // Allowed in every state; while Booting/Suspended requests wait.
@@ -115,8 +118,10 @@ class LinkPolicy {
 
   // Timeout handling; call every loop iteration. When the outstanding attempt
   // expired: an idempotent request with attempts left is re-sent (it goes
-  // back to the head of its priority) and false is returned; otherwise the
-  // request completes with Outcome::Timeout -> true, `out` filled.
+  // back to the head of its priority; on a full queue the newest Poll entry
+  // is evicted for it) and false is returned; otherwise (or when nothing can
+  // be evicted) the request completes with Outcome::Timeout -> true, `out`
+  // filled.
   // A gproto probe (v2 feature detection) never counts toward
   // consecutiveTimeouts because a v1 STM stays silent by design.
   bool poll(uint32_t nowMs, Completion& out);
@@ -128,7 +133,8 @@ class LinkPolicy {
   // Must be called when the glue has pulsed NRST (by policy or by the user).
   // Drops the outstanding request (no completion), removes all Poll entries,
   // keeps User/Config entries, clears the failure counters and enters
-  // Booting for bootHoldoffMs.
+  // Booting for bootHoldoffMs; afterwards the state is Unknown until the
+  // first matching reply.
   void onStmReset(uint32_t nowMs, bool byPolicy);
 
   // Flasher takes/returns the UART. suspend() drops the outstanding request
@@ -144,22 +150,33 @@ class LinkPolicy {
   bool busy() const { return outstanding_; }
 
  private:
+  // queue_[0..count_) is kept sorted by priority, FIFO within a priority.
   struct Entry {
     RequestLine line;
-    Priority priority;
-    uint16_t tag;
-    uint8_t attempts;
-    uint32_t seq;  // FIFO order within a priority
+    Priority priority = Priority::Poll;
+    uint16_t tag = 0;
+    uint8_t attempts = 0;  // attempts already made (retries re-queue with > 0)
   };
-  uint16_t timeoutFor(Cmd c) const;
+  uint16_t timeoutFor(const RequestLine& r) const;
+  bool bootHoldActive(uint32_t nowMs) const;
+  void insertAt(size_t pos, const Entry& e);
+  void removeAt(size_t pos);
+  // Index where an entry of priority p goes: after the last entry with the
+  // same or higher priority (atHead=false) or before the first entry of the
+  // same or lower priority (atHead=true, used for retries).
+  size_t insertPos(Priority p, bool atHead) const;
+  // Frees one slot when the queue is full by evicting the newest Poll entry.
+  bool makeRoom();
+  void startHold(uint32_t nowMs);
+  void complete(Outcome outcome, uint32_t nowMs, Completion& out);
 
   LinkParams params_;
   Entry queue_[kQueueCapacity];
   uint8_t count_ = 0;
-  uint32_t nextSeq_ = 0;
   Entry current_{};
   bool outstanding_ = false;
   uint32_t sentAtMs_ = 0;
+  bool quietActive_ = false;
   uint32_t quietSinceMs_ = 0;
   bool haveHeard_ = false;
   bool suspended_ = false;

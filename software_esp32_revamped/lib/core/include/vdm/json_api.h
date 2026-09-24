@@ -77,6 +77,11 @@ struct StatusSnapshot {
 //         "espRx":{"overflow":..,"malformed":..}},
 //  "calibration":{"active":..,"lastScheduled":..,"nextSlot":..},
 //  "auth":..,"lastEventSeq":..}
+// Unknown values are null: esp.build and stm.build 0, time.epoch/local
+// while !timeValid, lastSync 0, net.rssi unless on WiFi, stm.proto 0, an
+// invalid stm.version, hwId/chip for hwId 0, lastScheduled <= 0, nextSlot 0.
+// resetReason is the esp_reset_reason_t name ("poweron","task_wdt",...).
+// Builders return jw.ok() (writeErrorJson: jw.complete()).
 bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s);
 
 // Per-valve view: model state + config + sensor names/values resolved.
@@ -98,6 +103,11 @@ struct ValveView {
 //  "ext":null|{"calState":..,"earlyStops":..,"cmdRejected":..,
 //        "lastMove":{"dir":"open","req":..,"cnt":..,"stop":"endstop","peak":..,"ms":..},
 //        "moveSeq":..}}, ... 12 entries always]}
+// One entry per view (the glue passes all 12), idx = array position + 1.
+// "health" lists HealthFlag names in bit order: "blocked","failed","noValve",
+// "calibRetries","earlyStop","cmdRejected","stale","targetUnconfirmed",
+// "tempFailed". "sensors" lists only assigned slots (slot != 0). "peak" is
+// in mA with one decimal. A null state/config pointer renders as empty.
 bool writeValvesJson(JsonWriter& jw, const ValveView* views, uint8_t count, uint32_t nowMs);
 
 // {"valve":n,"count":k,"samples":[[count,current_mA_x10],...]}
@@ -121,6 +131,7 @@ struct SensorView {
 //   "temp":21.5|null,"raw":..,"age":..,"valve":n|null}],
 //  "volts":[{"slot":..,"name":..,"id":..,"active":..,"onBus":..,
 //   "value":12.345|null,"unit":"V","raw":..,"age":..}]}
+// "slot" is null for bus sensors without a config slot, "id" "" when zero.
 bool writeSensorsJson(JsonWriter& jw, const SensorView* temps, uint8_t tempCount,
                       const SensorView* volts, uint8_t voltCount);
 
@@ -134,6 +145,9 @@ bool writeEventsJson(JsonWriter& jw, const Event* events, size_t count, uint32_t
 //  "error":null|{"code":"nack","phase":"writing","addr":"0x08000100"},
 //  "startedMs":..,"finishedMs":..,"image":{"name":..,"size":..,"crc32":"0x..","version":".."},
 //  "appVersion":".."|null}
+// chipId/chipName null before GetId; bootloaderVersion "<hi>.<lo>" nibbles
+// of the GET byte (0x31 -> "3.1"), null when 0; "image" null when neither a
+// name nor a validated image is known; image.version null when empty.
 bool writeFlashStatusJson(JsonWriter& jw, const FlashStatus& s, const char* imageName);
 
 // Motor/STM parameters: {"motor":{"lowC":..,"highC":..,"startOnPower":..,
@@ -198,7 +212,9 @@ struct RouteMatch {
 // Matches "/api/..." (no query string; a trailing '/' is not accepted).
 // {n} must be 1..12 without leading zeros, else NotFound. needsAuth is false
 // only for the read-only GET routes (Status, Valves, ValveProfile, Sensors,
-// Events, StmFlashStatus) and only when protectRead is false.
+// Events, Motor, StmFlashStatus; DESIGN.md "HTTP API" auth column "read")
+// and only when protectRead is false. MethodNotAllowed keeps needsAuth true.
+// A path containing NUL bytes is NotFound.
 RouteMatch matchApiRoute(HttpMethod m, const char* path, size_t len, bool protectRead);
 
 }  // namespace vdm

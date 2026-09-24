@@ -160,7 +160,7 @@ enum class SetResult : uint8_t {
                 // for numeric keys (legacy UI sends "3"), bools accept 0/1
   OutOfRange,   // violates the per-field range (cross-field rules are checked
                 // by validateConfig after the whole patch)
-  ReadOnly,     // "schema"
+  ReadOnly,     // "schema" with a value other than kConfigSchemaVersion
 };
 const char* setResultName(SetResult r);
 
@@ -171,11 +171,45 @@ const char* setResultName(SetResult r);
 // The complete key list is DESIGN.md "Config schema". Secrets
 // ("*.password", "net.wifiPassword") are write-only; an empty string for a
 // secret means "unchanged" unless `clearSecrets` is true.
+// So that an exported document can be posted back unchanged, "schema" equal
+// to kConfigSchemaVersion and the export's "<secret>Set" booleans
+// ("net.wifiPasswordSet", "web.passwordSet", "mqtt.passwordSet") are
+// accepted as no-ops. Paths are at most 64 chars; array indices are
+// 1..N without leading zeros.
 SetResult setConfigValue(Config& c, const char* path, const ConfigValue& v, bool clearSecrets);
 
-// Applies a patch transactionally in the caller: copy config, call
-// setConfigValue for every key, validateConfig, then commit the copy.
-// (Documented here; the loop lives in glue because it walks ArduinoJson.)
+// ---------------------------------------------------------------- JSON patch
+
+constexpr uint8_t kConfigJsonMaxDepth = 8;  // nesting limit of a patch document
+
+enum class PatchResult : uint8_t {
+  Ok,
+  Malformed,   // not a JSON object / syntax error / nested deeper than kConfigJsonMaxDepth
+  UnknownKey,  // setConfigValue results for the first failing key
+  WrongType,
+  OutOfRange,
+  ReadOnly,
+  Invalid,     // every key applied, but validateConfig failed
+};
+// "ok","malformed","unknown_key","wrong_type","out_of_range","read_only","invalid"
+const char* patchResultName(PatchResult r);
+
+// POST /api/config: applies a partial config document to `c` in place, so
+// the caller passes a copy of the active config and commits it only on Ok.
+// Structure: the one writeConfigJson emits (nested objects, arrays with
+// element i -> path index i+1), nested objects keyed by index
+// ({"valves":{"3":{"name":"x"}}}) or dotted keys ({"valves.3.name":"x"}),
+// in any mix. A root "clearSecrets": true (bool only) makes empty secrets
+// clear the stored ones. Pass 1 checks the whole syntax (strict RFC 8259:
+// escapes incl. surrogate pairs, number grammar, no trailing data) before
+// anything is changed; pass 2 applies every scalar with setConfigValue and
+// stops at the first failure; then validateConfig runs. On failure `path`
+// receives the offending key path, or "@<byte offset>" for Malformed.
+// No heap, bounded recursion, strings longer than 96 bytes are truncated
+// (and then rejected as out of range by every string field). Escapes of
+// non-ASCII characters are validated but not decoded (no field accepts
+// them); they are rejected as out of range like raw non-ASCII bytes.
+PatchResult applyConfigJson(Config& c, const char* json, size_t len, char* path, size_t pathCap);
 
 // JSON export in the same key structure as setConfigValue, e.g.
 // {"schema":1,"station":"VdMot","net":{...},"valves":[{"name":..},...],...}.

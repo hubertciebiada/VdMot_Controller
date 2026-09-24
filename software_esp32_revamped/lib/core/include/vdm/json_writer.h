@@ -67,6 +67,7 @@ class JsonWriter {
   bool put(char c);
   bool putRaw(const char* s, size_t n);
   bool putEscaped(const char* s, size_t n);
+  bool putEscapedChar(unsigned char c);
 
   char* buf_;
   size_t cap_;

@@ -26,7 +26,10 @@ struct Version {
   uint16_t major = 0;
   uint16_t minor = 0;
   uint16_t patch = 0;
-  char suffix[24] = {0};  // verbatim including its leading separator
+  // Verbatim including its leading separator. 31 chars minus the shortest
+  // numeric part "0.0.0" leaves at most 26 chars, so every grammatical
+  // version fits.
+  char suffix[27] = {0};
   char hw[4] = {0};       // "C1".."C99" or ""
 };
 

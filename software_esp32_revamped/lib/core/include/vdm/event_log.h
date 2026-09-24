@@ -114,7 +114,8 @@ Event makeEvent(EventCode code, Severity sev, uint8_t valve, int32_t arg1, int32
 struct EventFilter {
   uint32_t sinceSeq = 0;              // return events with seq > sinceSeq
   Severity minSeverity = Severity::Debug;
-  uint8_t valve = kNoValve;           // kNoValve = all valves and system events
+  uint8_t valve = kNoValve;           // kNoValve = all valves and system events; a valve
+                                      // index also matches kAllValves events
 };
 
 // Ring buffer over caller-provided storage. When full the oldest event is
@@ -153,15 +154,16 @@ class EventLog {
 };
 
 // Human-readable message for an event without the prefix, e.g.
-// "valve 3: calibration ok (oc 3120, cc 3350)". Valve numbers are 1-based
-// in text. Returns chars written (truncated to fit, always NUL-terminated).
+// "valve 3: calibration ok (oc 3120, cc 3350)" ("all valves: " for
+// kAllValves). Valve numbers are 1-based in text. Returns chars written
+// (truncated to fit, always NUL-terminated).
 size_t formatEventMessage(const Event& e, char* out, size_t cap);
 // One log/syslog line:
 // "<iso8601 or +<uptime>s> <SEV> <code_name>[ v<n>] <message>"
 size_t formatEventLine(const Event& e, char* out, size_t cap);
 // JSON object: {"seq":..,"t":<epoch|null>,"up":..,"sev":"warning","code":410,
 // "name":"early_stop","valve":3|null,"a1":..,"a2":..,"text":"..","msg":".."}
-// (valve 1-based). Returns jw.ok().
+// (valve 1-based; null for system and all-valves events). Returns jw.ok().
 bool writeEventJson(JsonWriter& jw, const Event& e);
 
 }  // namespace vdm

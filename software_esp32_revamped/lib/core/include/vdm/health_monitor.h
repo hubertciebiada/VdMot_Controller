@@ -35,11 +35,19 @@ class HealthMonitor {
   //    new status is Idle, CalibFailed when Blocked; calibRetries increase
   //    during calibration: CalibRetry;
   //  - earlyStops / cmdRejected increase: EarlyStop / CmdRejected;
-  //  - sync -> Failed: TargetNotConfirmed; kHealthStale set: ValveStale;
-  //  - desired target change: TargetSet (Info);
+  //  - kHealthTargetUnconfirmed set (sync -> Failed): TargetNotConfirmed;
+  //    kHealthStale set: ValveStale (arg1 = the model's default staleness
+  //    threshold in s); either flag clearing: ValveRecovered with arg1 0
+  //    and arg2 = the cleared flag bits;
+  //  - desired target change by the web or MQTT: TargetSet (Info); adopting
+  //    the STM's target (source Stm) is silent;
   //  - any other status change: ValveStateChanged (Debug).
-  // Nothing is emitted for the first snapshot of a valve (known false->true)
-  // except Blocked/Failed/NoValve if the valve starts in that state.
+  // A calibration outcome replaces the status event it implies: CalibFailed
+  // suppresses ValveBlocked, and CalibOk/CalibFailed suppress
+  // ValveRecovered. Nothing is emitted for the first snapshot of a valve
+  // (known false->true) except Blocked/Failed/NoValve if the valve starts in
+  // that state (and TargetSet). When more than maxOut events arise, the
+  // most severe kinds (status, calibration) come first.
   size_t onValve(uint8_t valve, const ValveState& before, const ValveState& after,
                  bool active, Event* out, size_t maxOut);
 
@@ -50,20 +58,31 @@ class HealthMonitor {
 
   // STM counters (gstat, or the ESP line assembler): StmRxOverflow /
   // StmParseErrors when the total increased, at most once per 10 min per
-  // counter (the latest total is reported).
+  // counter and side (the latest total is reported). side 0 = ESP (counts
+  // from 0 at ESP boot), 1 = STM: its first observation after ESP boot is
+  // only the baseline. A total below the last one (STM reboot) re-baselines
+  // silently. side > 1 is ignored.
   size_t onStmCounters(uint32_t rxOverflowTotal, uint32_t parseErrTotal, uint8_t side,
                        uint32_t nowMs, Event* out, size_t maxOut);
 
-  // Temperature sensor in config slot (1-based) went invalid / valid again.
-  // `wasValid`/`isValid` from tempRawValid(); first observation is silent.
+  // Temperature sensor in config slot (1-based, 1..34) went invalid / valid
+  // again. `wasValid`/`isValid` from tempRawValid(); first observation
+  // (wasKnown false) is silent. TempSensorFailed carries arg2 = raw; the
+  // caller may put the sensor id into the event text.
   size_t onTempSensor(uint8_t slot, bool wasKnown, bool wasValid, bool isValid, int16_t raw,
                       Event* out, size_t maxOut);
 
  private:
-  uint32_t lastRxOverflowEventMs_[2] = {0, 0};
-  uint32_t lastParseErrEventMs_[2] = {0, 0};
-  bool rxOverflowReported_[2] = {false, false};
-  bool parseErrReported_[2] = {false, false};
+  // Rate-limited "total increased" tracking of one counter on one side.
+  struct CounterTrack {
+    bool baselined = false;
+    uint32_t total = 0;        // last total reported (or the baseline)
+    bool reported = false;     // lastEventMs is meaningful
+    uint32_t lastEventMs = 0;
+  };
+  static bool counterIncreased(CounterTrack& t, uint32_t total, uint32_t nowMs);
+  CounterTrack rxOverflow_[2];
+  CounterTrack parseErr_[2];
 };
 
 // Rate limit for events published to MQTT (<root>/events), architecture
@@ -76,7 +95,10 @@ class EventRateLimiter {
  public:
   static constexpr size_t kKeys = 64;
   explicit EventRateLimiter(uint32_t perKeyMs = 600000, uint16_t maxPerHour = 30);
-  // True when the event may be published now (and books it).
+  // True when the event may be published now (and books it). Events below
+  // Warning that are not calibration outcomes are refused without counting
+  // them as suppressed. Key entries older than perKeyMs are freed on every
+  // call, so a millis() wrap cannot resurrect them.
   bool allow(const Event& e, uint32_t nowMs);
   uint32_t suppressed() const { return suppressed_; }
 
@@ -87,11 +109,12 @@ class EventRateLimiter {
     bool used;
     uint32_t lastMs;
   };
+  void refill(uint32_t nowMs);
   uint32_t perKeyMs_;
   uint16_t maxPerHour_;
   uint32_t tokensMilli_;   // tokens x 1000
   uint32_t lastRefillMs_;
-  bool started_ = false;
+  uint32_t refillRemainder_ = 0;  // sub-milli-token refill carried over (< 3600000)
   Key keys_[kKeys];
   uint32_t suppressed_ = 0;
 };

@@ -6,6 +6,42 @@
 
 namespace vdm {
 
+namespace {
+
+// JSON escape sequence of one byte into out[0..6); returns its length.
+size_t escapeChar(unsigned char c, char* out) {
+  char e = 0;
+  switch (c) {
+    case '"': e = '"'; break;
+    case '\\': e = '\\'; break;
+    case '\n': e = 'n'; break;
+    case '\r': e = 'r'; break;
+    case '\t': e = 't'; break;
+    case '\b': e = 'b'; break;
+    case '\f': e = 'f'; break;
+    default: break;
+  }
+  if (e != 0) {
+    out[0] = '\\';
+    out[1] = e;
+    return 2;
+  }
+  if (c >= 0x20) {
+    out[0] = static_cast<char>(c);
+    return 1;
+  }
+  static const char kHex[] = "0123456789abcdef";
+  out[0] = '\\';
+  out[1] = 'u';
+  out[2] = '0';
+  out[3] = '0';
+  out[4] = kHex[c >> 4];
+  out[5] = kHex[c & 0x0F];
+  return 6;
+}
+
+}  // namespace
+
 JsonWriter::JsonWriter(char* buf, size_t capacity) : buf_(buf), cap_(buf ? capacity : 0) {
   reset();
 }
@@ -37,32 +73,18 @@ bool JsonWriter::putRaw(const char* s, size_t n) {
 bool JsonWriter::putEscaped(const char* s, size_t n) {
   if (!put('"')) return false;
   for (size_t i = 0; i < n; ++i) {
-    const unsigned char c = static_cast<unsigned char>(s[i]);
-    bool okc = true;
-    switch (c) {
-      case '"': okc = putRaw("\\\"", 2); break;
-      case '\\': okc = putRaw("\\\\", 2); break;
-      case '\n': okc = putRaw("\\n", 2); break;
-      case '\r': okc = putRaw("\\r", 2); break;
-      case '\t': okc = putRaw("\\t", 2); break;
-      case '\b': okc = putRaw("\\b", 2); break;
-      case '\f': okc = putRaw("\\f", 2); break;
-      default:
-        if (c < 0x20) {
-          char u[7];
-          snprintf(u, sizeof u, "\\u%04x", static_cast<unsigned>(c));
-          okc = putRaw(u, 6);
-        } else {
-          okc = put(static_cast<char>(c));
-        }
-    }
-    if (!okc) return false;
+    if (!putEscapedChar(static_cast<unsigned char>(s[i]))) return false;
   }
   return put('"');
 }
 
+bool JsonWriter::putEscapedChar(unsigned char c) {
+  char tmp[6];
+  return putRaw(tmp, escapeChar(c, tmp));
+}
+
+// Only called inside guarded(), which has already checked ok_.
 bool JsonWriter::beforeValue() {
-  if (!ok_) return false;
   if (depth_ == 0) {
     if (wroteRoot_) return false;
     wroteRoot_ = true;
@@ -220,15 +242,17 @@ size_t jsonEscape(const char* s, char* out, size_t cap) {
   if (cap == 0) return 0;
   out[0] = '\0';
   if (s == nullptr) return 0;
-  // Reuse the writer's escaping: write a string value, then strip the quotes.
-  JsonWriter jw(out, cap);
-  jw.value(s);
-  if (!jw.ok()) {
-    out[0] = '\0';
-    return 0;
+  size_t n = 0;
+  for (; *s != '\0'; ++s) {
+    char tmp[6];
+    const size_t k = escapeChar(static_cast<unsigned char>(*s), tmp);
+    if (k >= cap - n) {  // no room for the sequence plus the NUL
+      out[0] = '\0';
+      return 0;
+    }
+    memcpy(out + n, tmp, k);
+    n += k;
   }
-  const size_t n = jw.length() - 2;
-  memmove(out, out + 1, n);
   out[n] = '\0';
   return n;
 }

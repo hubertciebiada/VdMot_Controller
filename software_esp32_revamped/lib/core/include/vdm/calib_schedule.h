@@ -11,7 +11,9 @@
 
 namespace vdm {
 
-// Slot key of a local calendar date: yyyymmdd (e.g. 20260923).
+// Slot key of a local calendar date: yyyymmdd (e.g. 20260923). 0 when `t`
+// is not valid: valid flag clear, date outside 2000..9999 or impossible
+// (Feb 30), hour/minute/second out of range, or wday not matching the date.
 uint32_t calibSlotKey(const LocalTime& t);
 
 enum class CalibDecision : uint8_t {
@@ -33,13 +35,16 @@ enum class CalibDecision : uint8_t {
 //  - While time is invalid nothing fires. If time is still invalid when the
 //    scheduler is evaluated and the ESP has been up longer than
 //    noTimeReportMs, SkippedNoTime is returned once per ESP boot.
-//  - dayMask == 0 or hour > 23 or minute > 59: never fires.
+//  - dayMask == 0 (bit 7 is ignored) or hour > 23 or minute > 59: never
+//    fires. graceMinutes 0 is treated as 1.
+//  - A local time that calibSlotKey() rejects counts as "no valid time".
 //  - Stale bookings: a booked key in the future (clock was wrong) is
 //    discarded when a valid time more than 2 days before it is seen.
 class CalibScheduler {
  public:
   explicit CalibScheduler(uint16_t graceMinutes = 120, uint32_t noTimeReportMs = 3600000);
 
+  // A key that is not a valid yyyymmdd date is ignored (-> 0).
   void restoreLastSlot(uint32_t slotKey);
   uint32_t lastSlot() const { return lastSlot_; }
 
@@ -49,6 +54,11 @@ class CalibScheduler {
   // Minutes the firing was late relative to hh:mm (for the event), valid
   // right after evaluate() returned Fire.
   uint16_t lateMinutes() const { return lateMinutes_; }
+
+  // yyyymmdd of the next date whose slot will still fire (today while its
+  // window is open and it is not booked yet), looking up to 7 days ahead;
+  // 0 when the schedule is off or the time is not valid. For /api/status.
+  uint32_t nextSlot(const CalibScheduleConfig& cfg, const LocalTime& now) const;
 
  private:
   uint16_t graceMinutes_;

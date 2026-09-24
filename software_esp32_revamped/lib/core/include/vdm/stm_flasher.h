@@ -92,22 +92,40 @@ struct ImageInfo {
 };
 
 // Pure image checks (spec 02 R3). chipPid 0 = not known yet (then only the
-// family-independent checks run: size 1..512 KiB, SP in 0x20000000..
-// 0x20020000 and 4-aligned, reset vector odd and inside [0x08000000,
-// 0x08000000+size)). With a PID, size <= flash size (0x423 256 KiB, 0x431
-// 512 KiB, 0x433 512 KiB) and SP <= RAM top (0x423 0x20010000, 0x431
-// 0x20020000, 0x433 0x20018000). requireHandshake rejects images without the
-// DEADBEEF/BEEFIT strings.
+// family-independent checks run: size 1..512 KiB, SP in (0x20000000,
+// 0x20020000] and 4-aligned (an SP equal to the RAM base leaves no stack),
+// reset vector odd and inside [0x08000000, 0x08000000+size)). With a PID,
+// size <= flash size (0x423 256 KiB, 0x431 512 KiB, 0x433 512 KiB) and SP <=
+// RAM top (0x423 0x20010000, 0x431 0x20020000, 0x433 0x20018000); any other
+// non-zero PID gives UnknownChip. requireHandshake rejects images without the
+// DEADBEEF/BEEFIT strings. Checks run cheapest first; the first failing one is
+// returned and `out` keeps what was learnt up to that point.
 FlashError validateImage(FlashImage& img, uint16_t chipPid, bool requireHandshake, ImageInfo& out);
 
 // Sectors of an STM32F401/F411 covering [0, size): 16,16,16,16,64,128,...
 // KiB. Returns the number of sectors (1..8), 0 when size is 0 or > 512 KiB.
 uint8_t sectorsForImage(uint32_t size);
 
+namespace detail {
+// Incremental state of the image scan (CRC32, handshake strings, version
+// string). Shared by validateImage() and the Validating phase, which scans a
+// bounded number of bytes per step().
+struct ImageScan {
+  uint32_t offset = 0;
+  uint32_t crc = 0xFFFFFFFFu;
+  uint64_t window = 0;     // last 8 bytes, newest in the low byte
+  bool dead = false;       // "DEADBEEF" seen
+  bool beef = false;       // "BEEFIT" seen
+  bool versionFound = false;
+  uint8_t runLen = 0;      // printable run so far; 32 = too long
+  char run[32] = {0};
+};
+}  // namespace detail
+
 struct FlashOptions {
   bool blank = false;            // STM already in the ROM bootloader (BOOT0 held): no DEADBEEF
   bool force = false;            // skip handshake-string and version checks
-  uint32_t baud = 115200;
+  uint32_t baud = 115200;        // ROM bootloader 8E1; the v1 boot window is always 115200
   // Binding timing (DESIGN.md "STM flasher"):
   uint16_t resetPulseMs = 100;         // NRST asserted
   uint16_t handshakeFirstMs = 20;      // after reset release
@@ -121,7 +139,7 @@ struct FlashOptions {
   uint8_t sessionRetries = 2;          // whole erase+write+verify again, same ROM session
   uint16_t appBootMs = 4000;           // after the final reset, before the first gvers
   uint16_t appPollMs = 1000;           // gvers period
-  uint16_t appTimeoutMs = 15000;       // total wait for gvers
+  uint16_t appTimeoutMs = 15000;       // total wait for gvers, from NRST release
 };
 
 struct FlashStatus {
@@ -145,8 +163,28 @@ class StmFlasher {
  public:
   explicit StmFlasher(FlashTransport& transport);
 
-  // Starts a run. False (and nothing touched) when a run is active. The image
+  // Starts a run. False (and nothing touched) when a run is active or
+  // opt.baud is outside 1200..115200 (the AN3155 USART range). The image
   // object must outlive the run.
+  //
+  // Wire details beyond DESIGN.md §15:
+  //  - The handshake sends "DEADBEEF\n" (9 bytes). The v1 STM compares fixed
+  //    8-byte chunks without resync, so a stray byte at reset would misalign
+  //    a pure 8-byte stream forever; the 9-byte period re-aligns within 8
+  //    sends. The hardened STM ignores CR/LF.
+  //  - Normal mode opens the UART at 115200 8E1 for the handshake (the v1
+  //    boot window listens only there) and switches to opt.baud when BEEFIT
+  //    arrives; blank mode opens it at opt.baud directly.
+  //  - Every ACK timeout starts when the frame is queued and includes the
+  //    frame's wire time at opt.baud (11 bits per byte), so slow bauds do not
+  //    time out a 258-byte data frame that is still being sent.
+  //  - GetId first sends GET (0x00) for the bootloader version; a failed GET
+  //    is not fatal (the byte stays 0).
+  //  - The verify pass recomputes the image CRC32; a difference from the
+  //    validated one (file changed during the run) fails with ImageRead.
+  //  - Any failure after the STM was touched pulses NRST and restores 8N1
+  //    before the phase becomes Failed (phase keeps the failing phase during
+  //    that pulse). Failures while waiting for the app need no new pulse.
   bool begin(FlashImage& image, const FlashOptions& opt, uint32_t nowMs);
   // Advances the state machine; never blocks longer than the time to queue
   // one block (~300 bytes) on the transport. Returns the current phase.
@@ -159,18 +197,54 @@ class StmFlasher {
   const FlashStatus& status() const { return st_; }
 
  private:
+  enum class Resp : uint8_t { Pending, Ack, Nack, Timeout };
+
+  void enter(FlashPhase p, uint32_t nowMs);
+  void finish(FlashPhase p, uint32_t nowMs);
+  void fail(FlashError e, uint32_t address, uint32_t nowMs);
+  void opFailed(FlashError e, uint32_t address, uint32_t nowMs);
+  void setPercent(uint32_t p);
+  bool put(const uint8_t* data, size_t len, uint32_t nowMs);
+  bool send(const uint8_t* data, size_t len, uint32_t nowMs, uint32_t timeoutMs);
+  void pump();
+  Resp waitReply(uint32_t nowMs, size_t need);
+  uint32_t blockCount() const;
+  uint32_t blockLen(uint32_t block) const;
+  bool loadBlock(uint32_t block);
+  void runOnce(uint32_t nowMs);
+  void stepValidating(uint32_t nowMs);
+  void stepPulse(uint32_t nowMs);
+  void stepHandshake(uint32_t nowMs);
+  void stepSync(uint32_t nowMs);
+  void stepGetId(uint32_t nowMs);
+  void stepErasing(uint32_t nowMs);
+  void stepWriting(uint32_t nowMs);
+  void stepVerifying(uint32_t nowMs);
+  void stepWaitingApp(uint32_t nowMs);
+  void onAppLine(uint32_t nowMs);
+
   FlashTransport& t_;
   FlashImage* img_ = nullptr;
   FlashOptions opt_;
   FlashStatus st_;
+  detail::ImageScan scan_;
   uint32_t phaseStartMs_ = 0;
+  uint32_t releaseMs_ = 0;     // NRST released (Resetting/Starting)
   uint32_t lastSendMs_ = 0;
-  uint32_t block_ = 0;
+  uint32_t waitStartMs_ = 0;
+  uint32_t waitLimitMs_ = 0;
+  uint32_t block_ = 0;         // index in write/verify order
+  uint32_t verifyCrc_ = 0;
   uint8_t retries_ = 0;
-  uint8_t sub_ = 0;           // sub-step within a phase
-  uint8_t rx_[272];           // one read-back block + framing
-  size_t rxLen_ = 0;
+  uint8_t syncTries_ = 0;
+  uint8_t sub_ = 0;            // sub-step within a phase
+  bool touched_ = false;       // STM reset/UART re-opened: failure needs a pulse
+  bool cleanup_ = false;       // failure pulse in progress
+  bool lineDrop_ = false;      // WaitingApp: discard up to the next CR/LF
   bool abortRequested_ = false;
+  uint8_t tx_[260];            // data frame N-1, 256 data, checksum / expected block
+  uint8_t rx_[272];            // one read-back block + framing, or one app line
+  size_t rxLen_ = 0;
 };
 
 }  // namespace vdm

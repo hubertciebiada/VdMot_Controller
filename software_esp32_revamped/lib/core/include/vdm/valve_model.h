@@ -49,7 +49,7 @@ enum HealthFlag : uint16_t {
   kHealthEarlyStop = 1u << 4,         // earlyStops increased since ESP boot (v2)
   kHealthCmdRejected = 1u << 5,       // cmdRejected increased since ESP boot (v2)
   kHealthStale = 1u << 6,             // active valve: no data for staleMs
-  kHealthTargetUnconfirmed = 1u << 7, // TargetSync::Failed
+  kHealthTargetUnconfirmed = 1u << 7, // TargetSync::Failed, and while that target is retried
   kHealthTempFailed = 1u << 8,        // an assigned sensor reports a sentinel
 };
 
@@ -89,7 +89,9 @@ struct ValveState {
   OneWireId sensorId[2];
   uint8_t sensorSlot[2] = {0, 0};  // 1-based config slot, 0 = none/unknown
   uint16_t health = 0;             // HealthFlag bits
-  uint32_t revision = 0;           // +1 on every change of any field above
+  // +1 on every change of any field above except the lastSeenMs/lastPushMs
+  // timestamps (a poll that returns the same data is not a change).
+  uint32_t revision = 0;
 };
 
 // Field groups for change detection (publishing, events).
@@ -129,8 +131,10 @@ class ValveModel {
   uint16_t activeMask() const { return active_; }
 
   // User/MQTT command. Returns false (no change) for valve >= 12, pos > 100
-  // or an inactive valve. Same value as desired -> true, no re-push unless
-  // not Synced.
+  // or an inactive valve. Same value as desired -> true without a re-push,
+  // except that a Failed delivery is re-armed (Pending, attempts reset).
+  // A new value equal to the known STM target (no stgtp in flight) is
+  // Synced at once; otherwise it goes Pending.
   bool setDesiredTarget(uint8_t valve, uint8_t pos, TargetSource src, uint32_t nowMs);
 
   // Reply application. Out-of-range indices are ignored (codec already
@@ -165,15 +169,32 @@ class ValveModel {
 
   const ValveState& valve(uint8_t i) const;  // i >= 12 returns a static empty state
   bool anyCalibrating() const;
-  // Valve needs fast polling: moving, calibrating, or sync not Synced/Unknown.
+  // Valve needs fast polling: moving (opening/closing), calibrating, or a
+  // delivery in progress (Pending, AwaitAck, AwaitVerify). A Failed delivery
+  // waits failedRetryMs and does not need fast polling.
   bool isBusy(uint8_t i) const;
 
  private:
-  void updateHealth(uint8_t i, uint32_t nowMs);
+  bool isActive(uint8_t i) const;
+  void markSeen(uint8_t i, uint32_t nowMs);
+  void applyReadBack(uint8_t i, uint8_t target);
+  void markSynced(uint8_t i);
+  // Recomputes health and bumps the revision when anything changed.
+  void commit(uint8_t i, const ValveState& before);
+  void updateHealth(uint8_t i);
+
   ValveModelParams params_;
   ValveState v_[kValveCount];
   uint16_t active_ = 0;
   uint8_t pushCursor_ = 0;
+  uint32_t staleRefMs_[kValveCount] = {};  // last gvlvd/gvlvx, or first tick while active
+  bool staleRefValid_[kValveCount] = {};
+  bool stale_[kValveCount] = {};           // latched until the next valve data
+  bool baselined_[kValveCount] = {};       // false: next gvlvx sets the v2 counter baselines
+  bool pushedOnce_[kValveCount] = {};      // lastPushMs is meaningful
+  // A Failed delivery that is being retried keeps kHealthTargetUnconfirmed
+  // until a read-back confirms it, so a stuck valve does not flap the flag.
+  bool keepUnconfirmed_[kValveCount] = {};
 };
 
 // ---------------------------------------------------------------- sensors

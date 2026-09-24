@@ -13,7 +13,9 @@
 namespace vdm {
 
 // Read-only access to one legacy NVS key. Namespaces: "sysCfg", "netCfg",
-// "tZCfg", "protCfg", "valvesCfg", "tempsCfg", "voltsCfg", "Misc".
+// "tZCfg", "protCfg", "valvesCfg", "tempsCfg", "voltsCfg", "Misc"; the
+// dropped "valvesCtrlCfg", "msgCfg" and "motorCfg" keys are only probed to
+// count them in ImportReport::ignored.
 // Every method returns false when the namespace or key does not exist or
 // the stored type differs; outputs are untouched then.
 class LegacyNvsReader {
@@ -39,10 +41,12 @@ constexpr size_t kLegacyVoltsBlob = 480;    // 8 x 56 {name,active,float offset@
 
 struct ImportReport {
   bool anyLegacy = false;     // at least one legacy namespace had a key
-  uint16_t imported = 0;      // keys applied
-  uint16_t rejected = 0;      // keys present but invalid (value kept at default)
+  uint16_t imported = 0;      // keys applied (a blob counts once)
+  uint16_t rejected = 0;      // keys/blob fields present but invalid, plus repairs
   uint16_t ignored = 0;       // DROP keys present (PI, messenger, ...), not imported
-  char firstRejected[40] = {0};  // "<ns>/<key>" of the first rejected key
+  // "<ns>/<key>" of the first rejected key; blob fields as
+  // "<ns>/<key>.<n>.<field>" (n 1-based, e.g. "tempsCfg/temps.3.id").
+  char firstRejected[40] = {0};
   int64_t lastCalibEpoch = 0;    // Misc/MiscLC when valid (>= 2020-01-01), else 0
 };
 
@@ -56,7 +60,9 @@ struct ImportReport {
 //  tZCfg/tZ, tZCode -> time.tzName, time.tzPosix
 //  protCfg/dataProt, brokerIp (uint32 -> dotted host), brokerPort (0 -> 1883),
 //    publishInterval (clamped 2..3600), brokerUser, brokerPwd, brokerPF
-//    (missing -> 7 like the legacy read fallback), brokerKAT, brokerMD,
+//    (missing -> 7 like the legacy read fallback, applied only when
+//    protCfg/dataProt exists, so a device without legacy MQTT settings keeps
+//    the new defaults), brokerKAT, brokerMD,
 //    brokerMQF bit2 -> mqtt.germanDecimal; brokerInterval, brokerMQTO,
 //    brokerMQToPos and brokerMQF bits 0/1 -> ignored.
 //    dataProt 2 with publishSeparate 0: imported as mode Mqtt (HA needs
@@ -65,13 +71,26 @@ struct ImportReport {
 //  tempsCfg/temps (blob 1496): name, active, offset (clamped to +-10.0 C ->
 //    rejected if outside), ID (parseOneWireId; "" or all-zero -> empty slot)
 //  voltsCfg/volts (blob 480): name, active, offset, factor, unit, ID
-//  Misc/MiscLC -> report.lastCalibEpoch
-// Per-key validation uses the same ranges as setConfigValue; a key that
-// fails keeps the default. Afterwards cross-field rules are enforced by
-// clearing the offending optional feature (e.g. syslog level -> 0 without
-// server, web auth -> off when only one of user/password is set, duplicate
-// valve names -> later duplicates cleared), each counted as rejected, so the
-// result always passes validateConfig().
+//  Misc/MiscLC -> report.lastCalibEpoch (2020-01-01 <= t < 2100-01-01; the
+//    legacy firmware also stored the unsynced 1970 clock -> rejected)
+// Strings longer than their field and blob strings without a NUL inside
+// their char[] (legacy strncpy) are rejected. Per-key validation uses
+// setConfigValue itself; a key that fails keeps the default. Afterwards
+// cross-field rules are enforced by clearing the offending optional feature,
+// each counted as rejected: incomplete static IP -> DHCP ("netCfg/dhcp");
+// ssid with a password shorter than 8 -> WiFi credentials cleared
+// ("netCfg/pwd"); WiFi-only without ssid -> auto ("netCfg/ethwifi"); syslog
+// level without server -> 0; web user or password alone -> both cleared;
+// MQTT without broker -> off ("protCfg/brokerIp"); minDelay above the
+// publish interval -> clamped ("protCfg/brokerMD"); HA without separate
+// topics -> MQTT ("protCfg/dataProt"); duplicate valve segments and names
+// equal to another unnamed valve's number -> later names cleared (repeated
+// until stable); duplicate sensor ids -> later id cleared; active slots
+// without id -> inactive. As a last resort (never reached by the rules
+// above) a result that still fails validateConfig() is replaced by the
+// defaults and reported as "validate/<path>". The result always passes
+// validateConfig(). The temps blob buffer (1496 B) is static, so the
+// function is not reentrant (it runs once at boot under the storage lock).
 ImportReport importLegacyConfig(LegacyNvsReader& nvs, Config& out);
 
 }  // namespace vdm

@@ -17,10 +17,12 @@ constexpr size_t kStmMaxLineLen = 1023;
 //    a CR that ended a line is swallowed, also across feed() calls); empty
 //    lines are ignored.
 //  - A line longer than capacity-1 characters is dropped up to its
-//    terminator and counted in overflowCount().
+//    terminator and counted once in overflowCount().
 //  - A line containing a byte other than printable ASCII (0x20..0x7E) or TAB
-//    is dropped up to its terminator and counted in malformedCount().
+//    is dropped up to its terminator and counted once in malformedCount().
 //    (This catches 8E1 noise and bootloader bytes on the shared UART.)
+//    Both are counted when the bad byte arrives, so an endless stream
+//    without a terminator is still visible in the counters.
 //  - Once a line is complete no further byte is consumed until release(), so
 //    bytes after the terminator stay with the caller for the next line
 //    (no data loss when several replies arrive in one read).
@@ -60,8 +62,6 @@ class LineAssembler {
   size_t len_;
   bool ready_;
   bool discarding_;
-  bool discardIsOverflow_;
-  bool lastWasCr_;
   uint32_t overflows_;
   uint32_t malformed_;
 };

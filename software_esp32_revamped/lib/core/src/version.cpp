@@ -17,6 +17,9 @@ namespace vdm {
 namespace {
 
 constexpr size_t kVersionMaxLen = 31;
+// The suffix is what follows the shortest numeric part "0.0.0", so it always
+// fits and parseVersion needs no runtime length check for it.
+static_assert(sizeof(Version::suffix) >= kVersionMaxLen - 5 + 1, "suffix");  // NOMUTATE
 
 bool isSuffixChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
@@ -27,7 +30,7 @@ bool isSuffixChar(char c) {
 bool readComponent(const char* s, size_t len, size_t& pos, uint16_t& out) {
   const size_t start = pos;
   while (pos < len && s[pos] >= '0' && s[pos] <= '9') ++pos;
-  uint32_t v = 0;
+  uint32_t v;
   if (pos - start > 5 || !parseUint(s + start, pos - start, 65535, v)) return false;
   out = static_cast<uint16_t>(v);
   return true;
@@ -46,7 +49,7 @@ bool isHwPart(const char* s, size_t len) {
 
 bool parseVersion(const char* s, size_t len, Version& out) {
   out = Version{};
-  if (s == nullptr || len == 0 || len > kVersionMaxLen) return false;
+  if (s == nullptr || len > kVersionMaxLen) return false;  // len 0: no major
   Version v;
   size_t pos = 0;
   if (!readComponent(s, len, pos, v.major) || pos >= len || s[pos++] != '.') return false;
@@ -55,10 +58,12 @@ bool parseVersion(const char* s, size_t len, Version& out) {
 
   size_t rest = len - pos;
   const char* tail = s + pos;
+  // The suffix starts with a separator; the rest are suffix characters.
   for (size_t i = 0; i < rest; ++i) {
-    if (!isSuffixChar(tail[i])) return false;
+    const char c = tail[i];
+    const bool ok = i == 0 ? (c == '-' || c == '_' || c == '+') : isSuffixChar(c);
+    if (!ok) return false;
   }
-  if (rest > 0 && tail[0] != '-' && tail[0] != '_' && tail[0] != '+') return false;
 
   // hw = last '_' part when it is "_C<n>".
   const char* lastUnderscore = nullptr;
@@ -68,12 +73,11 @@ bool parseVersion(const char* s, size_t len, Version& out) {
   if (lastUnderscore != nullptr) {
     const size_t hwLen = static_cast<size_t>(tail + rest - lastUnderscore);
     if (isHwPart(lastUnderscore, hwLen)) {
-      memcpy(v.hw, lastUnderscore + 1, hwLen - 1);
-      v.hw[hwLen - 1] = '\0';
+      // "C<digits>"; v.hw is zero-initialised, so the NUL is already there.
+      for (size_t i = 1; i < hwLen; ++i) v.hw[i - 1] = lastUnderscore[i];
       rest -= hwLen;
     }
   }
-  if (rest >= sizeof(v.suffix)) return false;
   memcpy(v.suffix, tail, rest);
   v.suffix[rest] = '\0';
   v.valid = true;
@@ -95,14 +99,13 @@ size_t formatVersion(const Version& v, char* out, size_t cap) {
   if (cap == 0) return 0;
   out[0] = '\0';
   if (!v.valid) return 0;
-  char buf[80];
-  int n = 0;
-  // Components <= 5 digits, suffix < 24, hw < 4: always fits buf.
-  n = snprintf(buf, sizeof buf, "%u.%u.%u%s%s%s", static_cast<unsigned>(v.major),
-               static_cast<unsigned>(v.minor), static_cast<unsigned>(v.patch), v.suffix,
-               v.hw[0] ? "_" : "", v.hw);
-  if (n < 0 || static_cast<size_t>(n) >= cap) return 0;
-  memcpy(out, buf, static_cast<size_t>(n) + 1);
+  const int n = snprintf(out, cap, "%u.%u.%u%s%s%s", static_cast<unsigned>(v.major),
+                         static_cast<unsigned>(v.minor), static_cast<unsigned>(v.patch), v.suffix,
+                         v.hw[0] ? "_" : "", v.hw);
+  if (static_cast<size_t>(n) >= cap) {  // does not fit (snprintf cannot fail here)
+    out[0] = '\0';
+    return 0;
+  }
   return static_cast<size_t>(n);
 }
 

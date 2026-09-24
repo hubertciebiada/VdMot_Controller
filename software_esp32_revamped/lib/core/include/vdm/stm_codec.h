@@ -243,7 +243,7 @@ struct TargetReply {  // gtgtp v pos
   uint8_t target = 0;  // 0..100
 };
 
-// gvlvx (v2), 20 fields after the command:
+// gvlvx (v2), 19 fields after the command:
 // idx status pos target meanCur oc cc dc cr moves calState earlyStops
 // cmdRejected lastDir lastReq lastCnt lastStop lastPeak lastMs
 // `status` uses the gvlvd encoding (bit 7 = calibrating).
