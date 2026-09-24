@@ -30,17 +30,21 @@ uint32_t log(const vdm::Event& e);
 // Shorthand with the default severity of the code.
 uint32_t log(vdm::EventCode code, uint8_t valve = vdm::kNoValve, int32_t arg1 = 0,
              int32_t arg2 = 0, const char* text = nullptr);
+// Same with an explicit severity (codes whose severity depends on the args).
+uint32_t logSev(vdm::EventCode code, vdm::Severity sev, uint8_t valve = vdm::kNoValve,
+                int32_t arg1 = 0, int32_t arg2 = 0, const char* text = nullptr);
 
 // Filtered copy for the API (see vdm::EventLog::read).
 size_t read(const vdm::EventFilter& f, vdm::Event* out, size_t maxOut, uint32_t& nextSince,
             uint32_t& firstSeq, uint32_t& lastSeq, uint32_t& dropped);
 uint32_t lastSeq();
 
-// Events not yet handed to MQTT, oldest first; the MQTT task calls this
-// with its own cursor.
+// Events after `sinceSeq`, oldest first; the MQTT task calls this with its
+// own cursor.
 size_t readSince(uint32_t sinceSeq, vdm::Event* out, size_t maxOut, uint32_t& nextSince);
 
-// Sink configuration (from Config): syslog level/server/port, file on/off.
+// Sink configuration (from Config): syslog level/server/port, file on/off,
+// syslog HOSTNAME field.
 void configure(uint8_t syslogLevel, uint32_t syslogServer, uint16_t syslogPort, bool persist,
                const char* hostname);
 

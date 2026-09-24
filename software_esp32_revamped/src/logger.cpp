@@ -8,6 +8,7 @@
 #include <new>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -62,33 +63,70 @@ bool syslogWants(vdm::Severity s) {
   }
 }
 
-void writeFileLine(const char* line) {
-  if (!gPersist || !storage::fsReady()) return;
-  File f = LittleFS.open(kLogFile, FILE_APPEND);
-  if (!f) return;
-  if (f.size() >= kLogFileMax) {
-    f.close();
-    LittleFS.remove(kLogFileOld);
-    LittleFS.rename(kLogFile, kLogFileOld);
-    f = LittleFS.open(kLogFile, FILE_APPEND);
-    if (!f) return;
+// Appends a batch of lines, rotating at kLogFileMax. The file is opened once
+// per batch; a failed write stops the batch (the lines stay in the RAM log).
+class FileSink {
+ public:
+  ~FileSink() { close(); }
+  void write(const char* line) {
+    if (failed_ || !gPersist || !storage::fsReady()) return;
+    const size_t len = strlen(line);
+    if (!file_) {
+      file_ = LittleFS.open(kLogFile, FILE_APPEND);
+      if (!file_) {
+        failed_ = true;
+        return;
+      }
+    }
+    if (file_.size() + len + 1 > kLogFileMax) {
+      file_.close();
+      LittleFS.remove(kLogFileOld);
+      // A failed rename (e.g. the old file is open for /api/log) stops this
+      // batch instead of growing the file past its limit.
+      if (!LittleFS.rename(kLogFile, kLogFileOld)) {
+        failed_ = true;
+        return;
+      }
+      file_ = LittleFS.open(kLogFile, FILE_APPEND);
+      if (!file_) {
+        failed_ = true;
+        return;
+      }
+    }
+    if (file_.write(reinterpret_cast<const uint8_t*>(line), len) != len ||
+        file_.write('\n') != 1) {
+      failed_ = true;
+    }
   }
-  f.println(line);
-  f.close();
-}
+  void close() {
+    if (file_) file_.close();
+  }
+
+ private:
+  File file_;
+  bool failed_ = false;
+};
 
 void sendSyslog(const vdm::Event& e, const char* msg) {
   if (gSyslogServer == 0 || gSyslogPort == 0) return;
-  // RFC 5424: <PRI>1 TIMESTAMP HOST APP PROCID MSGID SD MSG ; facility local0 (16).
+  // RFC 5424: <PRI>1 TIMESTAMP HOSTNAME APP-NAME PROCID MSGID SD MSG,
+  // facility local0 (16). TIMESTAMP is "-" before SNTP sync.
+  char ts[24] = "-";
+  if (e.epoch != 0) {
+    const time_t t = static_cast<time_t>(e.epoch);
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &tm);
+  }
   char pkt[240];
   const unsigned pri = 16u * 8u + vdm::syslogSeverity(e.severity);
-  const int n = snprintf(pkt, sizeof pkt, "<%u>1 - %s vdmot - %s - %s", pri, gHostname,
-                         vdm::eventCodeName(e.code), msg);
+  const int n = snprintf(pkt, sizeof pkt, "<%u>1 %s %s vdmot - %s - %s", pri, ts,
+                         gHostname[0] ? gHostname : "-", vdm::eventCodeName(e.code), msg);
   if (n <= 0) return;
+  const size_t len = static_cast<size_t>(n) < sizeof pkt ? static_cast<size_t>(n) : sizeof pkt - 1;
   const IPAddress server(gSyslogServer);
   if (gUdp.beginPacket(server, gSyslogPort)) {
-    gUdp.write(reinterpret_cast<const uint8_t*>(pkt),
-               static_cast<size_t>(n) < sizeof pkt ? static_cast<size_t>(n) : sizeof pkt - 1);
+    gUdp.write(reinterpret_cast<const uint8_t*>(pkt), len);
     gUdp.endPacket();
   }
 }
@@ -122,6 +160,11 @@ uint32_t log(const vdm::Event& in) {
 
 uint32_t log(vdm::EventCode code, uint8_t valve, int32_t arg1, int32_t arg2, const char* text) {
   return log(vdm::makeEvent(code, vdm::eventDefaultSeverity(code), valve, arg1, arg2, text));
+}
+
+uint32_t logSev(vdm::EventCode code, vdm::Severity sev, uint8_t valve, int32_t arg1,
+                int32_t arg2, const char* text) {
+  return log(vdm::makeEvent(code, sev, valve, arg1, arg2, text));
 }
 
 size_t read(const vdm::EventFilter& f, vdm::Event* out, size_t maxOut, uint32_t& nextSince,
@@ -158,6 +201,12 @@ void configure(uint8_t syslogLevel, uint32_t syslogServer, uint16_t syslogPort, 
 void service(bool netUp) {
   // Bounded: at most kPendingLines events per call. Events that fell out of
   // the ring meanwhile are skipped (the gap is visible in the file by seq).
+  bool syslogOn;
+  {
+    Lock lock;
+    syslogOn = netUp && gSyslogLevel > 0;
+  }
+  FileSink file;
   vdm::Event batch[4];
   for (size_t round = 0; round < kPendingLines / 4; ++round) {
     uint32_t next = gSinkCursor;
@@ -166,8 +215,8 @@ void service(bool netUp) {
     for (size_t i = 0; i < n; ++i) {
       char line[160];
       vdm::formatEventLine(batch[i], line, sizeof line);
-      writeFileLine(line);
-      if (netUp && syslogWants(batch[i].severity)) {
+      file.write(line);
+      if (syslogOn && syslogWants(batch[i].severity)) {
         char msg[120];
         vdm::formatEventMessage(batch[i], msg, sizeof msg);
         sendSyslog(batch[i], msg);

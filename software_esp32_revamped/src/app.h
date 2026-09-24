@@ -77,12 +77,16 @@ struct Command {
   char image[32] = {0};   // LittleFS name below /stm/
   bool blank = false;
   bool force = false;
+  bool scheduled = false;  // Calibrate: fired by the calibration schedule
 };
 
 // Depth of the FreeRTOS queue into the STM task.
 constexpr size_t kCommandQueueDepth = 16;
 // Non-blocking; false when the queue is full (caller answers 503 / logs).
 bool submit(const Command& cmd);
+// Free entries in the queue (a handler that submits several commands checks
+// this first so a request is applied completely or not at all).
+size_t queueSpace();
 // STM task side: next command, false when none.
 bool receive(Command& out);
 
@@ -122,9 +126,21 @@ struct StmSnapshot {
 // Copies the latest snapshot (~7 KB: callers keep `out` in static storage,
 // never on a task stack).
 void readStmSnapshot(StmSnapshot& out);
-// Cheap accessor for the link state only.
+// Cheap accessors (no snapshot copy).
 vdm::LinkState stmLinkState();
+bool stmFlashActive();   // flasher running (UART owned by it)
+uint32_t stmSnapshotRevision();  // changes whenever a new snapshot is published
+uint8_t stmProtocol();   // 0 unknown, 1, 2
 // STM task only.
 void publishStmSnapshot(const StmSnapshot& in);
+
+// ---------------------------------------------------------------- calibration
+
+// Scheduled calibration state for /api/status (written by the app task).
+struct CalibInfo {
+  int64_t lastScheduledEpoch = 0;  // vdmrev/lastCal
+  uint32_t nextSlot = 0;           // yyyymmdd, 0 = none / no valid time
+};
+CalibInfo calibInfo();
 
 }  // namespace app

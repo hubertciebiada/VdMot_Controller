@@ -8,6 +8,11 @@
 
 namespace stm_link {
 
+// Drives BOOT0 LOW, then NRST released (IO15 LOW). The IO15 strap pull-up
+// holds the STM in reset from ESP reset until this runs, so it is called
+// from the earliest Arduino hook (initVariant), before setup().
+void releaseReset();
+
 // Configures the pins (NRST driven LOW = STM keeps running: architecture R6,
 // the ESP never resets the STM on its own boot), opens Serial2 8N1.
 void begin();
