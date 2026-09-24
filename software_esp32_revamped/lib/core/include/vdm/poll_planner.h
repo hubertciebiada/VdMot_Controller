@@ -95,6 +95,13 @@ class PollPlanner {
   // period. Results of requests the planner did not hand out are ignored.
   void onResult(const RequestLine& request, bool ok, uint32_t nowMs);
 
+  // A parsed gvers reply. A revamped STM (isRevamped) always speaks v2, so
+  // when the probe had timed out (protocol 1, e.g. the probe hit the STM's
+  // start-up window) the re-sync is restarted once to probe again. Armed
+  // again only after a successful v2 probe, so an STM that really stays
+  // silent on gproto is not probed in a loop.
+  void onVersion(bool revamped);
+
   static constexpr uint16_t kLostRequestMs = 10000;
 
  private:
@@ -136,6 +143,7 @@ class PollPlanner {
 
   PollCadence cadence_;
   uint8_t proto_ = 0;
+  bool reprobed_ = false;
   uint16_t activeMask_ = 0;
   uint16_t busyMask_ = 0;
   uint8_t tempCount_ = 0;

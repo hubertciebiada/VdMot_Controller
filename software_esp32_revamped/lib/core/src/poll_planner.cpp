@@ -21,6 +21,7 @@ PollPlanner::PollPlanner(const PollCadence& cadence) : cadence_(cadence) {}
 
 void PollPlanner::setProtocol(uint8_t proto) {
   proto_ = std::min<uint8_t>(proto, 2);
+  if (proto_ >= 2) reprobed_ = false;
   if (proto_ < 2) {
     pending_ &= ~kV2Items;
     inflight_ &= ~kV2Items;
@@ -259,6 +260,11 @@ bool PollPlanner::next(uint32_t nowMs, RequestLine& out) {
 
 // ---------------------------------------------------------------- results
 
+void PollPlanner::onVersion(bool revamped) {
+  if (!revamped || proto_ != 1 || reprobed_) return;
+  reprobed_ = true;
+  requestResync();
+}
 
 void PollPlanner::onResult(const RequestLine& request, bool ok, uint32_t nowMs) {
   RequestLine expected;

@@ -256,6 +256,8 @@ void LinkPolicy::onStmReset(uint32_t nowMs, bool byPolicy) {
   startHold(nowMs);
 }
 
+void LinkPolicy::holdAfterEspBoot(uint32_t nowMs) { startHold(nowMs); }
+
 size_t LinkPolicy::suspend() {
   const size_t dropped = count_ + (outstanding_ ? 1u : 0u);
   count_ = 0;

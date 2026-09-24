@@ -317,6 +317,8 @@ void onVersion(const vdm::Reply& rep) {
     gIncompatibleLogged = true;
     logger::log(vdm::EventCode::StmIncompatible, vdm::kNoValve, 0, 0, ver);
   }
+  gPlanner.onVersion(vdm::isRevamped(rep.version));
+  gSnap.proto = gPlanner.protocol();
 }
 
 // Applies reply data. `req` is the matched request or nullptr for a stray
@@ -677,6 +679,9 @@ void task(void*) {
   reloadConfig();
   startSensorGrace(start);
   gPlanner.requestResync();
+  // R6: no reset here, but the IO15 strap most likely reset the STM while
+  // the ESP booted; give it the same start-up hold-off as after a pulse.
+  gLink.holdAfterEspBoot(start);
   gLastSecondMs = start;
   for (;;) {
     esp_task_wdt_reset();
