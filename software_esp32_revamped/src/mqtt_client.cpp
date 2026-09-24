@@ -191,10 +191,21 @@ void reloadConfig() {
   }
 }
 
+// PubSubClient needs 5 (fixed header) + 2 (topic length) bytes besides the
+// topic and payload. Every message built here fits, so a publish only fails
+// on a dead connection or a socket write that stalled.
+static_assert(5 + 2 + vdm::kTopicMax + vdm::kDiscoveryPayloadMax <= kBufferSize,
+              "largest MQTT message must fit the PubSubClient buffer");
+
 bool publishRaw(const char* topic, const char* payload, bool retained) {
-  const bool ok = gClient.publish(topic, payload, retained);
-  if (!ok) count(&Status::publishFailures);
-  return ok;
+  if (gClient.publish(topic, payload, retained)) return true;
+  count(&Status::publishFailures);
+  // A failed publish on a live connection is a socket write that WiFiClient
+  // already retried for up to 10 s (broker gone without FIN/RST). Every
+  // further publish of this pass would stall as long, past the task
+  // watchdog: drop the connection and let the reconnect back-off take over.
+  if (gClient.connected()) gNet.stop();
+  return false;
 }
 
 bool publish(vdm::Topic t, const char* segment, const char* payload) {

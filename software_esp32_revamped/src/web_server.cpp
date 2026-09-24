@@ -241,6 +241,10 @@ bool authorised(AsyncWebServerRequest* req, bool needsAuth) {
   }
   AsyncWebServerResponse* res =
       req->beginResponse(401, kJson, "{\"error\":\"unauthorized\",\"detail\":\"\"}");
+  if (res == nullptr) {
+    req->send(500);  // out of memory
+    return false;
+  }
   res->addHeader("WWW-Authenticate", "Basic realm=\"VdMot\"");
   req->send(res);
   return false;
@@ -1197,6 +1201,7 @@ void handleStatic(AsyncWebServerRequest* req) {
     AsyncWebHeader* inm = req->getHeader("If-None-Match");
     if (inm != nullptr && inm->value() == a.etag) return req->send(304);
     AsyncWebServerResponse* res = req->beginResponse_P(200, a.contentType, a.data, a.length);
+    if (res == nullptr) return req->send(500);  // out of memory
     res->addHeader("Content-Encoding", "gzip");
     res->addHeader("ETag", a.etag);
     res->addHeader("Cache-Control", "no-cache");
