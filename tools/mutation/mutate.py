@@ -23,7 +23,11 @@ Config (JSON):
 Lines can be excluded in source with a trailing  // NOMUTATE  comment
 (use sparingly and explain why in the same comment).
 
-Exit code: 0 when score >= threshold, 1 otherwise, 2 on configuration error.
+Resumable: kills are cached in <config>.cache.json keyed by the source file hash, so a long run
+can be done in several invocations (e.g. under a 10-minute tool limit) and still converge.
+
+Exit code: 0 when score >= threshold (and every file >= file_threshold), 1 otherwise,
+2 on configuration error or when some mutants were not evaluated (the score would be invalid).
 A JSON report is written next to the config (<name>.report.json) and a
 Markdown summary to stdout.
 """
@@ -236,6 +240,26 @@ def run(cmd: str, cwd: str, timeout: int) -> tuple[int, str]:
         return -999, "timeout"
 
 
+CACHEABLE = ("killed", "timeout", "build_error")
+
+
+def mutant_key(m: Mutant, src_hash: str) -> str:
+    return f"{m.file}|{src_hash}|{m.line}|{m.col}|{m.op}|{m.original}|{m.replacement}"
+
+
+def load_cache(path: str) -> dict:
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(path: str, cache: dict) -> None:
+    tmp = path + ".tmp"
+    json.dump(cache, open(tmp, "w"))
+    os.replace(tmp, path)
+
+
 def fmt(cmd: str, build: str, stem: str = "") -> str:
     return cmd.replace("{build}", build).replace("{stem}", stem)
 
@@ -287,6 +311,9 @@ def main() -> int:
     ap.add_argument("--max", type=int, default=0, help="limit number of mutants (0 = all)")
     ap.add_argument("--jobs", type=int, default=1, help="parallel workers (each on its own copy of root)")
     ap.add_argument("--list", action="store_true", help="only list mutants")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="ignore cached kills (by default a mutant killed before is not re-run while its "
+                         "source file is unchanged; adding tests can only kill more, never revive a kill)")
     ap.add_argument("--changed-since", metavar="GIT_REV",
                     help="print the configured files changed since GIT_REV (space separated) and exit")
     args = ap.parse_args()
@@ -321,9 +348,19 @@ def main() -> int:
         all_muts += generate(p, rel)
     if args.max:
         all_muts = all_muts[: args.max]
+    import hashlib
+    src_hash = {rel: hashlib.sha1(text.encode()).hexdigest()[:16] for rel, text in sources.items()}
+    cache_path = os.path.splitext(cfg_path)[0] + ".cache.json"
+    cache = {} if args.no_cache else load_cache(cache_path)
+    reused = 0
     for m in all_muts:
         if m.line in equivalent.get(m.file, set()):
             m.status = "equivalent"
+            continue
+        hit = cache.get(mutant_key(m, src_hash[m.file]))
+        if hit in CACHEABLE:
+            m.status = hit
+            reused += 1
     if args.list:
         for m in all_muts:
             print(f"{m.file}:{m.line}:{m.col} {m.op} {m.original!r} -> {m.replacement!r}")
@@ -354,6 +391,7 @@ def main() -> int:
             workers.append((wroot, build))
 
         todo = [m for m in all_muts if m.status == "pending"]
+        print(f"{len(all_muts)} mutants, {reused} reused from cache, {len(todo)} to run", flush=True)
         lock = threading.Lock()
         done = [0]
         stop = threading.Event()
@@ -371,12 +409,18 @@ def main() -> int:
                     print(f"error evaluating {m.file}:{m.line}: {exc!r}", file=sys.stderr, flush=True)
                 with lock:
                     done[0] += 1
+                    if m.status in CACHEABLE:
+                        cache[mutant_key(m, src_hash[m.file])] = m.status
+                    if done[0] % 50 == 0:
+                        save_cache(cache_path, cache)
                     if done[0] % 25 == 0 or m.status == "survived":
                         print(f"[{done[0]}/{len(all_muts)}] {m.status:9} {m.file}:{m.line} {m.op} "
                               f"{m.original!r}->{m.replacement!r}", flush=True)
 
         def on_signal(signum, _frame):
             stop.set()
+            with lock:
+                save_cache(cache_path, cache)
             for rel, text in sources.items():
                 open(os.path.join(root, rel), "w", encoding="utf-8").write(text)
             sys.exit(128 + signum)
@@ -389,6 +433,8 @@ def main() -> int:
         for t in threads:
             t.join()
     finally:
+        stop.set()
+        save_cache(cache_path, cache)
         for rel, text in sources.items():
             open(os.path.join(root, rel), "w", encoding="utf-8").write(text)
         if tmp:
