@@ -7,7 +7,8 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/src"
 echo 'int f(int x){ int i=0; while (i < x) { i++; } return i; }' > "$T/src/f.cpp"
 cp "$T/src/f.cpp" "$T/orig.cpp"
-printf '#include "src/f.cpp"\nint main(){ return (f(3)==3 && f(0)==0) ? 0 : 1; }\n' > "$T/t.cpp"
+# the test prints a non-UTF-8 byte on failure: output decoding must never crash the runner
+printf '#include "src/f.cpp"\n#include <cstdio>\nint main(){ if (f(3)==3 && f(0)==0) return 0; std::fputs("\\xe4\\xff bad", stdout); return 1; }\n' > "$T/t.cpp"
 cat > "$T/cfg.json" <<JSON
 {"repo": ".", "root": ".", "files": ["src/f.cpp"], "test": "g++ -O0 t.cpp -o t && ./t", "timeout": 3, "threshold": 100}
 JSON

@@ -222,7 +222,8 @@ def run(cmd: str, cwd: str, timeout: int) -> tuple[int, str]:
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 5))
 
     p = subprocess.Popen(cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, start_new_session=True, preexec_fn=limit_child)
+                         text=True, errors="replace", start_new_session=True,
+                         preexec_fn=limit_child)
     try:
         out, _ = p.communicate(timeout=timeout)
         return p.returncode, (out or "")[-4000:]
@@ -363,7 +364,11 @@ def main() -> int:
                     if not todo:
                         return
                     m = todo.pop(0)
-                evaluate(m, wroot, build, cfg, timeout, sources[m.file])
+                try:
+                    evaluate(m, wroot, build, cfg, timeout, sources[m.file])
+                except Exception as exc:  # never let one mutant kill a worker thread
+                    m.status = "error"
+                    print(f"error evaluating {m.file}:{m.line}: {exc!r}", file=sys.stderr, flush=True)
                 with lock:
                     done[0] += 1
                     if done[0] % 25 == 0 or m.status == "survived":
@@ -389,8 +394,10 @@ def main() -> int:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    KILLED = ("killed", "timeout", "build_error")
+    not_run = [m for m in all_muts if m.status in ("pending", "error")]
     counted = [m for m in all_muts if m.status != "equivalent"]
-    killed = sum(m.status in ("killed", "timeout", "build_error") for m in counted)
+    killed = sum(m.status in KILLED for m in counted)
     score = 100.0 * killed / len(counted) if counted else 100.0
     report = {"score": round(score, 2), "threshold": threshold, "file_threshold": file_threshold,
               "total": len(all_muts), "killed": killed,
@@ -405,7 +412,7 @@ def main() -> int:
     for m in counted:
         k = per_file.setdefault(m.file, [0, 0])
         k[1] += 1
-        k[0] += m.status != "survived"
+        k[0] += m.status in KILLED
     failing_files = []
     print("\n| file | killed/total | score |\n|---|---|---|")
     for f, (k, t) in sorted(per_file.items()):
@@ -420,6 +427,9 @@ def main() -> int:
             print(f"- {m.file}:{m.line}:{m.col} `{m.original}` -> `{m.replacement}` ({m.op})")
     if failing_files:
         print("\nfiles below the per-file threshold: " + ", ".join(failing_files))
+    if not_run:
+        print(f"\nERROR: {len(not_run)} mutants were not evaluated (status pending/error); the score is not valid.")
+        return 2
     return 0 if score >= threshold and not failing_files else 1
 
 
