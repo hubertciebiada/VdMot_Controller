@@ -60,7 +60,8 @@ Upgrade order and rollback: see INSTALL.md.
 - STM: `stlnm` range 0 (off) or 50..65534, also after a restart.
 - STM: `eepst 1` only when the configuration is actually stored.
 - STM: the watchdog is fed only while the valve state machine makes progress.
-- ESP: the ESP no longer resets the STM when it boots. The STM is reset only on
+- ESP: the firmware no longer resets the STM when the ESP boots (with jumper X20
+  fitted the IO15 strap can still do it, see INSTALL.md). The STM is reset only on
   user request, for flashing, or after a sustained link failure.
 - ESP: HA discovery entities get `availability` and JSON escaping; invalid
   `device_class`/`state_class` on text/valve entities removed. Legacy
