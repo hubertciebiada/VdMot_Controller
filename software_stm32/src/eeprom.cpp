@@ -237,13 +237,19 @@ void eeprom_fill (void) {
 	//u16 a;
 	unsigned char eef_buffer[4];
 
-	// mark eeprom as written
-	((*((uint32_t*)&eef_buffer[0]))) = 0x1F2F3F4F;
+	// mark eeprom as written (0x1F2F3F4F, little endian)
+	eef_buffer[0] = 0x4F;
+	eef_buffer[1] = 0x3F;
+	eef_buffer[2] = 0x2F;
+	eef_buffer[3] = 0x1F;
   	//eep.write(EEPROM_MARK_ADD, eef_buffer, 4);
 	eeprom.writeBlock(EEPROM_MARK_ADD, eef_buffer, 4);
 
-	// version
-	((*((uint32_t*)&eef_buffer[0]))) = 11;
+	// version (11, 32 bit little endian)
+	eef_buffer[0] = 11;
+	eef_buffer[1] = 0;
+	eef_buffer[2] = 0;
+	eef_buffer[3] = 0;
   	//eep.write(EEPROM_VERS1_ADD, eef_buffer, 1);
 	eeprom.writeBlock(EEPROM_VERS1_ADD, eef_buffer, 4);
 
@@ -297,7 +303,6 @@ static int16_t eeprom_write_failed () {
 int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 
 	uint8_t buf[100];
-	uint16_t* pb;
 	uint16_t x, y;
 	uint16_t scnt;
 	uint16_t address;
@@ -321,9 +326,8 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 	// current bounds
 	buf[x++] =  lay->currentbound_low_fac;
 	buf[x++] =  lay->currentbound_high_fac;
-	pb=(uint16_t*) &buf[x];
-	*pb = lay->numberOfMovements;
-	x+=2; 
+	buf[x++] = (uint8_t) lay->numberOfMovements;			// little endian
+	buf[x++] = (uint8_t) (lay->numberOfMovements >> 8);
 
   	//eep.write(address, buf, x);
 	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
@@ -385,9 +389,8 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 // current bounds
 	x=0;
 	buf[x++] =  lay->startOnPower;
-	pb=(uint16_t*) &buf[x];
-	*pb = lay->noOfMinCounts;
-	x+=2; 
+	buf[x++] = (uint8_t) lay->noOfMinCounts;				// little endian
+	buf[x++] = (uint8_t) (lay->noOfMinCounts >> 8);
 	buf[x++] =  lay->maxCalibRetries;
 	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
@@ -490,7 +493,6 @@ static void eeprom_reread () {
 static bool eeprom_read_image (struct eeprom_layout* lay) {
 
 	uint8_t buf[100];
-	uint16_t* pb;
 	uint16_t x, y;
 	uint16_t scnt;
 	uint16_t address;
@@ -519,9 +521,8 @@ static bool eeprom_read_image (struct eeprom_layout* lay) {
 		// current bounds
 	lay->currentbound_low_fac =  buf[x++];
 	lay->currentbound_high_fac = buf[x++];
-	pb=(uint16_t*) &buf[x];
-	lay->numberOfMovements = *pb;
-	x+=2; 
+	lay->numberOfMovements = (uint16_t) (buf[x] | (buf[x + 1] << 8));		// little endian
+	x+=2;
 	address = EE_GENERALDATA_ADR + x;
 	
 
@@ -583,8 +584,7 @@ static bool eeprom_read_image (struct eeprom_layout* lay) {
 	lay->startOnPower = buf[0];
 	address++;
 	eeprom_read_block(address, buf, 2);
-	pb=(uint16_t*) &buf[0];
-	lay->noOfMinCounts = *pb;
+	lay->noOfMinCounts = (uint16_t) (buf[0] | (buf[1] << 8));		// little endian
 	address+=2;
 	eeprom_read_block(address, buf, 1);
 	lay->maxCalibRetries = buf[0];
