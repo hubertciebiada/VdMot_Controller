@@ -70,6 +70,13 @@ nav.tabs .dot { display: inline-block; width: 8px; height: 8px; border-radius: 4
 .banner { margin: 10px 16px 0; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--warn);
   background: var(--card); }
 .banner.err { border-color: var(--err); }
+.notices { display: flex; flex-direction: column; gap: 6px; margin: 8px 16px 0; }
+.notices:empty { display: none; }
+.notice { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--warn); background: var(--card);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.notice p { margin: 0; flex: 1 1 280px; }
+.notice.info { border-color: var(--info); }
+.notice.err { border-color: var(--err); }
 
 main { padding: 12px 16px 24px; max-width: 1280px; margin: 0 auto; }
 section > .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; }
@@ -120,7 +127,7 @@ dl.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 .summary { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 14px; }
 
 /* tables */
-.tbl-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.tbl-wrap { position: relative; overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
 table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
 th { font-weight: 600; color: var(--muted); font-size: 12.5px; }
@@ -128,6 +135,7 @@ tbody tr:last-child td { border-bottom: 0; }
 td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl-wrap input:not([type="checkbox"]), .tbl-wrap select { width: 100%; min-width: 6.5em; }
 .tbl-wrap input.id { min-width: 16em; font-family: ui-monospace, monospace; font-size: 12.5px; }
+.tbl-wrap input.pct { width: 4.5em; min-width: 4.5em; }
 .mono { font-family: ui-monospace, monospace; font-size: 12.5px; }
 
 /* events */
@@ -196,6 +204,7 @@ dialog p { margin: 0; }
   main { padding: 10px 12px 20px; }
   .cards, .grid, .cols { grid-template-columns: 1fr; }
   .banner { margin: 8px 12px 0; }
+  .notices { margin: 8px 12px 0; }
   nav.tabs { padding: 0 4px; }
   nav.tabs a { padding: 10px 7px 8px; font-size: 14px; }
 }
