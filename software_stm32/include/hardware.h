@@ -173,30 +173,19 @@
 // #endif
 
 #include "vdm/calibration.h"
+#include "vdm/legacy_layout.h"
 
 enum EEP_STATE { EEP_INIT, EEP_VALID, EEP_CHANGED };
 
-struct ds1820_eeprom_layout {
-	uint8_t		familycode;				// family code
-	uint8_t		romcode[6];				// rom code
-	uint8_t		crc;					    // crc
-};
+// sensor slot of the layout: family code, rom code, crc (vdm/legacy_layout.h keeps the 1.x name)
+using vdm::ds1820_eeprom_layout;
 
-struct eeprom_layout {
+static_assert(ACTUATOR_COUNT == vdm::kValveCount, "one valve count in the glue and in lib/core");
+static_assert(ADDITIONAL_SENSOR_COUNT == vdm::kExtraSensorSlots, "one count of additional sensor slots");
+
+// RAM mirror of the EEPROM: the fields of the 1.x layout (vdm::LegacyLayout, same names)
+struct eeprom_layout : vdm::LegacyLayout {
   enum EEP_STATE status;          // status of eeprom content
-	uint8_t   b_slave;              // 0 -> master, >0 -> slave
-  char		  descr[25];				    // string for system description
-	uint8_t		OneWireCfg[3];		    // 3 bytes for One Wire Gateway Configuration						
-										              // byte 0 - conversion interval
-  uint8_t currentbound_low_fac;   
-  uint8_t currentbound_high_fac;
-  uint16_t numberOfMovements;
-	struct ds1820_eeprom_layout owsensors1[ACTUATOR_COUNT];	// a lot of ds1820 sensors - first sensor of valve
-	struct ds1820_eeprom_layout owsensors2[ACTUATOR_COUNT];	// a lot of ds1820 sensors - second sensor of valve
-	struct ds1820_eeprom_layout owsensors[ADDITIONAL_SENSOR_COUNT];	// some other ds1820 sensors
-  uint8_t startOnPower;
-  uint16_t noOfMinCounts;
-  uint8_t maxCalibRetries;
   // layout version 2 extension block (see vdm/eeprom_layout.h)
   vdm::EscalationConfig escalation;     // breakaway escalation of calibration repetitions
 };
