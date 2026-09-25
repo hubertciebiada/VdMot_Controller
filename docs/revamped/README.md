@@ -6,7 +6,7 @@
 > the upstream project. Every artifact carries the suffix `-revamped`, so it
 > cannot be confused with the official firmware.
 
-Version: **2.0.0-revamped** (ESP32 and STM32).
+Version: **2.1.0-revamped** (ESP32 and STM32).
 Base: branch `hc-version` = upstream `developer` 1.4.12 plus the owner's fixes,
 a pinned toolchain and CI.
 
@@ -20,80 +20,73 @@ VdMot Revamped changes both:
 
 | Part | Upstream 1.4.x | VdMot Revamped |
 |---|---|---|
-| STM32 | valve control, calibration | same job, hardened; calibration fixes; move diagnostics; protocol v2 (new commands only) |
-| ESP32 | `software_esp32` (PI controller, window logic, alarms, web UI) | new firmware `software_esp32_revamped`: precise valve control, dashboard, diagnostics, event log, HA discovery. No PI controller, no alarms |
+| STM32 | valve control, calibration | same job, hardened; calibration fixes; move diagnostics; failsafe lease; settings and calibrations kept in the EEPROM; protocol 3 (new commands only) |
+| ESP32 | `software_esp32` (PI controller, window logic, alarms, web UI) | new firmware `software_esp32_revamped`: precise valve control, failsafe, dashboard, diagnostics, event log, HA discovery. No PI controller, no alarms |
 
-Both halves are backwards compatible:
-- the revamped STM works with the old ESP (protocol v1 is unchanged, v2 only adds commands);
-- the new ESP works with an unmodified STM 1.4.x (it detects v1 and uses only v1 commands).
+Compatibility between the two halves:
+- the revamped STM works with the old ESP: the v1 request and reply bytes are
+  unchanged (one exception: `stdet x` with x != 255 answers `stdet err`), new
+  data comes only through new commands;
+- the new ESP works with every STM from **1.4.0** on (it detects protocol 1, 2
+  or 3 and uses only what the STM supports). An STM below 1.4.0 only gets
+  targets; the dashboard asks to update it.
 
-## What changed
+## What changed in 2.1
 
-### STM32 (2.0.0-revamped)
-- **Hardening:** bounded UART/terminal line handling (CR, LF or CR LF; overlong
-  or non-printable lines dropped and counted; partial lines dropped after
-  100 ms), index checks before every array access, fixed ISR/main-loop races
-  in the valve state machine, no blocking delay in ISR paths, watchdog fed
-  only while the valve state machine makes progress, I2C bus recovery and
-  EEPROM retries, 1-Wire bounds.
-- **Calibration fixes:** end-stop thresholds from the learned mean current
-  with a 15 mA floor (20 mA for calibration closing strokes); the mean current
-  is learned only from a successful pass; a failed calibration never
-  overwrites counts/scaler and leaves the valve **blocked** instead of
-  reporting idle; failed/blocked valves no longer fake `actual = target`;
-  the 60 mA safety limit counts consecutive samples; one validated range
-  table for motor parameters; `staln` starts at once; targets are accepted
-  during a calibration.
-- **Diagnostics:** every move records direction, requested/counted pulses,
-  stop reason, peak current and duration, plus a 32-point current profile;
-  early end stops and rejected commands are counted.
-- **Protocol v2** (new commands `gproto`, `gvlvx`, `gprof`, `svmov`, `scalx`,
-  `gcalx`, `gstat`, `gmotx`): see [software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md),
-  which also lists the few changed v1 behaviours (e.g. `smotc err` for
-  out-of-range values).
-- **Optional breakaway escalation:** calibration repetitions may raise the
-  end-stop threshold step by step, capped by a configurable maximum (<= 60 mA).
-- New release envs for the F411 BlackPill: `STM32F411_release_C1`, `STM32F411_release_C2`.
+The full list is in [CHANGELOG.md](CHANGELOG.md) (ESP) and
+[software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md) (STM). The main points:
 
-### ESP32 (new firmware, 2.0.0-revamped)
-- **Precise valve control:** targets come only from MQTT or HTTP. Every target
-  is delivered with read-back verification (re-sent until the STM confirms it),
-  queued with priorities, and re-pushed after an STM restart. The ESP does
-  **not** reset the STM when the ESP boots; it resets it only on user
-  request, for flashing, or after a sustained link failure (>= 5 timeouts
-  over >= 60 s, at most once per 10 min).
-- **Dashboard** (single page, works on a phone, light/dark theme): valve cards
-  with position/target, health chips, last move, current-profile chart, set
-  target / calibrate / assembly / service move; sensors; live event log;
-  settings; maintenance (ESP update, STM flashing with progress, backup).
-- **Detailed logs:** structured event log (512 entries in RAM, 2 x 64 KB
-  rotating file on LittleFS, optional syslog), downloadable. Only warnings
-  and calibration outcomes go to MQTT, rate-limited.
-- **MQTT:** legacy topics, payloads and retain flags unchanged; new
-  `diag/...`, `events` and `status` (LWT) topics. See [MQTT.md](MQTT.md).
-- **Home Assistant discovery:** legacy entities keep their unique_ids; new
-  diagnostic entities; entities of removed features are deleted once.
-- **Legacy config import:** on first boot the legacy NVS settings (network,
-  MQTT, names, sensor mapping, calibration schedule, web login) are imported
-  once. Legacy keys are never modified, so a downgrade finds them.
-- **OTA with rollback:** a new ESP image must prove itself healthy (network +
-  STM link) or it is rolled back automatically; the STM is flashed from the
-  dashboard with chip-ID check and read-back verification.
-- **HTTP JSON API** with optional HTTP Basic auth and brute-force lockout.
-  See [API.md](API.md).
-- Scheduled calibration by weekday mask, hour and minute (DST-safe).
-- Same partition table as the legacy firmware (upgrade is a normal OTA).
+### Safety
+- **Failsafe when the regulator goes silent.** The ESP renews a lease on the STM
+  while its regulator (the MQTT broker, and Home Assistant in HA mode) is alive.
+  Without renewal for `failsafe.timeoutMin` (default **60 min**) every active
+  valve goes to its failsafe position (default **50 %**, per valve 0..100 or
+  "hold"). STM 2.1 does this on its own, also when the ESP is dead; with an
+  older STM the ESP emulates it. MQTT off counts as alive. Event
+  `failsafe_active`, MQTT `failsafe`, HA "Failsafe active".
+- **Blocked valves** go to their failsafe position instead of staying where the
+  failed calibration left them, and are calibrated again automatically after
+  1 h, 6 h, then every 24 h. A blocked or jammed valve is never moved or
+  calibrated in a loop.
+- **Short and inrush detection** (STM): a presence-test short and an inrush
+  above the limit are detected and reported (`gvlvy` fault 3 / 5). By default
+  they are **report-only**: the valve keeps its status. Enforcement is one build
+  switch (`kProtectEnforce` in `software_stm32/lib/core/include/vdm/protection_guard.h`),
+  to be enabled after a hardware measurement of the limits.
+- **STM safe mode:** 3 watchdog resets within 10 min stop the motors until
+  `ssafe 0`, a power-on, or 30 min of uptime.
+- **HTTP guard:** API writes need the header `X-VdMot: 1` and JSON content; the
+  `Host`/`Origin` must name the device; failed logins lock per client address.
 
-### Removed (new ESP)
-- PI/room temperature control, heat/cool modes, park position, window logic
-  and the related MQTT topics and HA entities (`climate`, `control/*`,
-  `window/*`, `tTarget`, `tValue`, `heatControl`, `parkPosition`).
-- Alarms and notifications (Pushover, e-mail).
-- °F display (°C only).
-- The legacy web UI pages (replaced by the dashboard and `/api/*`).
+### Robustness
+- Targets survive restarts: the STM keeps position, target and status over a
+  warm reset (reset pin, software, watchdog) and stores calibrations in its
+  EEPROM; the ESP keeps the desired targets in RTC memory and NVS.
+- Every ESP restart first waits (at most 10 s) until the STM has written its
+  EEPROM.
+- A new ESP image is kept only after it proved network, HTTP and (when it was
+  there at the upload) the STM link; otherwise the bootloader rolls back.
+- Network changes run on trial: without "Keep" within 2 min the old settings
+  come back.
+- The network watchdog first restarts the interface (5 min) and only then the
+  ESP (10 min).
+- The STM flasher checks the board revision (C1/C2 marker in the image against
+  the running STM), completes blank-mode flashes and falls back to 57600 baud.
+- The config is saved with a backup and repaired field by field instead of
+  falling back to defaults.
 
-If you need a room thermostat, run it in Home Assistant (or similar) and send
-valve targets over MQTT.
+### MQTT and Home Assistant
+- Legacy topic tree, legacy unique_ids and the legacy root `VdMotFBH` for an
+  empty station; per-item topic overrides for legacy names with `/`.
+- New topics: `requested`, `sync`, `failsafe`, `problem` per valve, `stm/status`,
+  `failsafe`, buttons under `cmd/`; `STOP` payload (STM 2.1).
+- Kept entities have no availability, so a rollback to the legacy firmware
+  leaves them working. New entities: failsafe, problem, target delivery, STM
+  link, calibrate buttons, an event entity.
+- QoS 1 for target commands and HA status, persistent session, client id
+  `<host>-<mac6>`.
+
+See [MQTT.md](MQTT.md) and [API.md](API.md) for the details.
 
 ## Dashboard preview
 
@@ -104,15 +97,22 @@ local port, without a controller.
 
 - **Native unit tests** (host, doctest, `-Wall -Wextra -Werror`, AddressSanitizer +
   UBSan) for all decision logic, which lives in hardware-free cores:
-  `software_stm32/lib/core` (16 modules, 189 test cases) and
-  `software_esp32_revamped/lib/core` (18 modules, 500 test cases). Parsers
-  get fixed-seed random-input tests.
-- **Mutation testing** (`tools/mutation/mutate.py`, bar 85 %):
-  STM core **96.8 %** ([report](mutation-stm32.md)),
-  ESP core **95.4 %** ([report](mutation-esp32.md)).
+  `software_stm32/lib/core` and `software_esp32_revamped/lib/core`. Parsers get
+  fixed-seed random-input tests.
+- **Glue suites:** the Arduino glue of both firmwares (`src/*.cpp`) is built on
+  the host against fakes of the hardware and libraries (`tools/native/testkit`)
+  and tested there, including multi-boot scenarios.
+- **Mutation testing** (`tools/mutation/mutate.py`): target **95 %** overall and
+  for every file, for the four suites `stm32`, `stm32-glue`, `esp32`,
+  `esp32-glue` (mutants that are stillborn are not counted). Reports:
+  [mutation-stm32.md](mutation-stm32.md), [mutation-esp32.md](mutation-esp32.md).
+- All suites run the same everywhere in a container:
+  `bash tools/native/docker.sh test stm32|esp32`,
+  `bash tools/native/docker.sh mutate <suite>`.
 - **Build checks** of every STM env and both ESP firmwares; ESP image size budget
   1.2 MB (partition 1.25 MB).
 - On-device behaviour: manual checklist in [INSTALL.md](INSTALL.md#4-after-the-upgrade-checklist).
+  Items marked **[HW]** there still need a measurement on a device.
 
 ## CI/CD
 
@@ -121,21 +121,21 @@ local port, without a controller.
 | Job | When | What |
 |---|---|---|
 | native | push / PR | native tests of both cores, mutation tool self-test |
-| mutation | push / PR (changed core files), weekly and manual (all) | informational, does not block a release |
+| mutation | push / PR (changed files), weekly and manual (all) | informational, does not block a release |
 | stm32 | push / PR | `STM32_release_C1/C2`, `STM32F411_release_C1/C2` |
 | esp32 | push / PR | revamped + legacy ESP, digest-less image, size check |
 | release | tag `v*-revamped` | `tools/release/package.py`, GitHub Release (pre-release for `-rc`) |
 | release-legacy | other `v*` tags | legacy binaries as before |
 
-## Pull request stack
+## Branches
 
-| Branch | Base | Content |
-|---|---|---|
-| `revamped/stm-hardening` | `hc-version` | STM fixes only (upstream-friendly), core library + native tests, F411 envs |
-| `revamped/stm-calibration` | `stm-hardening` | calibration fixes, move diagnostics, protocol v2 |
-| `revamped/esp-legacy-fixes` | `hc-version` | bug fixes for the legacy `software_esp32` (no features); independent of the rest |
-| `revamped/esp-new` | `stm-calibration` | new ESP firmware `software_esp32_revamped` |
-| `revamped/ci-release` | `esp-new` | CI, mutation configs and reports, release packaging, these docs |
+| Branch | Content |
+|---|---|
+| `revamped` | VdMot Revamped: STM firmware, new ESP firmware `software_esp32_revamped`, native tests and harness, mutation configs, CI, release packaging, these docs. Built on `hc-version`; the only branch of this project |
+| `hc-version` | base: upstream `developer` 1.4.12 plus the owner's fixes |
+
+Fixes for the legacy `software_esp32` (no features) are kept apart on
+`legacy/esp-fixes`.
 
 ## Documentation
 
@@ -143,6 +143,6 @@ local port, without a controller.
 - [MQTT.md](MQTT.md): topics and Home Assistant entities
 - [API.md](API.md): HTTP JSON API
 - [CHANGELOG.md](CHANGELOG.md)
-- [software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md): UART protocol v2
+- [software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md): UART protocol 2 and 3
 - [software_esp32_revamped/DESIGN.md](../../software_esp32_revamped/DESIGN.md): ESP design (internals)
 - [mutation-stm32.md](mutation-stm32.md), [mutation-esp32.md](mutation-esp32.md)
