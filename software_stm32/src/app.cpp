@@ -51,11 +51,16 @@
 static_assert(VALVE_NO_TARGET == vdm::kNoRejectedTarget, "one marker for no rejected target");
 static_assert(LEARN_AFTER_MOVEMENTS_DEFAULT == vdm::kLearnMovementsDefault, "one learn movements default");
 static_assert(LEARN_AFTER_TIME_DEFAULT == vdm::kLearnTimeDefaultS, "one learn time default");
-static_assert(VLV_STATE_IDLE == vdm::kStIdle && VLV_STATE_OPENING == vdm::kStOpening &&
-              VLV_STATE_CLOSING == vdm::kStClosing && VLV_STATE_FAILED == vdm::kStFailed &&
-              VLV_STATE_UNKNOWN == vdm::kStUnknown && VLV_STATE_OPENCIR == vdm::kStOpenCircuit &&
-              VLV_STATE_FULLOPEN == vdm::kStFullOpen && VLV_STATE_PRESENT == vdm::kStPresent &&
-              VLV_STATE_BLOCKS == vdm::kStBlocked, "valve status codes of the protocol");
+// valve status codes of the protocol
+static_assert(VLV_STATE_IDLE == vdm::kStIdle, "idle");
+static_assert(VLV_STATE_OPENING == vdm::kStOpening, "opening");
+static_assert(VLV_STATE_CLOSING == vdm::kStClosing, "closing");
+static_assert(VLV_STATE_FAILED == vdm::kStFailed, "failed");
+static_assert(VLV_STATE_UNKNOWN == vdm::kStUnknown, "unknown");
+static_assert(VLV_STATE_OPENCIR == vdm::kStOpenCircuit, "open circuit");
+static_assert(VLV_STATE_FULLOPEN == vdm::kStFullOpen, "full open");
+static_assert(VLV_STATE_PRESENT == vdm::kStPresent, "present");
+static_assert(VLV_STATE_BLOCKS == vdm::kStBlocked, "blocked");
 
 
 volatile struct valve myvalves[ACTUATOR_COUNT];

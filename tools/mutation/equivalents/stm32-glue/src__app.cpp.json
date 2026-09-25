@@ -1,0 +1,9 @@
+[
+  {"line": 430, "col": 20, "original": "0", "replacement": "1", "text": "unsigned int x = 0;", "reason": "dead initial value: every loop of app_10s_loop sets x before it reads it"},
+  {"line": 613, "col": 30, "original": "<", "replacement": "<=", "text": "for (unsigned int z = 0; z < 6; z++) {", "reason": "z == 6 compares romcode[6], which is the crc byte of the slot, with address[7], and the crc was compared equal just before"},
+  {"line": 613, "col": 32, "original": "6", "replacement": "7", "text": "for (unsigned int z = 0; z < 6; z++) {", "reason": "z == 6 compares romcode[6], which is the crc byte of the slot, with address[7], and the crc was compared equal just before"},
+  {"line": 624, "col": 41, "original": "<", "replacement": "<=", "text": "const uint8_t count = noOfDS18Devices < MAXONEWIRECNT ? noOfDS18Devices : MAXONEWIRECNT;", "reason": "noOfDS18Devices == MAXONEWIRECNT gives MAXONEWIRECNT either way"},
+  {"line": 693, "col": 10, "original": "(", "replacement": "(!", "text": "while(1);", "reason": "HAL_NVIC_SystemReset() does not return; the loop after it is never reached"},
+  {"line": 693, "col": 11, "original": "1", "replacement": "0", "text": "while(1);", "reason": "HAL_NVIC_SystemReset() does not return; the loop after it is never reached"},
+  {"line": 693, "col": 11, "original": "1", "replacement": "2", "text": "while(1);", "reason": "HAL_NVIC_SystemReset() does not return; the loop after it is never reached"}
+]

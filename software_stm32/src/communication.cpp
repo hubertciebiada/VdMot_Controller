@@ -114,7 +114,7 @@ static void storeSensorAddress (struct ds1820_eeprom_layout &stored, uint8_t s, 
 	struct ds1820_eeprom_layout slot;
 
 	slot.familycode = address[0];
-	for (uint8_t i = 0; i < 6; i++) slot.romcode[i] = address[1 + i];
+	memcpy(slot.romcode, address + 1, sizeof slot.romcode);
 	slot.crc = address[7];
 	if (memcmp(&stored, &slot, sizeof(slot)) == 0) return;
 	stored = slot;
@@ -385,7 +385,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 			COMM_SER.print(count, DEC);
 			COMM_SER.println(" ");
 		}	
-		else if (req.argc() == 1 && req.argU16(0, 0, 65535, x) && x == 255) {
+		else if (req.argc() == 1 && req.argU16(0, 255, 255, x)) {
 			// get all onewire detected sensor
 			COMM_SER.print(APP_PRE_GETONEWIRECNT);
 			COMM_SER.print(" ");		
@@ -459,7 +459,7 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 			COMM_SER.print(count, DEC);
 			COMM_SER.println(" ");
 		}	
-		else if (req.argc() == 1 && req.argU16(0, 0, 65535, x) && x == 255) {
+		else if (req.argc() == 1 && req.argU16(0, 255, 255, x)) {
 			// get all onewire detected sensor
 			COMM_SER.print(APP_PRE_GETOWVOLTCNT);
 			COMM_SER.print(" ");		

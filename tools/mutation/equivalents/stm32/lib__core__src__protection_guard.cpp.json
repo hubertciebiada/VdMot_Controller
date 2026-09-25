@@ -1,0 +1,3 @@
+[
+  {"line": 10, "col": 25, "original": "<", "replacement": "<=", "text": "for (uint8_t v = 0; v < kValveCount; v++) {", "reason": "bit kValveCount of tripped_ is never set (onTrip returns early for valve >= kValveCount), so the extra iteration stops at the mask test and counts nothing"}
+]
