@@ -1850,6 +1850,9 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     b[5] = 1;  // 257
     fixCrc(b);
     expect(b, DecodeResult::UnsupportedSchema);
+    DecodeInfo info;
+    CHECK(decodeConfig(b.data(), b.size(), out, &info) == DecodeResult::UnsupportedSchema);
+    CHECK(info.schema == 257);
   }
   {
     // Payload length one short: last field incomplete -> too short a
@@ -1915,6 +1918,34 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     fixCrc(b);
     expect(b, DecodeResult::Ok);
   }
+}
+
+TEST_CASE("config: a stored config with two valves on one MQTT segment is not loaded") {
+  // The 2.0.0 rule: names compare with ' ' == '_', each against every earlier
+  // valve.
+  struct Pair {
+    uint8_t a;
+    uint8_t b;
+    const char* nameA;
+    const char* nameB;
+  };
+  const Pair pairs[] = {{0, 1, "Dom", "Dom"}, {1, 11, "a b", "a_b"}, {3, 7, "x_y", "x y"}};
+  for (const Pair& p : pairs) {
+    CAPTURE(p.nameB);
+    Config c;
+    strcpy(c.valves[p.a].name, p.nameA);
+    strcpy(c.valves[p.b].name, p.nameB);
+    const std::vector<uint8_t> b = encode(c);
+    Config out;
+    CHECK(decodeConfig(b.data(), b.size(), out) == DecodeResult::Invalid);
+  }
+  Config ok;
+  strcpy(ok.valves[3].name, "x_y");
+  strcpy(ok.valves[7].name, "x-y");
+  const std::vector<uint8_t> b = encode(ok);
+  Config out;
+  CHECK(decodeConfig(b.data(), b.size(), out) == DecodeResult::Ok);
+  CHECK(std::string(out.valves[7].name) == "x-y");
 }
 
 TEST_CASE("config: decode fuzz") {
@@ -2314,6 +2345,7 @@ TEST_CASE("config: string keys after 2.0.0 and their rules (C-1)") {
       {"mqtt.clientId", "a/b", SetResult::OutOfRange},
       {"mqtt.clientId", "a:b", SetResult::OutOfRange},
       {"mqtt.clientId", "a@b", SetResult::OutOfRange},
+      {"mqtt.clientId", "@a", SetResult::OutOfRange},
       {"mqtt.clientId", "K\xc3\xbc" "che", SetResult::OutOfRange},
       {"mqtt.discoveryPrefix", "ha/discovery", SetResult::Ok},
       {"mqtt.discoveryPrefix", "a", SetResult::Ok},
@@ -2328,6 +2360,7 @@ TEST_CASE("config: string keys after 2.0.0 and their rules (C-1)") {
       {"mqtt.discoveryPrefix", "a b", SetResult::OutOfRange},
       {"mqtt.discoveryPrefix", "a.b", SetResult::OutOfRange},
       {"mqtt.discoveryPrefix", "a+", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "+a", SetResult::OutOfRange},
       {"valves.1.topic", "", SetResult::Ok},
       {"valves.1.topic", "Bad/WC", SetResult::Ok},
       {"valves.1.topic", "a\"b", SetResult::Ok},
@@ -2913,6 +2946,36 @@ TEST_CASE("config: cfgx damage applies nothing (C-4)") {
     CHECK(ki.bad == 1);
     CHECK(k.failsafe.timeoutMin == 32);
   }
+  // The same with an unknown tag: a cut record is never kept.
+  for (const std::vector<uint8_t>& cut :
+       {std::vector<uint8_t>{5, 0, 2, 32, 0, 200}, std::vector<uint8_t>{5, 0, 2, 32, 0, 200, 0},
+        std::vector<uint8_t>{5, 0, 2, 32, 0, 200, 0, 1},
+        std::vector<uint8_t>{5, 0, 2, 32, 0, 200, 0, 3, 'a', 'b'}}) {
+    CAPTURE(cut.size());
+    Config k;
+    ExtInfo ki;
+    uint8_t keep[kConfigExtKeepMax];
+    CHECK(decodeExt(extBlob(cut), k, &ki, keep, sizeof keep) == ExtResult::Ok);
+    CHECK(ki.applied == 1);
+    CHECK(ki.bad == 1);
+    CHECK(ki.unknown == 0);
+    CHECK(ki.keepLen == 0);
+  }
+  // A record that ends exactly at the payload end is whole.
+  Config z;
+  ExtInfo zi;
+  strcpy(z.mqtt.rootTopic, "x");
+  CHECK(decodeExt(extBlob({5, 0, 2, 33, 0, 2, 0, 0}), z, &zi) == ExtResult::Ok);
+  CHECK(zi.applied == 2);
+  CHECK(zi.bad == 0);
+  CHECK(z.mqtt.rootTopic[0] == '\0');
+  uint8_t keep[kConfigExtKeepMax];
+  CHECK(decodeExt(extBlob({5, 0, 2, 33, 0, 200, 0, 0}), z, &zi, keep, sizeof keep) ==
+        ExtResult::Ok);
+  CHECK(zi.applied == 1);
+  CHECK(zi.unknown == 1);
+  CHECK(zi.bad == 0);
+  CHECK(zi.keepLen == 3);
 }
 
 TEST_CASE("config: restart reasons (C-7)") {
@@ -2984,6 +3047,10 @@ TEST_CASE("config: restart reasons (C-7)") {
   Config k1, k2;
   strcpy(k1.station, "K\xc3\xbc" "che");
   strcpy(k2.station, "Kuche");
+  CHECK(configRestartReasons(k1, k2) == kRestartHostname);
+  // Station names of full length that differ in their last char.
+  strcpy(k1.station, "abcdefghijklmnopqrst");
+  strcpy(k2.station, "abcdefghijklmnopqrsu");
   CHECK(configRestartReasons(k1, k2) == kRestartHostname);
 }
 
@@ -3060,6 +3127,8 @@ TEST_CASE("config: effectiveDns, mqttRootTopic and itemSegment (C-8)") {
   CHECK(mqttRootTopic(c) == c.station);
   strcpy(c.mqtt.rootTopic, "VdMotFBH");
   CHECK(std::string(mqttRootTopic(c)) == "VdMotFBH");
+  strcpy(c.mqtt.rootTopic, "R");
+  CHECK(std::string(mqttRootTopic(c)) == "R");
 
   char out[11];
   memset(out, 'x', sizeof out);
