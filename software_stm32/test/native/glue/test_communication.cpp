@@ -1,5 +1,5 @@
 // Smoke tests of src/communication.cpp (glue_communication): today's v1 replies byte-exact against
-// stub values, and the line handling of communication_loop() (harness-stm 6.3).
+// stub values, and the line handling of communication_loop().
 #include "communication.h"
 #include "glue_test.h"
 #include "stub_app.h"

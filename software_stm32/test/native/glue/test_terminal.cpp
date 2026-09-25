@@ -107,7 +107,7 @@ TEST_CASE("Terminal_Serve: getone prints the sensor data, stm switches the test 
   CHECK(testmode == 0);
 }
 
-TEST_CASE("terminal_supervise and terminal_manual_active: nothing to supervise in wave 0") {
+TEST_CASE("terminal_supervise and terminal_manual_active: nothing supervised yet") {
   begin();
   terminal_supervise();
   CHECK_FALSE(terminal_manual_active());

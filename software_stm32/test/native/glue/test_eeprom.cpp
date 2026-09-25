@@ -159,7 +159,7 @@ TEST_CASE("eepromloop: a write that fails 3 times gives up with eepState 2") {
   CHECK(eeprom_free());
 }
 
-TEST_CASE("wave-0 functions: slot changes mark the sensors, no calibration records, no counters") {
+TEST_CASE("not implemented yet: slot changes mark all sensors, no calibration records, no counters") {
   glue::begin();
   eeprom_changed_slot(3);
   CHECK(eep_content.status == EEP_CHANGED);

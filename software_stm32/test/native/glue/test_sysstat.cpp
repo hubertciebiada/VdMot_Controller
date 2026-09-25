@@ -1,5 +1,6 @@
 // Smoke tests of src/sysstat.cpp (glue_sysstat): boot reason from RCC->CSR, reset counter in
-// .noinit across boots, uptime across the millis() wrap, the safe-mode functions of wave 0.
+// .noinit across boots, uptime across the millis() wrap, the safe-mode functions (not implemented
+// yet).
 #include "glue_test.h"
 #include "sysstat.h"
 
@@ -123,7 +124,7 @@ TEST_CASE("sysstat: the uptime counts seconds across the wrap of millis()") {
   CHECK(sysstat_uptime_s() == 4294968);
 }
 
-TEST_CASE("sysstat: safe mode is not active in wave 0 and ssafe 0 changes nothing") {
+TEST_CASE("sysstat: safe mode is not implemented yet: never active, ssafe 0 changes nothing") {
   glue::begin();
   sysstat_capture_reset();
   CHECK_FALSE(sysstat_safe_mode());

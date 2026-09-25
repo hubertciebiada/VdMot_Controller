@@ -1,6 +1,5 @@
-// Common part of the STM glue tests (harness-stm 6.1, contracts 17.5): every TEST_CASE runs in its
-// own process (tools/native/testkit) and starts with glue::begin(); no SUBCASE, fake time only,
-// whole outputs and whole call logs.
+// Common part of the STM glue tests: every TEST_CASE runs in its own process (tools/native/testkit)
+// and starts with glue::begin(); no SUBCASE, fake time only, whole outputs and whole call logs.
 #pragma once
 
 #include <string>

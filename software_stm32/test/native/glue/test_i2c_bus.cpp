@@ -1,5 +1,5 @@
 // Smoke tests of src/i2c_bus.cpp (glue_i2c_bus): the bus recovery clocks SCL while a slave holds
-// SDA low (at most 9 clocks), then sends a STOP; i2c_bus_restart() is empty in wave 0.
+// SDA low (at most 9 clocks), then sends a STOP; i2c_bus_restart() does nothing yet.
 #include "glue_test.h"
 #include "hardware.h"
 #include "i2c_bus.h"
@@ -78,7 +78,7 @@ TEST_CASE("i2c_bus_recover: a free bus gets no clock, a stuck one at most 9") {
   }
 }
 
-TEST_CASE("i2c_bus_restart: does nothing in wave 0") {
+TEST_CASE("i2c_bus_restart: does nothing yet") {
   glue::begin();
   i2c_bus_restart();
   CHECK(fake::board.events.empty());

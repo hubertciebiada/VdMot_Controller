@@ -1,5 +1,5 @@
 // Tests of the fake board, the runner hooks and the valve sim (glue_fakes): the glue suites trust
-// them, so each fake behaviour the glue depends on is pinned here (harness-stm F9, HS-2, HS-7).
+// them, so each fake behaviour the glue depends on is pinned here.
 #include <string>
 #include <vector>
 
@@ -38,7 +38,7 @@ void tim1Tick() { g_ticks.push_back("tim1@" + std::to_string(millis())); }
 void tim2Tick() { g_ticks.push_back("tim2@" + std::to_string(millis())); }
 
 serial_t* serialOf(HardwareSerial& port) {
-  // the arithmetic of the core's get_serial_obj() that S6 uses on COMM_SER
+  // the arithmetic of the core's get_serial_obj(), which no header declares
   return reinterpret_cast<serial_t*>(reinterpret_cast<char*>(port.getHandle()) - offsetof(serial_t, handle));
 }
 
@@ -50,7 +50,7 @@ void countingRx(serial_t* obj) {
 
 }  // namespace
 
-// ---------------------------------------------------------------- Print (F3)
+// ---------------------------------------------------------------- Print
 
 TEST_CASE("Print: numbers are formatted like on the 32-bit target") {
   glue::begin();
@@ -385,7 +385,7 @@ TEST_CASE("1-Wire: getTemp() gives DEVICE_DISCONNECTED_RAW for a failing read an
   CHECK(dallas.reads == 3);
 }
 
-// ---------------------------------------------------------------- stubs, runner hooks (HS-2)
+// ---------------------------------------------------------------- stubs, runner hooks
 
 TEST_CASE("stubs: glue::begin() empties the call log and restores every knob") {
   glue::begin();

@@ -1,5 +1,5 @@
-// Valve sim of the STM glue tests (harness-stm 2.6, HS-13): twelve actuators behind the L293/MUX
-// wiring of include/hardware.h, driving the real src/motor.cpp through the fake board.
+// Valve sim of the STM glue tests: twelve actuators behind the L293/MUX wiring of include/hardware.h,
+// driving the real src/motor.cpp through the fake board.
 //
 // Every millisecond of fake time, in this order: the motor model (pulses on REVINPIN through the
 // EXTI handler, which may cut the enable at once), the timer interrupts (TIM1 TimerHandler0 once

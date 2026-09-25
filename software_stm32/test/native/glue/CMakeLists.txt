@@ -1,5 +1,4 @@
-# STM32 glue suite (harness-stm, contracts 17.1): every src/<stem>.cpp of the firmware compiled
-# unchanged against the fake board (test/native/fakes/include comes first in the include path, the
+# STM32 glue suite: every src/<stem>.cpp of the firmware compiled unchanged against the fake board (test/native/fakes/include comes first in the include path, the
 # quoted includes next to a glue file are the real firmware headers).
 #
 #   glue_<stem>    src/<stem>.cpp + test_<stem>*.cpp + link-seam stubs of the glue modules it calls

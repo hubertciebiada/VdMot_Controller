@@ -1,5 +1,6 @@
 // Smoke tests of src/app.cpp (glue_app): start values, configuration load, the valve walk of
-// app_loop, the 10 s countdowns, the setters, the soft reset and the wave-0 protocol-3 functions.
+// app_loop, the 10 s countdowns, the setters, the soft reset and the protocol-3 functions that keep
+// today's behaviour until they are implemented.
 #include "glue_test.h"
 #include "stub_eeprom.h"
 #include "stub_motor.h"
@@ -143,7 +144,7 @@ TEST_CASE("reset_check: the soft reset waits for the EEPROM, then resets the con
         "prepare for soft reset\r\nApp: valve 0 unknown, try to find out...\r\nsoft reset now\r\n");
 }
 
-TEST_CASE("protocol 3 in wave 0: no lease, failsafe hold, stop accepted for valves and 255") {
+TEST_CASE("protocol 3 not implemented yet: no lease, failsafe hold, stop accepted for valves and 255") {
   begin();
   app_1s_tick(1);
   app_restore();
