@@ -37,6 +37,8 @@ uint8_t encodeValveStatus(uint8_t status, bool calibration) {
   return calibration ? static_cast<uint8_t>(status | kStatusCalibrationBit) : status;
 }
 
+uint8_t eepstSaved(uint8_t eepState) { return eepState == kEepStateOk ? 1 : 0; }
+
 ReplyLine& appendValveExtFields(ReplyLine& line, const ValveExtReply& r) {
   return line.u(r.index)
       .u(r.status)

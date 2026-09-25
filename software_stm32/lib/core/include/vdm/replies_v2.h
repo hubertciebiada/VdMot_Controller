@@ -96,7 +96,7 @@ constexpr uint8_t kEepStateReadFailed = 3;
 // pending, and while writing fails or is disabled after a failed read, it is 0:
 // the legacy ESP then does not take the configuration as saved (it waits up to
 // 60 s and restarts, which resets the STM), a v2 ESP reads the cause from gstat.
-constexpr uint8_t eepstSaved(uint8_t eepState) { return eepState == kEepStateOk ? 1 : 0; }
+uint8_t eepstSaved(uint8_t eepState);
 
 constexpr size_t kStatReplyMaxLen = 5 + 6 * 12;
 bool formatStat(BufWriter& out, const StatReply& r);
