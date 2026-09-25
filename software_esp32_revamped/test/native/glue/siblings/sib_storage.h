@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <vdm/config.h>
+#include <vdm/file_manager.h>
 #include <vdm/legacy_import.h>
 
 #include "storage.h"
@@ -47,6 +48,8 @@ struct Storage {
   uint8_t haLayout = 0;
   bool writeImportReportResult = true;
   bool hasImportReport = false;
+  std::vector<vdm::FileEntry> files;  // listFiles(), cut to `max` (then truncated)
+  bool filesTruncated = false;        // listFiles() truncated even when everything fits
   storage::FileResult deleteFileResult = storage::FileResult::NotFound;
   uint32_t legacyImagesRemoved = 0;
   uint32_t legacyImagesKib = 0;

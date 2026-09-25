@@ -168,9 +168,12 @@ bool dismissImportReport() {
   return had;
 }
 
-size_t listFiles(vdm::FileEntry*, size_t, bool& truncated) {
-  truncated = false;
-  return 0;
+size_t listFiles(vdm::FileEntry* out, size_t max, bool& truncated) {
+  const sib::Storage& s = sib::storage();
+  const size_t n = s.files.size() < max ? s.files.size() : max;
+  for (size_t i = 0; i < n; ++i) out[i] = s.files[i];
+  truncated = s.filesTruncated || s.files.size() > max;
+  return n;
 }
 
 FileResult deleteFile(const char* path) {
