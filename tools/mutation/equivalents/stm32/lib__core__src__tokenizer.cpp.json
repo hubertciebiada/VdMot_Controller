@@ -1,0 +1,5 @@
+[
+  {"line": 33, "col": 15, "original": ">", "replacement": ">=", "text": "if (maxArgs > kMaxArgs) maxArgs = kMaxArgs;", "reason": "maxArgs == kMaxArgs is set to itself"},
+  {"line": 68, "col": 20, "original": "0", "replacement": "1", "text": "uint32_t value = 0;", "reason": "dead initial value: argU32() sets it on success and it is not used on failure"},
+  {"line": 75, "col": 20, "original": "0", "replacement": "1", "text": "uint32_t value = 0;", "reason": "dead initial value: argU32() sets it on success and it is not used on failure"}
+]

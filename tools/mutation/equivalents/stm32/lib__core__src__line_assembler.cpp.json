@@ -1,0 +1,3 @@
+[
+  {"line": 19, "col": 12, "original": "0", "replacement": "1", "text": "len_(0),", "reason": "dead initial value: the constructor body calls clearBuffer(), which sets len_ = 0"}
+]

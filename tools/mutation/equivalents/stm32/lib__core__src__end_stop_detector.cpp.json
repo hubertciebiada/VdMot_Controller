@@ -1,0 +1,10 @@
+[
+  {"line": 7, "col": 40, "original": "<", "replacement": "<=", "text": "int32_t absolute(int32_t v) { return v < 0 ? -v : v; }", "reason": "-0 == 0: v == 0 takes either branch with the same result"},
+  {"line": 7, "col": 42, "original": "0", "replacement": "1", "text": "int32_t absolute(int32_t v) { return v < 0 ? -v : v; }", "reason": "v < 1 equals v <= 0 for integers, and -0 == 0"},
+  {"line": 23, "col": 11, "original": ">", "replacement": ">=", "text": "if (raw > kRawLimit) raw = kRawLimit;", "reason": "raw == kRawLimit is set to kRawLimit, the same value"},
+  {"line": 24, "col": 11, "original": "<", "replacement": "<=", "text": "if (raw < -kRawLimit) raw = -kRawLimit;", "reason": "raw == -kRawLimit is set to -kRawLimit, the same value"},
+  {"line": 25, "col": 17, "original": "<", "replacement": "<=", "text": "if (debounce_ < 255) debounce_++;", "reason": "debounce_ (private uint16_t) is only compared with > kInrushSamples (250): a cap of 255 or 256 settles the same"},
+  {"line": 25, "col": 19, "original": "255", "replacement": "254", "text": "if (debounce_ < 255) debounce_++;", "reason": "debounce_ (private uint16_t) is only compared with > kInrushSamples (250): a cap of 254 settles the same"},
+  {"line": 25, "col": 19, "original": "255", "replacement": "256", "text": "if (debounce_ < 255) debounce_++;", "reason": "debounce_ (private uint16_t) is only compared with > kInrushSamples (250): a cap of 256 settles the same"},
+  {"line": 32, "col": 17, "original": ">", "replacement": ">=", "text": "if (magnitude > peak_) peak_ = magnitude;", "reason": "an equal magnitude replaces an equal peak"}
+]

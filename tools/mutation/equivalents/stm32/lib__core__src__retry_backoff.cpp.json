@@ -1,0 +1,5 @@
+[
+  {"line": 7, "col": 16, "original": "<", "replacement": "<=", "text": "max_(max < first_ ? first_ : max),", "reason": "max == first_ picks the same value on both sides"},
+  {"line": 9, "col": 18, "original": "0", "replacement": "1", "text": "remaining_(0) {}", "reason": "remaining_ has no accessor and tick() reads it only while interval_ != 0; failed() sets it first"},
+  {"line": 22, "col": 16, "original": "0", "replacement": "1", "text": "remaining_ = 0;", "reason": "remaining_ has no accessor and tick() reads it only while interval_ != 0; failed() sets it first"}
+]

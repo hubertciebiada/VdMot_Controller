@@ -1,0 +1,7 @@
+[
+  {"line": 8, "col": 40, "original": "<", "replacement": "<=", "text": "const uint16_t mean = meanCurrent_mA < floor_mA ? floor_mA : meanCurrent_mA;", "reason": "meanCurrent_mA == floor_mA picks the same value on both sides"},
+  {"line": 26, "col": 63, "original": "<=", "replacement": "<", "text": "if (!c.enable || repetition == 0 || c.stepPct == 0 || bound <= 0) return bound;", "reason": "bound 0 grows to 0 * factor / 100 == 0 or is returned at the cap check, so 0 is returned either way"},
+  {"line": 29, "col": 13, "original": ">=", "replacement": ">", "text": "if (bound >= cap) return bound;", "reason": "bound == cap grows to at least cap and is clamped to cap == bound"},
+  {"line": 38, "col": 39, "original": ">", "replacement": ">=", "text": "const uint32_t required = minCounts > kMinTravelCounts ? minCounts : kMinTravelCounts;", "reason": "minCounts == kMinTravelCounts picks the same value on both sides"},
+  {"line": 46, "col": 35, "original": "0", "replacement": "1", "text": "const int64_t magnitude = sum < 0 ? -static_cast<int64_t>(sum) : sum;", "reason": "-0 == 0: v == 0 takes either branch with the same result"}
+]

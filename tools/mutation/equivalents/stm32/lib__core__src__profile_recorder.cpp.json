@@ -1,0 +1,6 @@
+[
+  {"line": 10, "col": 26, "original": "0", "replacement": "1", "text": "const uint32_t m = v < 0 ? static_cast<uint32_t>(-static_cast<int64_t>(v)) : static_cast<uint32_t>(v);", "reason": "-0 == 0: v == 0 takes either branch with the same result"},
+  {"line": 39, "col": 47, "original": "<", "replacement": "<=", "text": "while (size_ == kProfileSamples && spacing_ < kMaxSpacing) {", "reason": "unreachable: at spacing 0x8000 the 16-bit counts fall into at most 2 cells, so the loop already stopped on size_ == kProfileSamples (32)"},
+  {"line": 41, "col": 20, "original": "0", "replacement": "1", "text": "uint8_t kept = 0;", "reason": "samples_[0] always stays in place, so starting with kept = 1 gives the same array and size"},
+  {"line": 50, "col": 62, "original": "0", "replacement": "1", "text": "next_ = size_ ? nextGridPoint(samples_[size_ - 1].count) : 0;", "reason": "unreachable: compact() is private, runs only on a full buffer and always keeps at least 1 sample"}
+]
