@@ -119,7 +119,7 @@ struct valve {
   uint8_t forcedLearn;        // staln: learn without waiting for a target change
   uint8_t timedLearn;         // time trigger: learn at the next target change (after firstchange)
   uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls); set by appsetservice, cleared if the start is refused
-  uint8_t retestRequest;      // sdetvlv: test the valve again (applied by app_loop while no valve moves)
+  uint8_t retestRequest;      // stdet: test the valve again (applied by app_loop while no valve moves)
   uint8_t openRequest;        // staop: open fully (applied by app_loop while no valve moves)
   //struct valvemotor valvemot;
 };
