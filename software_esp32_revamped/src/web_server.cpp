@@ -9,11 +9,15 @@
 #include <esp_system.h>
 #include <new>
 #include <string.h>
+#include <time.h>
 
 #include <vdm/auth.h>
 #include <vdm/config.h>
+#include <vdm/file_manager.h>
 #include <vdm/json_api.h>
 #include <vdm/json_writer.h>
+#include <vdm/legacy_http.h>
+#include <vdm/web_guard.h>
 
 #include "app.h"
 #include "boot_alloc.h"
@@ -35,6 +39,8 @@ namespace {
 constexpr const char* kJson = "application/json";
 constexpr uint32_t kSensorStaleMs = 60000;
 constexpr size_t kMaxEventsPerResponse = 50;
+constexpr size_t kMaxFilesPerResponse = 48;
+constexpr size_t kHealthBufSize = 1024;
 
 AsyncWebServer gServer(80);
 bool gStarted = false;
@@ -88,23 +94,35 @@ vdm::Config& gCfg = bootAlloc<vdm::Config>();
 uint32_t gCfgRevision = UINT32_MAX;
 vdm::Config& gPatch = bootAlloc<vdm::Config>();
 vdm::AuthLimiter gAuthLimiter;
+vdm::RepeatLimiter gRefusedLimiter;  // RequestRefused once per verdict per 60 s
+char gHostname[vdm::kStationNameMax + 1] = {0};  // buildHostname(gCfg.station)
+char gGuardDetail[160] = {0};                    // detail of the current guard refusal
+char gHealthBuf[kHealthBufSize] = {0};           // GET /api/health, outside the slots
 StaticJsonDocument<512>& gDoc = bootAlloc<StaticJsonDocument<512>>();
 using ValveViews = ObjArray<vdm::ValveView, vdm::kValveCount>;
 using TempViews = ObjArray<vdm::SensorView, 2 * vdm::kTempSlotCount>;  // slots + unconfigured
 using VoltViews = ObjArray<vdm::SensorView, 2 * vdm::kVoltSlotCount>;
 using Events = ObjArray<vdm::Event, kMaxEventsPerResponse>;
 using Images = ObjArray<storage::ImageEntry, storage::kImageSlots>;
+using Files = ObjArray<vdm::FileEntry, kMaxFilesPerResponse>;
 ValveViews& gValveViews = bootAlloc<ValveViews>();
 TempViews& gTempViews = bootAlloc<TempViews>();
 VoltViews& gVoltViews = bootAlloc<VoltViews>();
 Events& gEvents = bootAlloc<Events>();
 Images& gImages = bootAlloc<Images>();
+Files& gFiles = bootAlloc<Files>();
+vdm::HealthSnapshot& gHealth = bootAlloc<vdm::HealthSnapshot>();
 
 void refreshConfig() {
   const uint32_t rev = storage::configRevision();
   if (rev == gCfgRevision) return;
   gCfgRevision = rev;
   storage::getConfig(gCfg);
+  vdm::buildHostname(gCfg.station, gHostname, sizeof gHostname);
+}
+
+uint32_t remoteIp(AsyncWebServerRequest* req) {
+  return static_cast<uint32_t>(req->client()->remoteIP());
 }
 
 bool authEnabled() { return gCfg.web.user[0] != '\0' && gCfg.web.password[0] != '\0'; }
@@ -213,9 +231,9 @@ vdm::RouteMatch route(AsyncWebServerRequest* req) {
 
 enum class AuthResult : uint8_t { Ok, Locked, Missing, Wrong };
 
-AuthResult checkAuth(AsyncWebServerRequest* req, bool needsAuth) {
+AuthResult checkAuth(AsyncWebServerRequest* req, bool needsAuth, uint32_t* retryAfterS = nullptr) {
   if (!authEnabled() || !needsAuth) return AuthResult::Ok;
-  if (gAuthLimiter.locked(app::nowMs())) return AuthResult::Locked;
+  if (gAuthLimiter.locked(remoteIp(req), app::nowMs(), retryAfterS)) return AuthResult::Locked;
   AsyncWebHeader* h = req->getHeader("Authorization");
   if (h == nullptr) return AuthResult::Missing;
   return vdm::checkBasicAuth(h->value().c_str(), h->value().length(), gCfg.web.user,
@@ -226,22 +244,45 @@ AuthResult checkAuth(AsyncWebServerRequest* req, bool needsAuth) {
 
 // Books the result, logs failures and answers 401/429. True = go on.
 bool authorised(AsyncWebServerRequest* req, bool needsAuth) {
-  const AuthResult r = checkAuth(req, needsAuth);
+  uint32_t retry = 0;
+  const uint32_t addr = remoteIp(req);
+  const AuthResult r = checkAuth(req, needsAuth, &retry);
   if (r == AuthResult::Ok) {
-    if (authEnabled() && needsAuth) gAuthLimiter.onResult(true, app::nowMs());
+    if (authEnabled() && needsAuth) gAuthLimiter.onResult(addr, true, app::nowMs());
     return true;
   }
   if (r == AuthResult::Locked) {
-    sendError(req, 429, "locked", "too many failed logins");
+    char detail[80];
+    snprintf(detail, sizeof detail, "too many failed logins from this address, retry in %lu s",
+             static_cast<unsigned long>(retry));
+    char body[160];
+    vdm::JsonWriter jw(body, sizeof body);
+    vdm::writeErrorJson(jw, "locked", detail);
+    AsyncWebServerResponse* res = req->beginResponse(429, kJson, body);
+    if (res == nullptr) {
+      req->send(500);  // out of memory
+      return false;
+    }
+    char after[12];
+    snprintf(after, sizeof after, "%lu", static_cast<unsigned long>(retry));
+    res->addHeader("Retry-After", after);
+    req->send(res);
     return false;
   }
   if (r == AuthResult::Wrong) {
     // A missing header is the browser's first attempt, not a failure.
-    gAuthLimiter.onResult(false, app::nowMs());
+    const uint32_t now = app::nowMs();
+    const bool lockStarted = gAuthLimiter.onResult(addr, false, now);
     char ip[16];
-    vdm::formatIpv4(static_cast<uint32_t>(req->client()->remoteIP()), ip, sizeof ip);
+    vdm::formatIpv4(addr, ip, sizeof ip);
     logger::log(vdm::EventCode::AuthFailed, vdm::kNoValve,
-                static_cast<int32_t>(gAuthLimiter.failuresInWindow()), 0, ip);
+                static_cast<int32_t>(gAuthLimiter.failuresInWindow(addr)), 0, ip);
+    if (lockStarted) {
+      uint32_t lockS = 0;
+      gAuthLimiter.locked(addr, now, &lockS);
+      logger::log(vdm::EventCode::AuthLocked, vdm::kNoValve, static_cast<int32_t>(lockS),
+                  static_cast<int32_t>(gAuthLimiter.lockLevel(addr)), ip);
+    }
   }
   AsyncWebServerResponse* res =
       req->beginResponse(401, kJson, "{\"error\":\"unauthorized\",\"detail\":\"\"}");
@@ -276,20 +317,93 @@ struct Refusal {
   const char* error = nullptr;
   const char* detail = nullptr;
   AuthResult auth = AuthResult::Ok;
+  vdm::GuardVerdict verdict = vdm::GuardVerdict::Allow;
 };
+
+const char* headerValue(AsyncWebServerRequest* req, const char* name, size_t& len) {
+  AsyncWebHeader* h = req->getHeader(name);
+  if (h == nullptr) {
+    len = 0;
+    return nullptr;
+  }
+  len = h->value().length();
+  return h->value().c_str();
+}
+
+// K5 guard of an /api/* request or a legacy alias; true = refused.
+bool guardRefusal(AsyncWebServerRequest* req, vdm::GuardScope scope, bool upload,
+                  Refusal& out) {
+  vdm::GuardRequest g;
+  g.method = methodOf(req);
+  g.scope = scope;
+  g.upload = upload;
+  g.hasBody = req->contentLength() > 0;
+  const String& host = req->host();
+  g.host = host.c_str();
+  g.hostLen = host.length();
+  g.origin = headerValue(req, "Origin", g.originLen);
+  g.marker = headerValue(req, "X-VdMot", g.markerLen);
+  const String& type = req->contentType();
+  g.contentType = type.c_str();
+  g.contentTypeLen = type.length();
+  vdm::HostPolicy p;
+  p.localIp = static_cast<uint32_t>(req->client()->localIP());
+  p.ifaceIp = net::info().ip;
+  p.hostname = gHostname;
+  p.allowed = gCfg.web.allowedHosts;
+  const vdm::GuardVerdict v = vdm::checkRequest(g, p);
+  if (v == vdm::GuardVerdict::Allow) return false;
+  vdm::guardDetail(v, g, p, gGuardDetail, sizeof gGuardDetail);
+  out = Refusal{vdm::guardHttpStatus(v), vdm::guardErrorCode(v), gGuardDetail, AuthResult::Ok, v};
+  return true;
+}
+
+// Paths outside /api/: the 410 table, 405 for a legacy alias with another
+// method, the alias guard, and every other request with a body (404/405,
+// never buffered).
+bool legacyRefusal(AsyncWebServerRequest* req, Refusal& out) {
+  const String& url = req->url();
+  const size_t len = req->contentLength();
+  const vdm::LegacyMatch lm =
+      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfg.web.protectRead);
+  switch (lm.route) {
+    case vdm::LegacyRoute::Gone:
+      out = Refusal{410, "gone", lm.replacement};
+      return true;
+    case vdm::LegacyRoute::MethodNotAllowed:
+      out = Refusal{405, "method_not_allowed", url.c_str()};
+      return true;
+    case vdm::LegacyRoute::Valves:
+    case vdm::LegacyRoute::Temps:
+    case vdm::LegacyRoute::Volts:
+      return guardRefusal(req, vdm::GuardScope::LegacyRead, false, out);
+    case vdm::LegacyRoute::SetValve:
+      if (guardRefusal(req, vdm::GuardScope::LegacyWrite, false, out)) return true;
+      if (len > kMaxBodySize) out = Refusal{413, "too_large", "body"};
+      return out.code != 0;
+    default:
+      break;
+  }
+  if (len == 0) return false;
+  if (req->method() == HTTP_GET) {
+    out = Refusal{404, "not_found", url.c_str()};
+  } else {
+    out = Refusal{405, "method_not_allowed", url.c_str()};
+  }
+  return true;
+}
 
 // Requests that must be answered without buffering their body.
 bool refusal(AsyncWebServerRequest* req, Refusal& out) {
   refreshConfig();
   const size_t len = req->contentLength();
   const bool multipart = req->contentType().startsWith("multipart/");
-  if (!req->url().startsWith("/api/")) {
-    if (len > 0) out = Refusal{413, "too_large", "no body expected"};
-    return len > 0;
-  }
+  if (!req->url().startsWith("/api/")) return legacyRefusal(req, out);
   const vdm::RouteMatch m = route(req);
-  if (m.route != vdm::ApiRoute::NotFound && m.route != vdm::ApiRoute::MethodNotAllowed &&
-      isUploadRoute(m.route)) {
+  const bool upload = m.route != vdm::ApiRoute::NotFound &&
+                      m.route != vdm::ApiRoute::MethodNotAllowed && isUploadRoute(m.route);
+  if (guardRefusal(req, vdm::GuardScope::Api, upload, out)) return true;
+  if (upload) {
     if (!multipart) {
       out = Refusal{415, "unsupported_media_type", "multipart/form-data required"};
     } else if (len == 0) {
@@ -314,17 +428,31 @@ bool refusal(AsyncWebServerRequest* req, Refusal& out) {
   return out.code != 0;
 }
 
+void keepGuardHeaders(AsyncWebServerRequest* req) {
+  req->addInterestingHeader("Authorization");
+  req->addInterestingHeader("Origin");
+  req->addInterestingHeader("X-VdMot");
+}
+
 class GuardHandler : public AsyncWebHandler {
  public:
   bool canHandle(AsyncWebServerRequest* req) override {
     Refusal r;
     if (!refusal(req, r)) return false;
-    req->addInterestingHeader("Authorization");
+    keepGuardHeaders(req);
     return true;
   }
   void handleRequest(AsyncWebServerRequest* req) override {
+    net::noteInboundHttp(remoteIp(req));
     Refusal r;
     if (!refusal(req, r)) return sendError(req, 503, "retry", "state changed");
+    if (r.verdict != vdm::GuardVerdict::Allow &&
+        gRefusedLimiter.allow(static_cast<uint8_t>(r.verdict), app::nowMs())) {
+      char ip[16];
+      vdm::formatIpv4(remoteIp(req), ip, sizeof ip);
+      logger::log(vdm::EventCode::RequestRefused, vdm::kNoValve,
+                  static_cast<int32_t>(r.verdict), 0, ip);
+    }
     if (r.code == 401) {
       // Books the failure and answers 401/429; credentials that became
       // valid meanwhile (config change) get a retry answer.
@@ -396,6 +524,29 @@ bool refuseWhileFlashing(AsyncWebServerRequest* req) {
   return true;
 }
 
+// STM firmware older than 1.4.0: STM actions except target, reset and flash
+// are refused.
+bool refuseTooOld(AsyncWebServerRequest* req) {
+  if (app::stmSupport() != vdm::StmSupport::TooOld) return false;
+  app::readStmSnapshot(gSnap);
+  char version[40];
+  if (vdm::formatVersion(gSnap.version, version, sizeof version) == 0) {
+    vdm::copyString(version, sizeof version, "?");
+  }
+  char detail[96];
+  snprintf(detail, sizeof detail, "STM firmware %s is older than 1.4.0: update the STM", version);
+  sendError(req, 409, "stm_unsupported", detail);
+  return true;
+}
+
+// Protocol 3 commands (stop, safe mode).
+bool refuseBelowV3(AsyncWebServerRequest* req) {
+  if (refuseTooOld(req)) return true;
+  if (app::stmProtocol() >= 3) return false;
+  sendError(req, 409, "stm_unsupported", "STM protocol 3 required");
+  return true;
+}
+
 // ---------------------------------------------------------------- GET handlers
 
 void handleStatus(AsyncWebServerRequest* req) {
@@ -451,6 +602,37 @@ void handleStatus(AsyncWebServerRequest* req) {
   s.nextCalibSlot = ci.nextSlot;
   s.authEnabled = authEnabled();
   s.lastEventSeq = logger::lastSeq();
+  s.station = gCfg.station;
+  const net::TrialInfo trial = net::trialInfo();
+  s.netTrialActive = trial.active;
+  s.netTrialRemainS = trial.remainS;
+  memcpy(s.mqttClientId, ms.clientId, sizeof s.mqttClientId);
+  s.mqttHaStatus = ms.haStatus;
+  s.stmSupport = gSnap.support;
+  s.lease = gSnap.lease;
+  s.haveLearnTime = gSnap.haveLearnTime;
+  s.learnTimeS = gSnap.learnTimeS;
+  s.nextCalibEpoch = ci.nextEpoch;
+  if (ci.nextEpoch > 0) {
+    const time_t t = static_cast<time_t>(ci.nextEpoch);
+    struct tm tm;
+    if (localtime_r(&t, &tm) != nullptr) {
+      vdm::LocalTime& l = s.nextCalibLocal;
+      l.valid = true;
+      l.year = static_cast<uint16_t>(tm.tm_year + 1900);
+      l.month = static_cast<uint8_t>(tm.tm_mon + 1);
+      l.mday = static_cast<uint8_t>(tm.tm_mday);
+      l.wday = static_cast<uint8_t>(tm.tm_wday);
+      l.hour = static_cast<uint8_t>(tm.tm_hour);
+      l.minute = static_cast<uint8_t>(tm.tm_min);
+      l.second = static_cast<uint8_t>(tm.tm_sec);
+      l.epoch = ci.nextEpoch;
+    }
+  }
+  s.configSource = static_cast<uint8_t>(storage::bootLoadSource());
+  s.configRepairs = storage::bootLoadDetails().info.repairs.mask;
+  s.configNewerSchema = storage::bootLoadDetails().info.decode.newerSchema;
+  s.importReport = storage::hasImportReport();
   sendDocument(req, 200, [](vdm::JsonWriter& jw) { return vdm::writeStatusJson(jw, s); });
 }
 
@@ -463,7 +645,7 @@ uint8_t tempSlotOf(const vdm::OneWireId& id) {
   return 0;
 }
 
-void handleValves(AsyncWebServerRequest* req) {
+void buildValveViews() {
   app::readStmSnapshot(gSnap);
   for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
     vdm::ValveView& v = gValveViews[i];
@@ -480,14 +662,20 @@ void handleValves(AsyncWebServerRequest* req) {
       v.sensorValid[k] = vdm::tempRawValid(raw[k]);
       v.sensorTenths[k] = static_cast<int32_t>(raw[k]) + gCfg.temps[slot - 1].offset;
     }
+    v.calibrationEnd.valid = mqtt::calibrationEnd(i, v.calibrationEnd);
   }
+}
+
+void handleValves(AsyncWebServerRequest* req) {
+  buildValveViews();
   const uint32_t now = app::nowMs();
   sendDocument(req, 200, [now](vdm::JsonWriter& jw) {
     return vdm::writeValvesJson(jw, gValveViews.data(), vdm::kValveCount, now);
   });
 }
 
-void handleSensors(AsyncWebServerRequest* req) {
+// Fills gTempViews/gVoltViews; returns the counts.
+void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   app::readStmSnapshot(gSnap);
   const uint32_t now = app::nowMs();
   uint8_t nt = 0;
@@ -573,6 +761,13 @@ void handleSensors(AsyncWebServerRequest* req) {
     v.valid = false;  // no offset/factor/unit without a slot
     v.ageS = r.seen ? vdm::elapsedMs(now, r.lastSeenMs) / 1000 : 0;
   }
+  ntOut = nt;
+  nvOut = nv;
+}
+
+void handleSensors(AsyncWebServerRequest* req) {
+  uint8_t nt = 0, nv = 0;
+  buildSensorViews(nt, nv);
   sendDocument(req, 200, [nt, nv](vdm::JsonWriter& jw) {
     return vdm::writeSensorsJson(jw, gTempViews.data(), nt, gVoltViews.data(), nv);
   });
@@ -639,7 +834,8 @@ void handleFlashStatus(AsyncWebServerRequest* req) {
   app::readStmSnapshot(gSnap);
   sendDocument(req, 200, [](vdm::JsonWriter& jw) {
     return vdm::writeFlashStatusJson(jw, gSnap.flash,
-                                     gSnap.flashImage[0] ? gSnap.flashImage : nullptr);
+                                     gSnap.flashImage[0] ? gSnap.flashImage : nullptr,
+                                     gSnap.flashPending);
   });
 }
 
@@ -667,6 +863,12 @@ void writeImage(vdm::JsonWriter& jw, const storage::ImageEntry& e, bool crcKnown
   } else {
     jw.nullValue();
   }
+  jw.key("hw");
+  if (e.hwTag[0]) {
+    jw.value(e.hwTag, strnlen(e.hwTag, sizeof e.hwTag));
+  } else {
+    jw.nullValue();
+  }
   jw.endObject();
 }
 
@@ -683,6 +885,82 @@ void handleImages(AsyncWebServerRequest* req) {
 void handleConfigGet(AsyncWebServerRequest* req, bool attachment) {
   sendDocument(req, 200, [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, gCfg); },
                attachment ? "attachment; filename=\"vdmot-config.json\"" : nullptr);
+}
+
+// ?secrets=1: passwords in clear, only while the web login protects it.
+void handleConfigExport(AsyncWebServerRequest* req) {
+  AsyncWebParameter* p = req->getParam("secrets");
+  if (p == nullptr) return handleConfigGet(req, true);
+  if (p->value() != "1") return sendError(req, 400, "bad_request", "secrets=1");
+  if (!authEnabled()) {
+    return sendError(req, 403, "auth_required", "enable web login to export passwords");
+  }
+  sendDocument(
+      req, 200,
+      [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, gCfg, vdm::SecretMode::Clear); },
+      "attachment; filename=\"vdmot-config-secrets.json\"");
+}
+
+// ---------------------------------------------------------------- files
+
+void handleFiles(AsyncWebServerRequest* req) {
+  bool truncated = false;
+  const size_t n = storage::listFiles(gFiles.data(), kMaxFilesPerResponse, truncated);
+  const uint32_t total = storage::fsTotal();
+  const uint32_t used = storage::fsUsed();
+  sendDocument(req, 200, [n, total, used, truncated](vdm::JsonWriter& jw) {
+    return vdm::writeFilesJson(jw, gFiles.data(), n, total, used, truncated);
+  });
+}
+
+void handleFileDelete(AsyncWebServerRequest* req) {
+  AsyncWebParameter* p = req->getParam("path");
+  if (p == nullptr) return sendError(req, 400, "bad_path", "path");
+  const String& path = p->value();
+  if (!vdm::fsPathValid(path.c_str(), path.length())) {
+    return sendError(req, 400, "bad_path", path.c_str());
+  }
+  switch (storage::deleteFile(path.c_str())) {
+    case storage::FileResult::Ok: return req->send(204);
+    case storage::FileResult::BadPath: return sendError(req, 400, "bad_path", path.c_str());
+    case storage::FileResult::Protected:
+      return sendError(req, 403, "protected",
+                       vdm::fileProtectReason(vdm::classifyFsPath(path.c_str(), path.length())));
+    case storage::FileResult::NotFound: return sendError(req, 404, "not_found", path.c_str());
+    default: return sendError(req, 500, "io_error", path.c_str());
+  }
+}
+
+void handleImportReport(AsyncWebServerRequest* req) {
+  if (!storage::hasImportReport()) return sendError(req, 404, "not_found", "no import report");
+  fs::File f = LittleFS.open(storage::kImportReportFile, FILE_READ);
+  if (!f) return sendError(req, 404, "not_found", "no import report");
+  const int slot = acquireSlot();
+  if (slot < 0) {
+    f.close();
+    return sendError(req, 503, "busy", "response buffers in use");
+  }
+  const size_t n = f.read(reinterpret_cast<uint8_t*>(gSlots[slot].buf), kResponseSlotSize);
+  const bool whole = f.available() == 0;
+  f.close();
+  if (n == 0 || !whole) {
+    releaseSlot(slot);
+    return sendError(req, 500, "io_error", storage::kImportReportFile);
+  }
+  sendSlot(req, 200, slot, n);
+}
+
+// ---------------------------------------------------------------- health
+
+void handleHealth(AsyncWebServerRequest* req) {
+  gHealth = vdm::HealthSnapshot{};
+  app::readHealth(gHealth);
+  vdm::JsonWriter jw(gHealthBuf, sizeof gHealthBuf);
+  if (!vdm::writeHealthJson(jw, gHealth)) return sendError(req, 500, "internal", "health");
+  AsyncWebServerResponse* res = req->beginResponse(200, kJson, gHealthBuf);
+  if (res == nullptr) return req->send(500);
+  res->addHeader("Cache-Control", "no-store");
+  req->send(res);
 }
 
 // ---------------------------------------------------------------- log download
@@ -713,6 +991,7 @@ size_t fillLog(uint8_t* buf, size_t maxLen) {
 void handleLog(AsyncWebServerRequest* req) {
   if (!storage::fsReady()) return sendError(req, 503, "unavailable", "no file system");
   if (gLog.owner != nullptr) return sendError(req, 409, "busy", "log download running");
+  logger::requestFlush();
   gLog.owner = req;
   gLog.part = 0;
   AsyncWebServerResponse* res = req->beginChunkedResponse(
@@ -731,21 +1010,36 @@ void handleLog(AsyncWebServerRequest* req) {
 
 // ---------------------------------------------------------------- POST handlers
 
+// JSON number (integer or fraction, never bool or string) rounded by
+// vdm::roundTargetPercent.
+bool targetField(JsonVariantConst v, uint8_t& out) {
+  if (v.isNull() || v.is<bool>() || !v.is<double>()) return false;
+  return vdm::roundTargetPercent(v.as<double>(), out);
+}
+
+// Queues a web target; false when an error was answered.
+bool submitTarget(AsyncWebServerRequest* req, uint8_t valve, uint8_t target) {
+  if (!gCfg.valves[valve].active) {
+    sendError(req, 409, "inactive", "valve not active");
+    return false;
+  }
+  app::Command c;
+  c.type = app::CommandType::SetTarget;
+  c.valve = valve;
+  c.pos = target;
+  c.source = vdm::TargetSource::Web;
+  return submitOr503(req, c);
+}
+
 void handleTarget(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
   JsonObjectConst o = gDoc.as<JsonObjectConst>();
   static const char* const kKeys[] = {"target"};
-  int64_t target = 0;
-  if (!onlyKeys(o, kKeys, 1) || !intField(o, "target", 0, 100, target, true)) {
+  uint8_t target = 0;
+  if (!onlyKeys(o, kKeys, 1) || !targetField(o["target"], target)) {
     return sendError(req, 400, "out_of_range", "target 0..100");
   }
-  if (!gCfg.valves[valve].active) return sendError(req, 409, "inactive", "valve not active");
-  app::Command c;
-  c.type = app::CommandType::SetTarget;
-  c.valve = valve;
-  c.pos = static_cast<uint8_t>(target);
-  c.source = vdm::TargetSource::Web;
-  if (!submitOr503(req, c)) return;
+  if (!submitTarget(req, valve, target)) return;
   char buf[48];
   snprintf(buf, sizeof buf, "{\"valve\":%u,\"target\":%u}", valve + 1u,
            static_cast<unsigned>(target));
@@ -754,6 +1048,7 @@ void handleTarget(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) {
 
 void handleSimple(AsyncWebServerRequest* req, app::CommandType type, uint8_t valve) {
   if (refuseWhileFlashing(req)) return;
+  if (type != app::CommandType::ResetStm && refuseTooOld(req)) return;
   app::Command c;
   c.type = type;
   c.valve = valve;
@@ -762,6 +1057,7 @@ void handleSimple(AsyncWebServerRequest* req, app::CommandType type, uint8_t val
 
 void handleServiceMove(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) {
   if (refuseWhileFlashing(req)) return;
+  if (refuseTooOld(req)) return;
   if (app::stmProtocol() < 2) return sendError(req, 409, "unsupported", "STM protocol v2 required");
   if (!parseBody(req, hasBody)) return;
   JsonObjectConst o = gDoc.as<JsonObjectConst>();
@@ -784,6 +1080,7 @@ void handleServiceMove(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) 
 
 void handleValveSensors(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) {
   if (refuseWhileFlashing(req)) return;
+  if (refuseTooOld(req)) return;
   if (!parseBody(req, hasBody)) return;
   JsonObjectConst o = gDoc.as<JsonObjectConst>();
   static const char* const kKeys[] = {"slot1", "slot2"};
@@ -809,27 +1106,60 @@ void handleValveSensors(AsyncWebServerRequest* req, uint8_t valve, bool hasBody)
 }
 
 void handleProfileRefresh(AsyncWebServerRequest* req, uint8_t valve) {
+  if (refuseTooOld(req)) return;
   if (app::stmProtocol() < 2) return sendError(req, 409, "unsupported", "STM protocol v2 required");
   handleSimple(req, app::CommandType::RequestProfile, valve);
 }
 
+// ?dryRun=1: validated like a save, nothing stored; the answer names what a
+// save would do. A save reserves its response slot first, so a busy server
+// answers 503 before anything is applied.
 void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
+  bool dryRun = false;
+  if (AsyncWebParameter* p = req->getParam("dryRun")) {
+    if (p->value() != "1") return sendError(req, 400, "bad_request", "dryRun=1");
+    dryRun = true;
+  }
   if (!hasBody || gBodyLen == 0) return sendError(req, 400, "bad_request", "JSON body required");
+  const int slot = dryRun ? -1 : acquireSlot();
+  if (!dryRun && slot < 0) return sendError(req, 503, "busy", "response buffers in use");
   gPatch = gCfg;
   char path[72];
   const vdm::PatchResult r = vdm::applyConfigJson(gPatch, gBody, gBodyLen, path, sizeof path);
-  if (r != vdm::PatchResult::Ok) return sendError(req, 400, "invalid", path);
+  if (r != vdm::PatchResult::Ok) {
+    releaseSlot(slot);
+    return sendError(req, 400, "invalid", path);
+  }
+  vdm::ApplyInfo info;
+  info.restartRequired = vdm::configRestartReasons(gCfg, gPatch) != 0;
+  info.netTrial = vdm::netTrialRequired(gCfg.net, gPatch.net);
+  if (dryRun) {
+    if (!vdm::validateConfig(gPatch, path, sizeof path)) {
+      return sendError(req, 400, "invalid", path);
+    }
+    char buf[64];
+    snprintf(buf, sizeof buf, "{\"restartRequired\":%s,\"netTrial\":%s}",
+             info.restartRequired ? "true" : "false", info.netTrial ? "true" : "false");
+    return req->send(200, kJson, buf);
+  }
   if (!storage::applyConfig(gPatch, path, sizeof path)) {
+    releaseSlot(slot);
     return sendError(req, strcmp(path, "nvs") == 0 ? 500 : 400, "invalid", path);
   }
   refreshConfig();
   logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve,
               static_cast<int32_t>(storage::configRevision()), 0, "web");
-  handleConfigGet(req, false);
+  vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
+  if (!vdm::writeConfigJson(jw, gCfg, vdm::SecretMode::Flags, &info) || !jw.complete()) {
+    releaseSlot(slot);
+    return sendError(req, 500, "internal", "document too large");
+  }
+  sendSlot(req, 200, slot, jw.length());
 }
 
 void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
   if (refuseWhileFlashing(req)) return;
+  if (refuseTooOld(req)) return;
   if (!parseBody(req, hasBody)) return;
   app::readStmSnapshot(gSnap);
   JsonObjectConst o = gDoc.as<JsonObjectConst>();
@@ -938,18 +1268,21 @@ void handleImageDelete(AsyncWebServerRequest* req, const char* rawName) {
 void handleFlash(AsyncWebServerRequest* req, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
   JsonObjectConst o = gDoc.as<JsonObjectConst>();
-  static const char* const kKeys[] = {"image", "mode", "force"};
+  static const char* const kKeys[] = {"image", "mode", "force", "board"};
   const char* image = o["image"].is<const char*>() ? o["image"].as<const char*>() : nullptr;
+  const char* board = o["board"].isNull() ? ""
+                      : (o["board"].is<const char*>() ? o["board"].as<const char*>() : nullptr);
   const char* mode = o["mode"].isNull() ? "normal"
                                         : (o["mode"].is<const char*>() ? o["mode"].as<const char*>()
                                                                        : "");
   bool force = false;
   char name[storage::kImageNameMax + 1];
-  if (!onlyKeys(o, kKeys, 3) || image == nullptr ||
+  if (!onlyKeys(o, kKeys, 4) || image == nullptr || board == nullptr ||
+      (board[0] != '\0' && strcmp(board, "C1") != 0 && strcmp(board, "C2") != 0) ||
       !storage::normalizeImageName(image, strlen(image), name, sizeof name) ||
       (strcmp(mode, "normal") != 0 && strcmp(mode, "blank") != 0) ||
       !boolField(o, "force", force, false)) {
-    return sendError(req, 400, "bad_request", "image, mode normal|blank, force");
+    return sendError(req, 400, "bad_request", "image, mode normal|blank, force, board C1|C2");
   }
   if (uploadBusy()) return sendError(req, 409, "busy", "upload or flash running");
   if (ota::restartPending()) return sendError(req, 409, "restarting", "ESP restart pending");
@@ -960,9 +1293,22 @@ void handleFlash(AsyncWebServerRequest* req, bool hasBody) {
       !(force && e.check == vdm::FlashError::ImageNoHandshake)) {
     return sendError(req, 400, "invalid_image", vdm::flashErrorName(e.check));
   }
+  // Board revision: the running STM's tag, else the user's choice.
+  app::readStmSnapshot(gSnap);
+  const char* boardHw = gSnap.version.hw[0] ? gSnap.version.hw : board;
+  const vdm::BoardCheck bc = vdm::checkBoard(e.hwTag, boardHw);
+  if (!force && bc == vdm::BoardCheck::Mismatch) {
+    char detail[40];
+    snprintf(detail, sizeof detail, "image %.3s, board %.3s", e.hwTag, boardHw);
+    return sendError(req, 409, "board_mismatch", detail);
+  }
+  if (!force && bc == vdm::BoardCheck::BoardRequired) {
+    return sendError(req, 409, "board_required", "choose the board: C1 or C2");
+  }
   app::Command c;
   c.type = app::CommandType::StartFlash;
   vdm::copyString(c.image, sizeof c.image, name);
+  vdm::copyString(c.board, sizeof c.board, board);
   c.blank = strcmp(mode, "blank") == 0;
   c.force = force;
   if (submitOr503(req, c)) sendAccepted(req);
@@ -990,9 +1336,7 @@ void handleFactoryReset(AsyncWebServerRequest* req, bool hasBody) {
 
 void handleDiscovery(AsyncWebServerRequest* req, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
-  if (gCfg.mqtt.mode != vdm::MqttMode::MqttHa) {
-    return sendError(req, 409, "disabled", "MQTT + HA mode required");
-  }
+  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return sendError(req, 409, "disabled", "MQTT is off");
   JsonObjectConst o = gDoc.as<JsonObjectConst>();
   const char* action = o["action"].is<const char*>() ? o["action"].as<const char*>() : "";
   mqtt::DiscoveryAction a;
@@ -1005,8 +1349,73 @@ void handleDiscovery(AsyncWebServerRequest* req, bool hasBody) {
   } else {
     return sendError(req, 400, "bad_request", "action publish|delete|republish");
   }
+  if (a != mqtt::DiscoveryAction::Delete && !gCfg.mqtt.separate) {
+    return sendError(req, 409, "separate_required", "enable mqtt.separate first");
+  }
   mqtt::requestDiscovery(a);
   sendAccepted(req);
+}
+
+void handleStop(AsyncWebServerRequest* req, uint8_t valve) {
+  if (refuseWhileFlashing(req)) return;
+  if (refuseBelowV3(req)) return;
+  app::Command c;
+  c.type = app::CommandType::StopValve;
+  c.valve = valve;
+  if (submitOr503(req, c)) sendAccepted(req);
+}
+
+void handleSafeModeLeave(AsyncWebServerRequest* req) {
+  if (refuseWhileFlashing(req)) return;
+  if (refuseBelowV3(req)) return;
+  app::Command c;
+  c.type = app::CommandType::LeaveSafeMode;
+  if (submitOr503(req, c)) sendAccepted(req);
+}
+
+void handleNetTrial(AsyncWebServerRequest* req, bool confirm) {
+  const bool ok = confirm ? net::requestTrialConfirm() : net::requestTrialRevert();
+  if (!ok) return sendError(req, 409, "no_trial", "no network trial running");
+  sendAccepted(req);
+}
+
+void handleImportReportDismiss(AsyncWebServerRequest* req) {
+  if (!storage::dismissImportReport()) return sendError(req, 404, "not_found", "no import report");
+  req->send(204);
+}
+
+// ---------------------------------------------------------------- legacy aliases
+
+void handleLegacyValves(AsyncWebServerRequest* req) {
+  buildValveViews();
+  sendDocument(req, 200, [](vdm::JsonWriter& jw) {
+    return vdm::writeLegacyValvesJson(jw, gValveViews.data(), vdm::kValveCount);
+  });
+}
+
+void handleLegacySensors(AsyncWebServerRequest* req, bool temps) {
+  uint8_t nt = 0, nv = 0;
+  buildSensorViews(nt, nv);
+  const bool all = gCfg.mqtt.allTemps;
+  sendDocument(req, 200, [temps, nt, nv, all](vdm::JsonWriter& jw) {
+    return temps ? vdm::writeLegacyTempsJson(jw, gTempViews.data(), nt, all)
+                 : vdm::writeLegacyVoltsJson(jw, gVoltViews.data(), nv);
+  });
+}
+
+// {"valve":1..12,"value":<number>}; other members (legacy PI values) are
+// ignored.
+void handleSetValve(AsyncWebServerRequest* req, bool hasBody) {
+  if (hasBody && gBodyOverflow) return sendError(req, 413, "too_large", "body");
+  if (!parseBody(req, hasBody)) return;
+  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  int64_t valve = 0;
+  uint8_t target = 0;
+  if (!intField(o, "valve", 1, vdm::kValveCount, valve, true) || !targetField(o["value"], target)) {
+    return sendError(req, 400, "out_of_range", "valve 1..12, value 0..100");
+  }
+  if (!submitTarget(req, static_cast<uint8_t>(valve - 1), target)) return;
+  req->send(200, kJson, "{\"res\":\"ok\"}");
 }
 
 // ---------------------------------------------------------------- uploads
@@ -1175,7 +1584,7 @@ void handleApi(AsyncWebServerRequest* req, bool hasBody) {
     case R::Events: return handleEvents(req);
     case R::ConfigGet: return handleConfigGet(req, false);
     case R::ConfigPatch: return handleConfigPatch(req, hasBody);
-    case R::ConfigExport: return handleConfigGet(req, true);
+    case R::ConfigExport: return handleConfigExport(req);
     case R::Motor: return handleMotorGet(req);
     case R::MotorSet: return handleMotorSet(req, hasBody);
     case R::StmReset: return handleStmReset(req, hasBody);
@@ -1193,8 +1602,17 @@ void handleApi(AsyncWebServerRequest* req, bool hasBody) {
       return sendAccepted(req);
     case R::MqttDiscovery: return handleDiscovery(req, hasBody);
     case R::LogDownload: return handleLog(req);
-    // Routes of 2.1 whose handlers are not there yet.
-    default: return sendError(req, 501, "not_implemented", url.c_str());
+    case R::Health: return handleHealth(req);
+    case R::ValveStop: return handleStop(req, v);
+    case R::StopAll: return handleStop(req, vdm::kAllValves);
+    case R::StmSafeModeLeave: return handleSafeModeLeave(req);
+    case R::NetConfirm: return handleNetTrial(req, true);
+    case R::NetRevert: return handleNetTrial(req, false);
+    case R::Files: return handleFiles(req);
+    case R::FileDelete: return handleFileDelete(req);
+    case R::ImportReport: return handleImportReport(req);
+    case R::ImportReportDismiss: return handleImportReportDismiss(req);
+    default: return sendError(req, 404, "not_found", url.c_str());
   }
 }
 
@@ -1216,9 +1634,34 @@ void handleStatic(AsyncWebServerRequest* req) {
   sendError(req, 404, "not_found", url.c_str());
 }
 
+// Non-API paths: the legacy aliases, else the dashboard files.
+void handleNonApi(AsyncWebServerRequest* req, bool hasBody) {
+  const String& url = req->url();
+  const vdm::LegacyMatch lm =
+      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfg.web.protectRead);
+  switch (lm.route) {
+    case vdm::LegacyRoute::Valves:
+      if (authorised(req, lm.needsAuth)) handleLegacyValves(req);
+      return;
+    case vdm::LegacyRoute::Temps:
+    case vdm::LegacyRoute::Volts:
+      if (authorised(req, lm.needsAuth)) handleLegacySensors(req, lm.route == vdm::LegacyRoute::Temps);
+      return;
+    case vdm::LegacyRoute::SetValve:
+      if (authorised(req, lm.needsAuth)) handleSetValve(req, hasBody);
+      return;
+    default:
+      break;
+  }
+  if (req->method() == HTTP_GET) return handleStatic(req);
+  sendError(req, 405, "method_not_allowed", url.c_str());
+}
+
 class ApiHandler : public AsyncWebHandler {
  public:
   bool canHandle(AsyncWebServerRequest* req) override {
+    req->addInterestingHeader("Origin");
+    req->addInterestingHeader("X-VdMot");
     req->addInterestingHeader("Authorization");
     req->addInterestingHeader("If-None-Match");
     req->addInterestingHeader("X-Update-MD5");
@@ -1227,6 +1670,7 @@ class ApiHandler : public AsyncWebHandler {
   }
 
   void handleRequest(AsyncWebServerRequest* req) override {
+    net::noteInboundHttp(remoteIp(req));
     refreshConfig();
     const bool hasBody = gBodyOwner == req;
     Mark mk;
@@ -1234,10 +1678,8 @@ class ApiHandler : public AsyncWebHandler {
       sendError(req, mk.code, mk.error, "body");
     } else if (req->url().startsWith("/api/")) {
       handleApi(req, hasBody);
-    } else if (req->method() == HTTP_GET) {
-      handleStatic(req);
     } else {
-      sendError(req, 405, "method_not_allowed", req->url().c_str());
+      handleNonApi(req, hasBody);
     }
     if (gBodyOwner == req) gBodyOwner = nullptr;
   }
