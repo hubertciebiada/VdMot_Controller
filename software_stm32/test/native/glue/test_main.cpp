@@ -47,7 +47,7 @@ TEST_CASE("setup_system: watchdog, I2C, pins, modules and the valve timer in thi
   glue::begin();
   setup_system();
   CHECK(stub::calls == stub::Calls{"sysstat_boot_reason()", "i2c_bus_recover()", "Terminal_Init()",
-                                   "communication_setup()", "eepromsetup()", "eeprom_read_layout(&eep_content)",
+                                   "sysstat_safe_mode()", "communication_setup()", "eepromsetup()", "eeprom_read_layout(&eep_content)",
                                    "temperature_setup()", "app_setup()", "valve_setup()", "app_restore()"});
   CHECK(IWatchdog.timeoutUs == 8000000);
   CHECK(IWatchdog.reloads == 3);
@@ -79,6 +79,13 @@ TEST_CASE("setup_system: a watchdog reset is reported on the terminal") {
   CHECK(fake::takeTx(Serial6) == "reset by watchdog\r\n");
 }
 
+TEST_CASE("setup_system: safe mode is reported on the terminal") {
+  glue::begin();
+  stub::sysstat.safeMode = true;
+  setup_system();
+  CHECK(fake::takeTx(Serial6) == "safe mode\r\n");
+}
+
 TEST_CASE("loop_system: the 10 ms, 100 ms and 1 s branches run when more than their period has passed") {
   glue::begin();
   loopAt(0);
@@ -108,17 +115,18 @@ TEST_CASE("loop_system: the 10 ms, 100 ms and 1 s branches run when more than th
   CHECK(branchCalls() == stub::Calls{"sysstat_uptime_s()", "app_1s_tick(1)", "eepromloop()"});
 }
 
-TEST_CASE("loop_system: app_10s_loop gets the real seconds at the 11th second branch") {
+TEST_CASE("loop_system: app_10s_loop gets the real seconds at every 10th second branch") {
   glue::begin();
   uint32_t ms = 0;
-  for (uint32_t s = 1; s <= 11; s++) {
+  for (uint32_t s = 1; s <= 20; s++) {
     ms += 1001;
-    stub::sysstat.uptime = s == 11 ? 13 : s;  // the branch ran late
+    stub::sysstat.uptime = s >= 10 ? s + 2 : s;  // the 10th branch ran late
     stub::calls.clear();
     loopAt(ms);
     CAPTURE(s);
-    CHECK(stub::callsOf("app_10s_loop") == (s == 11 ? stub::Calls{"app_10s_loop(13)"} : stub::Calls{}));
-    CHECK(stub::callsOf("app_1s_tick") == stub::Calls{s == 11 ? "app_1s_tick(3)" : "app_1s_tick(1)"});
+    CHECK(stub::callsOf("app_10s_loop") ==
+          (s == 10 ? stub::Calls{"app_10s_loop(12)"} : s == 20 ? stub::Calls{"app_10s_loop(10)"} : stub::Calls{}));
+    CHECK(stub::callsOf("app_1s_tick") == stub::Calls{s == 10 ? "app_1s_tick(3)" : "app_1s_tick(1)"});
   }
 }
 

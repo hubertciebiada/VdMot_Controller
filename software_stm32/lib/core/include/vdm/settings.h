@@ -15,6 +15,18 @@ constexpr uint16_t kLearnMovementsDefault = 2000;
 // learn-after-time (`stlnt`) in seconds, 0 disables the time trigger;
 // the default is one week (== LEARN_AFTER_TIME_DEFAULT, static_assert in app.cpp)
 constexpr uint32_t kLearnTimeDefaultS = 7 * 24 * 3600;
+// a stored learn time 0 (the ESP runs its own schedule) is only honoured while
+// a lease client was seen within this time: a rolled-back ESP without a
+// schedule never leaves the valves without the time trigger
+constexpr uint32_t kLearnTimeClientWindowS = 24 * 3600;
+
+// learn time the countdown runs with: stored, or the default for a stored 0
+// without a recent lease client
+uint32_t effectiveLearnTime(uint32_t storedS, bool clientSeen);
+
+// One countdown step: true when remaining <= elapsedS (the caller reloads),
+// otherwise remaining -= elapsedS.
+bool countdown(uint32_t& remaining, uint32_t elapsedS);
 
 // `stlnm` takes any 32-bit count (the ESP stores it as uint32) and 1.x always
 // replied, so a value outside the range is moved to its nearest bound

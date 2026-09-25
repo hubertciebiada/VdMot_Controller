@@ -134,6 +134,7 @@ void setup_system() {
   // terminal for debug
   Terminal_Init();
   if (watchdogReset) COMM_DBG.println("reset by watchdog");
+  if (sysstat_safe_mode()) COMM_DBG.println("safe mode");
 
   // serial communication to ESP32
   communication_setup();
@@ -213,13 +214,11 @@ void loop_system() {
     app_1s_tick(uptime - last1sTick);
     last1sTick = uptime;
 
-    if(time10s>=10) {
+    if(++time10s >= 10) {
       time10s = 0;
       app_10s_loop(uptime - last10sLoop);
       last10sLoop = uptime;
-      // todo sync with comm COMM_SER.println("STMalive ");   // send alive to ESP32
     }
-    else time10s++;
 
     //digitalWrite(LED, !digitalRead(LED));   // toggle LED    
     eepromloop();
