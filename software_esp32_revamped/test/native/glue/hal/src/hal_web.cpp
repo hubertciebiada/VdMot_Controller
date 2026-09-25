@@ -134,6 +134,7 @@ struct Exchange::PartState {
 };
 
 Exchange::Exchange(const Request& r) : r_(r), client_(r.remoteIp) {
+  client_.localIp_ = r.localIp;
   wire_ = r_.wireBody();
   ++state().openExchanges;
   AsyncWebServer* srv = state().instance;

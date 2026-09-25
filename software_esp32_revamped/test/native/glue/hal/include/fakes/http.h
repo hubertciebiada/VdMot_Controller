@@ -52,6 +52,7 @@ struct Request {
   size_t contentLength = SIZE_MAX;  // SIZE_MAX = the length of the body
   size_t segment = 1460;           // TCP segment size of the body
   uint32_t remoteIp = 0x3201A8C0;  // 192.168.1.50
+  uint32_t localIp = 0;            // the connection's local address (0 = unknown)
   bool zeroLengthFinal = false;    // uploads: the rest in a non-final call, then an empty final
 
   Request& header(const std::string& name, const std::string& value) {

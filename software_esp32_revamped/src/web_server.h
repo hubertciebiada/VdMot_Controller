@@ -21,7 +21,7 @@ constexpr size_t kResponseSlots = 2;
 constexpr size_t kResponseSlotSize = 12 * 1024;
 // JSON POST bodies are collected in one static buffer (one body at a time,
 // 409 when busy, 413 when larger).
-constexpr size_t kMaxBodySize = 4096;
+constexpr size_t kMaxBodySize = 8192;
 // Uploads (multipart): STM image file size limit and the allowance for the
 // multipart framing around the file in Content-Length.
 constexpr size_t kMaxStmImageSize = 512 * 1024;

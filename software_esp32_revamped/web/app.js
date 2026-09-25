@@ -81,22 +81,34 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mo
 // ------------------------------------------------------------------ API
 
 class ApiError extends Error {
-  constructor(status, data) {
-    super(apiMessage(status, data));
+  constructor(status, data, retryAfter) {
+    super(apiMessage(status, data, retryAfter));
     this.status = status;
     this.data = data || null;
+    this.retryAfter = retryAfter || 0;
   }
 }
 
-function apiMessage(status, d) {
+let fsFree = null;  // free LittleFS bytes from the last /api/files
+const MSG_503 = { queue_full: "The STM command queue is full; try again in a moment",
+  busy: "The device is busy with other requests; nothing was changed, try again", retry: "The device state changed; try again" };
+function apiMessage(status, d, retryAfter) {
   const code = d && typeof d.error === "string" ? d.error : "";
   const detail = d && typeof d.detail === "string" ? d.detail : "";
   if (status === 0) return code === "timeout" ? "The device did not answer in time" : "The device is not reachable";
   if (status === 401) return "Login required: reload the page and sign in";
-  if (status === 429) return "Too many failed logins; wait a minute";
+  if (status === 403 && code === "host_not_allowed") return "This device does not accept requests for this host name: " + detail;
+  if (status === 403 && code === "origin_not_allowed") return "Request from another web page refused: " + detail;
+  if (status === 403 && code === "header_required") return "The request lacks the X-VdMot header: reload the page";
+  if (status === 403 && code === "auth_required") return "Set a web user and password (Settings, Web access) to export passwords";
+  if (status === 410) return "Removed: use " + detail;
+  if (status === 415) return "The device expects JSON: " + detail;
+  if (status === 429) return "Too many failed logins from this address; try again in " + (retryAfter || 60) + " s";
+  if (status === 409 && code === "stm_unsupported") return detail;
   if (status === 501) return "Not supported by this firmware";
-  if (status === 503) return "The STM command queue is full; try again in a moment";
-  if (status === 507) return detail === "too_many_images" ? "Only 3 STM images can be stored; delete one first" : "Not enough space on the device";
+  if (status === 503) return MSG_503[code] || "The device is busy; try again";
+  if (status === 507) return detail === "too_many_images" ? "Only 3 STM images can be stored; delete one first" :
+    "Not enough space on the device" + (isNum(fsFree) ? " (" + fmtBytes(fsFree) + " free)" : "");
   if (status === 413) return "Too large for the device";
   let m = code ? code.replace(/_/g, " ") : "HTTP " + status;
   if (detail) m += ": " + detail;
@@ -106,7 +118,7 @@ function apiMessage(status, d) {
 async function api(method, path, body, timeoutMs) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs || 10000);
-  const init = { method, cache: "no-store", signal: ctl.signal, headers: {} };
+  const init = { method, cache: "no-store", signal: ctl.signal, headers: { "X-VdMot": "1" } };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -122,7 +134,7 @@ async function api(method, path, body, timeoutMs) {
   }
   let data = null;
   if (text) { try { data = JSON.parse(text); } catch { data = null; } }
-  if (!r.ok) throw new ApiError(r.status, data);
+  if (!r.ok) throw new ApiError(r.status, data, Number(r.headers.get("Retry-After")) || 0);
   return data;
 }
 
@@ -132,13 +144,14 @@ function upload(url, field, file, fileName, onProgress, headers) {
     const x = new XMLHttpRequest();
     x.open("POST", url);
     x.timeout = 600000;
+    x.setRequestHeader("X-VdMot", "1");
     for (const k of Object.keys(headers || {})) x.setRequestHeader(k, headers[k]);
     x.upload.onprogress = (e) => { if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total); };
     x.onload = () => {
       let d = null;
       try { d = x.responseText ? JSON.parse(x.responseText) : null; } catch { d = null; }
       if (x.status >= 200 && x.status < 300) resolve(d);
-      else reject(new ApiError(x.status, d));
+      else reject(new ApiError(x.status, d, Number(x.getResponseHeader("Retry-After")) || 0));
     };
     x.onerror = () => reject(new ApiError(0, { error: "network" }));
     x.ontimeout = () => reject(new ApiError(0, { error: "timeout" }));
@@ -281,6 +294,80 @@ let S = null;            // last /api/status
 let lastEventSeq = 0;
 let restartWait = null;  // {label, base uptime, boots, t0} while a restart is expected
 
+// Stacked notices under the banner: id -> element, rebuilt when the text changes.
+function notice(id, show, cls, text, buttons) {
+  let el = $("n-" + id);
+  if (!show) { if (el) el.remove(); return; }
+  const key = cls + "|" + text;
+  if (el && el.dataset.k === key) return;
+  const nel = h("div", { id: "n-" + id, class: "notice " + cls, role: "status" }, h("p", { text }),
+    buttons && buttons.length ? h("div", { class: "row" }, buttons) : null);
+  nel.dataset.k = key;
+  if (el) el.replaceWith(nel); else $("notices").append(nel);
+}
+function ssGet(k) { try { return sessionStorage.getItem(k); } catch { return null; } }
+function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch { /* private mode */ } }
+const btn = (text, onclick, cls) => h("button", { type: "button", class: cls || "", onclick }, text);
+let importReport = null;  // /api/import-report, loaded once while status.importReport
+const DROPPED_TXT = { pi: "PI control", window: "window contacts", messenger: "messenger", ds18Timeout: "sensor timeout",
+  legacyFailsafe: "MQTT timeout position" };
+function importText(r) {
+  if (!r || typeof r !== "object") return "The configuration was imported from the legacy firmware.";
+  const parts = ["The configuration was imported from the legacy firmware: " + fmt(r.imported) + " settings taken, " +
+    fmt(r.rejected) + " rejected" + (r.firstRejected ? " (first: " + r.firstRejected + ")" : "") + ", " + fmt(r.ignored) + " ignored."];
+  if (Array.isArray(r.dropped) && r.dropped.length) parts.push("Not available here: " + r.dropped.map((x) => DROPPED_TXT[x] || x).join(", ") + ".");
+  if (r.legacyFailsafe && typeof r.legacyFailsafe === "object") parts.push("The legacy MQTT timeout (" + fmt(r.legacyFailsafe.timeoutMin) +
+    " min, " + fmt(r.legacyFailsafe.pct) + " %) was replaced by the failsafe settings (Settings, Failsafe).");
+  if (typeof r.rootTopic === "string" && r.rootTopic) parts.push("MQTT root topic kept: " + r.rootTopic + ".");
+  if (Array.isArray(r.renamed) && r.renamed.length) parts.push("Renamed for MQTT: " + r.renamed.map((x) => x.kind + " " + x.n + " " + x.name +
+    (x.topic ? " (topic " + x.topic + ")" : "")).join(", ") + ".");
+  return parts.join(" ");
+}
+function renderNotices(st) {
+  const net = st.net || {}, stm = st.stm || {}, mq = st.mqtt || {}, c = st.config || {};
+  notice("auth", st.auth === false && !(Number(lsGet("vdm.authNoticeUntil")) > Date.now()), "info",
+    "Login is off: anyone on your network can change settings, reset the STM or flash firmware. Set a user and a password under Settings -> Web access.",
+    [btn("Settings", () => { location.hash = "#settings"; }),
+      btn("Hide for 30 days", () => { lsSet("vdm.authNoticeUntil", String(Date.now() + 30 * 86400000)); renderNotices(S); })]);
+  if (st.importReport === true && importReport === null) {
+    importReport = false;
+    api("GET", "/api/import-report").then((r) => { importReport = r; renderNotices(S); }).catch(() => { importReport = null; });
+  }
+  notice("import", st.importReport === true, "info", importText(importReport),
+    [btn("Dismiss", (e) => busy(e.currentTarget, async () => { await api("DELETE", "/api/import-report"); importReport = null; kick(pStatus); }))]);
+  notice("backup", c.source === "backup" && ssGet("vdm.n3") !== "1", "warn",
+    "The stored configuration could not be read; the device restored its backup copy.",
+    [btn("Dismiss", () => { ssSet("vdm.n3", "1"); renderNotices(S); })]);
+  notice("newer", c.newerSchema === true, "warn",
+    "The configuration was written by a newer firmware. Saving here drops the settings this firmware does not know.");
+  const trial = net.trial && typeof net.trial === "object" ? net.trial : null;
+  notice("trial", !!trial, "warn", "New network settings are on trial: keep them? The previous settings return in " +
+    (trial ? fmt(trial.remainS) : "?") + " s.",
+  [btn("Keep these settings", (e) => busy(e.currentTarget, async () => { await api("POST", "/api/system/network/confirm"); toast("Network settings kept"); kick(pStatus); }), "primary"),
+    btn("Revert now", (e) => busy(e.currentTarget, async () => { await api("POST", "/api/system/network/revert"); expectRestart("Network revert"); }))]);
+  const lease = stm.lease && typeof stm.lease === "object" ? stm.lease : null;
+  notice("failsafe", !!lease && (lease.state === "expired" || (lease.mode === "esp" && lease.failsafeMask > 0)), "warn",
+    "Failsafe active: the regulator is silent; valves are at their failsafe positions. Targets set here are stored and applied once the regulator is back. To open a valve now use Assembly (100 % until the next target) or change its failsafe %.");
+  notice("safe", !!(stm.status && stm.status.safeMode === true), "err",
+    "The STM is in safe mode after repeated watchdog resets: valves stay where they are. Check the wiring, then leave safe mode.",
+    [btn("Leave safe mode", (e) => simpleAction(e.currentTarget, { title: "Leave safe mode?", text: "The STM resumes normal valve control.", ok: "Leave safe mode" },
+      "POST", "/api/stm/safe-mode/leave", undefined, "Leaving safe mode", () => kick(pStatus)))]);
+  notice("ha", mq.haStatus === "offline" && mq.state === "connected", "warn",
+    "Home Assistant reports offline while commands arrive: enable retained birth/last will in HA.");
+}
+
+// E19: a new ESP firmware comes with its own dashboard. Reload once per
+// version, or ask when the settings form has unsaved changes.
+let espBuild = null;
+function checkVersion(esp) {
+  const ver = String(esp.version) + "|" + String(esp.build);
+  if (espBuild === null) { espBuild = ver; return; }
+  if (ver === espBuild) return;
+  if (!dirtyCount() && ssGet("vdm.reloadedFor") !== ver) { ssSet("vdm.reloadedFor", ver); location.reload(); return; }
+  notice("version", true, "info", "The ESP now runs " + esp.version + ". Reload the page to use the matching dashboard.",
+    [btn("Reload", () => { ssSet("vdm.reloadedFor", ver); location.reload(); }, "primary")]);
+}
+
 function banner(text, isErr) {
   const b = $("banner");
   b.hidden = !text;
@@ -305,6 +392,7 @@ async function pollStatus() {
     throw e;
   }
   if (!st || typeof st !== "object" || !st.esp) throw new Error("bad status");
+  checkVersion(st.esp);
   const protoChanged = !S || !S.stm || S.stm.proto !== (st.stm && st.stm.proto);
   S = st;
   renderStatus(st);
@@ -313,20 +401,26 @@ async function pollStatus() {
     toast(restartWait.label + ": the ESP is back (" + st.esp.version + ")");
     restartWait = null;
   }
+  renderNotices(st);
   if (!restartWait) {
     const msgs = [];
-    if (st.stm && st.stm.compatible === false) {
+    if (st.config && st.config.source === "defaults_after_error") {
+      msgs.push("The configuration could not be read and no backup exists: the device runs with defaults. Import a saved configuration under Maintenance.");
+    }
+    if (st.stm && st.stm.support === "too_old") {
+      msgs.push("STM firmware " + (st.stm.version || "") + " is older than 1.4.0: update the STM.");
+    } else if (st.stm && st.stm.compatible === false) {
       msgs.push("The STM firmware " + (st.stm.version || "") + " is older than the supported minimum " +
         (st.stm.minVersion || "") + ". Update it under Maintenance.");
     }
     if (st.stm && st.stm.link === "down") msgs.push("The STM does not answer.");
-    banner(msgs.join(" "), st.stm && st.stm.link === "down");
+    banner(msgs.join(" "), (st.stm && st.stm.link === "down") || (st.config && st.config.source === "defaults_after_error"));
   }
 }
 
 function renderStatus(st) {
   const net = st.net || {}, stm = st.stm || {}, mq = st.mqtt || {}, esp = st.esp || {}, tm = st.time || {};
-  const station = net.hostname || "VdMot";
+  const station = st.station || net.hostname || "VdMot";
   setText($("station"), station);
   document.title = station + " · VdMot Revamped";
   let netText = net.state === "down" || !net.state ? "network down" : net.state;
@@ -384,7 +478,8 @@ const HEALTH = { blocked: ["blocked", "err"], failed: ["failed", "err"], noValve
   calibRetries: ["calibration retries", "warn"], earlyStop: ["early stop", "warn"],
   cmdRejected: ["commands rejected", "warn"], stale: ["no fresh data", "warn"],
   targetUnconfirmed: ["target not confirmed", "warn"], tempFailed: ["sensor failed", "warn"],
-  calEarlyStop: ["early end stop since calibration", "warn"], calLastFailed: ["last calibration failed", "err"] };
+  calEarlyStop: ["early end stop since calibration", "warn"], calLastFailed: ["last calibration failed", "err"],
+  strokeShort: ["stroke close to minCounts: calibration may fail", "warn"] };
 const STOP_TXT = { none: "–", target: "target reached", endstop: "end stop", early_endstop: "early end stop",
   timeout: "timeout", undercurrent: "no motor current", safety_overcurrent: "over-current limit", aborted: "aborted" };
 const SYNC_TXT = { pending: "target pending", await_ack: "sending target", await_verify: "verifying target",
@@ -418,7 +513,8 @@ function buildCard(i) {
   c.temps = h("p", { class: "temps" });
   c.flags = h("div", { class: "flags" });
   const inId = "tg-" + i;
-  c.input = h("input", { id: inId, type: "number", inputmode: "numeric", min: 0, max: 100, step: 1,
+  c.fs = h("span", { class: "chip warn", hidden: true });
+  c.input = h("input", { id: inId, type: "text", inputmode: "decimal", min: 0, max: 100, step: "any",
     "aria-label": "Target for valve " + i + " in percent" });
   c.input.addEventListener("input", () => { c.dirty = true; });
   c.input.addEventListener("keydown", (e) => { if (e.key === "Enter") setTarget(c); });
@@ -429,11 +525,13 @@ function buildCard(i) {
     h("button", { type: "button", onclick: (e) => valveAction(e.currentTarget, i, "assembly") }, "Assembly"),
     c.moveBtn = h("button", { type: "button", onclick: () => openMove(i) }, "Service move…"),
     c.profBtn = h("button", { type: "button", onclick: () => openProfile(i) }, "Profile"),
+    c.stopBtn = h("button", { type: "button", onclick: (e) => simpleAction(e.currentTarget, null, "POST", "/api/valves/" + i + "/stop",
+      undefined, valveLabel(i) + ": stop requested", () => kick(pValves)) }, "Stop"),
   ];
   c.el = h("article", { class: "card", "aria-labelledby": "vt-" + i },
     h("div", { class: "vhead" },
       h("h3", { id: "vt-" + i }, h("span", { class: "idx", text: "#" + i }), c.name),
-      c.state, c.cal, c.sync),
+      c.state, c.cal, c.sync, c.fs),
     h("div", { class: "pos" }, c.pos, c.tgt),
     h("div", { class: "meter", role: "presentation" }, c.bar, c.mark),
     dl, c.last, c.temps, c.flags,
@@ -480,8 +578,8 @@ function updateCard(c, v) {
     c.last.className = "lastmove muted";
   }
   const sensors = Array.isArray(v.sensors) ? v.sensors : [];
-  setText(c.temps, sensors.length ? "Temperature: " + sensors.map((x) => (x.name || "slot " + x.slot) + " " +
-    (isNum(x.temp) ? x.temp.toFixed(1) + " °C" : "no reading")).join(", ") : "");
+  setText(c.temps, sensors.map((x) => "T" + (x.sensor === 2 ? 2 : 1) + " " + (x.name || "slot " + x.slot) + " " +
+    (isNum(x.temp) ? x.temp.toFixed(1) + " °C" : "no reading")).join(", "));
   c.temps.hidden = !sensors.length;
   const flags = Array.isArray(v.health) ? v.health.filter((f) => HEALTH[f]) : [];
   if (ext && ext.calEarlyStop === true) flags.push("calEarlyStop");
@@ -493,6 +591,10 @@ function updateCard(c, v) {
     for (const f of flags) c.flags.append(h("span", { class: "chip " + HEALTH[f][1], text: HEALTH[f][0] }));
   }
   c.flags.hidden = !flags.length;
+  const fs = v.failsafe && typeof v.failsafe === "object" ? v.failsafe : null;
+  c.fs.hidden = !fs || (fs.state !== "lease" && fs.state !== "blocked");
+  if (!c.fs.hidden) setChip(c.fs, "failsafe " + (fs.state === "blocked" ? "(blocked) " : "") + (isNum(fs.pct) ? fs.pct + " %" : "hold"),
+    fs.state === "blocked" ? "err" : "warn");
   c.el.classList.toggle("bad", !!v.active && (key === "blocked" || key === "failed"));
   c.el.classList.toggle("off", !v.active);
   if (!c.dirty && document.activeElement !== c.input) c.input.value = isNum(v.target) ? v.target : "";
@@ -503,6 +605,9 @@ function updateCard(c, v) {
   c.moveBtn.title = proto2 ? "" : "Needs STM firmware 2.x";
   c.profBtn.disabled = !proto2;
   c.profBtn.title = proto2 ? "" : "Needs STM firmware 2.x";
+  const proto3 = S && S.stm && S.stm.proto >= 3;
+  c.stopBtn.hidden = !proto3;
+  c.stopBtn.disabled = !v.active;
 }
 
 async function pollValves() {
@@ -551,20 +656,25 @@ function renderSummary() {
   setText(box, parts.join(" · "));
 }
 
+// Decimals with '.' or ',' are rounded by the device (43.5 -> 44).
 async function setTarget(c) {
-  const raw = c.input.value.trim();
+  const raw = c.input.value.trim().replace(",", ".");
   const t = Number(raw);
-  if (!/^\d{1,3}$/.test(raw) || t > 100) {
+  if (!/^\d{1,3}(\.\d+)?$/.test(raw) || t > 100) {
     c.input.setAttribute("aria-invalid", "true");
-    toast("Target must be a whole number from 0 to 100", true);
+    toast("Target must be a number from 0 to 100", true);
     c.input.focus();
     return;
   }
   c.input.removeAttribute("aria-invalid");
   await busy(c.setBtn, async () => {
-    await api("POST", "/api/valves/" + c.i + "/target", { target: t });
+    const r = await api("POST", "/api/valves/" + c.i + "/target", { target: t });
+    const sent = r && isNum(r.target) ? r.target : Math.round(t);
     c.dirty = false;
-    toast(valveLabel(c.i) + ": target " + t + " % sent");
+    c.input.value = sent;
+    const lease = S && S.stm && S.stm.lease;
+    const pending = lease && (lease.state === "expired" || (lease.mode === "esp" && lease.failsafeMask > 0));
+    toast(valveLabel(c.i) + ": target " + sent + " % " + (pending ? "stored, pending until the regulator is back" : "sent"));
     kick(pValves);
   });
 }
@@ -832,16 +942,18 @@ $("ev-live").addEventListener("change", () => kick(pEvents));
 //   secret: a..b bytes; ip/mask/bool/id/days: no extra.
 const RULE_MSG = { safe: "no + # / \" \\ or control characters",
   print: "no control characters", nospace: "printable ASCII without spaces", nocolon: "no ':' or control characters",
-  host: "host name (letters, digits, '-', '.') or IPv4 address" };
+  host: "host name (letters, digits, '-', '.') or IPv4 address",
+  hosts: "up to 4 host names or IPv4 addresses, comma-separated", seg: "letters, digits, '_' and '-'",
+  path: "levels of letters, digits, '_', '-' separated by single '/'", client: "letters, digits, '_', '-'" };
 const GROUPS = [
-  ["Station and network", "Changes in this group restart the ESP; the STM keeps running.", [
+  ["Station and network", "Network changes restart the ESP and must be confirmed from the new address within 2 minutes.", [
     ["station", "Station name", "str", 1, 20, "safe", "Host name, MQTT root and Home Assistant device name"],
     ["net.iface", "Interface", "sel", [[0, "Automatic"], [1, "Ethernet"], [2, "WiFi"]]],
     ["net.dhcp", "Use DHCP", "bool"],
     ["net.ip", "Static IP address", "ip"],
     ["net.mask", "Subnet mask", "mask"],
     ["net.gateway", "Gateway", "ip"],
-    ["net.dns", "DNS server", "ip"],
+    ["net.dns", "DNS server", "ip", undefined, undefined, "", "0.0.0.0 = use the gateway"],
     ["net.ssid", "WiFi SSID", "str", 0, 32, "print"],
     ["net.wifiPassword", "WiFi password", "secret", 0, 63, "", "Empty for an open network"],
     ["net.reconnectTimeoutMin", "Restart after network loss (min)", "int", 0, 240, "", "0 = never"]]],
@@ -852,13 +964,18 @@ const GROUPS = [
   ["Web access", "Login is required when both user and password are set.", [
     ["web.user", "User", "str", 0, 64, "nocolon"],
     ["web.password", "Password", "secret", 0, 64],
-    ["web.protectRead", "Also require login to view status", "bool"]]],
+    ["web.protectRead", "Also require login to view status", "bool"],
+    ["web.allowedHosts", "Additional host names", "str", 0, 80, "hosts",
+      "The API answers only for the device IP, its host name and <host name>.local; add other names you use, comma-separated"]]],
   ["MQTT", "", [
     ["mqtt.mode", "Mode", "sel", [[0, "Off"], [1, "MQTT"], [2, "MQTT + Home Assistant discovery"]]],
     ["mqtt.host", "Broker host or IP", "str", 0, 64, "host"],
     ["mqtt.port", "Port", "int", 1, 65535],
     ["mqtt.user", "User", "str", 0, 64, "print"],
-    ["mqtt.password", "Password", "secret", 0, 64],
+    ["mqtt.password", "Password", "secret", 0, 64, "", "Without a password the broker is used anonymously"],
+    ["mqtt.rootTopic", "MQTT root topic", "str", 0, 20, "safe", "Empty = station name"],
+    ["mqtt.clientId", "Client id", "str", 0, 23, "client", "Empty = automatic (<host>-<mac>); some brokers accept at most 23 characters"],
+    ["mqtt.discoveryPrefix", "HA discovery prefix", "str", 0, 32, "path", "Usually homeassistant"],
     ["mqtt.keepAliveS", "Keep-alive (s)", "int", 5, 300],
     ["mqtt.publishIntervalS", "Publish interval (s)", "int", 2, 3600],
     ["mqtt.minDelayS", "Minimum delay between publishes (s)", "int", 0, 3600],
@@ -874,6 +991,9 @@ const GROUPS = [
     ["mqtt.newDiag", "Extended diagnostics (diag/…)", "bool"],
     ["mqtt.events", "Publish warnings and calibration results", "bool"],
     ["mqtt.haDiscoveryOnConnect", "Send HA discovery on connect", "bool"]]],
+  ["Failsafe", "Used when the regulator (Home Assistant / MQTT) goes silent. Per-valve positions are in the valves table.", [
+    ["failsafe.timeoutMin", "Failsafe after regulator silence (min)", "int", 0, 1440, "",
+      "0 = off, 5-1440. When Home Assistant/MQTT is silent this long, every valve goes to its failsafe position"]]],
   ["Calibration schedule", "All valves are calibrated one after another at the chosen local time.", [
     ["calib.dayMask", "Days", "days"],
     ["calib.hour", "Hour (0–23)", "int", 0, 23],
@@ -920,6 +1040,10 @@ function ruleOk(rule, v) {
     case "safe": return !/[+#/"\\]/.test(v);
     case "nospace": return /^[\x21-\x7e]*$/.test(v);
     case "nocolon": return !v.includes(":");
+    case "seg": return /^[A-Za-z0-9_-]*$/.test(v);
+    case "client": return /^[A-Za-z0-9_-]*$/.test(v);
+    case "path": return v === "" || /^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/.test(v);
+    case "hosts": return v.trim() === "" ? v === "" : v.split(",").length <= 4 && v.split(",").every((x) => ruleOk("host", x.trim()) && x.trim() !== "");
     case "host":
       if (v === "") return true;
       if (/^[\d.]+$/.test(v)) return ipv4(v) !== null;
@@ -943,6 +1067,12 @@ function readField(f) {
       const raw = el.value.trim(), n = Number(raw);
       if (!/^-?\d{1,6}$/.test(raw)) return { err: "Enter a whole number" + (f.a !== undefined ? " " + f.a + "–" + f.b : "") };
       if (n < f.a || n > f.b) return { err: "Allowed " + f.a + "–" + f.b };
+      return { v: n };
+    }
+    case "pct": {  // 0..100 or hold (255)
+      if (f.hold && f.hold.checked) return { v: 255 };
+      const raw = el.value.trim(), n = Number(raw);
+      if (!/^\d{1,3}$/.test(raw) || n > 100) return { err: "0-100, or Hold" };
       return { v: n };
     }
     case "learn": {
@@ -1031,9 +1161,15 @@ function makeField(map, def, compact) {
       if (type === "str" || type === "secret") attrs.maxlength = b;
       f.el = h("input", attrs);
     }
+    if (type === "pct") {
+      f.el.inputMode = "numeric";
+      f.el.classList.add("pct");
+      f.hold = h("input", { type: "checkbox", "aria-label": label + ": hold the position" });
+      f.hold.addEventListener("change", () => { f.el.disabled = f.hold.checked; });
+    }
     if (compact) {
       f.el.setAttribute("aria-label", label);
-      wrap = h("div", null, f.el, f.errEl);
+      wrap = h("div", f.hold ? { class: "row" } : null, f.el, f.hold ? h("label", { class: "inline small" }, f.hold, "Hold") : null, f.errEl);
     } else {
       const kids = [h("label", { for: id, text: label }), f.el];
       if (type === "secret") {
@@ -1053,6 +1189,11 @@ function makeField(map, def, compact) {
 function setFieldValue(f, v) {
   f.orig = v;
   switch (f.type) {
+    case "pct":
+      f.hold.checked = v === 255;
+      f.el.value = isInt(v) && v <= 100 ? String(v) : "";
+      f.el.disabled = v === 255;
+      break;
     case "bool": f.el.checked = !!v; break;
     case "days": f.boxes.forEach((b, i) => { b.checked = isInt(v) && ((v >> i) & 1) === 1; }); break;
     case "secret":
@@ -1086,10 +1227,12 @@ function buildSettings() {
     vrows.push(h("tr", null, h("td", { text: i }),
       h("td", null, makeField(CF, ["valves." + i + ".name", "Valve " + i + " name", "str", 0, 10, "safe"], true)),
       h("td", null, makeField(CF, ["valves." + i + ".active", "Valve " + i + " active", "bool"], true)),
-      h("td", null, s1), h("td", null, s2)));
+      h("td", null, s1), h("td", null, s2),
+      h("td", null, makeField(CF, ["valves." + i + ".failsafePct", "Valve " + i + " failsafe %", "pct"], true)),
+      h("td", null, makeField(CF, ["valves." + i + ".topic", "Valve " + i + " MQTT topic", "str", 0, 10, "seg"], true))));
   }
-  form.append(tableGroup("Valves", "Names are used in MQTT topics and must be unique. Sensor changes are sent to the STM separately after the configuration is saved.",
-    ["#", "Name", "Active", "Sensor 1", "Sensor 2"], vrows));
+  form.append(tableGroup("Valves", "Names are used in MQTT topics and must be unique. Sensor changes are sent to the STM separately after the configuration is saved. Failsafe %: position when the regulator is silent (Hold keeps the position). MQTT topic: empty = from the name.",
+    ["#", "Name", "Active", "Sensor 1", "Sensor 2", "Failsafe %", "MQTT topic"], vrows));
   const trows = [];
   for (let i = 1; i <= TEMP_SLOTS; i++) {
     const p = "temps." + i + ".";
@@ -1097,10 +1240,11 @@ function buildSettings() {
       h("td", null, makeField(CF, [p + "name", "Temperature slot " + i + " name", "str", 0, 10, "safe"], true)),
       h("td", null, makeField(CF, [p + "active", "Temperature slot " + i + " active", "bool"], true)),
       h("td", null, makeField(CF, [p + "offset", "Temperature slot " + i + " offset in °C", "num", -10, 10], true)),
-      h("td", null, makeField(CF, [p + "id", "Temperature slot " + i + " 1-Wire id", "id"], true))));
+      h("td", null, makeField(CF, [p + "id", "Temperature slot " + i + " 1-Wire id", "id"], true)),
+      h("td", null, makeField(CF, [p + "topic", "Temperature slot " + i + " MQTT topic", "str", 0, 10, "seg"], true))));
   }
-  form.append(tableGroup("Temperature sensors", "Offset in °C (−10 to 10, 0.1 steps). Ids of sensors found on the bus are suggested.",
-    ["Slot", "Name", "Active", "Offset", "1-Wire id"], trows));
+  form.append(tableGroup("Temperature sensors", "Offset in °C (−10 to 10, 0.1 steps). Ids of sensors found on the bus are suggested. MQTT topic: empty = from the name.",
+    ["Slot", "Name", "Active", "Offset", "1-Wire id", "MQTT topic"], trows));
   const wrows = [];
   for (let i = 1; i <= VOLT_SLOTS; i++) {
     const p = "volts." + i + ".";
@@ -1112,10 +1256,11 @@ function buildSettings() {
       h("td", null, makeField(CF, [p + "offset", "Voltage slot " + i + " offset", "num", -1000, 1000], true)),
       h("td", null, nf),
       h("td", null, makeField(CF, [p + "unit", "Voltage slot " + i + " unit", "str", 0, 8, "safe"], true)),
-      h("td", null, makeField(CF, [p + "id", "Voltage slot " + i + " 1-Wire id", "id"], true))));
+      h("td", null, makeField(CF, [p + "id", "Voltage slot " + i + " 1-Wire id", "id"], true)),
+      h("td", null, makeField(CF, [p + "topic", "Voltage slot " + i + " MQTT topic", "str", 0, 10, "seg"], true))));
   }
-  form.append(tableGroup("Voltage sensors", "value = raw × factor + offset",
-    ["Slot", "Name", "Active", "Offset", "Factor", "Unit", "1-Wire id"], wrows));
+  form.append(tableGroup("Voltage sensors", "value = (raw / 100 + offset) × factor (raw in 10 mV). MQTT topic: empty = from the name.",
+    ["Slot", "Name", "Active", "Offset", "Factor", "Unit", "1-Wire id", "MQTT topic"], wrows));
   form.append(h("div", { class: "savebar" },
     h("button", { type: "submit", class: "primary", id: "cfg-save" }, "Save"),
     h("button", { type: "button", id: "cfg-discard", onclick: () => { if (cfg) fillSettings(cfg); } }, "Discard changes"),
@@ -1183,8 +1328,9 @@ function fillSettings(c) {
   }
   for (let i = 1; i <= VALVES; i++) {
     const sensors = V[i - 1] && Array.isArray(V[i - 1].sensors) ? V[i - 1].sensors : [];
-    mapSel[i].orig1 = sensors[0] && isInt(sensors[0].slot) ? sensors[0].slot : 0;
-    mapSel[i].orig2 = sensors[1] && isInt(sensors[1].slot) ? sensors[1].slot : 0;
+    const at = (n) => sensors.find((x) => x && x.sensor === n && isInt(x.slot));
+    mapSel[i].orig1 = at(1) ? at(1).slot : 0;
+    mapSel[i].orig2 = at(2) ? at(2).slot : 0;
     mapSel[i].s1.value = ""; mapSel[i].s2.value = "";
   }
   fillSlotOptions();
@@ -1263,6 +1409,11 @@ $("cfg-form").addEventListener("change", (e) => {
 window.addEventListener("beforeunload", (e) => { if (dirtyCount()) { e.preventDefault(); e.returnValue = ""; } });
 
 const segment = (n) => n.replace(/ /g, "_");
+// buildHaId (lib/core common.cpp): [A-Za-z0-9_-] kept, Latin letters folded to ASCII, the rest '_'.
+function haId(v) {
+  return v.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ß/g, "ss").replace(/[æÆ]/g, (x) => x === "æ" ? "ae" : "AE")
+    .replace(/[œŒ]/g, (x) => x === "œ" ? "oe" : "OE").replace(/[łŁ]/g, (x) => x === "ł" ? "l" : "L").replace(/[^A-Za-z0-9_-]/g, "_");
+}
 
 // Mirrors validateConfig (lib/core config.cpp): per-field ranges plus the
 // cross-field rules. Returns Map key -> message.
@@ -1297,6 +1448,20 @@ function validateSettings() {
   if (mode > 0 && !val("mqtt.host")) need("mqtt.host", "Required when MQTT is on");
   if (val("mqtt.minDelayS") > val("mqtt.publishIntervalS")) need("mqtt.minDelayS", "Must not exceed the publish interval");
   if (mode === 2 && !val("mqtt.separate")) need("mqtt.mode", "Home Assistant needs 'Separate topic per value'");
+  const fsMin = val("failsafe.timeoutMin");
+  if (fsMin > 0 && fsMin < 5) need("failsafe.timeoutMin", "0 (off) or 5-1440");
+  // V3: Home Assistant ids of the items must differ.
+  for (const [grp, count] of [["valves", VALVES], ["temps", TEMP_SLOTS], ["volts", VOLT_SLOTS]]) {
+    const ids = new Map();
+    for (let i = 1; i <= count; i++) {
+      if (grp !== "valves" && (!val(grp + "." + i + ".active") || !val(grp + "." + i + ".id"))) continue;
+      const topic = val(grp + "." + i + ".topic"), name = val(grp + "." + i + ".name");
+      const seg = topic || (name ? segment(name) : String(i));
+      const id = haId(seg);
+      if (ids.has(id)) need(grp + "." + i + "." + (topic ? "topic" : "name"), "Same Home Assistant id as " + grp.replace(/s$/, "") + " " + ids.get(id));
+      else ids.set(id, i);
+    }
+  }
   const names = [];
   for (let i = 1; i <= VALVES; i++) names.push(val("valves." + i + ".name") || "");
   names.forEach((n, i) => {
@@ -1338,7 +1503,7 @@ $("cfg-form").addEventListener("submit", async (e) => {
     return;
   }
   const patch = {};
-  let clear = false, restart = false;
+  let clear = false;
   for (const f of CF.values()) {
     if (!changed(f)) continue;
     if (f.type === "secret") {
@@ -1347,28 +1512,29 @@ $("cfg-form").addEventListener("submit", async (e) => {
     } else {
       patch[f.key] = readField(f).v;
     }
-    if (f.key === "station" || f.key.startsWith("net.")) restart = true;
   }
-  if (JSON.stringify(patch).length > 4000) {
-    toast("Too many changes for one request (the device accepts 4 KB); save part of them first", true);
+  if (clear) patch.clearSecrets = true;
+  if (utf8Len(JSON.stringify(patch)) > 8000) {
+    toast("Too many changes for one request (the device accepts 8 KB); save part of them first", true);
     return;
   }
   const maps = mappingChanges();
-  if (restart && !await confirmDlg({ title: "Restart the ESP?", text: "Network and station changes are applied by restarting the ESP. The STM and the valves keep running. If the new address is wrong, the dashboard becomes unreachable.", ok: "Save and restart" })) return;
   await busy($("cfg-save"), async () => {
     if (Object.keys(patch).length) {
-      if (clear) patch.clearSecrets = true;
-      let res;
-      try {
-        res = await api("POST", "/api/config", patch);
-      } catch (err) {
+      const rejected = (err) => {
         const path = err.data && typeof err.data.detail === "string" ? err.data.detail : "";
         const f = CF.get(path);
         if (err.status === 400 && f) { showErr(f, "Rejected by the device"); revealField(f); }
         throw err;
-      }
+      };
+      const dry = await api("POST", "/api/config?dryRun=1", patch).catch(rejected);
+      if (dry && dry.restartRequired && !await confirmDlg({ title: "Restart the ESP?", text: "These changes are applied by restarting the ESP. The STM and the valves keep running." +
+        (dry.netTrial ? " The new network settings run on trial: open the dashboard at the new address and confirm them within 2 minutes, or the previous settings return." : ""),
+      ok: "Save and restart" })) return;
+      const res = await api("POST", "/api/config", patch).catch(rejected);
+      const restart = !!(res && res.restartRequired);
       fillSettings(res && typeof res === "object" && res.station !== undefined ? res : await api("GET", "/api/config"));
-      toast("Configuration saved" + (restart ? "; the ESP restarts" : ""));
+      toast("Configuration saved" + (restart ? "; the ESP restarts" : "") + (res && res.netTrial ? ": confirm the network settings from the new address" : ""));
       if (restart) expectRestart("Settings");
     }
     for (const [i, a, b] of maps) {
@@ -1677,7 +1843,7 @@ async function loadImages() {
     return h("tr", null,
       h("td", null, h("span", { class: "mono", text: x.name }), lastGood ? h("span", { class: "small muted", text: " (backup of the last good firmware)" }) : null),
       h("td", { class: "r", text: fmtBytes(x.size) }),
-      h("td", null, x.version || "–", " ", state),
+      h("td", null, x.version || "–", " ", state, x.hw ? h("span", { class: "chip", text: x.hw }) : null),
       h("td", { class: "mono", text: isNum(x.crc32) ? "0x" + x.crc32.toString(16).padStart(8, "0") : x.crc32 || "–" }),
       h("td", null, h("span", { class: "row" },
         h("button", { type: "button", class: "primary", disabled: flashActive || !flashable, "aria-label": "Flash " + x.name,
@@ -1696,7 +1862,11 @@ async function flashImage(btn, img) {
   const mode = h("select", { id: "fl-mode" }, h("option", { value: "normal", text: "Normal (running STM firmware)" }),
     h("option", { value: "blank", text: "Blank chip / BOOT0 jumper set" }));
   const force = h("input", { type: "checkbox", id: "fl-force" });
-  const extra = [h("div", { class: "field" }, h("label", { for: "fl-mode", text: "Mode" }), mode)];
+  const board = h("select", { id: "fl-board" }, h("option", { value: "", text: "choose" }), h("option", { value: "C1", text: "C1" }),
+    h("option", { value: "C2", text: "C2 (also C3/C4)" }));
+  const boardField = h("div", { class: "field", hidden: true }, h("label", { for: "fl-board", text: "Board revision" + (img.hw ? " (image: " + img.hw + ")" : "") }), board);
+  mode.addEventListener("change", () => { boardField.hidden = mode.value !== "blank"; });
+  const extra = [h("div", { class: "field" }, h("label", { for: "fl-mode", text: "Mode" }), mode), boardField];
   if (noHandshake) {
     extra.push(h("p", { class: "small err-msg", text: "This image has no update handshake: after flashing it, the next STM update needs the BOOT0 jumper." }),
       h("label", { class: "inline small" }, force, "Flash it anyway"));
@@ -1706,7 +1876,9 @@ async function flashImage(btn, img) {
   ok: "Flash", danger: true, extra })) return;
   if (noHandshake && !force.checked) { toast("Not flashed: tick 'Flash it anyway' to use an image without handshake", true); return; }
   await busy(btn, async () => {
-    await api("POST", "/api/stm/flash", { image: img.name, mode: mode.value === "blank" ? "blank" : "normal", force: noHandshake && force.checked });
+    const body = { image: img.name, mode: mode.value === "blank" ? "blank" : "normal", force: noHandshake && force.checked };
+    if (mode.value === "blank" && board.value) body.board = board.value;
+    await api("POST", "/api/stm/flash", body);
     toast("Flashing started");
     flashActive = true;
     loadImages();
@@ -1733,7 +1905,7 @@ async function pollFlash() {
   const rows = [
     h("p", { class: "small" }, h("b", { text: "Flash: " + (PHASE_TXT[d.phase] || d.phase) }),
       d.image && d.image.name ? " · " + d.image.name : "", d.chipName ? " · " + d.chipName : "",
-      isNum(d.attempt) && d.attempt > 1 ? " · attempt " + d.attempt : ""),
+      isNum(d.attempt) && d.attempt > 1 ? " · attempt " + d.attempt : "", isNum(d.baud) && d.baud ? " · " + d.baud + " Bd" : ""),
   ];
   if (active) rows.push(h("progress", { max: 100, value: pct, "aria-label": "Flash progress" }),
     h("p", { class: "small muted", text: pct + " %" + (isNum(d.bytesTotal) && d.bytesTotal ? " · " + fmtBytes(d.bytesDone) + " of " + fmtBytes(d.bytesTotal) : "") }),
@@ -1743,13 +1915,16 @@ async function pollFlash() {
     }) }, "Abort"));
   if (d.phase === "failed" && d.error) rows.push(h("p", { class: "small err-msg", text: "Error: " + String(d.error.code || "?").replace(/_/g, " ") +
     (d.error.phase ? " while " + (PHASE_TXT[d.error.phase] || d.error.phase) : "") + (d.error.addr ? " at " + d.error.addr : "") }));
-  if (d.phase === "done") rows.push(h("p", { class: "small", text: "The STM runs " + (d.appVersion || "the new firmware") + "." }));
+  if (d.phase === "done") rows.push(h("p", { class: "small", text: d.manualReset ?
+    "Flashed and verified. Remove the BOOT0 jumper, then reset the STM (Reset STM)." :
+    "The STM runs " + (d.appVersion || "the new firmware") + "." }));
+  if (d.pending) rows.push(h("p", { class: "small muted", text: "Waiting for the STM to finish writing its EEPROM…" }));
   box.replaceChildren(...rows);
 }
 
 async function simpleAction(btn, opt, method, path, body, okMsg, after) {
   if (opt && !await confirmDlg(opt)) return;
-  await busy(btn, async () => { await api(method, path, body); toast(okMsg); if (after) after(); });
+  await busy(btn, async () => { const d = await api(method, path, body); toast(okMsg); if (after) after(d); });
 }
 $("btn-reboot").addEventListener("click", (e) => simpleAction(e.currentTarget,
   { title: "Restart the ESP?", text: "The dashboard and MQTT are unavailable for about 20 seconds. The STM and the valves keep running.", ok: "Restart" },
@@ -1788,9 +1963,10 @@ function flatten(obj, prefix, out, depth) {
   }
   return out;
 }
-// Import sends only what differs from the current configuration: a full
-// export can be larger than the 4 KB request limit, and unchanged network
-// settings then do not restart the ESP.
+// Import sends only what differs from the current configuration, as one
+// request of at most 8000 bytes; keys this firmware does not know are skipped
+// and listed. Passwords the file does not carry can be typed in.
+const SECRETS = ["web.password", "mqtt.password", "net.wifiPassword"];
 $("cfg-import").addEventListener("change", async () => {
   const inp = $("cfg-import"), f = inp.files[0];
   inp.value = "";
@@ -1801,27 +1977,86 @@ $("cfg-import").addEventListener("change", async () => {
   if (!doc || typeof doc !== "object" || Array.isArray(doc) || !isInt(doc.schema)) { toast("Not a VdMot Revamped configuration export", true); return; }
   await busy(null, async () => {
     const cur = await api("GET", "/api/config");
-    // 2.0.0 exports say schema 1: the keys they lack keep their values.
-    if (!cur || doc.schema < 1 || doc.schema > cur.schema) throw new Error("The export has configuration schema " + doc.schema + ", this firmware reads schema 1 to " + (cur && cur.schema));
-    const now = flatten(cur, "", new Map(), 0), patch = {};
-    let restart = false;
-    for (const [k, v] of flatten(doc, "", new Map(), 0)) {
-      if (now.has(k) && now.get(k) === v) continue;
+    if (!cur || doc.schema < 1) throw new Error("The export has configuration schema " + doc.schema);
+    const now = flatten(cur, "", new Map(), 0), patch = {}, skipped = [];
+    const file = flatten(doc, "", new Map(), 0);
+    for (const [k, v] of file) {
+      if (SECRETS.includes(k)) { if (v !== "") patch[k] = v; continue; }
+      if (!now.has(k)) { skipped.push(k); continue; }
+      if (now.get(k) === v) continue;
       patch[k] = v;
-      if (k === "station" || k.startsWith("net.")) restart = true;
     }
+    // secrets flagged in the file but missing in it and on the device
+    const pw = [];
+    for (const k of SECRETS) {
+      if (getPath(doc, k + "Set") === true && !(k in patch) && getPath(cur, k + "Set") !== true) {
+        const el = h("input", { type: "password", autocomplete: "new-password", id: "imp-" + k.replace(/\./g, "-") });
+        pw.push({ k, el, field: h("div", { class: "field" }, h("label", { for: el.id, text: k }), el,
+          h("span", { class: "hint", text: k === "web.password" ? "Required for the imported web login" :
+            k === "mqtt.password" ? "Without it the broker login fails" : "Without it the WiFi login fails" })) });
+      }
+    }
+    const webPw = pw.find((x) => x.k === "web.password");
+    const skipWeb = h("input", { type: "checkbox", id: "imp-skipweb" });
     const n = Object.keys(patch).length;
-    if (!n) { toast("The file matches the current configuration"); return; }
-    if (JSON.stringify(patch).length > 4000) throw new Error("Too many differences for one request (" + n + " settings); edit them under Settings");
-    if (!await confirmDlg({ title: "Import configuration?", text: n + " setting" + (n > 1 ? "s" : "") + " from " + f.name +
-      " differ from the current ones and will be replaced. Stored passwords are kept." + (restart ? " Network or station changes restart the ESP." : ""), ok: "Import" })) return;
-    await api("POST", "/api/config", patch);
-    toast("Configuration imported (" + n + " setting" + (n > 1 ? "s" : "") + ")" + (restart ? "; the ESP restarts" : ""));
+    if (!n && !pw.length) { toast("The file matches the current configuration"); return; }
+    const extra = [];
+    if (doc.schema > cur.schema) extra.push(h("p", { class: "small err-msg", text: "Written by a newer firmware; unknown settings are skipped." }));
+    if (skipped.length) extra.push(h("p", { class: "small muted", text: "Skipped (unknown here): " + skipped.slice(0, 12).join(", ") + (skipped.length > 12 ? " …" : "") }));
+    for (const x of pw) extra.push(x.field);
+    if (webPw) extra.push(h("label", { class: "inline small" }, skipWeb, "Skip the web login settings"));
+    const dlgOk = () => { const ok = $("dc-ok"); ok.disabled = !!webPw && !webPw.el.value && !skipWeb.checked; };
+    if (webPw) { webPw.el.addEventListener("input", dlgOk); skipWeb.addEventListener("change", dlgOk); }
+    let dry = null;
+    try { dry = await api("POST", "/api/config?dryRun=1", patch); } catch (e) { if (e.status !== 400 || !webPw) throw e; }
+    if (webPw) setTimeout(dlgOk, 0);  // after confirmDlg reset the button
+    if (!await confirmDlg({ title: "Import configuration?", text: n + " setting" + (n === 1 ? "" : "s") + " from " + f.name +
+      " differ from the current ones and will be replaced. Stored passwords are kept." +
+      (dry && dry.restartRequired ? " The ESP restarts to apply them." : "") +
+      (dry && dry.netTrial ? " The new network settings must be confirmed from the new address within 2 minutes." : ""), ok: "Import", extra })) return;
+    for (const x of pw) if (x.el.value) patch[x.k] = x.el.value;
+    if (webPw && skipWeb.checked) { delete patch["web.user"]; delete patch["web.password"]; }
+    if (utf8Len(JSON.stringify(patch)) > 8000) throw new Error("Too many differences for one request; edit them under Settings");
+    const res = await api("POST", "/api/config", patch);
+    const restart = !!(res && res.restartRequired);
+    toast("Configuration imported (" + Object.keys(patch).length + " settings)" + (restart ? "; the ESP restarts" : ""));
     cfgLoaded = false;
     if (view === "settings") loadSettings();
     if (restart) expectRestart("Configuration import");
   });
 });
+
+// Export with passwords (needs the web login)
+$("cfg-export-secrets").addEventListener("click", (e) => simpleAction(e.currentTarget,
+  { title: "Export with passwords?", text: "The file contains the web, MQTT and WiFi passwords in clear text. Keep it safe.", ok: "Export" },
+  "GET", "/api/config/export?secrets=1", undefined, "Export downloaded", null, (d) => {
+    const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" })), download: "vdmot-config-secrets.json" });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }));
+
+// Files on the ESP (LittleFS)
+const KIND_TXT = { stm_image: "STM image", upload_part: "aborted upload", log: "event log", internal: "internal",
+  legacy_ha_list: "legacy HA list", legacy_image: "legacy STM image", other: "other" };
+async function loadFiles() {
+  const tb = $("files-body");
+  let d;
+  try { d = await api("GET", "/api/files"); } catch (e) {
+    tb.replaceChildren(h("tr", null, h("td", { colspan: 4, class: "muted", text: "Could not list files: " + e.message })));
+    return;
+  }
+  if (!d || !Array.isArray(d.files)) return;
+  fsFree = isNum(d.total) && isNum(d.used) ? Math.max(0, d.total - d.used) : null;
+  setText($("files-info"), fmtBytes(d.used) + " of " + fmtBytes(d.total) + " used" + (d.truncated ? " · list truncated" : ""));
+  tb.replaceChildren(...d.files.map((x) => h("tr", null,
+    h("td", { class: "mono", text: x.path }), h("td", { class: "r", text: fmtBytes(x.size) }),
+    h("td", { text: KIND_TXT[x.kind] || x.kind }),
+    h("td", null, x.deletable ? h("button", { type: "button", class: "danger", "aria-label": "Delete " + x.path,
+      onclick: (e) => simpleAction(e.currentTarget, { title: "Delete " + x.path + "?", text: "The file is removed from the ESP.", ok: "Delete", danger: true },
+        "DELETE", "/api/files?path=" + encodeURIComponent(x.path), undefined, x.path + " deleted", loadFiles) }, "Delete") : null))));
+  if (!d.files.length) tb.append(h("tr", null, h("td", { colspan: 4, class: "muted", text: "No files." })));
+}
+$("files-reload").addEventListener("click", (e) => busy(e.currentTarget, loadFiles));
 
 // ------------------------------------------------------------------ start
 
@@ -1831,5 +2066,6 @@ const pSensors = poller(pollSensors, 10000, visible("sensors"));
 const pEvents = poller(pollEvents, 3000, visible("events"));
 const pFlash = poller(pollFlash, 1000, () => flashActive || view === "maintenance");
 poller(loadImages, 60000, visible("maintenance"));
+poller(loadFiles, 60000, visible("maintenance"));
 showView();
 })();
