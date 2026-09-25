@@ -14,6 +14,24 @@
 
 using namespace vdm;
 
+namespace {
+
+// Reference Dallas/Maxim CRC-8 of the first 7 ROM bytes (bitwise, reflected
+// 0x31), independent of crcValid().
+uint8_t refCrc(const OneWireId& x) {
+  uint8_t crc = 0;
+  for (int i = 0; i < 7; ++i) {
+    for (int bit = 0; bit < 8; ++bit) {
+      const bool mix = ((crc ^ (x.b[i] >> bit)) & 1) != 0;
+      crc = static_cast<uint8_t>(crc >> 1);
+      if (mix) crc ^= 0x8C;
+    }
+  }
+  return crc;
+}
+
+}  // namespace
+
 TEST_CASE("common: elapsedMs and timeReached") {
   CHECK(elapsedMs(100, 40) == 60);
   CHECK(elapsedMs(40, 100) == 0xFFFFFFC4u);
@@ -413,38 +431,7 @@ TEST_CASE("common: OneWireId compare, zero and CRC") {
 
   OneWireId id;
   REQUIRE(parseOneWireId("28-84-37-94-97-ff-03-23", 23, id));
-  const bool firstValid = crcValid(id);
-  // Compute the reference CRC independently (bitwise, reflected 0x31).
-  auto ref = [](const OneWireId& x) {
-    uint8_t crc = 0;
-    for (int i = 0; i < 7; ++i) {
-      for (int bit = 0; bit < 8; ++bit) {
-        const bool mix = ((crc ^ (x.b[i] >> bit)) & 1) != 0;
-        crc = static_cast<uint8_t>(crc >> 1);
-        if (mix) crc ^= 0x8C;
-      }
-    }
-    return crc;
-  };
-  CHECK(firstValid == (ref(id) == id.b[7]));
-  uint32_t seed = 12345;
-  int valid = 0;
-  for (int round = 0; round < 2000; ++round) {
-    OneWireId r;
-    for (int i = 0; i < 7; ++i) {
-      seed = seed * 1103515245u + 12345u;
-      r.b[i] = static_cast<uint8_t>(seed >> 16);
-    }
-    r.b[7] = ref(r);
-    CHECK(crcValid(r));
-    valid += crcValid(r) ? 1 : 0;
-    r.b[7] = static_cast<uint8_t>(r.b[7] ^ (1u << (round % 8)));
-    CHECK_FALSE(crcValid(r));
-    r.b[7] = static_cast<uint8_t>(r.b[7] ^ (1u << (round % 8)));
-    r.b[round % 7] = static_cast<uint8_t>(r.b[round % 7] ^ 0x01);
-    CHECK_FALSE(crcValid(r));
-  }
-  CHECK(valid == 2000);
+  CHECK(crcValid(id) == (refCrc(id) == id.b[7]));
   OneWireId zero;
   CHECK(crcValid(zero));
   // Maxim application note 27 example ROM: 02 1C B8 01 00 00 00, CRC A2.
@@ -454,6 +441,27 @@ TEST_CASE("common: OneWireId compare, zero and CRC") {
   CHECK(crcValid(maxim));
   maxim.b[7] = 0xA3;
   CHECK_FALSE(crcValid(maxim));
+}
+
+TEST_CASE("common: OneWireId CRC of fixed-seed random ids" * doctest::test_suite("fuzz")) {
+  uint32_t seed = 12345;
+  int valid = 0;
+  for (int round = 0; round < 2000; ++round) {
+    OneWireId r;
+    for (int i = 0; i < 7; ++i) {
+      seed = seed * 1103515245u + 12345u;
+      r.b[i] = static_cast<uint8_t>(seed >> 16);
+    }
+    r.b[7] = refCrc(r);
+    CHECK(crcValid(r));
+    valid += crcValid(r) ? 1 : 0;
+    r.b[7] = static_cast<uint8_t>(r.b[7] ^ (1u << (round % 8)));
+    CHECK_FALSE(crcValid(r));
+    r.b[7] = static_cast<uint8_t>(r.b[7] ^ (1u << (round % 8)));
+    r.b[round % 7] = static_cast<uint8_t>(r.b[round % 7] ^ 0x01);
+    CHECK_FALSE(crcValid(r));
+  }
+  CHECK(valid == 2000);
 }
 
 TEST_CASE("common: parseOneWireId and formatOneWireId") {
