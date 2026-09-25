@@ -2918,9 +2918,35 @@ TEST_CASE("config: restart reasons (C-7)") {
     CHECK(configRestartReasons(after, before) == r.reasons);
     CHECK(configRestartReasons(after, after) == 0);
   }
+  // Static addresses: every field counts, a dns of 0.0.0.0 means the gateway.
+  Config st;
+  st.net.dhcp = false;
+  st.net.ip = 0x3201A8C0;
+  st.net.mask = 0x00FFFFFF;
+  st.net.gateway = 0x0101A8C0;
+  const Row statics[] = {
+      {"dns with static", [](Config& c) { c.net.dns = 0x08080808; }, kRestartNetwork},
+      {"dns = gateway with static", [](Config& c) { c.net.dns = 0x0101A8C0; }, 0},
+      {"gateway with static and dns 0.0.0.0",
+       [](Config& c) { c.net.gateway = 0xFE01A8C0; }, kRestartNetwork},
+      {"ip with static", [](Config& c) { c.net.ip = 0x3301A8C0; }, kRestartNetwork},
+  };
+  for (const Row& r : statics) {
+    CAPTURE(r.what);
+    Config after = st;
+    r.edit(after);
+    CHECK(configRestartReasons(st, after) == r.reasons);
+  }
+  // WiFi credentials do not matter with Ethernet before and after.
+  Config eth = st;
+  eth.net.iface = NetInterface::Ethernet;
+  Config ethWifi = eth;
+  strcpy(ethWifi.net.ssid, "w");
+  strcpy(ethWifi.net.wifiPassword, "12345678");
+  CHECK(configRestartReasons(eth, ethWifi) == 0);
   // Host names "K-che" and "Kuche".
   Config k1, k2;
-  strcpy(k1.station, "KÃ¼" "che");
+  strcpy(k1.station, "K\xc3\xbc" "che");
   strcpy(k2.station, "Kuche");
   CHECK(configRestartReasons(k1, k2) == kRestartHostname);
 }
@@ -3123,6 +3149,19 @@ TEST_CASE("config: JSON export with secrets and the apply members (C-9)") {
         std::string::npos);
   CHECK(clear.find("\"user\":\"\",\"password\":\"\",\"keepAliveS\":60") != std::string::npos);
   CHECK(clear.compare(clear.size() - 18, 18, "\"persistLog\":true}") == 0);
+  // Golden: the defaults with SecretMode::Clear are the Flags document (golden
+  // above) with the secrets in place of the flags.
+  std::string expect = exportJson(Config{});
+  auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+    for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) {
+      s.replace(at, from.size(), to);
+    }
+  };
+  replaceAll(expect, "\"wifiPasswordSet\":false", "\"wifiPassword\":\"\"");
+  replaceAll(expect, "\"passwordSet\":false", "\"password\":\"\"");
+  JsonWriter jd(buf, sizeof buf);
+  REQUIRE(writeConfigJson(jd, Config{}, SecretMode::Clear));
+  CHECK(std::string(buf, jd.length()) == expect);
   // A cleartext export posts back to the same config.
   Config back;
   std::string path;
