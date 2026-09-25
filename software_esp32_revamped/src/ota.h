@@ -12,13 +12,15 @@
 namespace ota {
 
 // Reads the running partition's OTA state (PENDING_VERIFY after an update)
-// and arms the validator.
+// and arms the validator; the STM link counts when NVS otaStm says it was
+// up at the upload. otaStm is erased at once (a pending image gets one boot).
 void begin();
 
-// App task, every second: MarkValid -> esp_ota_mark_app_valid_cancel_rollback()
-// + AppMarkedValid event; Rollback -> RebootRequested(4), log flush,
-// esp_ota_mark_app_invalid_rollback_and_reboot(). netOk: the network check
-// of the validator (net::otaNetOk()); webStarted: the web server runs.
+// App task, every second: the loopback self-check (GET /api/health) when
+// due, validator update; MarkValid -> esp_ota_mark_app_valid_cancel_rollback()
+// + AppMarkedValid; Rollback -> RebootRequested(4, missing checks) and the
+// restart path rolls back. netOk: net::otaNetOk(); webStarted: the web
+// server runs.
 void service(uint32_t nowMs, bool netOk, bool linkUp, bool webStarted);
 
 // Validator state for /api/health.
@@ -44,10 +46,12 @@ const char* uploadError();
 // out, then esp_restart(). The first request wins; later ones are ignored.
 void requestRestart(uint8_t reason, uint32_t delayMs, int32_t detail = 0);
 bool restartPending();
-// App task: performs a requested restart when due (log flushed first). A
-// user/config restart (reasons 0 and 3) of an image still pending
-// verification with the network up confirms the image first, so it is not
-// rolled back (vdm::OtaValidator::confirmBeforeRestart).
+// App task: performs a requested restart when due and no STM flash runs:
+// the STM EEPROM save (vdm::RestartGate, 12 s guard; with jumper X20 the ESP
+// restart also resets the STM) and the desired targets (except for a
+// factory reset), then the confirmation of a pending image by a user
+// restart (reasons 0 and 3, vdm::OtaValidator::confirmBeforeRestart), otaStm
+// for an upload, the log flush, and esp_restart() or the rollback.
 void serviceRestart(uint32_t nowMs, bool netUp, bool linkUp);
 
 }  // namespace ota
