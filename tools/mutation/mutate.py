@@ -45,13 +45,15 @@ Config (JSON; every key is required except "test"; keys starting with "_" are co
 Source markers: "// NOMUTATE: <reason>" on a line suppresses its mutants; NOMUTATE without a
 reason is a configuration error. Preprocessor directive lines are never mutated.
 
-Statuses: killed; survived; timeout (confirmed by a solo re-run, counts as killed); stillborn
-(the compiler printed "error:"); not_compiled; equivalent; error (unconfirmed timeout,
-compiler crash or build timeout, a test run that did not start or whose runner failed (exit
-125-127); never cached, the run exits 2). Killed, timeout, stillborn and not_compiled results
-are cached in <config>.cache.json (key: file, source hash, config hash, position, operator,
-replacement), so an interrupted run resumes; survivors always run again. The checkout is never
-written: every worker is a copy under --workdir.
+Statuses: killed; survived; timeout (confirmed by a solo re-run, counts as killed; a mutant
+that fails its tests in the solo re-run is killed); stillborn (the compiler printed "error:");
+not_compiled; equivalent; error (a timeout that passes its tests alone, compiler crash or build
+timeout, a test run that did not start or whose runner failed (exit 125-127); never cached, the
+run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
+<config>.cache.json (key: file, source hash, config hash, position, operator, replacement), so
+an interrupted run resumes; survivors always run again. The checkout is never written: every
+worker is a copy under --workdir. The mean s/mutant covers the mutants built in this run; a
+re-run timeout counts with both runs.
 
 Exit code: 0 when the score >= threshold, every file >= file_threshold and no mutant has the
 status error; 1 when a threshold is missed; 2 on a configuration error, a failing unmutated
@@ -845,7 +847,9 @@ def summarize(muts: list[Mutant], files: list[str], cfg: dict) -> tuple[dict, di
     for m in muts:
         c = per_file[m.file]
         c[m.status if m.status in STATUSES else "pending"] += 1
-        if not m.cached and m.status not in ("pending", "equivalent"):
+        # the mean covers the mutants that were built: not the cached, equivalent and not
+        # compiled ones
+        if not m.cached and m.status not in ("pending", "equivalent", "not_compiled"):
             c["run"] += 1
             c["seconds"] += m.seconds
     totals = {s: 0 for s in STATUSES}
@@ -1141,17 +1145,23 @@ def run(args: argparse.Namespace) -> int:
             t.start()
         join_all(threads)
 
-        # timeouts are confirmed alone, so the load of the other workers cannot cause them
+        # timeouts are confirmed alone, so the load of the other workers cannot cause them; a
+        # mutant that fails its tests alone is killed, one that passes them alone is an error
         for m in sorted(confirm, key=lambda x: (x.file, x.line, x.col)):
-            first = m.detail
+            first, first_s = m.detail, m.seconds
+            m.detail = ""
             evaluate(m, workers[0], cfg, budgets, quick, runner, sources[m.file], mutant_env)
             if m.status == "timeout?":
                 m.status = "timeout"
                 m.detail = f"{first}; confirmed alone"
+            elif m.status == "killed":
+                m.detail = f"{first} under load; alone killed after {m.seconds:.1f} s"
             else:
-                m.detail = (f"unconfirmed timeout: {first}, alone the mutant was {m.status} "
+                solo = f"{m.status} ({m.detail})" if m.detail else m.status
+                m.detail = (f"unconfirmed timeout: {first}, alone the mutant was {solo} "
                             f"after {m.seconds:.1f} s")
                 m.status = "error"
+            m.seconds = round(first_s + m.seconds, 3)
             record(m)
     except Interrupted:
         print(f"interrupted by signal {interrupted[0]}", file=sys.stderr)

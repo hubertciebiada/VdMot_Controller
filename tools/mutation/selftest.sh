@@ -174,7 +174,9 @@ mutate dead --jobs 2
   fail "a mutant of an inactive line was built"
 [ "$(report dead "all(m['status'] == 'killed' for m in M if m['line'] == 3)")" = "True" ] ||
   fail "a compiled line was classified not_compiled"
-ok "not_compiled detection"
+[ "$(report dead "r['totals']['run'] == sum(m['status'] not in ('not_compiled', 'equivalent') for m in M)")" = "True" ] ||
+  fail "not_compiled mutants counted as run: $(report dead "r['totals']['run']")"
+ok "not_compiled detection, not counted as run"
 
 # --- a mutant that only warns (-Wparentheses) is built and counted; a compile error is stillborn
 project warn
@@ -326,17 +328,19 @@ grep -q "quick run, stage 1 only, not a gate" "$T/out" || fail "--no-fallback no
 [ "$(report stages "r['quick'] and r['score'] == 0.0")" = "True" ] || fail "--no-fallback ran stage 2"
 ok "stage 2 for stage-1 survivors, --no-fallback"
 
-# --- a timeout caused by load only (a CPU hog in a parallel worker) is an error, not a kill
+# --- a timeout caused by load only (a CPU hog in a parallel worker) is an error, not a kill; a
+# mutant that times out under load and fails its tests alone is killed, with the time of both runs
 project hog
-printf 'int u1(int a) {\n  return a;\n}\nint u2(int a) {\n  return a;\n}\n' >"$T/hog/proj/src/u.cpp"
+printf 'int u1(int a) {\n  return a;\n}\nint u2(int a) {\n  return a;\n}\nint u3(int a) {\n  return a;\n}\n' \
+  >"$T/hog/proj/src/u.cpp"
 cat >"$T/hog/proj/test_u.cpp" <<'CPP'
 #include "src/u.cpp"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
-// Mutant of u1: a CPU hog for 3 s (inside the 4 s budget). Mutant of u2: sleeps past its budget
-// only while the hog runs; alone it ends after 3 s.
+// Mutant of u1: a CPU hog for 3 s (inside the 4 s budget). Mutants of u2 and u3: sleep past their
+// budget only while the hog runs; alone they end after 3 s, u2 passing, u3 failing.
 int main() {
   const char* flag = getenv("HOG_FLAG");
   if (u1(5) == 0) {
@@ -348,7 +352,8 @@ int main() {
     remove(flag);
     return 1;
   }
-  if (u2(5) == 0) {
+  const bool u2Mutant = u2(5) == 0;
+  if (u2Mutant || u3(5) == 0) {
     for (int i = 0; i < 60; ++i) {
       if (access(flag, F_OK) == 0) {
         sleep(30);
@@ -356,16 +361,20 @@ int main() {
       }
       usleep(50000);
     }
+    return u2Mutant ? 0 : 1;
   }
   return 0;
 }
 CPP
 config hog '{"threshold": 0, "timeout_min": 4}'
-HOG_FLAG="$T/hog/flag" mutate hog --jobs 2
+HOG_FLAG="$T/hog/flag" mutate hog --jobs 3
 [ "$RC" -eq 2 ] || fail "load-only timeout: exit $RC, expected 2"
-[ "$(report hog "[m['status'] for m in M]")" = "['killed', 'error']" ] || fail "statuses $(report hog "[m['status'] for m in M]")"
+[ "$(report hog "[m['status'] for m in M]")" = "['killed', 'error', 'killed']" ] ||
+  fail "statuses $(report hog "[(m['status'], m['detail']) for m in M]")"
 report hog "M[1]['detail']" | grep -q "unconfirmed timeout" || fail "error without the unconfirmed-timeout detail"
-ok "unconfirmed timeout under a CPU hog is an error, not a kill"
+report hog "M[2]['detail']" | grep -q "exceeded 4.0 s under load; alone killed after" || fail "kill after a timeout: detail"
+[ "$(report hog "M[2]['seconds'] >= 7")" = "True" ] || fail "the first run of a re-run timeout was not counted"
+ok "unconfirmed timeout under a CPU hog is an error; killed alone is a kill, timed with both runs"
 
 # --- every config validates against the one schema; unknown and missing keys are errors
 for c in "$HERE"/*.json; do
