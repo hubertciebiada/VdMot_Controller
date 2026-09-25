@@ -1,0 +1,13 @@
+[
+  {"line": 68, "col": 32, "original": "0", "replacement": "1", "text": "static uint8_t manualChannel = 0;", "reason": "dead initial value: manualChannel is read only while manualActive, and sena assigns it before setting manualActive"},
+  {"line": 69, "col": 33, "original": "0", "replacement": "1", "text": "static uint32_t manualStartMs = 0;", "reason": "dead initial value: manualStartMs is read only while manualActive, and sena assigns it before setting manualActive"},
+  {"line": 142, "col": 16, "original": "0", "replacement": "1", "text": "uint16_t\t\tx = 0;", "reason": "dead initial value: x is used only when hasX, i.e. after argU16() assigned it"},
+  {"line": 143, "col": 19, "original": "0", "replacement": "1", "text": "uint32_t\t\txu32 = 0;", "reason": "dead initial value: xu32 is used only after argU32() succeeded and assigned it"},
+  {"line": 144, "col": 16, "original": "0", "replacement": "1", "text": "uint16_t\t\ty = 0;", "reason": "dead initial value: y is used only when hasY, i.e. after argU16() assigned it"},
+  {"line": 147, "col": 34, "original": "1", "replacement": "0", "text": "const bool hasX = req.argc() >= 1 && req.argU16(0, 0, 65535, x);", "reason": "argU16(0, ...) itself returns false without an argument (index < argc), so the count check is redundant"},
+  {"line": 148, "col": 34, "original": "2", "replacement": "0", "text": "const bool hasY = req.argc() >= 2 && req.argU16(1, 0, 65535, y);", "reason": "argU16(1, ...) itself returns false without a second argument (index < argc), so the count check is redundant"},
+  {"line": 148, "col": 34, "original": "2", "replacement": "1", "text": "const bool hasY = req.argc() >= 2 && req.argU16(1, 0, 65535, y);", "reason": "argU16(1, ...) itself returns false without a second argument (index < argc), so the count check is redundant"},
+  {"line": 407, "col": 59, "original": "0", "replacement": "1", "text": "const uint32_t values[5] = {x, y, params.startOnPower, 0, 0};", "reason": "applyMotorParamsRequest() is called with count 3 and reads only values[0..2]"},
+  {"line": 407, "col": 62, "original": "0", "replacement": "1", "text": "const uint32_t values[5] = {x, y, params.startOnPower, 0, 0};", "reason": "applyMotorParamsRequest() is called with count 3 and reads only values[0..2]"},
+  {"line": 468, "col": 10, "original": "CMD_NONE", "replacement": "0", "text": "return CMD_NONE;", "reason": "CMD_NONE is 0 (terminal.h)"}
+]
