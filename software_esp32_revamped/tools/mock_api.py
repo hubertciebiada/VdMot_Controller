@@ -139,21 +139,25 @@ class Device:
 
     def _default_config(self, auth):
         c = {
-            "schema": 1, "station": f"VdMot-{self.station}",
+            "schema": 2, "station": f"VdMot-{self.station}",
             "net": {"iface": 1, "dhcp": True, "ip": "0.0.0.0", "mask": "0.0.0.0", "gateway": "0.0.0.0",
                     "dns": "0.0.0.0", "ssid": "", "wifiPassword": "", "reconnectTimeoutMin": 5},
             "time": {"ntpServer": "pool.ntp.org", "tzName": "Europe/Warsaw", "tzPosix": "CET-1CEST,M3.5.0,M10.5.0/3"},
             "syslog": {"level": 0, "server": "0.0.0.0", "port": 514},
-            "web": {"user": auth[0] if auth else "", "password": auth[1] if auth else "", "protectRead": False},
+            "web": {"user": auth[0] if auth else "", "password": auth[1] if auth else "", "protectRead": False,
+                    "allowedHosts": ""},
             "mqtt": {"mode": 2, "host": "homeassistant.local", "port": 1883, "user": "vdmot", "password": "mqtt-pass",
                      "keepAliveS": 60, "publishIntervalS": 10, "minDelayS": 5, "separate": True, "allTemps": True,
                      "pathAsRoot": False, "upTime": True, "onChange": True, "retained": True, "plainText": True,
                      "diag": True, "germanDecimal": False, "newDiag": True, "events": True,
-                     "haDiscoveryOnConnect": True},
-            "valves": [{"name": "", "active": False} for _ in range(12)],
-            "temps": [{"name": "", "active": False, "offset": 0.0, "id": ""} for _ in range(34)],
-            "volts": [{"name": "", "active": False, "offset": 0.0, "factor": 1.0, "unit": "", "id": ""} for _ in range(8)],
+                     "haDiscoveryOnConnect": True, "rootTopic": "", "clientId": "",
+                     "discoveryPrefix": "homeassistant"},
+            "valves": [{"name": "", "active": False, "failsafePct": 50, "topic": ""} for _ in range(12)],
+            "temps": [{"name": "", "active": False, "offset": 0.0, "id": "", "topic": ""} for _ in range(34)],
+            "volts": [{"name": "", "active": False, "offset": 0.0, "factor": 1.0, "unit": "", "id": "", "topic": ""}
+                      for _ in range(8)],
             "calib": {"dayMask": 9, "hour": 3, "minute": 30},
+            "failsafe": {"timeoutMin": 60},
             "persistLog": True,
         }
         return c
@@ -168,15 +172,15 @@ class Device:
                                 "moveFrom": 0.0, "moveStart": 0.0, "blocked": None, "baseEarly": 0, "baseRej": 0})
         for i, (name, blocked) in enumerate(STATIONS[self.station]):
             v = self.valves[i]
-            self.config["valves"][i] = {"name": name, "active": True}
+            self.config["valves"][i].update(name=name, active=True)
             oc = rng.randrange(380, 520)
             v.update(active=True, state=1, meanCur=rng.choice([16, 16, 17, 17, 18]), moves=rng.randrange(900, 4200),
                      oc=oc, cc=oc + rng.randrange(20, 60), cr=0, src="mqtt", sync="synced")
             v["pos"] = v["target"] = rng.choice([0, 15, 30, 45, 60, 100])
             slot = i + 1
             tid = one_wire_id(rng, 0x28)
-            self.config["temps"][slot - 1] = {"name": name[:10], "active": True, "offset": rng.choice([0.0, -0.3, 0.5]),
-                                              "id": tid}
+            self.config["temps"][slot - 1].update(name=name[:10], active=True, offset=rng.choice([0.0, -0.3, 0.5]),
+                                                  id=tid)
             self.temps.append({"slot": slot, "id": tid, "base": rng.uniform(20.5, 23.5)})
             v["slots"] = [slot, 0]
             if blocked:
@@ -190,11 +194,11 @@ class Device:
         for k, label in enumerate(["Supply", "Return"]):
             slot = n + 1 + k
             tid = one_wire_id(rng, 0x28)
-            self.config["temps"][slot - 1] = {"name": label, "active": True, "offset": 0.0, "id": tid}
+            self.config["temps"][slot - 1].update(name=label, active=True, offset=0.0, id=tid)
             self.temps.append({"slot": slot, "id": tid, "base": 34.0 if label == "Supply" else 29.5})
         self.temps.append({"slot": None, "id": one_wire_id(rng, 0x28), "base": 24.0})
         vid = one_wire_id(rng, 0x26)
-        self.config["volts"][0] = {"name": "Supply", "active": True, "offset": 0.0, "factor": 0.01, "unit": "V", "id": vid}
+        self.config["volts"][0].update(name="Supply", active=True, offset=0.0, factor=0.01, unit="V", id=vid)
         self.volts.append({"slot": 1, "id": vid, "base": 1208})
 
     def _history(self):

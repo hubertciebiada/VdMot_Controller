@@ -1801,7 +1801,8 @@ $("cfg-import").addEventListener("change", async () => {
   if (!doc || typeof doc !== "object" || Array.isArray(doc) || !isInt(doc.schema)) { toast("Not a VdMot Revamped configuration export", true); return; }
   await busy(null, async () => {
     const cur = await api("GET", "/api/config");
-    if (!cur || doc.schema !== cur.schema) throw new Error("The export has configuration schema " + doc.schema + ", this firmware uses " + (cur && cur.schema));
+    // 2.0.0 exports say schema 1: the keys they lack keep their values.
+    if (!cur || doc.schema < 1 || doc.schema > cur.schema) throw new Error("The export has configuration schema " + doc.schema + ", this firmware reads schema 1 to " + (cur && cur.schema));
     const now = flatten(cur, "", new Map(), 0), patch = {};
     let restart = false;
     for (const [k, v] of flatten(doc, "", new Map(), 0)) {
