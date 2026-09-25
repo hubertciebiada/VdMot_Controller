@@ -1,7 +1,8 @@
-// STM link task: sole owner of Serial2 and the NRST pin. Runs LinkPolicy,
-// PollPlanner, ValveModel, SensorModel, RebootDetector and the StmFlasher;
-// executes app::Command; publishes app::StmSnapshot. Nothing else in the
-// firmware touches the UART (specs/04 §3.1: one owner task, message passing).
+// STM link task: sole owner of Serial2 and the NRST pin. Runs vdm::StmSession
+// (link policy, planner, models, lease, reset gate, flasher) and implements
+// its port; executes app::Command; publishes app::StmSnapshot. Nothing else
+// in the firmware touches the UART (specs/04 §3.1: one owner task, message
+// passing).
 #pragma once
 
 #include <stdint.h>
@@ -17,18 +18,16 @@ void releaseReset();
 // the firmware never drives an STM reset on its own boot; the IO15 strap pull-up can still reset it with jumper X20 fitted), opens Serial2 8N1.
 void begin();
 
-// Task entry (app::kStmTask). Loop, every 2 ms:
-//  1. drain app::receive() commands (validate, enqueue at Priority::User or
-//     start the flasher),
-//  2. read UART bytes into the LineAssembler, parse each line, feed
-//     LinkPolicy/models,
-//  3. LinkPolicy::poll() timeouts; shouldResetStm() -> NRST pulse,
-//  4. ValveModel target pushes/verifies (Priority::Config), PollPlanner
-//     (Priority::Poll) when the queue has room,
-//  5. write LinkPolicy::nextToSend() to the UART,
-//  6. health events, snapshot publish (at most every 100 ms or on change),
-//  7. feed the task watchdog.
-// While flashing, steps 2-5 are replaced by StmFlasher::step().
+// Task entry (app::kStmTask). At start: config, boot targets and lease
+// record from stm_service, StmSession::begin(). Loop, every 2 ms:
+//  1. feed the task watchdog, re-read a changed config,
+//  2. drain app::receive() commands into the session,
+//  3. read at most 512 UART bytes into the session, StmSession::poll(),
+//     write StmSession::nextToSend() to the UART,
+//  4. once per second StmSession::everySecond() with the MQTT regulator
+//     state and the STM save state of a pending ESP restart,
+//  5. StmSession::publishIfDue().
+// While flashing, step 3 is replaced by StmSession::flashStep().
 void task(void* arg);
 
 // Pulses NRST for 100 ms (task-internal; exposed for tests of the glue).

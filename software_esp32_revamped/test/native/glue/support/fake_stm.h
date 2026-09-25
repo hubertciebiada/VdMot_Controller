@@ -3,9 +3,11 @@
 // substituted), watches NRST (GPIO 15: HIGH holds the STM in reset, the release boots it) and,
 // for flash runs, hands every byte to the AN3155 simulator of test/native/support/sim_stm.h.
 //
-// Defaults: protocol 2, version "2.0.0-revamped_C2", no 1-Wire sensors, EEPROM idle (eepst 0),
+// Defaults: protocol 2, version "2.0.0-revamped_C2", no 1-Wire sensors, EEPROM idle (eepst 1),
 // replies 3 ms after the request line. Commands above the protocol stay unanswered, like a v1 STM
-// that ignores gproto.
+// that ignores gproto. gstat/gstax report an uptime counted from the last NRST release (from 100 s
+// at construction); slcfg/sfspo/stlnt store what glcfg/gtlnt read back (defaults 60 min, 50 %,
+// 604800 s).
 #pragma once
 
 #include <stddef.h>
@@ -36,7 +38,7 @@ class FakeStm : public fakes::SerialPeer {
   void silent(bool on);                    // no replies at all
   // Firmware older than the minimum: answers only "gvers 1.3.5_C2", stgtp and gtgtp.
   void tooOld(bool on);
-  void eepState(uint8_t n);                // eepst reply (0 idle)
+  void eepState(uint8_t n);                // eepst reply (1 idle, 0 a write is pending)
   // Reply of one command: fn(request line without CR LF) -> reply line ("" = no reply).
   void answer(const std::string& cmd, std::function<std::string(const std::string&)> fn);
   // A line the STM sends on its own after `delayMs`.
@@ -68,14 +70,19 @@ class FakeStm : public fakes::SerialPeer {
  private:
   void onLine(const std::string& line);
   std::string reply(const std::string& cmd, const std::vector<std::string>& args,
-                    const std::string& line) const;
+                    const std::string& line);
   void onNrst(uint8_t level);
 
   uint8_t protocol_ = 2;
   std::string version_;
   bool silent_ = false;
   bool tooOld_ = false;
-  uint8_t eep_ = 0;
+  uint8_t eep_ = 1;
+  uint64_t bootAtMs_ = 0;       // uptime 0 of the STM (NRST release)
+  uint32_t uptimeBaseS_ = 100;  // uptime at bootAtMs_
+  uint32_t leaseTimeout_ = 60;
+  uint32_t failsafe_[12] = {50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50};
+  uint32_t learnTime_ = 604800;
   std::map<std::string, std::function<std::string(const std::string&)>> answers_;
   std::string rxLine_;
   std::vector<Request> requests_;
