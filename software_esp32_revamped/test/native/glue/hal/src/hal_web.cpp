@@ -230,6 +230,7 @@ Exchange::~Exchange() {
 }
 
 bool Exchange::sendBody(size_t n) {
+  if (ended_) return true;  // the client is gone, the request deleted
   const size_t total = req_->contentLength_;
   while (n > 0 && sent_ < total && !ended_) {
     size_t len = r_.segment < n ? r_.segment : n;
