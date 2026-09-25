@@ -1,0 +1,4 @@
+[
+  {"line": 148, "col": 32, "original": "1", "replacement": "2", "text": "char tmp[kOneWireIdTextLen + 1] = {0};", "reason": "buffer size only: formatOneWireId() writes the 23 characters and the NUL, a larger buffer is never read beyond them"},
+  {"line": 148, "col": 38, "original": "0", "replacement": "1", "text": "char tmp[kOneWireIdTextLen + 1] = {0};", "reason": "formatOneWireId() overwrites the whole text including tmp[0] before it is read"}
+]

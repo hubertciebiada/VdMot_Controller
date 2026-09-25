@@ -49,6 +49,11 @@ bool pathIs(const char* path, size_t len, const char* want) {
   return strlen(want) == len && memcmp(path, want, len) == 0;
 }
 
+struct SensorKeys {
+  const char* name;
+  const char* temp;
+};
+
 void writeTemp(JsonWriter& jw, bool valid, int32_t tenths) {
   if (valid) {
     jw.fixed(tenths, 1);
@@ -119,12 +124,13 @@ bool writeLegacyValvesJson(JsonWriter& jw, const ValveView* views, uint8_t count
     jw.kv("cc", st.closeCount);
     jw.kv("dc", st.deadZone);
     jw.kv("cr", static_cast<uint32_t>(st.calibRetries));
-    static const char* const kNameKeys[2] = {"tIdxName1", "tIdxName2"};
-    static const char* const kTempKeys[2] = {"temp1", "temp2"};
-    for (uint8_t k = 0; k < 2; ++k) {
+    // One entry per ValveView sensor (sensorSlot[2] etc.).
+    static const SensorKeys kSensorKeys[] = {{"tIdxName1", "temp1"}, {"tIdxName2", "temp2"}};
+    for (const SensorKeys& keys : kSensorKeys) {
+      const size_t k = static_cast<size_t>(&keys - kSensorKeys);
       if (v.sensorSlot[k] == 0) continue;
-      jw.kv(kNameKeys[k], v.sensorName[k] ? v.sensorName[k] : "");
-      jw.key(kTempKeys[k]);
+      jw.kv(keys.name, v.sensorName[k] ? v.sensorName[k] : "");
+      jw.key(keys.temp);
       writeTemp(jw, v.sensorValid[k], v.sensorTenths[k]);
     }
     jw.kv("controlActive", static_cast<uint32_t>(0));
