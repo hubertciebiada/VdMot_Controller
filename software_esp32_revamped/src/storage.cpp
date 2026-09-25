@@ -441,7 +441,8 @@ bool encodeLocked(const vdm::Config& c, size_t& n, size_t& x) {
 
 // /sys/cfg.bak and /sys/cfgx.bak from the active config: both written to
 // .tmp files first, then renamed over the old ones, so a power cut leaves
-// the previous backup.
+// the previous backup. The base goes first: a cut between the renames pairs
+// the new base with the older ext keys, never the other way round.
 void writeBackup() {
   CfgLock lock;
   gBackupPending = false;
@@ -449,8 +450,8 @@ void writeBackup() {
   size_t x = 0;
   const bool ok = encodeLocked(gActive, n, x) && writeFile(kBackupExtTmp, gExt.data(), x) &&
                   writeFile(kBackupBaseTmp, gBlob.data(), n) &&
-                  LittleFS.rename(kBackupExtTmp, kBackupExt) &&
-                  LittleFS.rename(kBackupBaseTmp, kBackupBase);
+                  LittleFS.rename(kBackupBaseTmp, kBackupBase) &&
+                  LittleFS.rename(kBackupExtTmp, kBackupExt);
   if (!ok) {
     LittleFS.remove(kBackupExtTmp);
     LittleFS.remove(kBackupBaseTmp);
@@ -528,9 +529,13 @@ LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, LoadDetails& 
         details.errorCode = 0;
         gKeepLen = details.info.extInfo.keepLen;
         // First boot after the upgrade (or a lost file): the backup follows.
+        // A damaged cfgx left the new keys at their defaults; the backup may
+        // still hold them, so only the next explicit save replaces it.
+        const bool extDamaged = details.info.ext != vdm::ExtResult::Absent &&
+                                details.info.ext != vdm::ExtResult::Ok;
         size_t n = 0;
         size_t x = 0;
-        gBackupPending = encodeLocked(out, n, x) && gFsReady &&
+        gBackupPending = !extDamaged && encodeLocked(out, n, x) && gFsReady &&
                          !(sameFile(kBackupBase, gBlob.data(), n) &&
                            sameFile(kBackupExt, gExt.data(), x));
         return LoadSource::Stored;
@@ -819,14 +824,23 @@ FileResult deleteFile(const char* path) {
   if (!vdm::fsPathValid(path, len)) return FileResult::BadPath;
   if (!vdm::fileDeletable(vdm::classifyFsPath(path, len))) return FileResult::Protected;
   if (!gFsReady) return FileResult::Io;
-  if (!LittleFS.exists(path)) return FileResult::NotFound;
-  fs::File f = LittleFS.open(path, FILE_READ);
-  if (!f) return FileResult::Io;
-  const bool dir = f.isDirectory();
-  const uint32_t size = static_cast<uint32_t>(f.size());
-  f.close();
-  if (dir) return FileResult::BadPath;
-  if (!LittleFS.remove(path)) return FileResult::Io;
+  uint32_t size = 0;
+  {
+    FsLock lock;  // the running upload writes its .part under gFsMutex
+    char part[48];
+    if (gUpload.active && imagePath(gUpload.name, true, part, sizeof part) &&
+        strcmp(part, path) == 0) {
+      return FileResult::Protected;
+    }
+    if (!LittleFS.exists(path)) return FileResult::NotFound;
+    fs::File f = LittleFS.open(path, FILE_READ);
+    if (!f) return FileResult::Io;
+    const bool dir = f.isDirectory();
+    size = static_cast<uint32_t>(f.size());
+    f.close();
+    if (dir) return FileResult::BadPath;
+    if (!LittleFS.remove(path)) return FileResult::Io;
+  }
   logger::log(vdm::EventCode::FilesRemoved, vdm::kNoValve, 1, static_cast<int32_t>(kibOf(size)),
               path);
   return FileResult::Ok;
