@@ -10,3 +10,6 @@ software_stm32/build/
 ## mutation tool: local kill cache and reports ########
 tools/mutation/*.cache.json
 tools/mutation/*.report.json
+
+## Python bytecode of the tools ########
+__pycache__/

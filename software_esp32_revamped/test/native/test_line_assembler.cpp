@@ -257,7 +257,7 @@ TEST_CASE("line assembler: buffer is always NUL-terminated and never overrun") {
   CHECK(buf[7] == '\0');
 }
 
-TEST_CASE("line assembler: fixed-seed fuzz keeps invariants") {
+TEST_CASE("line assembler: fixed-seed fuzz keeps invariants" * doctest::test_suite("fuzz")) {
   uint32_t seed = 0x1234567u;
   auto rnd = [&seed]() {
     seed = seed * 1664525u + 1013904223u;

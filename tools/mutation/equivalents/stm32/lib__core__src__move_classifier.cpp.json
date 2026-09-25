@@ -1,0 +1,5 @@
+[
+  {"line": 10, "col": 46, "original": ">", "replacement": ">=", "text": "const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;", "reason": "expectedTravelPct == 100 is capped to 100, the same value"},
+  {"line": 10, "col": 48, "original": "100", "replacement": "99", "text": "const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;", "reason": "> 99 differs from > 100 only for 100, which is capped to 100, the same value"},
+  {"line": 55, "col": 24, "original": "<=", "replacement": "<", "text": "r.peakCurrent = peak <= 0 ? 0 : saturate16(static_cast<uint64_t>(peak));", "reason": "peak == 0 gives saturate16(0) == 0 either way"}
+]

@@ -1,0 +1,4 @@
+[
+  {"line": 64, "col": 28, "original": "0", "replacement": "1", "text": "uint32_t magnitude = v < 0 ? 0u - static_cast<uint32_t>(v) : static_cast<uint32_t>(v);", "reason": "v == 0 gives the magnitude 0u - 0 == 0 either way; the sign comes from the separate v < 0 below"},
+  {"line": 78, "col": 19, "original": "2", "replacement": "3", "text": "const char text[2] = {kHex[v >> 4], kHex[v & 0x0F]};", "reason": "array size only: appendRaw() appends exactly 2 bytes, a third element is never read"}
+]
