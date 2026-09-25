@@ -39,11 +39,17 @@
 #include "DallasTemperature.h"
 #include "vdm/arg_parser.h"
 #include "vdm/buf_writer.h"
+#include "vdm/failsafe.h"
+#include "vdm/lease.h"
 #include "vdm/line_assembler.h"
 #include "vdm/replies.h"
 #include "vdm/replies_v2.h"
+#include "vdm/replies_v3.h"
 #include "vdm/settings.h"
 #include "vdm/tokenizer.h"
+#include "vdm/uart_errors.h"
+#include "vdm/valve_codes.h"
+#include <stddef.h>
 #include <string.h>
 
 // DEBUG
@@ -60,13 +66,26 @@
 #define COMM_MAX_READ			512			// bytes taken from the UART per communication_loop call
 #define COMM_LINE_TIMEOUT_MS	100			// an unterminated line is dropped after this idle time (a request takes ~10 ms)
 #define NO_SENSOR_ADDRESS		"00-00-00-00-00-00-00-00"
+#define ALL_VALVES				255			// sfspo, sstop: every valve
+
+// The board revision this image was built for. The ESP flasher looks for this string in a firmware
+// file before it flashes it (one marker per image), gvers reports the tag from the same array.
+extern const char kHardwareMarker[] __attribute__((used)) = HARDWARE_MARKER_PREFIX HARDWARE_REVISION_TAG;
 
 static vdm::StaticLineAssembler<COMM_LINE_SIZE> commLine;
 static uint32_t commLastByteMs = 0;			// when commLine consumed its last byte
 static uint32_t commTooManyArgs = 0;		// requests dropped for too many arguments (gstat parseErr)
+static vdm::UartErrorCounters commUartErrors;	// written by the USART1 RX interrupt
 
 // longest reply (gprof), static to keep it off the main loop stack
 static vdm::StaticBufWriter<vdm::kProfileReplyMaxLen + 1> replyLine;
+static_assert(vdm::kValveExtV3ReplyMaxLen <= vdm::kProfileReplyMaxLen, "gvlvy fits replyLine");
+static_assert(vdm::kStatV3ReplyMaxLen <= vdm::kProfileReplyMaxLen, "gstax fits replyLine");
+
+static_assert(vdm::kUartErrorParity == HAL_UART_ERROR_PE, "HAL parity error bit");
+static_assert(vdm::kUartErrorNoise == HAL_UART_ERROR_NE, "HAL noise error bit");
+static_assert(vdm::kUartErrorFraming == HAL_UART_ERROR_FE, "HAL framing error bit");
+static_assert(vdm::kUartErrorOverrun == HAL_UART_ERROR_ORE, "HAL overrun error bit");
 
 
 // sends the reply formatted into replyLine (nothing if it did not fit)
@@ -77,33 +96,48 @@ static void sendReply (bool formatted)
 }
 
 
-static void storeSensorAddress (struct ds1820_eeprom_layout &slot, const uint8_t *address)
+// RX interrupt of the ESP UART: the HAL sets the error code of a byte before it hands the byte
+// over. The errors and the bytes that find the ring full are counted, then the core's handler
+// stores the byte.
+static void comm_rx_irq (serial_t *obj)
 {
+	const bool ringFull = (obj->rx_head + 1) % SERIAL_RX_BUFFER_SIZE == obj->rx_tail;
+	vdm::countUartErrors(commUartErrors, obj->handle.ErrorCode, ringFull);
+	HardwareSerial::_rx_complete_irq(obj);
+}
+
+
+// stores a sensor address in the EEPROM sensor slot `stored` (slot number s for the EEPROM, see
+// eeprom_changed_slot); the EEPROM is marked only when the slot changes
+static void storeSensorAddress (struct ds1820_eeprom_layout &stored, uint8_t s, const uint8_t *address)
+{
+	struct ds1820_eeprom_layout slot;
+
 	slot.familycode = address[0];
 	for (uint8_t i = 0; i < 6; i++) slot.romcode[i] = address[1 + i];
 	slot.crc = address[7];
+	if (memcmp(&stored, &slot, sizeof(slot)) == 0) return;
+	stored = slot;
+	eeprom_changed_slot(s);
 }
 
 
 // parses one "xx-xx-xx-xx-xx-xx-xx-xx" address into an EEPROM sensor slot
 // valid addresses are stored, the all-zero address clears the slot, anything else is ignored
-static void setValveIDSensor (const char *text, struct ds1820_eeprom_layout &slot)
+static void setValveIDSensor (const char *text, struct ds1820_eeprom_layout &slot, uint8_t s)
 {
 	DeviceAddress address;
 
 	if (!vdm::parseOneWireAddress(text, address)) return;
-	if (vdm::isZeroAddress(address) || sensors.validAddress(address)) {
-		storeSensorAddress(slot, address);
-		eeprom_changed(EEP_CHANGED_SENSORS);
-	}
+	if (vdm::isZeroAddress(address) || sensors.validAddress(address)) storeSensorAddress(slot, s, address);
 }
 
 
 int16_t comm_set_valve_sensors (uint16_t valve, const char *first, const char *second)
 {
 	if (valve >= ACTUATOR_COUNT) return -1;
-	setValveIDSensor(first, eep_content.owsensors1[valve]);
-	setValveIDSensor(second, eep_content.owsensors2[valve]);
+	setValveIDSensor(first, eep_content.owsensors1[valve], valve);
+	setValveIDSensor(second, eep_content.owsensors2[valve], ACTUATOR_COUNT + valve);
 	return 0;
 }
 
@@ -113,16 +147,26 @@ int16_t comm_set_valve_sensor_index (uint16_t valve, uint8_t slot, uint16_t sens
 	if (valve >= ACTUATOR_COUNT || sensor >= noOfDS18Devices || sensor >= MAXONEWIRECNT) return -1;
 
 	if (slot == 1) {
-		storeSensorAddress(eep_content.owsensors1[valve], tempsensors[sensor].address);
+		storeSensorAddress(eep_content.owsensors1[valve], valve, tempsensors[sensor].address);
 		myvalves[valve].sensorindex1 = sensor;
 	}
 	else if (slot == 2) {
-		storeSensorAddress(eep_content.owsensors2[valve], tempsensors[sensor].address);
+		storeSensorAddress(eep_content.owsensors2[valve], ACTUATOR_COUNT + valve, tempsensors[sensor].address);
 		myvalves[valve].sensorindex2 = sensor;
 	}
 	else return -1;
 
-	eeprom_changed(EEP_CHANGED_SENSORS);
+	return 0;
+}
+
+
+int16_t comm_set_learntime (uint32_t seconds)
+{
+	if (app_set_learntime(seconds) != 0) return -1;
+	if (eep_content.learnTimeS != seconds) {
+		eep_content.learnTimeS = seconds;
+		eeprom_changed(EEP_CHANGED_LEARNTIME);
+	}
 	return 0;
 }
 
@@ -159,6 +203,67 @@ static int32_t valveTemperature (unsigned int sensorindex)
 }
 
 
+// argument i is a valve index or 255 (every valve)
+static bool argValveOrAll (const vdm::Tokenizer &req, uint8_t i, uint16_t &x)
+{
+	return req.argU16(i, 0, ACTUATOR_COUNT - 1, x) || req.argU16(i, ALL_VALVES, ALL_VALVES, x);
+}
+
+
+// stores the failsafe position of one valve or of all (255) and applies it
+static void setFailsafe (uint16_t valve, uint8_t pct)
+{
+	bool changed = false;
+
+	for (uint8_t v = 0; v < ACTUATOR_COUNT; v++) {
+		if ((valve == v || valve == ALL_VALVES) && eep_content.failsafePct[v] != pct) {
+			eep_content.failsafePct[v] = pct;
+			changed = true;
+		}
+	}
+	if (changed) eeprom_changed(EEP_CHANGED_FAILSAFE);
+	app_set_failsafe(valve, pct);
+}
+
+
+// the gvlvx values of valve x (also the first ones of gvlvy)
+static void fillValveExt (uint16_t x, vdm::ValveExtReply &data)
+{
+	struct valve_snapshot snap;
+
+	// one copy: a calibration pass or the end of a move changes several fields at once
+	valve_get_snapshot(x, snap);
+	const bool requested = app_learn_pending(x, snap.status, snap.calibration != 0);
+
+	data.index = (uint8_t) x;
+	data.status = vdm::encodeValveStatus(snap.status, snap.calibration != 0);
+	data.position = snap.actual_position;
+	data.target = snap.target_position;
+	data.meanCurrent = (uint16_t) (snap.meancurrent > 0xFFFF ? 0xFFFF : snap.meancurrent);
+	data.openingCount = snap.opening_count;
+	data.closingCount = snap.closing_count;
+	data.deadzoneCount = snap.deadzone_count;
+	data.calibRetries = snap.calibRetries;
+	data.movements = snap.movements;
+	data.calState = vdm::composeCalState(snap.calibActive != 0, requested, snap.diag.earlyWarn, snap.diag.lastCalFailed);
+	data.earlyStops = snap.diag.earlyStops;
+	data.cmdRejected = myvalves[x].cmdRejected;
+	data.last = snap.diag.last;
+}
+
+
+// the gstat values (also the first ones of gstax)
+static void fillStat (vdm::StatReply &stat)
+{
+	stat.uptimeSeconds = sysstat_uptime_s();
+	stat.resets = sysstat_resets();
+	stat.bootReason = (uint8_t) sysstat_boot_reason();
+	stat.rxOverflow = commLine.overflowCount();
+	stat.parseErrors = commLine.malformedCount() + commLine.expiredCount() + commTooManyArgs;
+	stat.eepromState = eeprom_state();
+}
+
+
 void communication_setup (void) {
 	
 	// UART to ESP32
@@ -166,6 +271,13 @@ void communication_setup (void) {
 	COMM_SER.setTx(PA9);			//STM32F401 blackpill USART1 TX PA9
 	COMM_SER.begin(115200, SERIAL_8N1);
 	while(!COMM_SER);
+	// the core has no hook for receive errors: its RX callback is wrapped. serial_t is found from
+	// the UART handle like the core's get_serial_obj() (uart.c) does.
+	serial_t *serial = (serial_t *) ((char *) COMM_SER.getHandle() - offsetof(serial_t, handle));
+	const uint32_t primask = __get_PRIMASK();
+	__disable_irq();
+	serial->rx_callback = comm_rx_irq;
+	__set_PRIMASK(primask);
 	// drop bytes received with the wrong framing during the 8E1 boot window
 	while (COMM_SER.available() > 0) COMM_SER.read();
 	commLine.reset();
@@ -185,6 +297,9 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	uint32_t	xu32 = 0;
 	uint16_t	y = 0;
 	uint8_t		pos = 0;
+
+	// the valve polls of an ESP that sends no lease commands (2.0.0, legacy) keep the lease alive
+	if (req.is(APP_PRE_GETVLVDATA) || req.is(APP_PRE_GETVLVEXT)) app_lease_poll();
 
 	// set target position
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -382,12 +497,12 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	}
 	
 
-	// set valve learning time
+	// set valve learning time (stored in the EEPROM)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_SETLEARNTIME)) {
 		commdbg_print("set valve learning time to ");
 
-		if (req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32) && app_set_learntime(xu32) == 0) {
+		if (req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32) && comm_set_learntime(xu32) == 0) {
 			COMM_SER.println(APP_PRE_SETLEARNTIME);
 			commdbg_println(xu32, DEC);
 		}
@@ -405,10 +520,14 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		const bool valid = req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32);
 		if (valid) x = vdm::learnMovementsFromRequest(xu32);
 
+		// every request restarts the movement counters of all valves (v1), the EEPROM is written
+		// only for a new value
 		if (valid && app_set_learnmovements(x) == 0) {
 			commdbg_println(x, DEC);
-			eep_content.numberOfMovements=x;
-			eeprom_changed(EEP_CHANGED_MOVEMENTS);
+			if (eep_content.numberOfMovements != x) {
+				eep_content.numberOfMovements = x;
+				eeprom_changed(EEP_CHANGED_MOVEMENTS);
+			}
 			COMM_SER.println(APP_PRE_SETLEARNMOVEM);
 		}
 		else commdbg_println("- error");
@@ -547,7 +666,8 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	} 
 
 
-	// detect valve status
+	// detect valve status: stdet 255 tests every valve again; another number is answered with
+	// "stdet err" (v1 confirmed it without doing anything)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_SETDETECTVLV)) {
 		commdbg_print("got detect valve status request");
@@ -557,29 +677,28 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 			if (x == 255) {
 				app_scan_valves();
 				commdbg_println(" - reset all valves");
+				COMM_SER.print(APP_PRE_SETDETECTVLV);
+				COMM_SER.println(" ");
 			}
-			else commdbg_println(" - error");
-			
-			COMM_SER.print(APP_PRE_SETDETECTVLV);
-			COMM_SER.println(" ");
+			else {
+				commdbg_println(" - error");
+				sendReply(vdm::formatResult(replyLine, APP_PRE_SETDETECTVLV, false));
+			}
 		}
 		else commdbg_println(" - error");		
 	} 
 
 
-	// get version request
+	// get version request: "gvers <version>_<board revision> <build> "
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_GETVERSION)) {
 		commdbg_println("got version request");
 
 		COMM_SER.print(APP_PRE_GETVERSION);
 		COMM_SER.print(" ");			
-
 		COMM_SER.print(FIRMWARE_VERSION);
-		#ifdef HARDWARE_VERSION
-			COMM_SER.print("_");
-			COMM_SER.print(HARDWARE_VERSION);
-		#endif
+		COMM_SER.print("_");
+		COMM_SER.print(kHardwareMarker + sizeof(HARDWARE_MARKER_PREFIX) - 1);
 
 		#ifdef FIRMWARE_BUILD
 			COMM_SER.print(" ");
@@ -647,28 +766,9 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_GETVLVEXT)) {
 		if (req.argc() == 1 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x)) {
-			struct valve_snapshot snap;
 			vdm::ValveExtReply data;
 
-			// one copy: a calibration pass or the end of a move changes several fields at once
-			valve_get_snapshot(x, snap);
-			const bool requested = app_learn_pending(x, snap.status, snap.calibration != 0);
-
-			data.index = (uint8_t) x;
-			data.status = vdm::encodeValveStatus(snap.status, snap.calibration != 0);
-			data.position = snap.actual_position;
-			data.target = snap.target_position;
-			data.meanCurrent = (uint16_t) (snap.meancurrent > 0xFFFF ? 0xFFFF : snap.meancurrent);
-			data.openingCount = snap.opening_count;
-			data.closingCount = snap.closing_count;
-			data.deadzoneCount = snap.deadzone_count;
-			data.calibRetries = snap.calibRetries;
-			data.movements = snap.movements;
-			data.calState = vdm::composeCalState(snap.calibActive != 0, requested, snap.diag.earlyWarn, snap.diag.lastCalFailed);
-			data.earlyStops = snap.diag.earlyStops;
-			data.cmdRejected = myvalves[x].cmdRejected;
-			data.last = snap.diag.last;
-
+			fillValveExt(x, data);
 			sendReply(vdm::formatValveExt(replyLine, data));
 		}
 		else commdbg_println("gvlvx: invalid arguments");
@@ -714,8 +814,9 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 			&& req.argU8(2, vdm::kEscalationMaxmAMin, vdm::kEscalationMaxmAMax, config.maxmA);
 
 		if (valid) {
+			const bool changed = memcmp(&eep_content.escalation, &config, sizeof(config)) != 0;
 			motor_set_escalation(config);
-			eeprom_changed(EEP_CHANGED_ESCALATION);
+			if (changed) eeprom_changed(EEP_CHANGED_ESCALATION);
 		}
 		sendReply(vdm::formatResult(replyLine, APP_PRE_SETCALESC, valid));
 	}
@@ -728,12 +829,8 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_GETSTATUS)) {
 		vdm::StatReply stat;
-		stat.uptimeSeconds = sysstat_uptime_s();
-		stat.resets = sysstat_resets();
-		stat.bootReason = (uint8_t) sysstat_boot_reason();
-		stat.rxOverflow = commLine.overflowCount();
-		stat.parseErrors = commLine.malformedCount() + commLine.expiredCount() + commTooManyArgs;
-		stat.eepromState = eeprom_state();
+
+		fillStat(stat);
 		sendReply(vdm::formatStat(replyLine, stat));
 	}
 
@@ -741,6 +838,133 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is(APP_PRE_GETMOTLIMITS)) {
 		sendReply(vdm::formatMotorLimits(replyLine));
+	}
+
+	// protocol 3 ------------------------------------------------------------
+
+	// lease heartbeat: slhbt alive (0/1) -> "slhbt lease remainS" / "slhbt err"
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_LEASEHEARTBEAT)) {
+		if (req.argc() == 1 && req.argU8(0, 0, 1, pos)) {
+			app_lease_heartbeat(pos != 0);
+			const uint8_t lease = app_lease_state();
+			sendReply(vdm::formatHeartbeat(replyLine, lease, app_lease_remaining_s()));
+		}
+		else sendReply(vdm::formatResult(replyLine, APP_PRE_LEASEHEARTBEAT, false));
+	}
+
+	// lease timeout: slcfg minutes (0 = off, 5..1440), stored in the EEPROM; no renewal
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_SETLEASE)) {
+		const bool valid = req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32) && vdm::leaseTimeoutValid(xu32);
+
+		if (valid) {
+			if (eep_content.leaseTimeoutMin != xu32) {
+				eep_content.leaseTimeoutMin = (uint16_t) xu32;
+				eeprom_changed(EEP_CHANGED_LEASE);
+			}
+			app_lease_configure((uint16_t) xu32);
+			app_lease_command();
+		}
+		sendReply(vdm::formatResult(replyLine, APP_PRE_SETLEASE, valid));
+	}
+
+	// failsafe position: sfspo idx|255 pct (0..100, 255 = hold), stored in the EEPROM
+	// -> "sfspo idx ok" / "sfspo idx err 1" / "sfspo -1 err 1" (no valid index)
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_SETFAILSAFE)) {
+		const int32_t index = (req.argc() >= 1 && argValveOrAll(req, 0, x)) ? (int32_t) x : -1;
+		uint8_t error = 1;
+
+		if (index >= 0 && req.argc() == 2 && req.argU8(1, 0, 255, pos) && vdm::failsafePctValid(pos)) {
+			setFailsafe(x, pos);
+			app_lease_command();
+			error = 0;
+		}
+		sendReply(vdm::formatIndexedResult(replyLine, APP_PRE_SETFAILSAFE, index, error));
+	}
+
+	// lease timeout and failsafe positions: "glcfg timeoutMin fs0 ... fs11"
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETLEASE)) {
+		uint8_t fs[ACTUATOR_COUNT];
+
+		app_lease_command();
+		for (uint8_t v = 0; v < ACTUATOR_COUNT; v++) fs[v] = app_failsafe_pct(v);
+		sendReply(vdm::formatLeaseConfig(replyLine, app_lease_timeout(), fs));
+	}
+
+	// gvlvx plus flags fault fsPct drive retryS retries
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETVLVEXT3)) {
+		if (req.argc() == 1 && req.argU16(0, 0, ACTUATOR_COUNT - 1, x)) {
+			vdm::ValveExtV3Reply data;
+			struct valve_v3_info info;
+
+			fillValveExt(x, data.base);
+			app_get_valve_v3(x, info);
+			data.flags = info.flags;
+			data.fault = info.fault;
+			data.failsafePct = info.fsPct;
+			data.drive = info.drive;
+			data.retryS = info.retryS;
+			data.retries = info.retries;
+			sendReply(vdm::formatValveExtV3(replyLine, data));
+		}
+		else commdbg_println("gvlvy: invalid arguments");
+	}
+
+	// gstat plus lease, safe mode, UART errors, EEPROM load and writes, temperature ages, sysFlags
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETSTATUS3)) {
+		vdm::StatV3Reply stat;
+
+		fillStat(stat.base);
+		stat.lease = app_lease_state();
+		stat.leaseRemainS = app_lease_remaining_s();
+		stat.leaseClient = app_lease_client() ? 1 : 0;
+		stat.leaseTimeoutMin = app_lease_timeout();
+		stat.failsafeMask = app_failsafe_mask();
+		stat.safeMode = sysstat_safe_mode() ? 1 : 0;
+		stat.wdgResets = sysstat_wdg_resets();
+		const uint32_t primask = __get_PRIMASK();
+		__disable_irq();
+		const vdm::UartErrorCounters uart = commUartErrors;
+		__set_PRIMASK(primask);
+		stat.uartOre = uart.overrun;
+		stat.uartFe = uart.framing;
+		stat.uartNe = uart.noise;
+		stat.rxDropped = uart.dropped;
+		stat.cfgFlags = eeprom_cfg_flags();
+		stat.cfgEvents = eeprom_cfg_events();
+		stat.eepWrites = eeprom_writes();
+		stat.tempAgeS = app_temp_age_s();
+		stat.owScanAgeS = ow_scan_age_s();
+		stat.sysFlags = app_protect_suspended() ? vdm::kSysFlagProtectSuspended : 0;
+		sendReply(vdm::formatStatV3(replyLine, stat));
+	}
+
+	// stop: sstop idx|255 -> "sstop idx ok" (also when nothing ran) / "sstop -1 err 1"
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_STOP)) {
+		const bool valid = req.argc() == 1 && argValveOrAll(req, 0, x) && app_stop(x) == 0;
+
+		sendReply(vdm::formatIndexedResult(replyLine, APP_PRE_STOP, valid ? (int32_t) x : -1, valid ? 0 : 1));
+	}
+
+	// stored learn time: "gtlnt seconds" (0 = time trigger off)
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_GETLEARNTIME)) {
+		sendReply(vdm::formatLearnTime(replyLine, app_get_learntime()));
+	}
+
+	// leave safe mode: ssafe 0 -> "ssafe ok" / "ssafe err"
+	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+	else if(req.is(APP_PRE_SAFEMODE)) {
+		const bool valid = req.argc() == 1 && req.argU8(0, 0, 0, pos);
+
+		if (valid) sysstat_leave_safe_mode();
+		sendReply(vdm::formatResult(replyLine, APP_PRE_SAFEMODE, valid));
 	}
 
 	// unknown commands are ignored without reply (protocol v1)

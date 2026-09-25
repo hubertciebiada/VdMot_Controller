@@ -130,7 +130,7 @@ TEST_CASE("gstat, gcalx, gmotx, gproto") {
 
   StaticBufWriter<16> g;
   REQUIRE(vdm::formatProtocolVersion(g));
-  CHECK(std::string(g.c_str()) == "gproto 2");
+  CHECK(std::string(g.c_str()) == "gproto 3");
 }
 
 TEST_CASE("ok / err replies") {

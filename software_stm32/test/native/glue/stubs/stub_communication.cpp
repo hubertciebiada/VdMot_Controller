@@ -34,6 +34,11 @@ int16_t comm_set_valve_sensor_index(uint16_t valve, uint8_t slot, uint16_t senso
   return communication.setSensorIndex;
 }
 
+int16_t comm_set_learntime(uint32_t seconds) {
+  log("comm_set_learntime(%u)", static_cast<unsigned>(seconds));
+  return communication.setLearnTime;
+}
+
 void comm_print_valve_sensor_ids(Print& out, uint16_t valve, char delimiter) {
   log("comm_print_valve_sensor_ids(%u, '%c')", valve, delimiter);
   out.print(communication.firstSensor.c_str());
