@@ -10,7 +10,6 @@
 #include <freertos/task.h>
 #include <string.h>
 
-#include <vdm/calib_schedule.h>
 #include <vdm/config.h>
 #include <vdm/event_log.h>
 
@@ -21,6 +20,7 @@
 #include "net.h"
 #include "ota.h"
 #include "stm_link.h"
+#include "stm_service.h"
 #include "storage.h"
 #include "web_server.h"
 
@@ -46,7 +46,6 @@ CalibInfo gCalibInfo;
 // App task working copies (static: too large for the task stack).
 vdm::Config& gCfg = bootAlloc<vdm::Config>();
 uint32_t gCfgRevision = 0;
-vdm::CalibScheduler gCalib;
 
 constexpr uint32_t kLowHeapBytes = 30 * 1024;
 constexpr uint32_t kLowHeapRepeatMs = 3600000;
@@ -84,41 +83,6 @@ bool abnormalReset(esp_reset_reason_t r) {
   }
 }
 
-void setCalibInfo(int64_t lastEpoch, uint32_t nextSlot) {
-  portENTER_CRITICAL(&gCalibMux);
-  gCalibInfo.lastScheduledEpoch = lastEpoch;
-  gCalibInfo.nextSlot = nextSlot;
-  portEXIT_CRITICAL(&gCalibMux);
-}
-
-void calibrationTick(uint32_t now) {
-  const vdm::LocalTime lt = net::localTime();
-  int64_t lastEpoch = calibInfo().lastScheduledEpoch;
-  const vdm::CalibDecision d = gCalib.evaluate(gCfg.calib, lt, now);
-  if (d == vdm::CalibDecision::Fire) {
-    Command c;
-    c.type = CommandType::Calibrate;
-    c.valve = vdm::kAllValves;
-    c.source = vdm::TargetSource::None;
-    c.scheduled = true;
-    if (submit(c)) {
-      storage::saveCalibSlot(gCalib.lastSlot());
-      storage::saveLastCalib(lt.epoch);
-      lastEpoch = lt.epoch;
-      logger::log(vdm::EventCode::ScheduledCalibration, vdm::kNoValve,
-                  static_cast<int32_t>(gCalib.lastSlot()), gCalib.lateMinutes());
-    } else {
-      // The slot stays booked in RAM (no retry storm); the miss is reported
-      // and the next slot fires normally.
-      logger::log(vdm::EventCode::StmQueueFull, vdm::kNoValve,
-                  static_cast<int32_t>(vdm::Cmd::Staln));
-    }
-  } else if (d == vdm::CalibDecision::SkippedNoTime) {
-    logger::log(vdm::EventCode::CalibTimeMissing, vdm::kNoValve, 0);
-  }
-  setCalibInfo(lastEpoch, gCalib.nextSlot(gCfg.calib, lt));
-}
-
 // Live effects of a config change (DESIGN.md "Config schema", apply
 // semantics). The stm and mqtt tasks follow configRevision() themselves.
 void applyConfigChange() {
@@ -144,7 +108,6 @@ void checkHeap(uint32_t now) {
 void appTask(void*) {
   esp_task_wdt_add(nullptr);
   uint32_t lastSecond = 0;
-  uint32_t lastCalib = 0;
   for (;;) {
     esp_task_wdt_reset();
     const uint32_t now = nowMs();
@@ -157,10 +120,7 @@ void appTask(void*) {
       if (net::isUp() && !web::started()) web::begin();
       ota::service(now, net::isUp(), stmLinkState() == vdm::LinkState::Up);
       checkHeap(now);
-    }
-    if (vdm::elapsedMs(now, lastCalib) >= 10000) {
-      lastCalib = now;
-      calibrationTick(now);
+      stm_service::service(now);
     }
     logger::service(net::isUp());
     storage::service();
@@ -223,6 +183,12 @@ CalibInfo calibInfo() {
   return c;
 }
 
+void setCalibInfo(const CalibInfo& c) {
+  portENTER_CRITICAL(&gCalibMux);
+  gCalibInfo = c;
+  portEXIT_CRITICAL(&gCalibMux);
+}
+
 void setup() {
   Serial.begin(115200);
   // R6: release the STM from reset first thing (IO15 pull-up may hold it).
@@ -265,8 +231,7 @@ void setup() {
   logger::configure(gCfg.syslog.level, gCfg.syslog.server, gCfg.syslog.port, gCfg.persistLog,
                     gCfg.station);
 
-  gCalib.restoreLastSlot(storage::loadCalibSlot());
-  setCalibInfo(storage::loadLastCalib(), 0);
+  stm_service::begin();
 
   net::begin(gCfg);
   ota::begin();

@@ -76,11 +76,13 @@ void publishStmSnapshot(const StmSnapshot& in);
 
 // ---------------------------------------------------------------- calibration
 
-// Scheduled calibration state for /api/status (written by the app task).
+// Scheduled calibration state for /api/status (written by the app task,
+// stm_service).
 struct CalibInfo {
   int64_t lastScheduledEpoch = 0;  // vdmrev/lastCal
   uint32_t nextSlot = 0;           // yyyymmdd, 0 = none / no valid time
 };
 CalibInfo calibInfo();
+void setCalibInfo(const CalibInfo& c);
 
 }  // namespace app
