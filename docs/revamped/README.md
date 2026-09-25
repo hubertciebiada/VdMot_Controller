@@ -10,8 +10,6 @@ Version: **2.0.0-revamped** (ESP32 and STM32).
 Base: branch `hc-version` = upstream `developer` 1.4.12 plus the owner's fixes,
 a pinned toolchain and CI.
 
-![Valves view](img/dashboard-valves.png)
-
 ## What it is
 
 The VdMot controller has two MCUs: an STM32 (BlackPill F401/F411) that drives
@@ -97,17 +95,10 @@ Both halves are backwards compatible:
 If you need a room thermostat, run it in Home Assistant (or similar) and send
 valve targets over MQTT.
 
-## Screenshots
+## Dashboard preview
 
-| Current profile of the last move | Event log |
-|---|---|
-| ![Profile](img/dashboard-profile.png) | ![Events](img/dashboard-events.png) |
-
-| Maintenance | Phone |
-|---|---|
-| ![Maintenance](img/dashboard-maintenance.png) | ![Mobile](img/dashboard-mobile.png) |
-
-(Screenshots from `software_esp32_revamped/tools/mock_api.py` with simulated data.)
+`python3 software_esp32_revamped/tools/mock_api.py` serves the dashboard with simulated data on a
+local port, without a controller.
 
 ## Testing
 
