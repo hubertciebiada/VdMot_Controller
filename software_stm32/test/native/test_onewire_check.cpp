@@ -36,7 +36,7 @@ TEST_CASE("crc8: empty input and single bytes") {
   CHECK(vdm::crc8(&ff, 1) == 0x35);
 }
 
-TEST_CASE("crc8: matches the reference on random data") {
+TEST_CASE("crc8: matches the reference on random data" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(20260924);
   uint8_t buf[16];
   for (int round = 0; round < 2000; ++round) {

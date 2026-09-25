@@ -141,7 +141,7 @@ TEST_CASE("checkBasicAuth decoded length limit is 130") {
   CHECK_FALSE(check(hdr, "u", pwd));
 }
 
-TEST_CASE("checkBasicAuth survives random input") {
+TEST_CASE("checkBasicAuth survives random input" * doctest::test_suite("fuzz")) {
   uint32_t seed = 0x5eed1234u;
   char buf[200];
   for (int round = 0; round < 20000; ++round) {

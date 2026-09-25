@@ -2125,7 +2125,7 @@ using vdm_test::kStmGoldenCount;
 
 }  // namespace
 
-TEST_CASE("codec: fuzz with random bytes (fixed seed)") {
+TEST_CASE("codec: fuzz with random bytes (fixed seed)" * doctest::test_suite("fuzz")) {
   Rng rng{0xC0FFEEu};
   Reply r;
   for (int iter = 0; iter < 20000; ++iter) {
@@ -2145,7 +2145,7 @@ TEST_CASE("codec: fuzz with random bytes (fixed seed)") {
   }
 }
 
-TEST_CASE("codec: fuzz by mutating golden replies (fixed seed)") {
+TEST_CASE("codec: fuzz by mutating golden replies (fixed seed)" * doctest::test_suite("fuzz")) {
   Rng rng{12345u};
   Reply r;
   size_t ok = 0;

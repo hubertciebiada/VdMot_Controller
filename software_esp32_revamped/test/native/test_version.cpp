@@ -253,7 +253,7 @@ TEST_CASE("version: stmSupport against the 1.4.0 minimum") {
   CHECK(std::string(stmSupportName(static_cast<StmSupport>(3))) == "unknown");
 }
 
-TEST_CASE("version: fuzz") {
+TEST_CASE("version: fuzz" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(777);
   const char alphabet[] = "0123456789._-+Cc revampedDv\x01\xff";
   for (int iter = 0; iter < 20000; ++iter) {

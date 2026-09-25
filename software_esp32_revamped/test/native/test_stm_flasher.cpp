@@ -543,7 +543,7 @@ TEST_CASE("validate: read errors") {
   CHECK(validateImage(m, 0, true, info) == FlashError::ImageRead);
 }
 
-TEST_CASE("validate: fixed-seed fuzz against the reference rules") {
+TEST_CASE("validate: fixed-seed fuzz against the reference rules" * doctest::test_suite("fuzz")) {
   Lcg r(0xC0FFEEu);
   const uint16_t pids[] = {0, 0x423, 0x431, 0x433, 0x413};
   for (int iter = 0; iter < 3000; ++iter) {
@@ -769,7 +769,7 @@ TEST_CASE("flasher: image sizes around block and word boundaries") {
   }
 }
 
-TEST_CASE("flasher: full 512 KiB image erases all 8 sectors") {
+TEST_CASE("flasher: full 512 KiB image erases all 8 sectors" * doctest::test_suite("slow")) {
   Rig rig(makeImage(512 * kKiB));
   CHECK(rig.beginAndRun() == FlashPhase::Done);
   CHECK(rig.flashMatchesImage());
@@ -808,7 +808,7 @@ TEST_CASE("flasher: one data frame per step, chained transitions") {
   CHECK(startingAt - verifyStart <= 64 * 6 + 4);
 }
 
-TEST_CASE("flasher: validation reads at most 1 KiB per step") {
+TEST_CASE("flasher: validation reads at most 1 KiB per step" * doctest::test_suite("slow")) {
   Rig rig(makeImage(512 * kKiB));
   REQUIRE(rig.begin());
   size_t prev = 0;
@@ -1961,7 +1961,7 @@ TEST_CASE("flasher: application reply parsing details") {
 
 // ================================================================ fuzz
 
-TEST_CASE("flasher: fixed-seed fault fuzz always ends clean") {
+TEST_CASE("flasher: fixed-seed fault fuzz always ends clean" * doctest::test_suite("fuzz")) {
   Lcg r(0xF1A5u);
   int done = 0, failed = 0;
   for (int iter = 0; iter < 120; ++iter) {

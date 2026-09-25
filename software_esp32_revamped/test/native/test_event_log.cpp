@@ -741,7 +741,8 @@ TEST_CASE("event lines with UTC time or uptime") {
   CHECK(formatEventLine(e, small, 0) == 0);
 }
 
-TEST_CASE("event line dates match an independent calendar for every day to 2106") {
+TEST_CASE("event line dates match an independent calendar for every day to 2106" *
+          doctest::test_suite("slow")) {
   // Reference: walk the calendar day by day from 1970-01-01.
   static const unsigned kMonthDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   unsigned y = 1970, m = 1, d = 1;
@@ -925,7 +926,8 @@ TEST_CASE("formatUtcTimestamp") {
   CHECK(formatUtcTimestamp(0, nullptr, 40) == 0);
 }
 
-TEST_CASE("parseSeverity fuzz: random bytes only ever match a case-folded name") {
+TEST_CASE("parseSeverity fuzz: random bytes only ever match a case-folded name" *
+          doctest::test_suite("fuzz")) {
   // Fixed seed: reproducible. Candidates are biased towards the real names so
   // that near misses (one flipped byte, wrong length) are exercised as well.
   const char* names[] = {"debug", "info", "warning", "error", "critical"};

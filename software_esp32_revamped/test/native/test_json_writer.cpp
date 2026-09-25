@@ -425,7 +425,7 @@ TEST_CASE("json escape helper") {
   CHECK(out[0] == '\0');
 }
 
-TEST_CASE("json writer: random call sequences stay bounded") {
+TEST_CASE("json writer: random call sequences stay bounded" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(1234);
   for (int iter = 0; iter < 2000; ++iter) {
     const size_t cap = rng() % 80;

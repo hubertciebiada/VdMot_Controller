@@ -332,7 +332,7 @@ TEST_CASE("parseTargetCommandTopic") {
   CHECK(parseTargetCommandTopic(s, edge.c_str(), edge.size(), seg) == 1);
 }
 
-TEST_CASE("parseTargetCommandTopic fuzz (fixed seed)") {
+TEST_CASE("parseTargetCommandTopic fuzz (fixed seed)" * doctest::test_suite("fuzz")) {
   const char* names[kValveCount] = {"a", "b b", "", "", "", "", "", "", "", "", "", ""};
   Segments seg;
   fillSegments(seg, names);

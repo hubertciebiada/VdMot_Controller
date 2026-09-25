@@ -1685,7 +1685,8 @@ TEST_CASE("config: patch nesting depth is bounded") {
   CHECK(patch(c, veryDeep, &path) == PatchResult::Malformed);
 }
 
-TEST_CASE("config: patch fuzz with random bytes and mutated documents") {
+TEST_CASE("config: patch fuzz with random bytes and mutated documents" *
+          doctest::test_suite("fuzz")) {
   std::mt19937 rng(20260924);
   const std::string base = exportJson(fullConfig());
   const char alphabet[] = "{}[]\":,\\/ -0123456789.eEtrufalsn\"abcxyz\x01\xff";
@@ -1955,7 +1956,7 @@ TEST_CASE("config: the loader without repairs rejects two valves on one MQTT seg
   CHECK(std::string(out.valves[7].name) == "x-y");
 }
 
-TEST_CASE("config: decode fuzz") {
+TEST_CASE("config: decode fuzz" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(424242);
   const std::vector<uint8_t> good = encode(fullConfig());
   for (int iter = 0; iter < 4000; ++iter) {

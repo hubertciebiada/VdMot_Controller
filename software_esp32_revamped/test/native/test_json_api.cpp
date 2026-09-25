@@ -789,7 +789,7 @@ TEST_CASE("api: malformed and unknown paths") {
   CHECK(matchApiRoute(HttpMethod::Get, "/api/status", 10, false).route == ApiRoute::NotFound);
 }
 
-TEST_CASE("api: router fuzz") {
+TEST_CASE("api: router fuzz" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(31337);
   const char* pieces[] = {"/", "api", "valves", "1", "12", "13", "0", "stm", "images", "flash",
                           "abort", "a.bin", ".x", "target", "profile", "config", "export", "",
