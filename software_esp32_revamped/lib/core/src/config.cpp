@@ -562,9 +562,10 @@ bool itemKey(const Config& c, ItemKind kind, uint8_t i, bool haId, ItemKey& out)
   return true;
 }
 
-// The first item whose key equals the key of an earlier one: true and its
-// index in `later`.
-bool duplicateItem(const Config& c, ItemKind kind, uint8_t count, bool haId, uint8_t& later) {
+// The first item whose key equals the key of an earlier one: true, its index
+// in `later` and the earlier item's in `earlier`.
+bool duplicateItem(const Config& c, ItemKind kind, uint8_t count, bool haId, uint8_t& later,
+                   uint8_t& earlier) {
   ItemKey a;
   ItemKey b;
   for (uint8_t i = 1; i < count; ++i) {  // NOMUTATE: i = 0 has no earlier item to compare
@@ -572,6 +573,7 @@ bool duplicateItem(const Config& c, ItemKind kind, uint8_t count, bool haId, uin
     for (uint8_t j = 0; j < i; ++j) {
       if (itemKey(c, kind, j, haId, b) && strcmp(a, b) == 0) {
         later = i;
+        earlier = j;
         return true;
       }
     }
@@ -668,14 +670,15 @@ bool newRulesOk(const Config& c, PathOut& po) {
   if (m.mode == MqttMode::MqttHa && m.germanDecimal) return failAt(po, kMqtt, "germanDecimal");
   // V2: one MQTT segment per valve; V3: one HA id per valve, per active slot.
   uint8_t i{};
-  if (duplicateItem(c, ItemKind::Valve, kValveCount, false, i) ||
-      duplicateItem(c, ItemKind::Valve, kValveCount, true, i)) {
+  uint8_t j{};
+  if (duplicateItem(c, ItemKind::Valve, kValveCount, false, i, j) ||
+      duplicateItem(c, ItemKind::Valve, kValveCount, true, i, j)) {
     return failItem(po, kValves, i, c.valves[i].topic);
   }
-  if (duplicateItem(c, ItemKind::Temp, kTempSlotCount, true, i)) {
+  if (duplicateItem(c, ItemKind::Temp, kTempSlotCount, true, i, j)) {
     return failItem(po, kTemps, i, c.temps[i].topic);
   }
-  if (duplicateItem(c, ItemKind::Volt, kVoltSlotCount, true, i)) {
+  if (duplicateItem(c, ItemKind::Volt, kVoltSlotCount, true, i, j)) {
     return failItem(po, kVolts, i, c.volts[i].topic);
   }
   return true;
@@ -1791,31 +1794,247 @@ size_t encodeConfig(const Config& c, uint8_t* out, size_t cap) {
   return bo.ok() ? bo.length() : 0;
 }
 
+namespace {
+
+// The factory defaults (flash, not RAM or stack: Config is ~2.7 KB).
+constexpr Config kDefaultConfig{};
+
+// Field f of group g, element e back to its default, through the codec (so
+// every kind resets by its own encoding).
+void resetField(Config& c, const Group& g, uint8_t e, const Field& f) {
+  uint8_t buf[sizeof(WebConfig::allowedHosts)];  // the longest encoding: length byte + 80 chars
+  ByteIn in(buf, encodeOneField(f, fieldPtr(kDefaultConfig, g, e, f), buf, sizeof buf));
+  decodeField(in, f, fieldPtr(c, g, e, f));
+}
+
+char* itemName(Config& c, ItemKind kind, uint8_t i) {
+  return kind == ItemKind::Valve ? c.valves[i].name
+                                 : (kind == ItemKind::Temp ? c.temps[i].name : c.volts[i].name);
+}
+
+char* itemTopic(Config& c, ItemKind kind, uint8_t i) {
+  return kind == ItemKind::Valve ? c.valves[i].topic
+                                 : (kind == ItemKind::Temp ? c.temps[i].topic : c.volts[i].topic);
+}
+
+// Makes a config valid step by step and records every step in Repairs.
+class Repairer {
+ public:
+  Repairer(Config& c, Repairs& r) : c_(c), r_(r) {}
+
+  void run() {
+    fields();
+    network();
+    web();
+    mqtt();
+    while (valveStep()) {
+    }
+    slots(c_.temps, kTempSlotCount, kTemps, r_.tempIds, r_.tempActive);
+    slots(c_.volts, kVoltSlotCount, kVolts, r_.voltIds, r_.voltActive);
+    while (haIdStep(ItemKind::Temp, kTempSlotCount, kTemps)) {
+    }
+    while (haIdStep(ItemKind::Volt, kVoltSlotCount, kVolts)) {
+    }
+  }
+
+ private:
+  void note(uint32_t bit, const Group& g, uint8_t e, const char* field) {
+    r_.mask |= bit;
+    ++r_.count;  // at most one repair per field and item: never near UINT16_MAX
+    if (r_.first[0] == '\0') PathOut(r_.first, sizeof r_.first).set(g, e, field);
+  }
+
+  // Every field outside its per-field rule gets its default.
+  void fields() {
+    if (c_.schema != kConfigJsonSchema) {
+      c_.schema = kConfigJsonSchema;
+      note(kRepairField, kGroups[0], 0, "schema");
+    }
+    for (const Group& g : kGroups) {
+      for (uint8_t e = 0; e < elementCount(g); ++e) {
+        for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
+          const Field& f = g.fields[fi];
+          if (fieldValid(f, fieldPtr(c_, g, e, f))) continue;
+          resetField(c_, g, e, f);
+          note(kRepairField, g, e, f.name);
+        }
+      }
+    }
+  }
+
+  void network() {
+    NetConfig& n = c_.net;
+    if (!n.dhcp && (n.ip == 0 || n.mask == 0 || n.gateway == 0)) {
+      n.dhcp = true;  // an incomplete static setup would leave the device unreachable
+      note(kRepairStaticIp, kNet, 0, "dhcp");
+    }
+    const size_t pwdLen = strlen(n.wifiPassword);
+    if (n.ssid[0] != '\0' && pwdLen > 0 && pwdLen < 8) {  // "" = open network
+      n.ssid[0] = '\0';
+      n.wifiPassword[0] = '\0';
+      note(kRepairWifiPassword, kNet, 0, "wifiPassword");
+    }
+    if (n.iface == NetInterface::Wifi && n.ssid[0] == '\0') {
+      n.iface = NetInterface::Auto;
+      note(kRepairWifiIface, kNet, 0, "iface");
+    }
+    if (c_.syslog.level > 0 && c_.syslog.server == 0) {
+      c_.syslog.level = 0;
+      note(kRepairSyslog, kSyslog, 0, "level");
+    }
+  }
+
+  void web() {
+    WebConfig& w = c_.web;
+    const bool userSet = w.user[0] != '\0';
+    if (userSet == (w.password[0] != '\0')) return;
+    if (userSet) {
+      note(kRepairWebNoPassword, kWeb, 0, "password");
+    } else {
+      note(kRepairWebNoUser, kWeb, 0, "user");
+    }
+    w.user[0] = '\0';
+    w.password[0] = '\0';
+  }
+
+  void mqtt() {
+    MqttConfig& m = c_.mqtt;
+    if (m.mode != MqttMode::Off && m.host[0] == '\0') {
+      m.mode = MqttMode::Off;
+      note(kRepairMqttHost, kMqtt, 0, "mode");
+    }
+    if (m.minDelayS > m.publishIntervalS) {
+      m.minDelayS = m.publishIntervalS;
+      note(kRepairMinDelay, kMqtt, 0, "minDelayS");
+    }
+    if (m.mode == MqttMode::MqttHa && !m.separate) {
+      m.mode = MqttMode::Mqtt;
+      note(kRepairHaSeparate, kMqtt, 0, "mode");
+    }
+    if (m.mode == MqttMode::MqttHa && m.germanDecimal) {
+      m.germanDecimal = false;  // V1: Home Assistant reads a decimal point
+      note(kRepairHaDecimal, kMqtt, 0, "germanDecimal");
+    }
+  }
+
+  // Two items with one key: the later item's override is cleared, else its
+  // name; an unnamed later item uses its number, so then the earlier item's
+  // override or name goes. V2 names the cleared string in the bit, V3 not.
+  void resolve(ItemKind kind, const Group& g, uint8_t later, uint8_t earlier, bool haId) {
+    const bool laterSet =
+        itemTopic(c_, kind, later)[0] != '\0' || itemName(c_, kind, later)[0] != '\0';
+    const uint8_t k = laterSet ? later : earlier;
+    char* topic = itemTopic(c_, kind, k);
+    const bool isTopic = topic[0] != '\0';
+    if (isTopic) {
+      topic[0] = '\0';
+    } else {
+      itemName(c_, kind, k)[0] = '\0';
+    }
+    if (kind == ItemKind::Valve) {
+      uint16_t& bits = isTopic ? r_.valveTopics : r_.valveNames;
+      bits = static_cast<uint16_t>(bits | (1u << k));
+    }
+    const uint32_t bit = haId ? kRepairHaIds : (isTopic ? kRepairTopics : kRepairValveNames);
+    note(bit, g, k, isTopic ? "topic" : "name");
+  }
+
+  void clearValveName(uint8_t i) {
+    c_.valves[i].name[0] = '\0';
+    r_.valveNames = static_cast<uint16_t>(r_.valveNames | (1u << i));
+    note(kRepairValveNames, kValves, i, "name");
+  }
+
+  // One valve repair; false when the valves are valid. Clearing a name can
+  // make a new clash (a name equal to the number of a now unnamed valve), so
+  // the caller repeats until stable.
+  bool valveStep() {
+    for (uint8_t i = 0; i < kValveCount; ++i) {
+      const char* name = c_.valves[i].name;
+      if (name[0] == '\0') continue;
+      for (uint8_t j = 0; j < i; ++j) {
+        if (sameSegment(name, c_.valves[j].name)) {
+          clearValveName(i);
+          return true;
+        }
+      }
+      const uint8_t num = valveNumberSegment(name);
+      if (num != 0 && c_.valves[num - 1].name[0] == '\0') {
+        clearValveName(i);
+        return true;
+      }
+    }
+    uint8_t later{};
+    uint8_t earlier{};
+    // V2: one MQTT segment per valve.
+    if (duplicateItem(c_, ItemKind::Valve, kValveCount, false, later, earlier)) {
+      resolve(ItemKind::Valve, kValves, later, earlier, false);
+      return true;
+    }
+    return haIdStep(ItemKind::Valve, kValveCount, kValves);
+  }
+
+  // V3: one HA id per valve and per active slot.
+  bool haIdStep(ItemKind kind, uint8_t count, const Group& g) {
+    uint8_t later{};
+    uint8_t earlier{};
+    if (!duplicateItem(c_, kind, count, true, later, earlier)) return false;
+    resolve(kind, g, later, earlier, true);
+    return true;
+  }
+
+  // Duplicate ids: the later id is cleared; an active slot without id is
+  // switched off.
+  template <typename Slot, typename Bits>
+  void slots(Slot* s, uint8_t count, const Group& g, Bits& ids, Bits& active) {
+    for (uint8_t i = 0; i < count; ++i) {
+      for (uint8_t j = 0; j < i && !isZero(s[i].id); ++j) {
+        if (s[j].id != s[i].id) continue;
+        s[i].id = OneWireId{};
+        ids = static_cast<Bits>(ids | (static_cast<Bits>(1) << i));
+        note(kRepairSlotIds, g, i, "id");
+      }
+      if (s[i].active && isZero(s[i].id)) {
+        s[i].active = false;
+        active = static_cast<Bits>(active | (static_cast<Bits>(1) << i));
+        note(kRepairSlotActive, g, i, "active");
+      }
+    }
+  }
+
+  Config& c_;
+  Repairs& r_;
+};
+
+}  // namespace
+
 uint32_t sanitizeConfig(Config& c, Repairs* out) {
-  // Pass-through: the loader still rejects what a repair would fix.
-  (void)c;
-  if (out != nullptr) *out = Repairs{};
-  return 0;
+  Repairs local;
+  Repairs& r = out != nullptr ? *out : local;
+  r = Repairs{};
+  Repairer(c, r).run();
+  return r.mask;
 }
 
 DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out, DecodeInfo* info) {
   setDefaults(out);
-  if (info != nullptr) *info = DecodeInfo{};
+  DecodeInfo local;
+  DecodeInfo& di = info != nullptr ? *info : local;
+  di = DecodeInfo{};
   if (data == nullptr || len < kHeaderSize + kCrcSize) return DecodeResult::TooShort;
   if (memcmp(data, kMagic, sizeof kMagic) != 0) return DecodeResult::BadMagic;
-  const uint16_t schema = static_cast<uint16_t>(data[4] | (data[5] << 8));
-  if (info != nullptr) info->schema = schema;
+  di.schema = static_cast<uint16_t>(data[4] | (data[5] << 8));
   const size_t payload = static_cast<size_t>(data[6] | (data[7] << 8));
   if (len < kHeaderSize + payload + kCrcSize) return DecodeResult::TooShort;
   if (len > kHeaderSize + payload + kCrcSize) return DecodeResult::Invalid;
   const size_t crcAt = kHeaderSize + payload;
   if (crc32(data, crcAt) != loadLe32(data + crcAt)) return DecodeResult::BadCrc;
-  // Schema 1 is the first one; older blobs do not exist. A newer schema is
-  // left alone so a downgrade does not destroy it.
-  if (schema != kConfigBaseSchema) return DecodeResult::UnsupportedSchema;
+  // Schema 1 is the first one; older blobs do not exist.
+  if (di.schema == 0) return DecodeResult::UnsupportedSchema;
 
   // Decoded in place (Config is too big for a second copy on small stacks);
-  // any failure puts the defaults back.
+  // structural damage puts the defaults back. A newer schema starts with the
+  // schema-1 fields: that prefix is read, the rest is left alone.
   ByteIn in(data + kHeaderSize, payload);
   for (size_t gi = 0; gi < kGroupCount && in.ok(); ++gi) {
     const Group& g = kGroups[gi];
@@ -1826,12 +2045,15 @@ DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out, DecodeIn
       }
     }
   }
-  // The rules added after 2.0.0 never drop a stored config.
-  PathOut none;
-  if (!in.ok() || !in.atEnd() || !storedRulesOk(out, none)) {
+  const bool newer = di.schema > kConfigBaseSchema;
+  if (!in.ok() || (!newer && !in.atEnd())) {
     setDefaults(out);
     return DecodeResult::Invalid;
   }
+  di.newerSchema = newer;
+  // Values are repaired field by field; a stored config is never dropped
+  // because a rule got stricter.
+  sanitizeConfig(out, &di.repairs);
   return DecodeResult::Ok;
 }
 
@@ -1907,6 +2129,9 @@ bool loadConfigBlobs(const StoredBlobs& b, Config& out, LoadInfo& info, uint8_t*
   info.base = decodeConfig(b.base, b.baseLen, out, &info.decode);
   if (info.base != DecodeResult::Ok) return false;
   info.ext = decodeConfigExt(b.ext, b.extLen, out, &info.extInfo, keep, keepCap);
+  // The ext records can break a cross-field rule (an override equal to
+  // another valve's segment).
+  sanitizeConfig(out, &info.repairs);
   return true;
 }
 

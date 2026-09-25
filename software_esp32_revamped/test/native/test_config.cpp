@@ -1840,20 +1840,23 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     expect(b, DecodeResult::BadCrc);
   }
   {
+    // Schema 0 never existed; a newer schema is read by its schema-1 prefix.
     std::vector<uint8_t> b = good;
-    b[4] = 2;
-    fixCrc(b);
-    expect(b, DecodeResult::UnsupportedSchema);
     b[4] = 0;
-    fixCrc(b);
-    expect(b, DecodeResult::UnsupportedSchema);
-    b[4] = 1;
-    b[5] = 1;  // 257
     fixCrc(b);
     expect(b, DecodeResult::UnsupportedSchema);
     DecodeInfo info;
     CHECK(decodeConfig(b.data(), b.size(), out, &info) == DecodeResult::UnsupportedSchema);
+    CHECK(info.schema == 0);
+    CHECK_FALSE(info.newerSchema);
+    b[4] = 1;
+    b[5] = 1;  // 257
+    fixCrc(b);
+    Config o;
+    CHECK(decodeConfig(b.data(), b.size(), o, &info) == DecodeResult::Ok);
     CHECK(info.schema == 257);
+    CHECK(info.newerSchema);
+    CHECK(sameConfig(o, full));
   }
   {
     // Payload length one short: last field incomplete -> too short a
@@ -1884,7 +1887,7 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     b[10] = 0;
     fixCrc(b);
     expect(b, DecodeResult::Invalid);
-    // Station of length 0: structurally fine, fails validation.
+    // Station of length 0: structurally fine, repaired (C-6).
     Config e;
     Config z;
     const std::vector<uint8_t> zeroLen = [&] {
@@ -1897,7 +1900,12 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
       fixCrc(v);
       return v;
     }();
-    CHECK(decodeConfig(zeroLen.data(), zeroLen.size(), z) == DecodeResult::Invalid);
+    DecodeInfo info;
+    CHECK(decodeConfig(zeroLen.data(), zeroLen.size(), z, &info) == DecodeResult::Ok);
+    CHECK(std::string(z.station) == "VdMot");
+    CHECK(info.repairs.mask == kRepairField);
+    CHECK(info.repairs.count == 1);
+    CHECK(std::string(info.repairs.first) == "station");
   }
   {
     // Bool byte 2 and out-of-range values.
@@ -1914,17 +1922,23 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     b = encode(a);
     b[hourAt] = 24;
     fixCrc(b);
-    expect(b, DecodeResult::Invalid);
+    Config o;
+    DecodeInfo info;
+    CHECK(decodeConfig(b.data(), b.size(), o, &info) == DecodeResult::Ok);
+    CHECK(o.calib.hour == 0);
+    CHECK(info.repairs.mask == kRepairField);
+    CHECK(std::string(info.repairs.first) == "calib.hour");
     b[hourAt] = 23;
     fixCrc(b);
-    expect(b, DecodeResult::Ok);
+    CHECK(decodeConfig(b.data(), b.size(), o, &info) == DecodeResult::Ok);
+    CHECK(o.calib.hour == 23);
+    CHECK(info.repairs.mask == 0);
   }
 }
 
-TEST_CASE("config: the loader without repairs rejects two valves on one MQTT segment") {
+TEST_CASE("config: the loader clears the later of two valves on one MQTT segment") {
   // The 2.0.0 rule: names compare with ' ' == '_', each against every earlier
-  // valve. (sanitizeConfig() is still a pass-through, so decodeConfig drops
-  // such a blob like 2.0.0 did.)
+  // valve; the loader clears the later name instead of dropping the blob.
   struct Pair {
     uint8_t a;
     uint8_t b;
@@ -1939,14 +1953,22 @@ TEST_CASE("config: the loader without repairs rejects two valves on one MQTT seg
     strcpy(c.valves[p.b].name, p.nameB);
     const std::vector<uint8_t> b = encode(c);
     Config out;
-    CHECK(decodeConfig(b.data(), b.size(), out) == DecodeResult::Invalid);
+    DecodeInfo info;
+    CHECK(decodeConfig(b.data(), b.size(), out, &info) == DecodeResult::Ok);
+    CHECK(std::string(out.valves[p.a].name) == p.nameA);
+    CHECK(out.valves[p.b].name[0] == '\0');
+    CHECK(info.repairs.mask == kRepairValveNames);
+    CHECK(info.repairs.valveNames == (1u << p.b));
   }
   // A name equal to the number of an unnamed valve is that valve's segment.
   Config num;
   strcpy(num.valves[4].name, "1");
   const std::vector<uint8_t> nb = encode(num);
   Config numOut;
-  CHECK(decodeConfig(nb.data(), nb.size(), numOut) == DecodeResult::Invalid);
+  DecodeInfo numInfo;
+  CHECK(decodeConfig(nb.data(), nb.size(), numOut, &numInfo) == DecodeResult::Ok);
+  CHECK(numOut.valves[4].name[0] == '\0');
+  CHECK(std::string(numInfo.repairs.first) == "valves.5.name");
   Config ok;
   strcpy(ok.valves[3].name, "x_y");
   strcpy(ok.valves[7].name, "x-y");
@@ -2641,8 +2663,12 @@ TEST_CASE("config: the cfg blob stays the 2.0.0 blob (C-2)") {
   CHECK(encode(fullConfig()) == golden);
   // The keys added later do not touch it.
   CHECK(encode(fullConfigExt()) == golden);
+  // C-3: the 2.0.0 blob needs no repair; the new keys are defaults.
   Config back;
-  CHECK(decodeConfig(golden.data(), golden.size(), back) == DecodeResult::Ok);
+  DecodeInfo info;
+  CHECK(decodeConfig(golden.data(), golden.size(), back, &info) == DecodeResult::Ok);
+  CHECK(info.repairs.mask == 0);
+  CHECK_FALSE(info.newerSchema);
   CHECK(sameConfig(back, fullConfig()));
 }
 
@@ -3313,20 +3339,7 @@ TEST_CASE("config: export and patch round trip with every key") {
   CHECK(sameConfig(c, full));
 }
 
-TEST_CASE("config: load and repair API before the repairs") {
-  Config c = fullConfigExt();
-  Repairs r;
-  r.mask = 5;
-  r.count = 2;
-  strcpy(r.first, "x");
-  CHECK(sanitizeConfig(c, &r) == 0);
-  CHECK(r.mask == 0);
-  CHECK(r.count == 0);
-  CHECK(r.first[0] == '\0');
-  CHECK(sanitizeConfig(c, nullptr) == 0);
-  CHECK(sameConfig(c, fullConfigExt()));
-
-  // decodeConfig reports the header schema.
+TEST_CASE("config: decode reports the header schema, loadConfigBlobs reads base then ext") {
   const std::vector<uint8_t> base = encode(fullConfigExt());
   DecodeInfo info;
   info.newerSchema = true;
@@ -3336,18 +3349,12 @@ TEST_CASE("config: load and repair API before the repairs") {
   CHECK(info.schema == 1);
   CHECK_FALSE(info.newerSchema);
   CHECK(info.repairs.count == 0);
-  std::vector<uint8_t> newer = base;
-  newer[4] = 2;
-  fixCrc(newer);
-  CHECK(decodeConfig(newer.data(), newer.size(), d, &info) == DecodeResult::UnsupportedSchema);
-  CHECK(info.schema == 2);
   std::vector<uint8_t> magic = base;
   magic[0] = 'X';
   CHECK(decodeConfig(magic.data(), magic.size(), d, &info) == DecodeResult::BadMagic);
   CHECK(info.schema == 0);
   CHECK(decodeConfig(nullptr, 0, d, &info) == DecodeResult::TooShort);
 
-  // loadConfigBlobs: base, then the ext records.
   const std::vector<uint8_t> ext = encodeExt(fullConfigExt());
   StoredBlobs b;
   b.base = base.data();
@@ -3363,7 +3370,7 @@ TEST_CASE("config: load and repair API before the repairs") {
   CHECK(li.decode.schema == 1);
   CHECK(li.repairs.mask == 0);
   CHECK(sameConfig(out, fullConfigExt()));
-  // A damaged ext blob leaves the defaults of its keys.
+  // A damaged ext blob leaves the defaults of its keys (C-10).
   std::vector<uint8_t> badExt = ext;
   badExt[9] ^= 1;
   b.ext = badExt.data();
@@ -3389,7 +3396,7 @@ TEST_CASE("config: load and repair API before the repairs") {
   CHECK(sameConfig(out, Config{}));
 }
 
-TEST_CASE("config: a stored config that breaks only V1-V3 is still loaded") {
+TEST_CASE("config: a stored config that breaks V1-V3 or a 2.0.0 rule is repaired") {
   Config ha;
   ha.mqtt.mode = MqttMode::MqttHa;
   strcpy(ha.mqtt.host, "b");
@@ -3399,13 +3406,22 @@ TEST_CASE("config: a stored config that breaks only V1-V3 is still loaded") {
   CHECK(validatePath(ha) == "mqtt.germanDecimal");
   const std::vector<uint8_t> blob = encode(ha);
   Config back;
-  CHECK(decodeConfig(blob.data(), blob.size(), back) == DecodeResult::Ok);
-  CHECK(sameConfig(back, ha));
+  DecodeInfo info;
+  CHECK(decodeConfig(blob.data(), blob.size(), back, &info) == DecodeResult::Ok);
+  CHECK(info.repairs.mask == (kRepairHaDecimal | kRepairHaIds));
+  CHECK(info.repairs.count == 2);
+  CHECK(std::string(info.repairs.first) == "mqtt.germanDecimal");
+  CHECK(info.repairs.valveNames == 2);
+  Config expect = ha;
+  expect.mqtt.germanDecimal = false;
+  expect.valves[1].name[0] = '\0';
+  CHECK(sameConfig(back, expect));
+  CHECK(validatePath(back) == "OK");
+  // A 2.0.0 rule is repaired as well.
   ha.mqtt.germanDecimal = false;
-  CHECK(validatePath(ha) == "valves.2.name");
-  // A 2.0.0 rule still drops it.
   ha.mqtt.separate = false;
   const std::vector<uint8_t> broken = encode(ha);
-  CHECK(decodeConfig(broken.data(), broken.size(), back) == DecodeResult::Invalid);
-  CHECK(sameConfig(back, Config{}));
+  CHECK(decodeConfig(broken.data(), broken.size(), back, &info) == DecodeResult::Ok);
+  CHECK(back.mqtt.mode == MqttMode::Mqtt);
+  CHECK(info.repairs.mask == (kRepairHaSeparate | kRepairHaIds));
 }
