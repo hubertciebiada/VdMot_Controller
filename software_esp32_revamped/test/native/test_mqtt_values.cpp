@@ -23,7 +23,7 @@ TEST_CASE("systemState") {
   CHECK(systemState(LinkState::Degraded, v, kValveCount, 0x0010) == 2);
   const uint16_t others[] = {kHealthNoValve,    kHealthCalibRetries,      kHealthEarlyStop,
                              kHealthCmdRejected, kHealthStale,            kHealthTargetUnconfirmed,
-                             kHealthTempFailed};
+                             kHealthTempFailed,  kHealthFailsafe,         kHealthStrokeShort};
   for (uint16_t f : others) {
     v[4].health = f;
     CHECK(systemState(LinkState::Up, v, kValveCount, 0x0010) == 1);
@@ -43,4 +43,29 @@ TEST_CASE("systemState") {
   v[0].health = 0;
   v[4].health = 0;
   CHECK(systemState(LinkState::Up, v, 255, 0xFFFF) == 0);
+}
+
+TEST_CASE("systemState: safe mode and failsafe") {
+  ValveState v[kValveCount];
+  SystemFlags safe;
+  safe.safeMode = true;
+  SystemFlags fs;
+  fs.failsafe = true;
+  SystemFlags both;
+  both.safeMode = true;
+  both.failsafe = true;
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF, SystemFlags{}) == 0);
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF, safe) == 2);
+  CHECK(systemState(LinkState::Up, nullptr, 0, 0, safe) == 2);
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF, fs) == 1);
+  CHECK(systemState(LinkState::Up, nullptr, 0, 0, fs) == 1);
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF, both) == 2);
+  CHECK(systemState(LinkState::Degraded, v, kValveCount, 0x0FFF, safe) == 2);
+  CHECK(systemState(LinkState::Down, v, kValveCount, 0x0FFF, fs) == 2);
+  // An error of a valve outranks the failsafe.
+  v[2].health = kHealthFailed;
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF, fs) == 2);
+  v[2].health = kHealthFailsafe;
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF, fs) == 1);
+  CHECK(systemState(LinkState::Up, v, kValveCount, 0x0FFF) == 1);
 }
