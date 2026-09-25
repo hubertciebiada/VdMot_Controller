@@ -1,8 +1,7 @@
 // STM link task: sole owner of Serial2 and the NRST pin. Runs vdm::StmSession
 // (link policy, planner, models, lease, reset gate, flasher) and implements
 // its port; executes app::Command; publishes app::StmSnapshot. Nothing else
-// in the firmware touches the UART (specs/04 §3.1: one owner task, message
-// passing).
+// in the firmware touches the UART (one owner task, message passing).
 #pragma once
 
 #include <stdint.h>

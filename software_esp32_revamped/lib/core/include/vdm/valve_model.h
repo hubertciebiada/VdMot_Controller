@@ -14,7 +14,7 @@ namespace vdm {
 
 class SensorModel;
 
-// Legacy text for a status value (MQTT plain-text payloads, spec 03 §5.2):
+// Legacy text for a status value (MQTT plain-text payloads):
 // 0 "", 1 "idle", 2 "opens", 3 "closes", 4 "failed", 5 "unknown",
 // 6 "no valve", 7 "full open", 8 "connected", 9 "blocked", >= 10 "".
 const char* valveStatusText(uint8_t status);

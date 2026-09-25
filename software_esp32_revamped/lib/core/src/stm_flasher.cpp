@@ -823,7 +823,7 @@ void StmFlasher::stepVerifying(uint32_t nowMs) {
   }
   if (sub_ == 2) {
     const uint8_t n[2] = {static_cast<uint8_t>(len - 1), static_cast<uint8_t>((len - 1) ^ 0xFF)};
-    // ACK + N+1 data bytes at 11 bits each, plus 200 ms (spec 02 R5).
+    // ACK + N+1 data bytes at 11 bits each, plus 200 ms.
     const uint32_t dataMs = wireMs(len + 1, sessionBaud_) + 200u;
     if (!send(n, sizeof n, nowMs, opt_.ackTimeoutMs + dataMs)) return;
     sub_ = 3;

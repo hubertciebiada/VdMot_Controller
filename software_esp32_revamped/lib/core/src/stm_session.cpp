@@ -6,8 +6,8 @@
 
 namespace vdm {
 
-StmSession::StmSession(StmSessionPort& port, FlashTransport& transport)
-    : port_(port), transport_(transport), flasher_(transport) {
+StmSession::StmSession(StmSessionPort& port, FlashTransport& transport, StmSnapshot& snapshot)
+    : port_(port), transport_(transport), flasher_(transport), snap_(snapshot) {
   parseVersion(minStmVersion(), strlen(minStmVersion()), minVersion_);
 }
 
@@ -43,25 +43,29 @@ void StmSession::startSensorGrace(uint32_t nowMs) {
 // ---------------------------------------------------------------- config and start
 
 void StmSession::applyConfig(const Config& cfg, bool trusted) {
-  cfg_ = cfg;
   uint16_t mask = 0;
   for (uint8_t i = 0; i < kValveCount; ++i) {
-    if (cfg_.valves[i].active) mask = static_cast<uint16_t>(mask | (1u << i));
+    if (cfg.valves[i].active) mask = static_cast<uint16_t>(mask | (1u << i));
   }
   model_.setActiveMask(mask);
   planner_.setActiveMask(mask);
   bool idsChanged = false;
   for (uint8_t i = 0; i < kTempSlotCount; ++i) {
-    if (slotIds_[i] != cfg_.temps[i].id) idsChanged = true;
-    slotIds_[i] = cfg_.temps[i].id;
+    if (slotIds_[i] != cfg.temps[i].id) idsChanged = true;
+    slotIds_[i] = cfg.temps[i].id;
+    tempActive_[i] = cfg.temps[i].active;
+  }
+  for (uint8_t i = 0; i < kVoltSlotCount; ++i) {
+    voltIds_[i] = cfg.volts[i].id;
+    voltActive_[i] = cfg.volts[i].active;
   }
   // Slot ids changed: re-resolve the valve sensor assignment.
   if (idsChanged) planner_.requestValveSensors();
   LeaseConfig lc;
-  effectiveLeaseConfig(cfg_, lc);
+  effectiveLeaseConfig(cfg, lc);
   lease_.setConfig(lc);
   lease_.setConfigTrusted(trusted);
-  learn_.setDesired(stmLearnTime(cfg_.calib));
+  learn_.setDesired(stmLearnTime(cfg.calib));
   dirty_ = true;
 }
 
@@ -692,12 +696,12 @@ void StmSession::checkSensors(uint32_t nowMs) {
   Event ev[kMaxEventsPerUpdate];
   for (uint8_t i = 0; i < kTempSlotCount; ++i) {
     SlotTrack& t = tempTrack_[i];
-    const TempSlotConfig& slot = cfg_.temps[i];
-    if (!slot.active || isZero(slot.id)) {
+    const OneWireId& id = slotIds_[i];
+    if (!tempActive_[i] || isZero(id)) {
       t = SlotTrack{};
       continue;
     }
-    const int bus = sensors_.findTemp(slot.id);
+    const int bus = sensors_.findTemp(id);
     const TempReading& rd = sensors_.temp(bus >= 0 ? static_cast<uint8_t>(bus) : 0xFF);
     const bool valid = bus >= 0 && tempRawValid(rd.raw) &&
                        sensors_.tempFresh(static_cast<uint8_t>(bus), nowMs, kSensorStaleMs);
@@ -705,7 +709,7 @@ void StmSession::checkSensors(uint32_t nowMs) {
                                           rd.raw, ev, kMaxEventsPerUpdate);
     for (size_t k = 0; k < n; ++k) {
       if (ev[k].code == EventCode::TempSensorFailed) {
-        formatOneWireId(slot.id, ev[k].text, sizeof ev[k].text);
+        formatOneWireId(id, ev[k].text, sizeof ev[k].text);
       }
       port_.logEvent(ev[k]);
     }
@@ -714,12 +718,11 @@ void StmSession::checkSensors(uint32_t nowMs) {
   }
   for (uint8_t i = 0; i < kVoltSlotCount; ++i) {
     SlotTrack& t = voltTrack_[i];
-    const VoltSlotConfig& slot = cfg_.volts[i];
-    if (!slot.active || isZero(slot.id)) {
+    if (!voltActive_[i] || isZero(voltIds_[i])) {
       t = SlotTrack{};
       continue;
     }
-    const int bus = sensors_.findVolt(slot.id);
+    const int bus = sensors_.findVolt(voltIds_[i]);
     const VoltReading& rd = sensors_.volt(bus >= 0 ? static_cast<uint8_t>(bus) : 0xFF);
     const bool valid = bus >= 0 && rd.seen && vadValid(rd.vad) &&
                        elapsedMs(nowMs, rd.lastSeenMs) <= kSensorStaleMs;

@@ -61,7 +61,9 @@ class StmSession {
   static constexpr uint16_t kTagScheduledCalib = 1;
   static constexpr uint32_t kStmBaud = 115200;
 
-  StmSession(StmSessionPort& port, FlashTransport& transport);
+  // `snapshot` is the session's working snapshot (large: the glue allocates
+  // it once with the other snapshot copies of the firmware).
+  StmSession(StmSessionPort& port, FlashTransport& transport, StmSnapshot& snapshot);
   StmSession(const StmSession&) = delete;
   StmSession& operator=(const StmSession&) = delete;
 
@@ -153,9 +155,12 @@ class StmSession {
   StmFlasher flasher_;
   Reply reply_;
 
-  Config cfg_;
+  // Sensor slots of the config (the valve sensor assignment, failure edges).
   OneWireId slotIds_[kTempSlotCount];
-  StmSnapshot snap_;
+  bool tempActive_[kTempSlotCount] = {};
+  OneWireId voltIds_[kVoltSlotCount];
+  bool voltActive_[kVoltSlotCount] = {};
+  StmSnapshot& snap_;
   ValveState prev_[kValveCount];
   LinkState prevLink_ = LinkState::Unknown;
   bool dirty_ = true;

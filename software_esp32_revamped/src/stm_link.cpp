@@ -91,7 +91,8 @@ UartTransport gTransport;
 Port gPort;
 
 vdm::StmSession& newSession() {
-  vdm::StmSession* s = new (std::nothrow) vdm::StmSession(gPort, gTransport);
+  vdm::StmSession* s =
+      new (std::nothrow) vdm::StmSession(gPort, gTransport, bootAlloc<vdm::StmSnapshot>());
   if (s == nullptr) abort();  // out of memory at boot: nothing sensible to do
   return *s;
 }
@@ -133,8 +134,8 @@ void pulseReset() {
 }
 
 void releaseReset() {
-  // BOOT0 LOW before NRST is released (specs/06 §5.2), so a wired BOOT0
-  // never starts the ROM bootloader.
+  // BOOT0 LOW before NRST is released, so a wired BOOT0 never starts the
+  // ROM bootloader.
   digitalWrite(board::kStmBoot0Pin, LOW);
   pinMode(board::kStmBoot0Pin, OUTPUT);
   setReset(false);

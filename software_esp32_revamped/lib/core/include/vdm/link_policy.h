@@ -137,8 +137,8 @@ class LinkPolicy {
   // first matching reply.
   void onStmReset(uint32_t nowMs, bool byPolicy);
 
-  // ESP boot: the IO15 strap pull-up holds NRST while the ESP boots
-  // (specs/06 §5.2), so the STM is most likely starting up as well. Enters
+  // ESP boot: the IO15 strap pull-up holds NRST while the ESP boots, so the
+  // STM is most likely starting up as well. Enters
   // Booting for bootHoldoffMs like onStmReset(), but counts no reset and
   // keeps the queue. Without it the first gproto probe lands in the STM's
   // start-up window, times out and selects protocol v1 for a v2 STM.
@@ -213,7 +213,7 @@ class RebootDetector {
   //    statuses on the ESP clock (a power-on restart after a long outage).
   // Clears an armed link-recovery check.
   uint8_t onStatus(const StmStatus& s, uint32_t nowMs);
-  // v1 heuristic (spec 01 §10): true when a valve that previously reported
+  // v1 heuristic: true when a valve that previously reported
   // openCount>0 or closeCount>0 now reports openCount==0 && closeCount==0 &&
   // moves==0 with status Unknown(5), Connected(8) or NoValve(6).
   bool onValveData(const ValveData& d);

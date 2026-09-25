@@ -100,7 +100,8 @@ struct Rig {
   SimStm sim{now};
   TestPort port;
   LineStm stm;
-  StmSession s{port, sim};
+  StmSnapshot snapshot;
+  StmSession s{port, sim, snapshot};
   Config cfg;
   bool trusted = true;
   RegulatorInput reg;
