@@ -1,0 +1,11 @@
+[
+  {"line": 14, "col": 25, "original": "<", "replacement": "<=", "text": "for (uint8_t v = 0; v < kValveCount; ++v) {", "reason": "every mask passed in is a valve mask with bits 0..11 only, so the extra v == 12 step finds its bit clear"},
+  {"line": 321, "col": 46, "original": "0", "replacement": "1", "text": "log(EventCode::StmFlashFailed, kNoValve, 0, 0, \"start refused\");", "reason": "unreachable: StmFlasher::begin() refuses only while active (flashing() is checked before) or for a baud outside its range (FlashOptions default 115200)"},
+  {"line": 321, "col": 49, "original": "0", "replacement": "1", "text": "log(EventCode::StmFlashFailed, kNoValve, 0, 0, \"start refused\");", "reason": "unreachable: StmFlasher::begin() refuses only while active (flashing() is checked before) or for a baud outside its range (FlashOptions default 115200)"},
+  {"line": 487, "col": 29, "original": "<", "replacement": "<=", "text": "if (rep.profile.valve < kValveCount) snap_.profiles[rep.profile.valve] = rep.profile;", "reason": "parseProfile() accepts valve indices 0..kValveMax only, so the valve is never kValveCount"},
+  {"line": 496, "col": 9, "original": ">=", "replacement": ">", "text": "if (v >= kValveCount) return;", "reason": "buildServiceMove() refuses valves >= kValveCount, so a completed svmov request never carries valve kValveCount"},
+  {"line": 608, "col": 19, "original": "0", "replacement": "1", "text": "uint8_t valve = 0, pos = 0;", "reason": "out parameters: nextAssemblyPush/nextTargetPush/nextVerify set them before they are read"},
+  {"line": 608, "col": 28, "original": "0", "replacement": "1", "text": "uint8_t valve = 0, pos = 0;", "reason": "out parameter: nextTargetPush sets it before it is read"},
+  {"line": 622, "col": 36, "original": "0", "replacement": "1", "text": "learn_.setProtocol(unsupported ? 0 : proto);", "reason": "an unsupported STM never gets learn-time requests (learn_.next is skipped while unsupported) and LearnTimeSync treats protocols below 3 alike"},
+  {"line": 648, "col": 25, "original": "<", "replacement": "<=", "text": "for (uint8_t i = 0; i < kValveCount; ++i) planner_.setValveBusy(i, model_.isBusy(i));", "reason": "PollPlanner::setValveBusy ignores valve kValveCount (and ValveModel::isBusy returns false for it)"}
+]

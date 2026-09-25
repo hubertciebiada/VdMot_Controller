@@ -6,6 +6,18 @@
 
 namespace vdm {
 
+namespace {
+
+// Calls f(v) for every valve whose bit is set in `mask`.
+template <typename F>
+void forEachValve(uint16_t mask, F f) {
+  for (uint8_t v = 0; v < kValveCount; ++v) {
+    if ((mask >> v) & 1u) f(v);
+  }
+}
+
+}  // namespace
+
 StmSession::StmSession(StmSessionPort& port, FlashTransport& transport, StmSnapshot& snapshot)
     : port_(port), transport_(transport), flasher_(transport), snap_(snapshot) {
   parseVersion(minStmVersion(), strlen(minStmVersion()), minVersion_);
@@ -22,12 +34,9 @@ void StmSession::logEvents(const Event* ev, size_t n) {
 }
 
 bool StmSession::enqueue(const RequestLine& r, Priority p, uint16_t tag) {
-  if (r.len == 0) return false;
-  if (link_.enqueue(r, p, tag) == EnqueueResult::Full) {
-    log(EventCode::StmQueueFull, kNoValve, static_cast<int32_t>(r.cmd));
-    return false;
-  }
-  return true;
+  const EnqueueResult res = link_.enqueue(r, p, tag);
+  if (res == EnqueueResult::Full) log(EventCode::StmQueueFull, kNoValve, static_cast<int32_t>(r.cmd));
+  return res == EnqueueResult::Queued || res == EnqueueResult::Coalesced;
 }
 
 bool StmSession::stmAnswers(uint32_t nowMs) const {
@@ -44,20 +53,22 @@ void StmSession::startSensorGrace(uint32_t nowMs) {
 
 void StmSession::applyConfig(const Config& cfg, bool trusted) {
   uint16_t mask = 0;
-  for (uint8_t i = 0; i < kValveCount; ++i) {
-    if (cfg.valves[i].active) mask = static_cast<uint16_t>(mask | (1u << i));
+  for (const ValveConfig& v : cfg.valves) {
+    if (v.active) mask = static_cast<uint16_t>(mask | (1u << (&v - cfg.valves)));
   }
   model_.setActiveMask(mask);
   planner_.setActiveMask(mask);
   bool idsChanged = false;
-  for (uint8_t i = 0; i < kTempSlotCount; ++i) {
-    if (slotIds_[i] != cfg.temps[i].id) idsChanged = true;
-    slotIds_[i] = cfg.temps[i].id;
-    tempActive_[i] = cfg.temps[i].active;
+  for (const TempSlotConfig& t : cfg.temps) {
+    const size_t i = static_cast<size_t>(&t - cfg.temps);
+    if (slotIds_[i] != t.id) idsChanged = true;
+    slotIds_[i] = t.id;
+    tempActive_[i] = t.active;
   }
-  for (uint8_t i = 0; i < kVoltSlotCount; ++i) {
-    voltIds_[i] = cfg.volts[i].id;
-    voltActive_[i] = cfg.volts[i].active;
+  for (const VoltSlotConfig& t : cfg.volts) {
+    const size_t i = static_cast<size_t>(&t - cfg.volts);
+    voltIds_[i] = t.id;
+    voltActive_[i] = t.active;
   }
   // Slot ids changed: re-resolve the valve sensor assignment.
   if (idsChanged) planner_.requestValveSensors();
@@ -83,7 +94,8 @@ void StmSession::begin(uint32_t nowMs, const PersistedTargets& targets, RestoreS
   dirty_ = true;
 }
 
-// Everything the STM knew about this session is gone.
+// Everything the STM knew about this session is gone. Every caller marks the
+// snapshot dirty (a reply, a completion, a link state change or the flasher).
 void StmSession::newStmSession(uint32_t nowMs) {
   model_.onStmRebooted(nowMs);
   planner_.requestResync();
@@ -93,7 +105,6 @@ void StmSession::newStmSession(uint32_t nowMs) {
   snap_.proto = planner_.protocol();  // unknown until gproto answers again
   snap_.support = planner_.support();
   startSensorGrace(nowMs);
-  dirty_ = true;
 }
 
 // STM rebooted/was reset/re-flashed by us: forget link-level history too.
@@ -298,12 +309,11 @@ void StmSession::beginFlash(const StmCommand& c, uint32_t nowMs) {
   opt.blank = c.blank;
   opt.force = c.force;
   // The running STM's tag wins over the user's choice.
-  if (snap_.version.hw[0] != '\0') {
-    memcpy(opt.boardHw, snap_.version.hw, sizeof opt.boardHw);
+  if (boardTagValid(snap_.version.hw)) {  // parseVersion: a valid tag or ""
+    copyString(opt.boardHw, sizeof opt.boardHw, snap_.version.hw);
   } else if (boardTagValid(c.board)) {
-    memcpy(opt.boardHw, c.board, sizeof opt.boardHw);
+    copyString(opt.boardHw, sizeof opt.boardHw, c.board);
   }
-  opt.boardHw[sizeof opt.boardHw - 1] = '\0';
   link_.suspend();
   if (!flasher_.begin(*img, opt, nowMs)) {
     port_.closeImage();
@@ -362,13 +372,11 @@ void StmSession::onVersion(const Reply& rep) {
   if (snap_.support == StmSupport::TooOld && prevSupport_ != StmSupport::TooOld) {
     model_.forgetStmData();
     // Targets are still delivered (stgtp/gtgtp exist on every 1.x): read them back.
-    for (uint8_t v = 0; v < kValveCount; ++v) {
-      if ((model_.activeMask() >> v) & 1u) planner_.requestTarget(v);
-    }
+    forEachValve(model_.activeMask(), [this](uint8_t v) { planner_.requestTarget(v); });
   }
   prevSupport_ = snap_.support;
-  char ver[32];
-  if (formatVersion(rep.version, ver, sizeof ver) == 0) return;
+  char ver[sizeof loggedVersion_];
+  formatVersion(rep.version, ver, sizeof ver);  // a parsed gvers version always fits
   if (strcmp(ver, loggedVersion_) != 0) {
     copyString(loggedVersion_, sizeof loggedVersion_, ver);
     incompatibleLogged_ = false;
@@ -493,10 +501,8 @@ void StmSession::onServiceMoveResult(const Completion& c, const Reply* rep, uint
     planner_.requestTarget(v);  // fast read-back of gvlvx
     return;
   }
-  // Rejected ("svmov v err n", "svmov -1 err n") or no answer.
-  const int32_t code = (c.outcome == Outcome::Rejected && rep != nullptr)
-                           ? static_cast<int32_t>(rep->serviceMove.errorCode)
-                           : -1;
+  // Rejected ("svmov v err n", "svmov -1 err n": a reply) or no answer (none).
+  const int32_t code = rep != nullptr ? static_cast<int32_t>(rep->serviceMove.errorCode) : -1;
   port_.logEvent(makeEvent(EventCode::ServiceMoveDone, Severity::Warning, v, -1, code,
                            c.outcome == Outcome::Rejected ? "rejected" : "no reply"));
 }
@@ -555,9 +561,7 @@ void StmSession::onCompletion(const Completion& c, const Reply* rep, uint32_t no
     case Cmd::Sstop:
       if (!ok) break;
       if (req.valve == kAllValves) {
-        for (uint8_t v = 0; v < kValveCount; ++v) {
-          if ((model_.activeMask() >> v) & 1u) planner_.requestTarget(v);
-        }
+        forEachValve(model_.activeMask(), [this](uint8_t v) { planner_.requestTarget(v); });
       } else {
         planner_.requestTarget(req.valve);
       }
@@ -587,14 +591,12 @@ void StmSession::onLine(const char* line, size_t len, uint32_t nowMs) {
 
 void StmSession::onRx(const char* data, size_t len, uint32_t nowMs) {
   size_t off = 0;
+  // Without a pending line feed() consumes at least one byte: this ends.
   while (off < len) {
-    const size_t used = lines_.feed(data + off, len - off);
-    off += used;
+    off += lines_.feed(data + off, len - off);
     if (lines_.hasLine()) {
       onLine(lines_.line(), lines_.length(), nowMs);
       lines_.release();
-    } else if (used == 0) {
-      break;  // defensive: the assembler refused bytes without a line
     }
   }
 }
@@ -673,7 +675,7 @@ void StmSession::flashStep(uint32_t nowMs) {
   transport_.configure(kStmBaud, false);  // the flasher restored 8N1 already; make sure
   const FlashStatus& st = flasher_.status();
   if (phase == FlashPhase::Done) {
-    char ver[32] = {0};
+    char ver[sizeof loggedVersion_];  // formatVersion() always terminates it
     formatVersion(st.appVersion, ver, sizeof ver);
     log(EventCode::StmFlashDone, kNoValve,
         static_cast<int32_t>(elapsedMs(st.finishedMs, st.startedMs)), 0, ver);
@@ -694,8 +696,8 @@ void StmSession::checkSensors(uint32_t nowMs) {
     sensorGrace_ = false;
   }
   Event ev[kMaxEventsPerUpdate];
-  for (uint8_t i = 0; i < kTempSlotCount; ++i) {
-    SlotTrack& t = tempTrack_[i];
+  for (SlotTrack& t : tempTrack_) {
+    const size_t i = static_cast<size_t>(&t - tempTrack_);
     const OneWireId& id = slotIds_[i];
     if (!tempActive_[i] || isZero(id)) {
       t = SlotTrack{};
@@ -707,17 +709,16 @@ void StmSession::checkSensors(uint32_t nowMs) {
                        sensors_.tempFresh(static_cast<uint8_t>(bus), nowMs, kSensorStaleMs);
     const size_t n = health_.onTempSensor(static_cast<uint8_t>(i + 1), t.known, t.valid, valid,
                                           rd.raw, ev, kMaxEventsPerUpdate);
-    for (size_t k = 0; k < n; ++k) {
-      if (ev[k].code == EventCode::TempSensorFailed) {
-        formatOneWireId(id, ev[k].text, sizeof ev[k].text);
-      }
-      port_.logEvent(ev[k]);
+    // At most one event: the failure carries the sensor id.
+    if (n == 1 && ev[0].code == EventCode::TempSensorFailed) {
+      formatOneWireId(id, ev[0].text, sizeof(Event::text));
     }
+    logEvents(ev, n);
     t.known = true;
     t.valid = valid;
   }
-  for (uint8_t i = 0; i < kVoltSlotCount; ++i) {
-    SlotTrack& t = voltTrack_[i];
+  for (SlotTrack& t : voltTrack_) {
+    const size_t i = static_cast<size_t>(&t - voltTrack_);
     if (!voltActive_[i] || isZero(voltIds_[i])) {
       t = SlotTrack{};
       continue;
@@ -726,7 +727,7 @@ void StmSession::checkSensors(uint32_t nowMs) {
     const VoltReading& rd = sensors_.volt(bus >= 0 ? static_cast<uint8_t>(bus) : 0xFF);
     const bool valid = bus >= 0 && rd.seen && vadValid(rd.vad) &&
                        elapsedMs(nowMs, rd.lastSeenMs) <= kSensorStaleMs;
-    if (t.known && t.valid && !valid) log(EventCode::VoltSensorFailed, kNoValve, i + 1, rd.vad);
+    if (t.known && t.valid && !valid) log(EventCode::VoltSensorFailed, kNoValve, static_cast<int32_t>(i + 1), rd.vad);
     t.known = true;
     t.valid = valid;
   }
@@ -779,8 +780,8 @@ void StmSession::everySecond(uint32_t nowMs, const RegulatorInput& regulator, St
     snap_.sensorsSettled = settled;
     dirty_ = true;
   }
-  for (uint8_t v = 0; v < kValveCount; ++v) {
-    PendingMove& m = moves_[v];
+  for (PendingMove& m : moves_) {
+    const uint8_t v = static_cast<uint8_t>(&m - moves_);
     if (!m.active) continue;
     const ValveState& s = model_.valve(v);
     if (s.moveSeq != m.moveSeq) {
@@ -798,19 +799,20 @@ void StmSession::everySecond(uint32_t nowMs, const RegulatorInput& regulator, St
 
 void StmSession::publishIfDue(uint32_t nowMs) {
   Event ev[kMaxEventsPerUpdate];
-  for (uint8_t i = 0; i < kValveCount; ++i) {
+  for (ValveState& prev : prev_) {
+    const uint8_t i = static_cast<uint8_t>(&prev - prev_);
     const ValveState& cur = model_.valve(i);
-    if (cur.revision == prev_[i].revision) continue;
+    if (cur.revision == prev.revision) continue;
     const bool active = (model_.activeMask() >> i) & 1u;
-    const size_t n = health_.onValve(i, prev_[i], cur, active, ev, kMaxEventsPerUpdate);
-    for (size_t k = 0; k < n; ++k) {
-      if (ev[k].code == EventCode::CalibStarted && ((scheduledMask_ >> i) & 1u)) {
-        ev[k].arg1 = 1;
+    const size_t n = health_.onValve(i, prev, cur, active, ev, kMaxEventsPerUpdate);
+    for (Event* e = ev; e != ev + n; ++e) {
+      if (e->code == EventCode::CalibStarted && ((scheduledMask_ >> i) & 1u)) {
+        e->arg1 = 1;
         scheduledMask_ = static_cast<uint16_t>(scheduledMask_ & ~(1u << i));
       }
-      port_.logEvent(ev[k]);
+      port_.logEvent(*e);
     }
-    prev_[i] = cur;
+    prev = cur;
     dirty_ = true;
   }
   const LinkState ls = link_.state(nowMs);
@@ -831,11 +833,11 @@ void StmSession::publishIfDue(uint32_t nowMs) {
     port_.storeDesiredTargets(t);
   }
   if (!dirty_ || (publishedOnce_ && elapsedMs(nowMs, lastPublishMs_) < kPublishMinMs)) return;
-  for (uint8_t i = 0; i < kValveCount; ++i) snap_.valves[i] = model_.valve(i);
+  for (ValveState& v : snap_.valves) v = model_.valve(static_cast<uint8_t>(&v - snap_.valves));
   snap_.tempCount = sensors_.tempCount();
-  for (uint8_t i = 0; i < kTempSlotCount; ++i) snap_.temps[i] = sensors_.temp(i);
+  for (TempReading& t : snap_.temps) t = sensors_.temp(static_cast<uint8_t>(&t - snap_.temps));
   snap_.voltCount = sensors_.voltCount();
-  for (uint8_t i = 0; i < kVoltSlotCount; ++i) snap_.volts[i] = sensors_.volt(i);
+  for (VoltReading& t : snap_.volts) t = sensors_.volt(static_cast<uint8_t>(&t - snap_.volts));
   snap_.link = ls;
   snap_.linkStats = link_.stats();
   snap_.lineOverflows = lines_.overflowCount();
