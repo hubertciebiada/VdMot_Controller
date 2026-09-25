@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "vdm/valve_model.h"
@@ -68,61 +69,85 @@ size_t putf(char* out, size_t cap, const char* fmt, ...) {
 
 size_t putText(char* out, size_t cap, const char* text) { return putf(out, cap, "%s", text); }
 
-// Valid topic segment: 1..kSegmentMax chars, none of NUL, '/', '+', '#'.
+// Valid topic segment (topicSegmentValid) of a NUL-terminated string.
 bool segmentValid(const char* seg, size_t& len) {
   if (seg == nullptr) return false;
   len = boundedLength(seg, kSegmentMax + 1);
-  if (len == 0 || len > kSegmentMax) return false;
-  for (size_t i = 0; i < len; ++i) {
-    if (seg[i] == '/' || seg[i] == '+' || seg[i] == '#') return false;
-  }
-  return true;
+  return topicSegmentValid(seg, len);
 }
+
+enum class RetainRule : uint8_t { Setting, Always, Never };
 
 struct TopicDef {
   const char* head;  // path before the segment (or the whole path)
   const char* tail;  // path after the segment; nullptr = no segment
+  bool suffix;       // "/value" appended with `separate`
+  RetainRule retain;
 };
+
+constexpr RetainRule S = RetainRule::Setting;
+constexpr RetainRule A = RetainRule::Always;
+constexpr RetainRule N = RetainRule::Never;
 
 // Indexed by Topic.
 const TopicDef kTopics[kTopicCount] = {
-    {"common/ip", nullptr},
-    {"common/state", nullptr},
-    {"common/uptime", nullptr},
-    {"common/message", nullptr},
-    {"valves/", "/target"},
-    {"valves/", "/state"},
-    {"valves/", "/calibration/date"},
-    {"valves/", "/calibration/repetitions"},
-    {"valves/", "/diag/meanCurrrent"},
-    {"valves/", "/diag/openCount"},
-    {"valves/", "/diag/closeCount"},
-    {"valves/", "/diag/deadZoneCount"},
-    {"valves/", "/diag/moves"},
-    {"valves/", "/temp1"},
-    {"valves/", "/temp2"},
-    {"valves/", "/actual"},
-    {"temps/", "/id"},
-    {"temps/", "/value"},
-    {"sensors/", "/id"},
-    {"sensors/", "/value"},
-    {"sensors/", "/unit"},
-    {"diag/valves/", "/lastMove"},
-    {"diag/valves/", "/earlyStops"},
-    {"diag/valves/", "/cmdRejected"},
-    {"diag/valves/", "/calState"},
-    {"diag/valves/", "/profile"},
-    {"diag/stm/proto", nullptr},
-    {"diag/stm/uptime", nullptr},
-    {"diag/stm/resets", nullptr},
-    {"diag/stm/rxOverflow", nullptr},
-    {"diag/stm/parseErr", nullptr},
-    {"diag/stm/link", nullptr},
-    {"diag/calibration/active", nullptr},
-    {"events", nullptr},
-    {"status", nullptr},
+    {"common/ip", nullptr, true, S},
+    {"common/state", nullptr, true, S},
+    {"common/uptime", nullptr, true, S},
+    {"common/message", nullptr, true, S},
+    {"valves/", "/target", true, S},
+    {"valves/", "/state", true, S},
+    {"valves/", "/calibration/date", true, S},
+    {"valves/", "/calibration/repetitions", true, S},
+    {"valves/", "/diag/meanCurrrent", true, S},
+    {"valves/", "/diag/openCount", true, S},
+    {"valves/", "/diag/closeCount", true, S},
+    {"valves/", "/diag/deadZoneCount", true, S},
+    {"valves/", "/diag/moves", true, S},
+    {"valves/", "/temp1", true, S},
+    {"valves/", "/temp2", true, S},
+    {"valves/", "/actual", true, S},
+    {"temps/", "/id", true, S},
+    {"temps/", "/value", true, S},
+    {"sensors/", "/id", true, S},
+    {"sensors/", "/value", true, S},
+    {"sensors/", "/unit", true, S},
+    {"diag/valves/", "/lastMove", false, S},
+    {"diag/valves/", "/earlyStops", false, S},
+    {"diag/valves/", "/cmdRejected", false, S},
+    {"diag/valves/", "/calState", false, S},
+    {"diag/valves/", "/profile", false, N},
+    {"diag/stm/proto", nullptr, false, S},
+    {"diag/stm/uptime", nullptr, false, S},
+    {"diag/stm/resets", nullptr, false, S},
+    {"diag/stm/rxOverflow", nullptr, false, S},
+    {"diag/stm/parseErr", nullptr, false, S},
+    {"diag/stm/link", nullptr, false, S},
+    {"diag/calibration/active", nullptr, false, A},
+    {"events", nullptr, false, N},
+    {"status", nullptr, false, A},
+    {"valves/", "/requested", true, S},
+    {"valves/", "/sync", true, S},
+    {"valves/", "/failsafe", true, S},
+    {"valves/", "/problem", true, S},
+    {"stm/status", nullptr, false, A},
+    {"failsafe", nullptr, false, A},
+    {"diag/stm/version", nullptr, false, S},
+    {"diag/stm/started", nullptr, false, S},
+    {"diag/stm/lease", nullptr, false, S},
+    {"diag/stm/safeMode", nullptr, false, S},
+    {"diag/mqtt/eventsSuppressed", nullptr, false, S},
+    {"diag/mqtt/commandsRejected", nullptr, false, S},
+    {"diag/calibration/next", nullptr, false, S},
+    {"cmd/valves/", "/calibrate", false, N},
+    {"cmd/calibrate", nullptr, false, N},
+    {"cmd/restart", nullptr, false, N},
+    {"cmd/stmReset", nullptr, false, N},
+    {"cmd/detect", nullptr, false, N},
+    {"cmd/stop", nullptr, false, N},
+    {"cmd/stmSafeExit", nullptr, false, N},
 };
-static_assert(static_cast<uint8_t>(Topic::Status) + 1 == kTopicCount, "kTopics out of sync");
+static_assert(static_cast<uint8_t>(Topic::CmdStmSafeExit) + 1 == kTopicCount, "kTopics out of sync");
 
 // Main topic + path (without the compat suffix); fails `b` on bad input.
 void addBase(Builder& b, const TopicContext& ctx, Topic t, const char* segment) {
@@ -185,19 +210,31 @@ size_t buildSegment(const char* name, uint8_t idx0, char* out, size_t cap) {
   return len;
 }
 
-bool topicIsCompat(Topic t) { return static_cast<uint8_t>(t) <= static_cast<uint8_t>(Topic::VoltUnit); }
+bool topicSegmentValid(const char* seg, size_t len) {
+  if (seg == nullptr || len == 0 || len > kSegmentMax) return false;
+  if (seg[0] == '/' || seg[len - 1] == '/') return false;
+  for (size_t i = 0; i < len; ++i) {
+    const char c = seg[i];
+    if (c == '\0' || c == '+' || c == '#') return false;
+    if (c == '/' && seg[i + 1] == '/') return false;  // i + 1 < len: the last byte is no '/'
+  }
+  return true;
+}
+
+bool topicIsCompat(Topic t) {
+  const uint8_t i = static_cast<uint8_t>(t);
+  return i < kTopicCount && kTopics[i].suffix;
+}
 
 bool topicRetained(Topic t, bool publishRetained) {
-  switch (t) {
-    case Topic::Status:
-    case Topic::DiagCalibrationActive:
-      return true;
-    case Topic::Events:
-    case Topic::DiagValveProfile:
-      return false;
-    default:
-      return static_cast<uint8_t>(t) < kTopicCount && publishRetained;
+  const uint8_t i = static_cast<uint8_t>(t);
+  if (i >= kTopicCount) return false;
+  switch (kTopics[i].retain) {
+    case RetainRule::Always: return true;
+    case RetainRule::Never: return false;
+    case RetainRule::Setting: break;
   }
+  return publishRetained;
 }
 
 size_t buildTopic(const TopicContext& ctx, Topic t, const char* segment, char* out, size_t cap) {
@@ -217,48 +254,169 @@ size_t buildTargetCommandTopic(const TopicContext& ctx, const char* segment, cha
   return b.finish();
 }
 
-int parseTargetCommandTopic(const TopicContext& ctx, const char* topic, size_t len,
-                            const char segments[kValveCount][kSegmentMax + 1]) {
-  if (topic == nullptr || len == 0) return -1;
-  if (memchr(topic, '\0', len) != nullptr) return -1;
+size_t buildHaStatusTopic(const char* prefix, char* out, size_t cap) {
+  if (out == nullptr) return 0;
+  Builder b(out, cap);
+  if (prefix == nullptr || prefix[0] == '\0') b.fail();
+  b.add(prefix);
+  b.add("/status");
+  return b.finish();
+}
+
+namespace {
+
+constexpr char kHaDefaultPrefix[] = "homeassistant";
+
+// Appends one entry (skipped when it does not fit or the filter is empty).
+void addSubscription(Subscription* out, size_t cap, size_t& n, const char* filter, size_t len,
+                     uint8_t qos) {
+  if (n >= cap || len == 0) return;
+  memcpy(out[n].filter, filter, len + 1);
+  out[n].qos = qos;
+  ++n;
+}
+
+// "<main>valves/<seg>/target[/set]" and the same + "/set".
+void addTargetFilters(const TopicContext& ctx, const char* main, size_t ml, const char* seg,
+                      Subscription* out, size_t cap, size_t& n) {
+  char f[kTopicMax + 1];
+  Builder b(f, sizeof f);
+  b.add(main, ml);
+  b.add("valves/");
+  b.add(seg);
+  b.add(ctx.separate ? "/target/set" : "/target");
+  const size_t len = b.finish();
+  addSubscription(out, cap, n, f, len, 1);
+  if (len == 0 || len + 4 > kTopicMax) return;
+  memcpy(f + len, "/set", 5);
+  addSubscription(out, cap, n, f, len + 4, 1);
+}
+
+bool startsWith(const char* s, size_t n, const char* prefix, size_t pl) {
+  return n >= pl && memcmp(s, prefix, pl) == 0;
+}
+
+bool endsWith(const char* s, size_t n, const char* suffix, size_t sl) {
+  return n >= sl && memcmp(s + n - sl, suffix, sl) == 0;
+}
+
+// The valve a segment names: configured segments first, then 1..12.
+int8_t matchSegment(const char* seg, size_t len, const char segments[kValveCount][kSegmentMax + 1]) {
+  if (segments != nullptr) {
+    for (uint8_t i = 0; i < kValveCount; ++i) {
+      const size_t l = boundedLength(segments[i], kSegmentMax);
+      if (l == len && memcmp(segments[i], seg, len) == 0) return static_cast<int8_t>(i);
+    }
+  }
+  uint32_t n = 0;
+  if (seg[0] == '0' || !parseUint(seg, len, kValveCount, n) || n == 0) return -1;
+  return static_cast<int8_t>(n - 1);
+}
+
+struct CmdName {
+  const char* name;
+  InboundKind kind;
+};
+
+const CmdName kCmdNames[] = {
+    {"calibrate", InboundKind::CalibrateAll}, {"restart", InboundKind::Restart},
+    {"stmReset", InboundKind::StmReset},      {"detect", InboundKind::Detect},
+    {"stop", InboundKind::StopAll},           {"stmSafeExit", InboundKind::StmSafeExit},
+};
+
+}  // namespace
+
+size_t buildSubscriptions(const TopicContext& ctx, MqttMode mode, const char* haPrefix,
+                          const char segments[kValveCount][kSegmentMax + 1], Subscription* out,
+                          size_t cap) {
+  if (out == nullptr || mode == MqttMode::Off) return 0;
+  size_t n = 0;
+  char main[kTopicMax + 1];
+  const size_t ml = buildMainTopic(ctx, main, sizeof main);
+  if (ml > 0) {
+    addTargetFilters(ctx, main, ml, "+", out, cap, n);
+    char f[kTopicMax + 1];
+    Builder b(f, sizeof f);
+    b.add(main, ml);
+    b.add("cmd/#");
+    addSubscription(out, cap, n, f, b.finish(), 0);
+    for (uint8_t i = 0; segments != nullptr && i < kValveCount; ++i) {
+      const size_t sl = boundedLength(segments[i], kSegmentMax);
+      if (memchr(segments[i], '/', sl) == nullptr || !topicSegmentValid(segments[i], sl)) continue;
+      char seg[kSegmentMax + 1];
+      memcpy(seg, segments[i], sl);
+      seg[sl] = '\0';
+      addTargetFilters(ctx, main, ml, seg, out, cap, n);
+    }
+  }
+  if (mode == MqttMode::MqttHa) {
+    char f[kTopicMax + 1];
+    addSubscription(out, cap, n, f, buildHaStatusTopic(kHaDefaultPrefix, f, sizeof f), 1);
+    if (haPrefix != nullptr && strcmp(haPrefix, kHaDefaultPrefix) != 0) {
+      addSubscription(out, cap, n, f, buildHaStatusTopic(haPrefix, f, sizeof f), 1);
+    }
+  }
+  return n;
+}
+
+InboundTopic parseInboundTopic(const TopicContext& ctx, const char* haPrefix, const char* topic,
+                               size_t len, const char segments[kValveCount][kSegmentMax + 1]) {
+  InboundTopic r;
+  if (topic == nullptr || len == 0 || len > kTopicMax || memchr(topic, '\0', len) != nullptr) {
+    return r;
+  }
+  char ha[kTopicMax + 1];
+  size_t hl = buildHaStatusTopic(kHaDefaultPrefix, ha, sizeof ha);
+  const bool defaultHa = hl == len && memcmp(topic, ha, len) == 0;
+  hl = buildHaStatusTopic(haPrefix, ha, sizeof ha);
+  if (defaultHa || (hl == len && memcmp(topic, ha, len) == 0)) {
+    r.kind = InboundKind::HaStatus;
+    return r;
+  }
   if (topic[0] == '/') {
     ++topic;
     --len;
   }
   char main[kTopicMax + 1];
   size_t ml = buildMainTopic(ctx, main, sizeof main);
-  if (ml == 0) return -1;
+  if (ml == 0) return r;
   const char* mp = main;
   if (mp[0] == '/') {
     ++mp;
     --ml;
   }
-  static const char kValves[] = "valves/";
-  const size_t vl = sizeof kValves - 1;
-  if (len < ml + vl || memcmp(topic, mp, ml) != 0 || memcmp(topic + ml, kValves, vl) != 0) {
-    return -1;
-  }
-  const char* seg = topic + ml + vl;
-  const char* end = topic + len;
-  const char* slash = static_cast<const char*>(memchr(seg, '/', static_cast<size_t>(end - seg)));
-  if (slash == nullptr) return -1;
-  const size_t segLen = static_cast<size_t>(slash - seg);
-  if (segLen == 0 || segLen > kSegmentMax) return -1;
-  const char* rest = slash + 1;
-  const size_t restLen = static_cast<size_t>(end - rest);
-  const bool suffixOk =
-      ctx.separate ? (bytesEqual(rest, restLen, "target/set") || bytesEqual(rest, restLen, "target/set/set"))
-                   : (bytesEqual(rest, restLen, "target") || bytesEqual(rest, restLen, "target/set"));
-  if (!suffixOk) return -1;
-  if (segments != nullptr) {
-    for (uint8_t i = 0; i < kValveCount; ++i) {
-      const size_t l = boundedLength(segments[i], kSegmentMax);
-      if (l == segLen && memcmp(segments[i], seg, segLen) == 0) return i;
+  if (!startsWith(topic, len, mp, ml)) return r;
+  const char* rest = topic + ml;
+  size_t n = len - ml;
+  if (startsWith(rest, n, "valves/", 7)) {
+    rest += 7;
+    n -= 7;
+    static const char* const kSeparate[] = {"/target/set", "/target/set/set"};
+    static const char* const kPlain[] = {"/target", "/target/set"};
+    const char* const* suffixes = ctx.separate ? kSeparate : kPlain;
+    for (uint8_t k = 0; k < 2; ++k) {
+      const size_t sl = strlen(suffixes[k]);
+      if (n <= sl || !endsWith(rest, n, suffixes[k], sl)) continue;
+      r.kind = InboundKind::Target;
+      r.valve = matchSegment(rest, n - sl, segments);
+      r.stateForm = !ctx.separate && k == 0;
+      return r;
     }
+    return r;
   }
-  uint32_t n = 0;
-  if (seg[0] == '0' || !parseUint(seg, segLen, kValveCount, n) || n == 0) return -1;
-  return static_cast<int>(n - 1);
+  if (!startsWith(rest, n, "cmd/", 4)) return r;
+  rest += 4;
+  n -= 4;
+  if (startsWith(rest, n, "valves/", 7) && n > 7 + 10 && endsWith(rest, n, "/calibrate", 10)) {
+    r.kind = InboundKind::CalibrateValve;
+    r.valve = matchSegment(rest + 7, n - 7 - 10, segments);
+    return r;
+  }
+  r.kind = InboundKind::UnknownCommand;
+  for (const CmdName& c : kCmdNames) {
+    if (bytesEqual(rest, n, c.name)) r.kind = c.kind;
+  }
+  return r;
 }
 
 TargetPayload parseTargetPayload(const char* p, size_t len, uint8_t& out) {
@@ -279,22 +437,33 @@ TargetPayload parseTargetPayload(const char* p, size_t len, uint8_t& out) {
     out = 0;
     return TargetPayload::Ok;
   }
+  if (bytesEqual(s, n, "STOP")) return TargetPayload::Stop;
+  char num[kTargetPayloadMax + 1];
   size_t i = 0;
-  uint32_t v = 0;
   while (i < n && s[i] >= '0' && s[i] <= '9') {
-    if (v <= 100) v = v * 10 + static_cast<uint32_t>(s[i] - '0');
+    num[i] = s[i];
     ++i;
   }
   if (i == 0) return TargetPayload::NotNumber;
   if (i < n) {
-    if (s[i] != '.' || i + 1 == n) return TargetPayload::NotNumber;
-    for (size_t k = i + 1; k < n; ++k) {
-      if (s[k] != '0') return TargetPayload::NotNumber;
+    if (s[i] != '.' && s[i] != ',') return TargetPayload::NotNumber;
+    num[i++] = '.';
+    const size_t first = i;
+    while (i < n && s[i] >= '0' && s[i] <= '9') {
+      num[i] = s[i];
+      ++i;
     }
+    if (i == first || i < n) return TargetPayload::NotNumber;
   }
-  if (v > 100) return TargetPayload::OutOfRange;
-  out = static_cast<uint8_t>(v);
+  num[i] = '\0';
+  uint8_t v = 0;
+  if (!roundTargetPercent(strtod(num, nullptr), v)) return TargetPayload::OutOfRange;
+  out = v;
   return TargetPayload::Ok;
+}
+
+bool parseButtonPayload(const char* p, size_t len) {
+  return p != nullptr && bytesEqual(p, len, "PRESS");
 }
 
 // ---------------------------------------------------------------- payloads

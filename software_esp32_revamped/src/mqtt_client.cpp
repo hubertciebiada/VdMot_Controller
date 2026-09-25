@@ -4,6 +4,8 @@
 #include <LittleFS.h>
 #include <PubSubClient.h>
 #include <WiFiClient.h>
+#include <esp_attr.h>
+#include <esp_mac.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <string.h>
@@ -12,8 +14,10 @@
 #include <vdm/event_limiter.h>
 #include <vdm/ha_discovery.h>
 #include <vdm/json_writer.h>
+#include <vdm/mqtt_policy.h>
 #include <vdm/mqtt_topics.h>
 #include <vdm/mqtt_values.h>
+#include <vdm/version.h>
 
 #include "app.h"
 #include "boot_alloc.h"
@@ -32,23 +36,29 @@ constexpr uint8_t kSlotValve0 = 1;
 constexpr uint8_t kSlotTemp0 = kSlotValve0 + vdm::kValveCount;  // 13
 constexpr uint8_t kSlotVolt0 = kSlotTemp0 + vdm::kTempSlotCount;  // 47
 constexpr uint8_t kSlotStm = kSlotVolt0 + vdm::kVoltSlotCount;    // 55
-constexpr uint8_t kSlotCount = kSlotStm + 1;
+constexpr uint8_t kSlotSystem = kSlotStm + 1;                     // 56: stm/status, failsafe
+constexpr uint8_t kSlotCount = kSlotSystem + 1;
 static_assert(kSlotCount <= vdm::PublishScheduler::kSlots, "scheduler slots");
 
 constexpr uint8_t kMaxSlotsPerPass = 2;       // on-change items per loop pass
 constexpr uint8_t kMaxDiagPerPass = 4;        // diag messages per loop pass
 constexpr size_t kEventsPerPass = 4;
 constexpr uint32_t kSensorStaleMs = 60000;
-constexpr const char* kHaStatusTopic = "homeassistant/status";
-constexpr const char* kLegacyDiscoveryFile = "/HADiscovery.cfg";
-constexpr const char* kLegacyDiscoveryDone = "/HADiscovery.cfg.done";
+constexpr uint32_t kCounterPaceMs = 10000;    // diag/mqtt/* at most this often
+constexpr uint32_t kStartedToleranceS = 60;   // diag/stm/started moves by more than this
+constexpr size_t kInboundSlots = 4;
+constexpr size_t kInboundPayloadMax = 33;     // longer payloads are cut (every valid one is shorter)
+constexpr const char* kListFile = "/HADiscovery.cfg";
+constexpr const char* kListTmp = "/HADiscovery.cfg.tmp";
 
-// Compat fields of a valve that trigger an on-change publish.
+// Fields of a valve that trigger an on-change publish.
 constexpr uint32_t kValveCompatMask = vdm::kChangeStatus | vdm::kChangePosition |
                                       vdm::kChangeTarget | vdm::kChangeMeanCurrent |
                                       vdm::kChangeTemp1 | vdm::kChangeTemp2 |
                                       vdm::kChangeCounters | vdm::kChangeCalibRetries |
-                                      vdm::kChangeSensors | vdm::kChangeKnown;
+                                      vdm::kChangeSensors | vdm::kChangeKnown |
+                                      vdm::kChangeSync | vdm::kChangeHealth |
+                                      vdm::kChangeFailsafe;
 
 WiFiClient gNet;
 PubSubClient gClient(gNet);
@@ -62,13 +72,15 @@ uint32_t gSnapRevision = UINT32_MAX;
 vdm::TopicContext gTopics;
 char gSegments[vdm::kValveCount][vdm::kSegmentMax + 1];
 char gHost[vdm::kHostMax + 1];  // PubSubClient keeps the pointer
-char gClientId[vdm::kStationNameMax + 1];
+char gClientId[vdm::kClientIdMax + 1];
 char gLwtTopic[vdm::kTopicMax + 1];
+bool gCleanNext = false;  // the next connect drops the broker session (topic config changed)
 vdm::PublishScheduler gScheduler;
 vdm::EventRateLimiter gEventLimiter;
+vdm::EventAggregator gAggregator;
 uint32_t gEventCursor = 0;
 
-// Last published compat values (on-change detection).
+// Last published values (on-change detection).
 using ValveStates = ObjArray<vdm::ValveState, vdm::kValveCount>;
 ValveStates& gPubValve = bootAlloc<ValveStates>();
 bool gPubValveValid[vdm::kValveCount];
@@ -81,6 +93,8 @@ SensorPub gPubTemp[vdm::kTempSlotCount];
 SensorPub gPubVolt[vdm::kVoltSlotCount];
 uint8_t gPubState = 0xFF;
 uint32_t gPubUptime = UINT32_MAX;
+int8_t gPubStmOnline = -1;
+int8_t gPubFailsafe = -1;
 char gMessage[120] = "";        // message of the latest Warning+ event
 bool gMessageChanged = true;
 bool gFirstPublish = true;      // common/ip only on the first full publish per connection
@@ -90,11 +104,7 @@ uint8_t gChangeCursor = 0;
 
 // Calibration end per valve (legacy calibration/date), observed from the
 // snapshots regardless of the connection state.
-bool gCalibrating[vdm::kValveCount];
-bool gCalibEnded[vdm::kValveCount];
-vdm::LocalTime gCalibEnd[vdm::kValveCount];
-bool gCalibDateDirty[vdm::kValveCount];
-bool gObservedOnce = false;
+vdm::CalibEndTracker gCalib;
 
 // New diag topics: last published values (valid after connect).
 struct DiagPub {
@@ -113,33 +123,98 @@ struct StmPub {
   uint32_t resets = 0, rxOverflow = 0, parseErr = 0;
   bool statusValid = false;
   int8_t calibActive = -1;
+  char version[32] = "";
+  int64_t started = -1;
+  int8_t lease = -1;
+  int8_t safeMode = -1;
+  bool nextValid = false;
+  int64_t next = 0;
+  bool suppressedValid = false;
+  uint32_t suppressed = 0;
+  uint32_t suppressedMs = 0;
+  bool rejectedValid = false;
+  uint32_t rejected = 0;
+  uint32_t rejectedMs = 0;
 } gPubStm;
 
 // Discovery.
-enum class DiscPhase : uint8_t { Idle, DropList, LegacyFile, RemoveCurrent, PublishCurrent };
+class ListPort : public vdm::DiscoveryPort {
+ public:
+  bool publish(const char* topic, const char* payload) override;
+  bool listOpen() override {
+    if (!storage::fsReady()) return false;
+    read_ = LittleFS.open(kListFile, FILE_READ);
+    return static_cast<bool>(read_);
+  }
+  int listRead() override { return read_ ? read_.read() : -1; }
+  void listClose() override { read_.close(); }
+  bool listBegin() override {
+    if (!storage::fsReady()) return false;
+    write_ = LittleFS.open(kListTmp, FILE_WRITE);
+    return static_cast<bool>(write_);
+  }
+  bool listWrite(const char* topic) override {
+    const size_t n = strlen(topic);
+    return write_.write(reinterpret_cast<const uint8_t*>(topic), n) == n &&
+           write_.write(reinterpret_cast<const uint8_t*>("\n"), 1) == 1;
+  }
+  bool listCommit() override {
+    write_.close();
+    return LittleFS.rename(kListTmp, kListFile);
+  }
+  void listAbort() override {
+    write_.close();
+    if (storage::fsReady()) LittleFS.remove(kListTmp);
+  }
+  void close() {
+    read_.close();
+    write_.close();
+  }
+
+ private:
+  fs::File read_;
+  fs::File write_;
+};
+
 vdm::DiscoveryContext& gDiscCtx = bootAlloc<vdm::DiscoveryContext>();
-vdm::DiscoveryIterator gDiscIter(gDiscCtx);
-vdm::DropListIterator gDropIter(gDiscCtx);
-DiscPhase gDiscPhase = DiscPhase::Idle;
-bool gDiscPublishAfter = false;  // RemoveCurrent is followed by PublishCurrent
-DiscPhase gDiscAfterCleanup = DiscPhase::Idle;  // phase after the first-run cleanup
-uint32_t gDiscTempMask = 0;  // valves with temp1/temp2 when discovery last ran
-uint16_t gDiscConfigs = 0, gDiscDeletes = 0, gDiscSkipped = 0;
-fs::File gLegacyFile;
+vdm::DiscoveryRun gRun;
+ListPort gPort;
+uint32_t gDiscKey = 0;
+uint32_t gDiscKeyRevision = UINT32_MAX;  // snapshot revision the key was checked at
 using PayloadBuf = ObjArray<char, vdm::kDiscoveryPayloadMax + 1>;
 PayloadBuf& gDiscPayload = bootAlloc<PayloadBuf>();  // also the profile payload
 
+// Inbound messages: copied by the PubSubClient callback, handled after loop().
+struct Inbound {
+  char topic[vdm::kTopicMax + 1];
+  size_t topicLen;
+  uint8_t payload[kInboundPayloadMax];
+  size_t len;
+};
+Inbound gInbound[kInboundSlots];
+size_t gInboundCount = 0;
+uint32_t gInboundOverflow = 0;  // messages lost to a full queue since the last drain
+vdm::EchoFilter gEcho;
+vdm::RejectLog gRejectLog;
+vdm::ButtonGate gButtons;
+vdm::TargetLatch gLatch;
+uint8_t gLatchCursor = 0;
+vdm::RegulatorWatch gRegulator;
+RTC_NOINIT_ATTR vdm::HaStatusRecord gRtcHaStatus;
+
 portMUX_TYPE gMux = portMUX_INITIALIZER_UNLOCKED;
 Status gStatus;
+vdm::RegulatorInput gRegulatorState;
 volatile bool gReconnectRequested = false;
 volatile bool gDiscoveryRequested = false;
 volatile DiscoveryAction gDiscoveryAction = DiscoveryAction::Publish;
 bool gOfflineSent = false;
 bool gConnected = false;
-// First-run HA cleanup waiting for the STM data (see cleanupReady()).
-bool gCleanupDeferred = false;
 
-vdm::Backoff gBackoff(kBackoffMinMs, kBackoffMaxMs);
+vdm::ReconnectPacer gPacer(kBackoffMinMs, kBackoffMaxMs);
+bool gConfigLoaded = false;
+
+void onDisconnected();
 
 void setState(vdm::MqttState s, int8_t rc) {
   portENTER_CRITICAL(&gMux);
@@ -154,43 +229,73 @@ void count(uint32_t Status::*field) {
   portEXIT_CRITICAL(&gMux);
 }
 
+uint32_t readCount(uint32_t Status::*field) {
+  portENTER_CRITICAL(&gMux);
+  const uint32_t v = gStatus.*field;
+  portEXIT_CRITICAL(&gMux);
+  return v;
+}
+
 void setDiscoveryRunning(bool on) {
   portENTER_CRITICAL(&gMux);
   gStatus.discoveryRunning = on;
   portEXIT_CRITICAL(&gMux);
 }
 
-// Config parts that shape topics, subscriptions or discovery. A change of
-// any of them needs a clean reconnect; other config changes do not.
-bool topicConfigChanged(const vdm::Config& a, const vdm::Config& b) {
-  return strcmp(a.station, b.station) != 0 || memcmp(&a.mqtt, &b.mqtt, sizeof a.mqtt) != 0 ||
-         memcmp(a.valves, b.valves, sizeof a.valves) != 0 ||
-         memcmp(a.temps, b.temps, sizeof a.temps) != 0 ||
-         memcmp(a.volts, b.volts, sizeof a.volts) != 0;
+// The HA status goes to the status, the regulator state and the RTC record.
+void storeHaStatus() {
+  const vdm::HaStatus s = gRegulator.haStatus();
+  encodeHaStatusRecord(s, gRtcHaStatus);
+  portENTER_CRITICAL(&gMux);
+  gStatus.haStatus = s;
+  gRegulatorState.ha = s;
+  portEXIT_CRITICAL(&gMux);
+}
+
+// Regulator view for the lease: mode, broker session, HA status.
+void updateRegulator() {
+  portENTER_CRITICAL(&gMux);
+  gRegulatorState.mode = gCfg.mqtt.mode;
+  gRegulatorState.brokerConnected = gConnected;
+  gRegulatorState.ha = gRegulator.haStatus();
+  portEXIT_CRITICAL(&gMux);
 }
 
 void reloadConfig() {
   vdm::Config& next = gNextCfg;
   gCfgRevision = storage::configRevision();
   storage::getConfig(next);
-  const bool reconnect = topicConfigChanged(next, gCfg);
+  const bool reconnect = vdm::mqttTopicConfigChanged(next, gCfg);
   gCfg = next;
-  vdm::copyString(gTopics.station, sizeof gTopics.station, gCfg.station);
+  vdm::copyString(gTopics.station, sizeof gTopics.station, vdm::mqttRootTopic(gCfg));
   gTopics.pathAsRoot = gCfg.mqtt.pathAsRoot;
   gTopics.separate = gCfg.mqtt.separate;
   for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    vdm::buildSegment(gCfg.valves[i].name, i, gSegments[i], sizeof gSegments[i]);
+    vdm::itemSegment(gCfg, vdm::ItemKind::Valve, i, gSegments[i], sizeof gSegments[i]);
   }
-  vdm::copyString(gClientId, sizeof gClientId, gCfg.station[0] ? gCfg.station : "VdMot");
+  if (gCfg.mqtt.clientId[0] != '\0') {
+    vdm::copyString(gClientId, sizeof gClientId, gCfg.mqtt.clientId);
+  } else {
+    uint8_t mac[6] = {0};
+    esp_efuse_mac_get_default(mac);
+    vdm::buildMqttClientId(gCfg.station, mac, gClientId, sizeof gClientId);
+  }
   vdm::PublishScheduler::Params p;
   p.onChange = gCfg.mqtt.onChange;
   p.publishIntervalMs = static_cast<uint32_t>(gCfg.mqtt.publishIntervalS) * 1000u;
   p.minDelayMs = static_cast<uint32_t>(gCfg.mqtt.minDelayS) * 1000u;
   gScheduler.configure(p);
   vdm::buildTopic(gTopics, vdm::Topic::Status, nullptr, gLwtTopic, sizeof gLwtTopic);
-  if (reconnect && gClient.connected()) {
-    gClient.disconnect();  // clean: the broker does not send the LWT
+  // The config found at boot is the one the broker session belongs to.
+  if (reconnect && gConfigLoaded) {
+    gCleanNext = true;
+    if (gClient.connected()) {
+      gClient.disconnect();  // clean: the broker does not send the LWT
+      onDisconnected();
+      gPacer.forceNow();     // not a failed attempt
+    }
   }
+  gConfigLoaded = true;
 }
 
 // PubSubClient needs 5 (fixed header) + 2 (topic length) bytes besides the
@@ -200,7 +305,9 @@ static_assert(5 + 2 + vdm::kTopicMax + vdm::kDiscoveryPayloadMax <= kBufferSize,
               "largest MQTT message must fit the PubSubClient buffer");
 
 bool publishRaw(const char* topic, const char* payload, bool retained) {
-  if (gClient.publish(topic, payload, retained)) return true;
+  const bool ok = gClient.publish(topic, payload, retained);
+  esp_task_wdt_reset();  // a pass may publish many messages
+  if (ok) return true;
   count(&Status::publishFailures);
   // A failed publish on a live connection is a socket write that WiFiClient
   // already retried for up to 10 s (broker gone without FIN/RST). Every
@@ -208,6 +315,10 @@ bool publishRaw(const char* topic, const char* payload, bool retained) {
   // watchdog: drop the connection and let the reconnect back-off take over.
   if (gClient.connected()) gNet.stop();
   return false;
+}
+
+bool ListPort::publish(const char* topic, const char* payload) {
+  return publishRaw(topic, payload, true);
 }
 
 bool publish(vdm::Topic t, const char* segment, const char* payload) {
@@ -228,39 +339,255 @@ bool publishCounter(vdm::Topic t, const char* segment, uint32_t v) {
   return publish(t, segment, buf);
 }
 
+// ---------------------------------------------------------------- discovery
+
+bool stmV3() { return gSnap.proto >= 3; }
+
+vdm::DiscoveryInputs discoveryInputs() {
+  vdm::DiscoveryInputs in;
+  in.cfg = &gCfg;
+  in.valves = gSnap.valves;
+  in.temps = gSnap.temps;
+  in.tempCount = gSnap.tempCount;
+  in.volts = gSnap.volts;
+  in.voltCount = gSnap.voltCount;
+  in.sensorsSettled = gSnap.sensorsSettled;
+  in.stmProto = gSnap.proto;
+  in.stmHw = gSnap.version.hw;
+  in.ip = net::info().ip;
+  in.swVersion = vdm::firmwareVersion();
+  return in;
+}
+
+void startRun(const vdm::DiscoveryPlan& plan) {
+  if (gRun.running()) gRun.abort(gPort);
+  const vdm::DiscoveryInputs in = discoveryInputs();
+  vdm::buildDiscoveryContext(in, gDiscCtx);
+  gDiscKey = vdm::discoveryInputKey(in);
+  gDiscKeyRevision = gSnapRevision;
+  gRun.start(gDiscCtx, plan);
+  setDiscoveryRunning(true);
+}
+
+// A publish run (with the first-run cleanup and the 2.0.0 migration when due).
+vdm::DiscoveryPlan publishPlan() {
+  vdm::DiscoveryPlan p;
+  p.publish = true;
+  p.dropLegacy = !storage::haCleanupDone();
+  p.retire20 = storage::haLayout() < 2;
+  return p;
+}
+
+// Manual requests run in modes 1 and 2.
+void startRequested(DiscoveryAction a) {
+  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return;
+  vdm::DiscoveryPlan p = a == DiscoveryAction::Delete ? vdm::DiscoveryPlan{} : publishPlan();
+  p.removeAll = a != DiscoveryAction::Publish;
+  p.prune = a != DiscoveryAction::Delete;
+  startRun(p);
+}
+
+// Automatic run after a connect.
+void startOnConnect() {
+  const bool ha = gCfg.mqtt.mode == vdm::MqttMode::MqttHa;
+  if (ha && (gCfg.mqtt.haDiscoveryOnConnect || storage::haLayout() < 2)) {
+    startRun(publishPlan());
+  } else if (!storage::haCleanupDone()) {
+    vdm::DiscoveryPlan p;
+    p.dropLegacy = true;
+    startRun(p);
+  }
+}
+
+void serviceDiscovery() {
+  if (!gRun.running()) return;
+  vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
+  const vdm::DiscoveryRun::Phase ph = gRun.step(gPort, jw);
+  if (ph == vdm::DiscoveryRun::Phase::Aborted) {
+    setDiscoveryRunning(false);
+    return;
+  }
+  if (ph != vdm::DiscoveryRun::Phase::Done) return;
+  setDiscoveryRunning(false);
+  const vdm::DiscoveryRun::Stats& s = gRun.stats();
+  logger::log(vdm::EventCode::HaDiscoverySent, vdm::kNoValve, s.configs, s.deletes,
+              s.skipped ? "skipped entities" : nullptr);
+  if (gRun.plan().dropLegacy) storage::setHaCleanupDone();
+  if (gRun.plan().publish) storage::setHaLayout(2);
+}
+
+// A valve sensor or a published sensor segment changed after the last run
+// (the STM reports assignments only after its first 1-Wire read).
+void checkDiscoveryInputs() {
+  if (gRun.running() || gCfg.mqtt.mode != vdm::MqttMode::MqttHa ||
+      !gCfg.mqtt.haDiscoveryOnConnect || gDiscKeyRevision == gSnapRevision) {
+    return;
+  }
+  gDiscKeyRevision = gSnapRevision;
+  if (vdm::discoveryInputKey(discoveryInputs()) != gDiscKey) startRun(publishPlan());
+}
+
 // ---------------------------------------------------------------- inbound
 
 void onMessage(char* topic, uint8_t* payload, unsigned int len) {
-  const size_t topicLen = strnlen(topic, vdm::kTopicMax + 1);
-  if (topicLen == strlen(kHaStatusTopic) && strcmp(topic, kHaStatusTopic) == 0) {
-    if (len == 6 && memcmp(payload, "online", 6) == 0 && gCfg.mqtt.mode == vdm::MqttMode::MqttHa &&
-        gCfg.mqtt.haDiscoveryOnConnect) {
-      requestDiscovery(DiscoveryAction::Publish);
-    }
+  // Only copies: publishing here would overwrite PubSubClient's buffer.
+  if (gInboundCount >= kInboundSlots) {
+    ++gInboundOverflow;
     return;
   }
-  const int valve = vdm::parseTargetCommandTopic(gTopics, topic, topicLen, gSegments);
-  if (valve < 0) return;
-  uint8_t pos = 0;
-  const vdm::TargetPayload r =
-      vdm::parseTargetPayload(reinterpret_cast<const char*>(payload), len, pos);
-  const char* reason = nullptr;
-  if (r != vdm::TargetPayload::Ok) {
-    reason = "payload";
-  } else if (!gCfg.valves[valve].active) {
-    reason = "inactive";
-  } else {
-    app::Command c;
-    c.type = app::CommandType::SetTarget;
-    c.valve = static_cast<uint8_t>(valve);
-    c.pos = pos;
-    c.source = vdm::TargetSource::Mqtt;
-    if (app::submit(c)) return;
-    reason = "queue full";
-  }
+  Inbound& m = gInbound[gInboundCount++];
+  m.topicLen = strnlen(topic, vdm::kTopicMax + 1);
+  if (m.topicLen > vdm::kTopicMax) m.topicLen = 0;  // not one of ours
+  memcpy(m.topic, topic, m.topicLen);
+  m.topic[m.topicLen] = '\0';
+  m.len = len < kInboundPayloadMax ? len : kInboundPayloadMax;
+  memcpy(m.payload, payload, m.len);
+}
+
+void rejectCommand(vdm::RejectReason reason, uint8_t valve, int32_t detail) {
   count(&Status::commandsRejected);
-  logger::log(vdm::EventCode::MqttCommandRejected, vdm::kNoValve, valve + 1,
-              static_cast<int32_t>(r), reason);
+  const uint8_t key = valve < vdm::kValveCount ? static_cast<uint8_t>(valve + 1) : 0;
+  if (!gRejectLog.shouldLog(key, reason, app::nowMs())) return;
+  logger::log(vdm::EventCode::MqttCommandRejected, vdm::kNoValve, key, detail,
+              vdm::rejectReasonName(reason));
+}
+
+void accepted() {
+  portENTER_CRITICAL(&gMux);
+  ++gRegulatorState.commandSeq;
+  portEXIT_CRITICAL(&gMux);
+  if (gCfg.mqtt.mode == vdm::MqttMode::MqttHa &&
+      gRegulator.onInboundCommand() != vdm::RegulatorWatch::Change::None) {
+    storeHaStatus();
+  }
+}
+
+bool submit(app::CommandType type, uint8_t valve) {
+  app::Command c;
+  c.type = type;
+  c.valve = valve;
+  return app::submit(c);
+}
+
+void submitTarget(uint8_t valve, uint8_t pos) {
+  app::Command c;
+  c.type = app::CommandType::SetTarget;
+  c.valve = valve;
+  c.pos = pos;
+  c.source = vdm::TargetSource::Mqtt;
+  if (app::submit(c)) {
+    gLatch.clear(valve);
+  } else {
+    gLatch.set(valve, pos);  // re-submitted until the queue takes it
+  }
+}
+
+void act(const vdm::InboundDecision& d) {
+  bool ok = true;
+  switch (d.action) {
+    case vdm::InboundAction::SetTarget:
+      submitTarget(d.valve, d.pos);
+      break;
+    case vdm::InboundAction::StopValve:
+      ok = submit(app::CommandType::StopValve, d.valve);
+      break;
+    case vdm::InboundAction::CalibrateValve:
+      ok = submit(app::CommandType::Calibrate, d.valve);
+      break;
+    case vdm::InboundAction::CalibrateAll:
+      ok = submit(app::CommandType::Calibrate, vdm::kAllValves);
+      break;
+    case vdm::InboundAction::Restart:
+      ota::requestRestart(0, 1000);
+      break;
+    case vdm::InboundAction::StmReset:
+      ok = submit(app::CommandType::ResetStm, vdm::kNoValve);
+      break;
+    case vdm::InboundAction::Detect:
+      ok = submit(app::CommandType::Detect, vdm::kAllValves);
+      break;
+    case vdm::InboundAction::StopAll:
+      ok = submit(app::CommandType::StopValve, vdm::kAllValves);
+      break;
+    case vdm::InboundAction::StmSafeExit:
+      ok = submit(app::CommandType::LeaveSafeMode, vdm::kNoValve);
+      break;
+    default:
+      return;
+  }
+  if (ok) {
+    accepted();
+  } else {
+    rejectCommand(vdm::RejectReason::QueueFull, d.valve, 0);
+  }
+}
+
+void onHaStatus(const vdm::InboundDecision& d) {
+  const char* p = d.action == vdm::InboundAction::HaOnline ? "online" : "offline";
+  const vdm::RegulatorWatch::Change ch = gRegulator.onHaStatus(p, strlen(p));
+  storeHaStatus();
+  if (ch == vdm::RegulatorWatch::Change::CameOnline && gCfg.mqtt.haDiscoveryOnConnect &&
+      !gRun.running()) {
+    startRun(publishPlan());
+  }
+}
+
+void handleInbound(const Inbound& m) {
+  vdm::InboundContext ic;
+  ic.topics = &gTopics;
+  ic.haPrefix = gCfg.mqtt.discoveryPrefix;
+  ic.segments = gSegments;
+  ic.activeMask = vdm::activeValveMask(gCfg);
+  ic.mode = gCfg.mqtt.mode;
+  ic.stmV3 = stmV3();
+  ic.echo = &gEcho;
+  vdm::InboundDecision d;
+  if (vdm::inboundIsClearEcho(ic, m.topic, m.topicLen, m.payload, m.len)) {
+    if (gButtons.confirm(m.topic, m.topicLen, d)) act(d);
+    return;
+  }
+  d = vdm::decideInbound(ic, m.topic, m.topicLen, m.payload, m.len);
+  if (d.action == vdm::InboundAction::Ignore) return;
+  if (d.action == vdm::InboundAction::HaOnline || d.action == vdm::InboundAction::HaOffline) {
+    onHaStatus(d);
+    return;
+  }
+  const bool cleared = !d.clearRetained || publishRaw(m.topic, "", true);
+  if (d.action == vdm::InboundAction::Reject) {
+    rejectCommand(d.reason, d.valve, d.detail);
+  } else if (!vdm::inboundIsButton(d.action)) {
+    act(d);
+  } else if (!cleared) {
+    rejectCommand(vdm::RejectReason::ClearNotConfirmed, d.valve, 0);
+  } else if (!gButtons.hold(d, m.topic, m.topicLen, app::nowMs())) {
+    rejectCommand(vdm::RejectReason::QueueFull, d.valve, 0);
+  }
+}
+
+void drainInbound() {
+  // Copy out first: publishing below may run the callback again (it never
+  // does in PubSubClient 2.8, which reads only in loop()).
+  for (size_t i = 0; i < gInboundCount; ++i) handleInbound(gInbound[i]);
+  gInboundCount = 0;
+  for (; gInboundOverflow > 0; --gInboundOverflow) {
+    rejectCommand(vdm::RejectReason::QueueFull, vdm::kNoValve, 0);
+  }
+  vdm::InboundDecision d;
+  while (gButtons.expire(app::nowMs(), d)) {
+    rejectCommand(vdm::RejectReason::ClearNotConfirmed, d.valve, 0);
+  }
+  uint8_t valve = 0;
+  uint8_t pos = 0;
+  if (gLatch.next(gLatchCursor, valve, pos)) {
+    gLatchCursor = static_cast<uint8_t>((valve + 1) % vdm::kValveCount);
+    submitTarget(valve, pos);
+  }
+}
+
+// loop() plus the handling of what it delivered.
+void pump() {
+  gClient.loop();
+  drainInbound();
 }
 
 // ---------------------------------------------------------------- snapshot
@@ -272,78 +599,33 @@ void observe() {
   if (rev == gSnapRevision) return;
   gSnapRevision = rev;
   app::readStmSnapshot(gSnap);
-  for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    const bool cal = gSnap.valves[i].calibrating;
-    if (gObservedOnce && gCalibrating[i] && !cal) {
-      gCalibEnd[i] = net::localTime();
-      gCalibEnded[i] = true;
-      gCalibDateDirty[i] = true;
-    }
-    gCalibrating[i] = cal;
-  }
-  gObservedOnce = true;
+  const vdm::LocalTime now = net::localTime();
+  portENTER_CRITICAL(&gMux);  // calibrationEnd() reads it from other tasks
+  gCalib.observe(gSnap.valves, now);
+  portEXIT_CRITICAL(&gMux);
 }
 
-uint16_t activeMask() {
-  uint16_t m = 0;
-  for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    if (gCfg.valves[i].active) m |= static_cast<uint16_t>(1u << i);
-  }
-  return m;
-}
+bool failsafeActive() { return gSnap.lease.state == vdm::LeaseState::Expired; }
+
+bool safeMode() { return gSnap.haveStatus && gSnap.status.v3 && gSnap.status.safeMode; }
 
 uint8_t currentSystemState() {
-  return vdm::systemState(gSnap.link, gSnap.valves, vdm::kValveCount, activeMask());
+  vdm::SystemFlags f;
+  f.safeMode = safeMode();
+  f.failsafe = failsafeActive();
+  return vdm::systemState(gSnap.link, gSnap.valves, vdm::kValveCount, vdm::activeValveMask(gCfg),
+                          f);
 }
 
-// Temperature of a config slot (1-based) with its offset; false = "failed".
 bool slotTemp(uint8_t slot1, int32_t& tenths) {
-  if (slot1 == 0 || slot1 > vdm::kTempSlotCount) return false;
-  const vdm::TempSlotConfig& s = gCfg.temps[slot1 - 1];
-  if (vdm::isZero(s.id)) return false;
-  for (uint8_t b = 0; b < vdm::kTempSlotCount; ++b) {
-    const vdm::TempReading& r = gSnap.temps[b];
-    if (!r.seen || r.id != s.id) continue;
-    if (!vdm::tempRawValid(r.raw) || vdm::elapsedMs(app::nowMs(), r.lastSeenMs) > kSensorStaleMs) {
-      return false;
-    }
-    tenths = static_cast<int32_t>(r.raw) + s.offset;
-    return true;
-  }
-  return false;
+  return vdm::slotTempTenths(gCfg, gSnap.temps, gSnap.tempCount, slot1, app::nowMs(),
+                             kSensorStaleMs, tenths);
 }
 
-// Volt value of a config slot (0-based) in the configured unit.
 bool slotVolt(uint8_t i, double& value) {
-  const vdm::VoltSlotConfig& s = gCfg.volts[i];
-  if (vdm::isZero(s.id)) return false;
-  for (uint8_t b = 0; b < vdm::kVoltSlotCount; ++b) {
-    const vdm::VoltReading& r = gSnap.volts[b];
-    if (!r.seen || r.id != s.id) continue;
-    if (!vdm::vadValid(r.vad) || vdm::elapsedMs(app::nowMs(), r.lastSeenMs) > kSensorStaleMs) {
-      return false;
-    }
-    value = (static_cast<double>(r.vad) / 100.0 + s.offset) * s.factor;
-    return true;
-  }
-  return false;
+  return vdm::slotVoltValue(gCfg, gSnap.volts, gSnap.voltCount, i, app::nowMs(), kSensorStaleMs,
+                            value);
 }
-
-bool tempAssignedToValve(uint8_t slot1) {
-  for (uint8_t v = 0; v < vdm::kValveCount; ++v) {
-    const vdm::ValveState& s = gSnap.valves[v];
-    if (s.sensorSlot[0] == slot1 || s.sensorSlot[1] == slot1) return true;
-  }
-  return false;
-}
-
-bool tempPublished(uint8_t i) {
-  const vdm::TempSlotConfig& s = gCfg.temps[i];
-  return s.active && !vdm::isZero(s.id) &&
-         (gCfg.mqtt.allTemps || !tempAssignedToValve(static_cast<uint8_t>(i + 1)));
-}
-
-bool voltPublished(uint8_t i) { return gCfg.volts[i].active && !vdm::isZero(gCfg.volts[i].id); }
 
 // ---------------------------------------------------------------- compat slots
 
@@ -380,13 +662,21 @@ void publishValve(uint8_t i) {
   gPubValveValid[i] = true;
   if (!gCfg.valves[i].active || !v.known) return;
   char buf[48];
-  if (v.desiredValid) publishUint(vdm::Topic::ValveTarget, seg, v.desired);
+  uint8_t target = 0;
+  if (vdm::publishedTarget(v, gCfg.mqtt.separate, target) &&
+      publishUint(vdm::Topic::ValveTarget, seg, target) && !gCfg.mqtt.separate) {
+    gEcho.published(i, target);
+  }
+  if (v.desiredValid) publishUint(vdm::Topic::ValveRequested, seg, v.desired);
+  publish(vdm::Topic::ValveSync, seg, vdm::targetSyncName(v.sync));
+  publish(vdm::Topic::ValveFailsafe, seg, vdm::failsafeKindName(vdm::failsafeKind(v)));
+  publish(vdm::Topic::ValveProblem, seg, vdm::valveProblem(v) ? "1" : "0");
   vdm::formatValveState(v.status, gCfg.mqtt.plainText, buf, sizeof buf);
   publish(vdm::Topic::ValveState, seg, buf);
   publishUint(vdm::Topic::ValveActual, seg, v.position);
-  if (gCalibEnded[i]) {
-    vdm::formatCalibDate(gCalibEnd[i], buf, sizeof buf);
-    if (publish(vdm::Topic::ValveCalibDate, seg, buf)) gCalibDateDirty[i] = false;
+  if (gCalib.ended(i)) {
+    vdm::formatCalibDate(gCalib.end(i), buf, sizeof buf);
+    if (publish(vdm::Topic::ValveCalibDate, seg, buf)) gCalib.clearDirty(i);
   }
   publishUint(vdm::Topic::ValveCalibRepetitions, seg, v.calibRetries);
   if (gCfg.mqtt.diag) {
@@ -407,11 +697,16 @@ void publishTemp(uint8_t i) {
   p.ok = slotTemp(static_cast<uint8_t>(i + 1), tenths);
   p.value = tenths;
   p.valid = true;
-  if (!tempPublished(i)) return;
+  if (!vdm::tempPublished(gCfg, gSnap.valves, i)) return;
+  const vdm::TempSlotConfig& s = gCfg.temps[i];
   char seg[vdm::kSegmentMax + 1];
+  if (vdm::sensorTopicSegment(gCfg, vdm::ItemKind::Temp, i,
+                              vdm::findTempBus(gSnap.temps, gSnap.tempCount, s.id), seg,
+                              sizeof seg) == 0) {
+    return;  // unnamed and not on the bus
+  }
   char buf[vdm::kOneWireIdTextLen + 1];
-  vdm::buildSegment(gCfg.temps[i].name, i, seg, sizeof seg);
-  vdm::formatOneWireId(gCfg.temps[i].id, buf, sizeof buf);
+  vdm::formatOneWireId(s.id, buf, sizeof buf);
   publish(vdm::Topic::TempId, seg, buf);
   vdm::formatTemp(tenths, p.ok, gCfg.mqtt.germanDecimal, buf, sizeof buf);
   publish(vdm::Topic::TempValue, seg, buf);
@@ -423,20 +718,35 @@ void publishVolt(uint8_t i) {
   p.ok = slotVolt(i, value);
   p.value = p.ok ? static_cast<int32_t>(value * 1000.0) : 0;
   p.valid = true;
-  if (!voltPublished(i)) return;
+  if (!vdm::voltPublishedMqtt(gCfg, i)) return;
+  const vdm::VoltSlotConfig& s = gCfg.volts[i];
   char seg[vdm::kSegmentMax + 1];
+  if (vdm::sensorTopicSegment(gCfg, vdm::ItemKind::Volt, i,
+                              vdm::findVoltBus(gSnap.volts, gSnap.voltCount, s.id), seg,
+                              sizeof seg) == 0) {
+    return;
+  }
   char buf[vdm::kOneWireIdTextLen + 1];
-  vdm::buildSegment(gCfg.volts[i].name, i, seg, sizeof seg);
-  vdm::formatOneWireId(gCfg.volts[i].id, buf, sizeof buf);
+  vdm::formatOneWireId(s.id, buf, sizeof buf);
   publish(vdm::Topic::VoltId, seg, buf);
   vdm::formatVolt(value, p.ok, gCfg.mqtt.germanDecimal, buf, sizeof buf);
   publish(vdm::Topic::VoltValue, seg, buf);
-  publish(vdm::Topic::VoltUnit, seg, gCfg.volts[i].unit);
+  publish(vdm::Topic::VoltUnit, seg, s.unit);
 }
 
 void publishStmFull() {
   if (!gCfg.mqtt.newDiag || gSnap.proto < 2 || !gSnap.haveStatus) return;
   publishUint(vdm::Topic::DiagStmUptime, nullptr, gSnap.status.uptimeS);
+}
+
+// stm/status and failsafe: always published, retained.
+void publishSystem() {
+  const bool online = vdm::stmOnline(gSnap.link);
+  if (publish(vdm::Topic::StmStatus, nullptr, online ? "online" : "offline")) {
+    gPubStmOnline = online ? 1 : 0;
+  }
+  const bool fs = failsafeActive();
+  if (publish(vdm::Topic::Failsafe, nullptr, fs ? "1" : "0")) gPubFailsafe = fs ? 1 : 0;
 }
 
 void publishSlot(uint8_t slot, bool full) {
@@ -448,9 +758,16 @@ void publishSlot(uint8_t slot, bool full) {
     publishTemp(slot - kSlotTemp0);
   } else if (slot < kSlotStm) {
     publishVolt(slot - kSlotVolt0);
-  } else {
+  } else if (slot == kSlotStm) {
     publishStmFull();
+  } else {
+    publishSystem();
   }
+}
+
+bool systemChanged() {
+  return gPubStmOnline != (vdm::stmOnline(gSnap.link) ? 1 : 0) ||
+         gPubFailsafe != (failsafeActive() ? 1 : 0);
 }
 
 bool slotChanged(uint8_t slot) {
@@ -461,7 +778,7 @@ bool slotChanged(uint8_t slot) {
   }
   if (slot < kSlotTemp0) {
     const uint8_t i = slot - kSlotValve0;
-    return !gPubValveValid[i] || gCalibDateDirty[i] ||
+    return !gPubValveValid[i] || gCalib.dirty(i) ||
            (vdm::diffValve(gPubValve[i], gSnap.valves[i]) & kValveCompatMask) != 0;
   }
   if (slot < kSlotVolt0) {
@@ -502,11 +819,14 @@ void serviceFullPublish(uint32_t now) {
 }
 
 void serviceOnChange(uint32_t now) {
-  if (!gCfg.mqtt.onChange || gFullRunning) return;
+  if (gFullRunning) return;
+  // stm/status and failsafe go out on every change, whatever onChange says.
+  if (systemChanged()) publishSystem();
+  if (!gCfg.mqtt.onChange) return;
   uint8_t sent = 0;
-  for (uint8_t n = 0; n < kSlotCount && sent < kMaxSlotsPerPass; ++n) {
+  for (uint8_t n = 0; n < kSlotSystem && sent < kMaxSlotsPerPass; ++n) {
     const uint8_t slot = gChangeCursor;
-    gChangeCursor = static_cast<uint8_t>((gChangeCursor + 1) % kSlotCount);
+    gChangeCursor = static_cast<uint8_t>((gChangeCursor + 1) % kSlotSystem);
     if (gScheduler.takeItem(slot, slotChanged(slot), now)) {
       publishSlot(slot, false);
       ++sent;
@@ -534,8 +854,62 @@ uint32_t profileCrc(const vdm::Profile& p) {
   return vdm::crc32(reinterpret_cast<const uint8_t*>(&p), sizeof p);
 }
 
+// A counter topic of diag/mqtt: on change, at most every kCounterPaceMs.
+void publishPaced(vdm::Topic t, uint32_t value, bool& valid, uint32_t& last, uint32_t& lastMs,
+                  uint32_t now) {
+  if (valid && (value == last || vdm::elapsedMs(now, lastMs) < kCounterPaceMs)) return;
+  if (!publishUint(t, nullptr, value)) return;
+  valid = true;
+  last = value;
+  lastMs = now;
+}
+
+// STM version, start time, lease, safe mode, counters, next calibration.
+void serviceSystemDiag(uint32_t now) {
+  StmPub& s = gPubStm;
+  char buf[32];
+  if (gSnap.version.valid && vdm::formatVersion(gSnap.version, buf, sizeof buf) > 0 &&
+      strcmp(buf, s.version) != 0 && publish(vdm::Topic::DiagStmVersion, nullptr, buf)) {
+    vdm::copyString(s.version, sizeof s.version, buf);
+  }
+  const vdm::LocalTime t = net::localTime();
+  if (gSnap.proto >= 2 && gSnap.haveStatus && t.valid && t.epoch > gSnap.status.uptimeS) {
+    const int64_t started = t.epoch - static_cast<int64_t>(gSnap.status.uptimeS);
+    const int64_t moved = started > s.started ? started - s.started : s.started - started;
+    if (s.started < 0 || moved > static_cast<int64_t>(kStartedToleranceS)) {
+      vdm::formatUtcTimestamp(static_cast<uint32_t>(started), buf, sizeof buf);
+      if (publish(vdm::Topic::DiagStmStarted, nullptr, buf)) s.started = started;
+    }
+  }
+  const int8_t lease = static_cast<int8_t>(gSnap.lease.state);
+  if (lease != s.lease &&
+      publish(vdm::Topic::DiagStmLease, nullptr, vdm::leaseStateName(gSnap.lease.state))) {
+    s.lease = lease;
+  }
+  if (gSnap.haveStatus && gSnap.status.v3) {
+    const int8_t sm = gSnap.status.safeMode ? 1 : 0;
+    if (sm != s.safeMode && publish(vdm::Topic::DiagStmSafeMode, nullptr, sm ? "1" : "0")) {
+      s.safeMode = sm;
+    }
+  }
+  const int64_t next = app::calibInfo().nextEpoch;
+  if (!s.nextValid || next != s.next) {
+    buf[0] = '\0';
+    if (next > 0) vdm::formatUtcTimestamp(static_cast<uint32_t>(next), buf, sizeof buf);
+    if (publish(vdm::Topic::DiagCalibrationNext, nullptr, buf)) {
+      s.nextValid = true;
+      s.next = next;
+    }
+  }
+  const uint32_t suppressed = gEventLimiter.suppressed() + gAggregator.duplicates();
+  publishPaced(vdm::Topic::DiagMqttEventsSuppressed, suppressed, s.suppressedValid, s.suppressed,
+               s.suppressedMs, now);
+  publishPaced(vdm::Topic::DiagMqttCommandsRejected, readCount(&Status::commandsRejected),
+               s.rejectedValid, s.rejected, s.rejectedMs, now);
+}
+
 // Publishes changed diag values; bounded messages per pass.
-void serviceDiag() {
+void serviceDiag(uint32_t now) {
   if (!gCfg.mqtt.newDiag) return;
   uint8_t budget = kMaxDiagPerPass;
   // STM level.
@@ -575,6 +949,7 @@ void serviceDiag() {
       s.calibActive = static_cast<int8_t>(calibActive);
     }
   }
+  serviceSystemDiag(now);
   // Per valve (v2 only).
   for (uint8_t i = 0; i < vdm::kValveCount && budget > 0; ++i) {
     const vdm::ValveState& v = gSnap.valves[i];
@@ -613,233 +988,46 @@ void serviceDiag() {
       d.profileCrc = crc;
     }
     d.valid = true;
-    gClient.loop();
+    pump();
   }
 }
 
 // ---------------------------------------------------------------- events
+
+void publishEvent(const vdm::PublishEvent& pe, uint32_t now) {
+  if (!gEventLimiter.allow(pe.event, now)) return;
+  char json[512];
+  vdm::JsonWriter jw(json, sizeof json);
+  if (vdm::writeMqttEventJson(jw, pe.event, pe.valveMask) && jw.complete()) {
+    publish(vdm::Topic::Events, nullptr, json);
+  }
+}
 
 void serviceEvents(uint32_t now) {
   vdm::Event ev[kEventsPerPass];
   uint32_t next = gEventCursor;
   const size_t n = logger::readSince(gEventCursor, ev, kEventsPerPass, next);
   gEventCursor = next;
+  const bool out = gConnected && gCfg.mqtt.events;
   for (size_t i = 0; i < n; ++i) {
     if (ev[i].severity >= vdm::Severity::Warning) {
       vdm::formatEventMessage(ev[i], gMessage, sizeof gMessage);
       gMessageChanged = true;
     }
-    if (!gConnected || !gCfg.mqtt.events) continue;
-    if (!gEventLimiter.allow(ev[i], now)) continue;
-    char json[320];
-    vdm::JsonWriter jw(json, sizeof json);
-    if (vdm::writeEventJson(jw, ev[i]) && jw.complete()) {
-      publish(vdm::Topic::Events, nullptr, json);
-    }
-  }
-  portENTER_CRITICAL(&gMux);
-  gStatus.eventsSuppressed = gEventLimiter.suppressed();
-  portEXIT_CRITICAL(&gMux);
-}
-
-// ---------------------------------------------------------------- discovery
-
-// Bit 2i / 2i+1: valve i reports sensor 1 / 2 (temp entities exist).
-uint32_t valveTempMask() {
-  uint32_t m = 0;
-  for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    if (gSnap.valves[i].temp1 != vdm::kTempUnassigned) m |= 1u << (2 * i);
-    if (gSnap.valves[i].temp2 != vdm::kTempUnassigned) m |= 1u << (2 * i + 1);
-  }
-  return m;
-}
-
-void buildDiscoveryContext() {
-  vdm::DiscoveryContext& c = gDiscCtx;
-  c = vdm::DiscoveryContext{};
-  c.topics = gTopics;
-  c.plainText = gCfg.mqtt.plainText;
-  c.publishDiag = gCfg.mqtt.diag;
-  c.publishUptime = gCfg.mqtt.upTime;
-  c.publishAllTemps = gCfg.mqtt.allTemps;
-  c.newDiag = gCfg.mqtt.newDiag;
-  vdm::formatIpv4(net::info().ip, c.ip, sizeof c.ip);
-  vdm::copyString(c.swVersion, sizeof c.swVersion, vdm::firmwareVersion());
-  gDiscTempMask = valveTempMask();
-  for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    c.valves[i].active = gCfg.valves[i].active;
-    vdm::copyString(c.valves[i].segment, sizeof c.valves[i].segment, gSegments[i]);
-    c.valves[i].hasTemp1 = gSnap.valves[i].temp1 != vdm::kTempUnassigned;
-    c.valves[i].hasTemp2 = gSnap.valves[i].temp2 != vdm::kTempUnassigned;
-    c.valves[i].tempsKnown = gSnap.sensorsSettled && gSnap.valves[i].known;
-  }
-  for (uint8_t i = 0; i < vdm::kTempSlotCount; ++i) {
-    const vdm::TempSlotConfig& s = gCfg.temps[i];
-    vdm::DiscoveryContext::Sensor& d = c.temps[i];
-    d.active = s.active && !vdm::isZero(s.id);
-    d.published = tempPublished(i);
-    vdm::buildSegment(s.name, i, d.segment, sizeof d.segment);
-    vdm::copyString(d.name, sizeof d.name, s.name);
-    if (!vdm::isZero(s.id)) vdm::formatOneWireId(s.id, d.id, sizeof d.id);
-  }
-  for (uint8_t i = 0; i < vdm::kVoltSlotCount; ++i) {
-    const vdm::VoltSlotConfig& s = gCfg.volts[i];
-    vdm::DiscoveryContext::Sensor& d = c.volts[i];
-    d.active = voltPublished(i);
-    d.published = d.active;
-    vdm::buildSegment(s.name, i, d.segment, sizeof d.segment);
-    vdm::copyString(d.name, sizeof d.name, s.name);
-    if (!vdm::isZero(s.id)) vdm::formatOneWireId(s.id, d.id, sizeof d.id);
-    vdm::copyString(d.unit, sizeof d.unit, s.unit);
-  }
-}
-
-// The first-run cleanup judges every legacy config against the current
-// entity set, and the valve temp entities depend on STM data that arrives
-// seconds after MQTT connects. It waits for the STM re-sync to settle, at
-// most kCleanupMaxWaitS after boot; valves whose sensors are still unknown
-// then keep their temp configs (ha_discovery tempsKnown).
-constexpr uint32_t kCleanupMaxWaitS = 600;
-
-bool cleanupReady() { return gSnap.sensorsSettled || app::uptimeS() >= kCleanupMaxWaitS; }
-
-// `cleanupOnly`: only the first-run deletion of legacy DROP/stale entities
-// (haDiscoveryOnConnect off, or MQTT without HA: the legacy firmware let
-// both modes send discovery, R2 wants the DROP configs gone once); the
-// current entities are left alone.
-void startDiscovery(DiscoveryAction a, bool cleanupOnly = false) {
-  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return;
-  if (gCfg.mqtt.mode != vdm::MqttMode::MqttHa && !cleanupOnly) return;
-  bool cleanup = !storage::haCleanupDone();
-  if (cleanup && !cleanupReady()) {
-    gCleanupDeferred = true;
-    cleanup = false;
-  }
-  if (cleanupOnly && !cleanup) return;
-  if (gLegacyFile) gLegacyFile.close();
-  buildDiscoveryContext();
-  gDiscIter.restart();
-  gDropIter.restart();
-  gDiscConfigs = gDiscDeletes = gDiscSkipped = 0;
-  gDiscPublishAfter = a == DiscoveryAction::DeleteAndPublish;
-  const DiscPhase first = cleanupOnly                          ? DiscPhase::Idle
-                          : a == DiscoveryAction::Publish      ? DiscPhase::PublishCurrent
-                                                               : DiscPhase::RemoveCurrent;
-  gDiscAfterCleanup = first;
-  gDiscPhase = cleanup ? DiscPhase::DropList : first;
-  setDiscoveryRunning(true);
-}
-
-void finishDiscovery() {
-  if (gLegacyFile) gLegacyFile.close();
-  gDiscPhase = DiscPhase::Idle;
-  setDiscoveryRunning(false);
-  logger::log(vdm::EventCode::HaDiscoverySent, vdm::kNoValve, gDiscConfigs, gDiscDeletes,
-              gDiscSkipped ? "skipped entities" : nullptr);
-}
-
-bool deleteTopic(const char* topic) {
-  const bool ok = publishRaw(topic, "", true);
-  if (ok) ++gDiscDeletes;
-  return ok;
-}
-
-// Reads the next line of the legacy discovery list (bounded); false at EOF.
-bool nextLegacyLine(char* out, size_t cap) {
-  size_t n = 0;
-  bool any = false;
-  bool overlong = false;
-  while (gLegacyFile.available() > 0) {
-    const int c = gLegacyFile.read();
-    if (c < 0) break;
-    any = true;
-    if (c == '\n' || c == '\r') {
-      if (n == 0 && !overlong) continue;  // empty line / CRLF
-      break;
-    }
-    if (n + 1 < cap) {
-      out[n++] = static_cast<char>(c);
+    if (!out || !vdm::eventReachesMqtt(ev[i])) continue;
+    vdm::PublishEvent pe;
+    if (ev[i].valve < vdm::kValveCount) {
+      if (gAggregator.offer(ev[i], now, pe)) publishEvent(pe, now);
     } else {
-      overlong = true;
+      pe.event = ev[i];
+      publishEvent(pe, now);
     }
   }
-  out[n] = '\0';
-  if (overlong) out[0] = '\0';  // never publish a truncated topic
-  return any;
-}
-
-bool legacyLineUsable(const char* t) {
-  if (strncmp(t, "homeassistant/", 14) != 0) return false;
-  for (const char* p = t; *p; ++p) {
-    if (*p == '+' || *p == '#' || static_cast<unsigned char>(*p) < 0x20 || *p == 0x7F) return false;
-  }
-  return true;
-}
-
-// One discovery message per call.
-void serviceDiscovery() {
-  switch (gDiscPhase) {
-    case DiscPhase::Idle:
-      return;
-    case DiscPhase::DropList: {
-      vdm::DiscoveryMessage msg;
-      if (gDropIter.next(msg)) {
-        deleteTopic(msg.topic);
-        return;
-      }
-      gDiscPhase = DiscPhase::LegacyFile;
-      gLegacyFile =
-          storage::fsReady() ? LittleFS.open(kLegacyDiscoveryFile, FILE_READ) : fs::File();
-      return;
-    }
-    case DiscPhase::LegacyFile: {
-      char line[vdm::kDiscoveryTopicMax + 1];
-      if (gLegacyFile && nextLegacyLine(line, sizeof line)) {
-        const size_t len = strlen(line);
-        if (len > 0 && legacyLineUsable(line) &&
-            !vdm::discoveryTopicIsCurrent(gDiscCtx, line, len)) {
-          deleteTopic(line);
-        }
-        return;
-      }
-      if (gLegacyFile) {
-        gLegacyFile.close();
-        LittleFS.remove(kLegacyDiscoveryDone);
-        LittleFS.rename(kLegacyDiscoveryFile, kLegacyDiscoveryDone);
-      }
-      storage::setHaCleanupDone();
-      if (gDiscAfterCleanup == DiscPhase::Idle) {
-        finishDiscovery();
-      } else {
-        gDiscPhase = gDiscAfterCleanup;
-      }
-      return;
-    }
-    case DiscPhase::RemoveCurrent:
-    case DiscPhase::PublishCurrent: {
-      vdm::DiscoveryMessage msg;
-      vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
-      if (gDiscIter.next(msg, jw)) {
-        if (gDiscPhase == DiscPhase::RemoveCurrent) {
-          deleteTopic(msg.topic);
-        } else if (publishRaw(msg.topic, jw.c_str(), true)) {
-          ++gDiscConfigs;
-        }
-        return;
-      }
-      if (!jw.ok()) {  // entity did not fit: skipped, iteration continues
-        ++gDiscSkipped;
-        return;
-      }
-      if (gDiscPhase == DiscPhase::RemoveCurrent && gDiscPublishAfter) {
-        gDiscIter.restart();
-        gDiscPhase = DiscPhase::PublishCurrent;
-        return;
-      }
-      finishDiscovery();
-      return;
-    }
-  }
+  vdm::PublishEvent pe;
+  while (out && gAggregator.poll(now, pe)) publishEvent(pe, now);
+  portENTER_CRITICAL(&gMux);
+  gStatus.eventsSuppressed = gEventLimiter.suppressed() + gAggregator.duplicates();
+  portEXIT_CRITICAL(&gMux);
 }
 
 // ---------------------------------------------------------------- connection
@@ -852,20 +1040,12 @@ void resetPublishedState() {
   gPubStm = StmPub{};
   gPubState = 0xFF;
   gPubUptime = UINT32_MAX;
+  gPubStmOnline = -1;
+  gPubFailsafe = -1;
   gMessageChanged = true;
   gFirstPublish = true;
   gFullRunning = false;
   gFullCursor = 0;
-}
-
-bool subscribeValve(uint8_t i) {
-  char topic[vdm::kTopicMax + 1];
-  const size_t n = vdm::buildTargetCommandTopic(gTopics, gSegments[i], topic, sizeof topic);
-  if (n == 0 || !gClient.subscribe(topic)) return false;
-  // Also "<cmd>/set" (ioBroker "/set/set" when separate, "/set" otherwise).
-  if (n + 4 > vdm::kTopicMax) return true;
-  memcpy(topic + n, "/set", 5);
-  return gClient.subscribe(topic);
 }
 
 bool connect(uint32_t now) {
@@ -883,37 +1063,46 @@ bool connect(uint32_t now) {
   esp_task_wdt_reset();  // connect may take up to 3 s TCP + 5 s CONNACK
   const bool ok = gClient.connect(gClientId, auth ? gCfg.mqtt.user : nullptr,
                                   auth ? gCfg.mqtt.password : nullptr, gLwtTopic, 0, true,
-                                  "offline");
+                                  "offline", gCleanNext);
   esp_task_wdt_reset();
   if (!ok) {
     setState(vdm::MqttState::Error, static_cast<int8_t>(gClient.state()));
     return false;
   }
+  gCleanNext = false;
+  gPacer.onConnected(now);
   resetPublishedState();
+  gInboundCount = 0;
+  gEcho.reset();
+  gButtons.reset();
   publishRaw(gLwtTopic, "online", true);
-  for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    if (gCfg.valves[i].active) subscribeValve(i);
-  }
-  if (gCfg.mqtt.mode == vdm::MqttMode::MqttHa) gClient.subscribe(kHaStatusTopic);
+  static vdm::Subscription subs[vdm::kMaxSubscriptions];
+  const size_t n = vdm::buildSubscriptions(gTopics, gCfg.mqtt.mode, gCfg.mqtt.discoveryPrefix,
+                                           gSegments, subs, vdm::kMaxSubscriptions);
+  for (size_t i = 0; i < n; ++i) gClient.subscribe(subs[i].filter, subs[i].qos);
   gScheduler.onConnected(now);
   gConnected = true;
   gOfflineSent = false;
+  portENTER_CRITICAL(&gMux);
+  vdm::copyString(gStatus.clientId, sizeof gStatus.clientId, gClientId);
+  portEXIT_CRITICAL(&gMux);
   setState(vdm::MqttState::Connected, 0);
   count(&Status::reconnects);
   logger::log(vdm::EventCode::MqttConnected);
-  startDiscovery(DiscoveryAction::Publish,
-                 gCfg.mqtt.mode != vdm::MqttMode::MqttHa || !gCfg.mqtt.haDiscoveryOnConnect);
+  startOnConnect();
   return true;
 }
 
 void onDisconnected() {
   if (!gConnected) return;
   gConnected = false;
-  if (gDiscPhase != DiscPhase::Idle) {
-    if (gLegacyFile) gLegacyFile.close();
-    gDiscPhase = DiscPhase::Idle;
-    setDiscoveryRunning(false);
-  }
+  gPacer.onDropped(app::nowMs());
+  if (gRun.running()) gRun.abort(gPort);
+  gPort.close();
+  setDiscoveryRunning(false);
+  gAggregator.reset();
+  gButtons.reset();
+  gInboundCount = 0;
   logger::log(vdm::EventCode::MqttDisconnected, vdm::kNoValve, gClient.state());
   setState(vdm::MqttState::Connecting, static_cast<int8_t>(gClient.state()));
 }
@@ -930,7 +1119,10 @@ void disconnectClean() {
 
 void begin() {
   gClient.setBufferSize(kBufferSize);  // allocated once, never resized
+  gRegulator.restore(vdm::decodeHaStatusRecord(gRtcHaStatus));
   reloadConfig();
+  updateRegulator();
+  storeHaStatus();
 }
 
 void task(void*) {
@@ -941,6 +1133,7 @@ void task(void*) {
     const uint32_t now = app::nowMs();
     if (storage::configRevision() != gCfgRevision) reloadConfig();
     observe();
+    updateRegulator();
 
     if (ota::restartPending()) {
       if (!gOfflineSent) {
@@ -963,39 +1156,31 @@ void task(void*) {
     if (gReconnectRequested) {
       gReconnectRequested = false;
       disconnectClean();
-      gBackoff.reset();
+      gPacer.forceNow();
     }
     if (!gClient.connected()) {
       onDisconnected();
-      if (gBackoff.due(now)) {
-        if (connect(now)) {
-          gBackoff.reset();
-        } else {
-          gBackoff.onFailure(app::nowMs());
-        }
+      if (gPacer.due(now)) {
+        if (!connect(now)) gPacer.onAttemptFailed(app::nowMs());
       }
+      updateRegulator();
       serviceEvents(now);
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
+    gPacer.tick(now, true);
     if (gDiscoveryRequested) {
       gDiscoveryRequested = false;
-      startDiscovery(gDiscoveryAction);
-    } else if (gDiscPhase == DiscPhase::Idle && gCleanupDeferred && cleanupReady()) {
-      gCleanupDeferred = false;
-      startDiscovery(DiscoveryAction::Publish, true);
-    } else if (gDiscPhase == DiscPhase::Idle && gCfg.mqtt.mode == vdm::MqttMode::MqttHa &&
-               gCfg.mqtt.haDiscoveryOnConnect && valveTempMask() != gDiscTempMask) {
-      // A valve sensor appeared/disappeared after the last run (the STM
-      // reports assignments only after its first 1-Wire read).
-      startDiscovery(DiscoveryAction::Publish);
+      startRequested(gDiscoveryAction);
+    } else {
+      checkDiscoveryInputs();
     }
-    gClient.loop();
+    pump();
     serviceEvents(now);
     serviceFullPublish(now);
-    gClient.loop();
+    pump();
     serviceOnChange(now);
-    serviceDiag();
+    serviceDiag(now);
     serviceDiscovery();
     vTaskDelay(pdMS_TO_TICKS(kDiscoveryPaceMs));
   }
@@ -1008,11 +1193,20 @@ Status status() {
   return s;
 }
 
-// No regulator watch yet: mode Off reads as a live regulator, so no
-// failsafe starts because of it.
-vdm::RegulatorInput regulatorState() { return vdm::RegulatorInput{}; }
+vdm::RegulatorInput regulatorState() {
+  portENTER_CRITICAL(&gMux);
+  const vdm::RegulatorInput r = gRegulatorState;
+  portEXIT_CRITICAL(&gMux);
+  return r;
+}
 
-bool calibrationEnd(uint8_t, vdm::LocalTime&) { return false; }
+bool calibrationEnd(uint8_t valve, vdm::LocalTime& out) {
+  portENTER_CRITICAL(&gMux);
+  const bool ended = gCalib.ended(valve);
+  if (ended) out = gCalib.end(valve);
+  portEXIT_CRITICAL(&gMux);
+  return ended;
+}
 
 void requestReconnect() { gReconnectRequested = true; }
 

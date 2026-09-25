@@ -14,8 +14,8 @@
 namespace mqtt {
 
 // Binding numbers (DESIGN.md "MQTT").
-constexpr uint16_t kBufferSize = 1792;        // PubSubClient packet buffer (topic + payload;
-                                              // discovery payloads up to 1535)
+constexpr uint16_t kBufferSize = 2304;        // PubSubClient packet buffer (topic + payload;
+                                              // discovery payloads up to 2047)
 constexpr uint16_t kSocketTimeoutS = 5;       // CONNACK / read wait (independent of keepalive)
 constexpr uint32_t kConnectTimeoutMs = 3000;  // TCP connect (WiFiClient default)
 constexpr uint32_t kBackoffMinMs = 2000;      // reconnect back-off, doubles per failure

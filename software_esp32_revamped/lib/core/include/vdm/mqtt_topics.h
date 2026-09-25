@@ -1,13 +1,14 @@
 // MQTT topic tree, command-topic parsing, payload formatting and publish
 // scheduling. The compat part is byte-exact with the legacy firmware
-// (specs/03-mqtt-ha-compat.md §3-§6); the new part follows architecture §3.4.
-// Hardware-free.
+// (software_esp32/src/mqtt.cpp); the new part is described in DESIGN.md
+// "MQTT". Hardware-free.
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "vdm/common.h"
+#include "vdm/config.h"
 
 namespace vdm {
 
@@ -16,7 +17,9 @@ constexpr size_t kSegmentMax = kItemNameMax;  // valve/sensor segment chars
 
 // Settings that shape topics (subset of MqttConfig).
 struct TopicContext {
-  char station[kStationNameMax + 1] = {0};  // validated with isSafeName
+  // The MQTT root (mqttRootTopic(): mqtt.rootTopic, else the station),
+  // validated with isSafeName.
+  char station[kStationNameMax + 1] = {0};
   bool pathAsRoot = false;  // legacy publishPathAsRoot: leading '/'
   bool separate = true;     // legacy publishSeparate: "/value" + "/set"
 };
@@ -28,6 +31,11 @@ size_t buildMainTopic(const TopicContext& ctx, char* out, size_t cap);
 // Valve/sensor segment: name with ' ' -> '_', or the 1-based index when the
 // name is empty ("3"). idx0 is 0-based.
 size_t buildSegment(const char* name, uint8_t idx0, char* out, size_t cap);
+
+// A segment as it may appear in a topic: 1..kSegmentMax bytes without NUL,
+// '+' and '#'; '/' only between two non-empty parts (topic overrides such as
+// "Bad/WC" of the legacy firmware, config.h itemSegment()).
+bool topicSegmentValid(const char* seg, size_t len);
 
 enum class Topic : uint8_t {
   // ---- compat (legacy tree; "/value" appended when ctx.separate) ----
@@ -67,14 +75,36 @@ enum class Topic : uint8_t {
   DiagCalibrationActive, // <main>diag/calibration/active     "0"/"1", retained
   Events,                // <main>events                      JSON, not retained
   Status,                // <main>status                      "online"/"offline", retained LWT
+  // ---- 2.1 (internal numbering, no external meaning) ----
+  ValveRequested,        // <main>valves/<V>/requested         desired target, suffix rule
+  ValveSync,             // <main>valves/<V>/sync              targetSyncName(), suffix rule
+  ValveFailsafe,         // <main>valves/<V>/failsafe          off/lease/blocked, suffix rule
+  ValveProblem,          // <main>valves/<V>/problem           "1"/"0", suffix rule
+  StmStatus,             // <main>stm/status                   "online"/"offline", retained
+  Failsafe,              // <main>failsafe                     "1"/"0", retained
+  DiagStmVersion,        // <main>diag/stm/version
+  DiagStmStarted,        // <main>diag/stm/started             UTC timestamp
+  DiagStmLease,          // <main>diag/stm/lease               off/running/expired
+  DiagStmSafeMode,       // <main>diag/stm/safeMode            "1"/"0"
+  DiagMqttEventsSuppressed,  // <main>diag/mqtt/eventsSuppressed
+  DiagMqttCommandsRejected,  // <main>diag/mqtt/commandsRejected
+  DiagCalibrationNext,   // <main>diag/calibration/next        UTC timestamp or ""
+  CmdValveCalibrate,     // <main>cmd/valves/<V>/calibrate     commands (buttons), never retained
+  CmdCalibrate,          // <main>cmd/calibrate
+  CmdRestart,            // <main>cmd/restart
+  CmdStmReset,           // <main>cmd/stmReset
+  CmdDetect,             // <main>cmd/detect
+  CmdStop,               // <main>cmd/stop                     protocol >= 3
+  CmdStmSafeExit,        // <main>cmd/stmSafeExit              protocol >= 3
 };
-constexpr uint8_t kTopicCount = 35;
+constexpr uint8_t kTopicCount = 55;
 
-// True for topics in the legacy tree (suffix rule applies).
+// True for topics that take the "/value" suffix with `separate`: the legacy
+// tree plus valves/<V>/{requested,sync,failsafe,problem}.
 bool topicIsCompat(Topic t);
-// Retain flag: compat topics use cfg publishRetained; Status and
-// DiagCalibrationActive are always retained; Events and DiagValveProfile
-// never; other diag topics follow publishRetained.
+// Retain flag: Status, StmStatus, Failsafe and DiagCalibrationActive are
+// always retained; Events, DiagValveProfile and the cmd/ topics never; every
+// other topic follows publishRetained.
 bool topicRetained(Topic t, bool publishRetained);
 
 // Full publish topic. `segment` is the valve/sensor segment for per-item
@@ -87,23 +117,70 @@ size_t buildTopic(const TopicContext& ctx, Topic t, const char* segment, char* o
 size_t buildTargetCommandTopic(const TopicContext& ctx, const char* segment, char* out,
                                size_t cap);
 
-// Parses an inbound topic (spec 03 §4.1, hardened):
-//  - a leading '/' on the inbound topic and on main is ignored;
-//  - must be "<main>valves/<seg>/target" + ("/set" | "/set/set") when
-//    separate, or + ("" | "/set") when not;
-//  - <seg> 1..kSegmentMax chars; matched against segments[0..11] (the
-//    buildSegment() of every valve, active or not) in index order, first match
-//    wins; otherwise a strict number 1..12 selects that valve.
-// Returns the 0-based valve or -1 (unknown topic / no such valve).
-int parseTargetCommandTopic(const TopicContext& ctx, const char* topic, size_t len,
-                            const char segments[kValveCount][kSegmentMax + 1]);
+// HA status topic "<prefix>/status" (HA birth / last will). 0 when it does
+// not fit or the prefix is null or empty.
+size_t buildHaStatusTopic(const char* prefix, char* out, size_t cap);
 
-enum class TargetPayload : uint8_t { Ok, Empty, NotNumber, OutOfRange };
-// Target payload: optional surrounding spaces/tabs/CR/LF, then an integer
-// 0..100, optionally followed by ".0..." zeros only ("55", "55.0", "55.00").
-// Also accepts exactly "OPEN" -> 100 and "CLOSE" -> 0 (HA valve entity).
-// Rejects: sign, hex, exponent, "nan"/"inf", fractions, > 100, > 16 chars.
+// Subscriptions of one connection.
+constexpr size_t kMaxSubscriptions = 29;
+struct Subscription {
+  char filter[kTopicMax + 1] = {0};
+  uint8_t qos = 0;
+};
+// Modes Mqtt and MqttHa: the two target command filters with a '+' for the
+// valve (separate: "<main>valves/+/target/set" and ".../target/set/set"; not
+// separate: "<main>valves/+/target" and ".../target/set"), QoS 1; then
+// "<main>cmd/#", QoS 0; then for every valve whose segment contains '/' the
+// same two filters spelled out (QoS 1: '+' matches one level only); MqttHa
+// also "homeassistant/status" and "<haPrefix>/status" when the prefix
+// differs (QoS 1). Off: none. Entries that do not fit `cap` or kTopicMax are
+// skipped. `segments` may be null (no spelled-out filters).
+size_t buildSubscriptions(const TopicContext& ctx, MqttMode mode, const char* haPrefix,
+                          const char segments[kValveCount][kSegmentMax + 1], Subscription* out,
+                          size_t cap);
+
+enum class InboundKind : uint8_t {
+  None,            // not one of our topics
+  HaStatus,        // "homeassistant/status" or "<haPrefix>/status"
+  Target,          // <main>valves/<seg>/target command
+  CalibrateValve,  // <main>cmd/valves/<seg>/calibrate
+  CalibrateAll,    // <main>cmd/calibrate
+  Restart,         // <main>cmd/restart
+  StmReset,        // <main>cmd/stmReset
+  Detect,          // <main>cmd/detect
+  StopAll,         // <main>cmd/stop
+  StmSafeExit,     // <main>cmd/stmSafeExit
+  UnknownCommand,  // <main>cmd/<anything else>
+};
+struct InboundTopic {
+  InboundKind kind = InboundKind::None;
+  int8_t valve = -1;       // Target / CalibrateValve: 0..11; -1 = the segment names no valve
+  bool stateForm = false;  // Target without separate: exactly "<main>valves/<seg>/target"
+};
+// Classifies an inbound topic of exactly `len` bytes (NUL bytes -> None):
+//  - "homeassistant/status" and "<haPrefix>/status" -> HaStatus;
+//  - a leading '/' on the topic and on main is ignored for the rest;
+//  - "<main>valves/<seg>/" + ("target/set" | "target/set/set") when
+//    separate, + ("target" | "target/set") when not -> Target;
+//  - "<main>cmd/valves/<seg>/calibrate" -> CalibrateValve; the fixed cmd/
+//    topics -> their kind; any other "<main>cmd/..." -> UnknownCommand.
+// <seg> is matched against segments[0..11] (itemSegment() of every valve,
+// active or not, '/' allowed) in index order, first match wins; otherwise a
+// strict number 1..12 without leading zero selects that valve; any other
+// non-empty segment gives valve -1; an empty one gives None.
+InboundTopic parseInboundTopic(const TopicContext& ctx, const char* haPrefix, const char* topic,
+                               size_t len, const char segments[kValveCount][kSegmentMax + 1]);
+
+enum class TargetPayload : uint8_t { Ok, Empty, NotNumber, OutOfRange, Stop };
+// Target payload: optional surrounding spaces/tabs/CR/LF, at most 16 bytes in
+// all; "OPEN" -> 100, "CLOSE" -> 0, "STOP" -> Stop (out unchanged);
+// otherwise 1+ digits, optionally '.' or ',' and 1+ digits, converted with
+// roundTargetPercent() (exact range 0..100, half up: 43.5 -> 44, 99.5 -> 100,
+// 100.01 -> OutOfRange). Rejects: sign, exponent, hex, "nan"/"inf", a
+// separator without digits on either side, a second separator.
 TargetPayload parseTargetPayload(const char* p, size_t len, uint8_t& out);
+// Button payload: exactly "PRESS" (HA default payload_press).
+bool parseButtonPayload(const char* p, size_t len);
 
 // ---------------------------------------------------------------- payloads
 
@@ -128,7 +205,7 @@ size_t formatLegacyCounter(uint32_t v, char* out, size_t cap);
 
 // ---------------------------------------------------------------- scheduling
 
-// Legacy publish cadence (spec 03 §6), per item slot:
+// Legacy publish cadence, per item slot:
 //  - after (re)connect: everything once (full publish);
 //  - periodic mode (!onChange): full publish every publishIntervalMs;
 //  - on-change mode: an item goes out when changed and minDelayMs has passed
