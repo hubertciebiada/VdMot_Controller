@@ -251,10 +251,13 @@ constexpr bool allFit(const Field (&a)[N]) {
   }
   return true;  // NOMUTATE
 }
-static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&
-                  allFit(kSyslogFields) && allFit(kWebFields) && allFit(kMqttFields) &&
-                  allFit(kValveFields) && allFit(kTempFields) && allFit(kVoltFields) &&
-                  allFit(kCalibFields) && allFit(kFailsafeFields) && allFit(kRootTail),
+// NOMUTATE on the next lines: compile-time check.
+static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&  // NOMUTATE
+                  allFit(kSyslogFields) && allFit(kWebFields) &&                 // NOMUTATE
+                  allFit(kMqttFields) && allFit(kValveFields) &&                 // NOMUTATE
+                  allFit(kTempFields) && allFit(kVoltFields) &&                  // NOMUTATE
+                  allFit(kCalibFields) && allFit(kFailsafeFields) &&             // NOMUTATE
+                  allFit(kRootTail),
               "string field limits");
 
 struct Group {
@@ -271,8 +274,10 @@ constexpr uint8_t countOf(const T (&)[N]) {
   return static_cast<uint8_t>(N);
 }
 
+// NOMUTATE on the two root rows: a root group has no index, its count is
+// never read.
 const Group kGroups[] = {
-    {nullptr, kRootHead, countOf(kRootHead), 0, 0, sizeof(Config)},
+    {nullptr, kRootHead, countOf(kRootHead), 0, 0, sizeof(Config)},  // NOMUTATE
     {"net", kNetFields, countOf(kNetFields), offsetof(Config, net), 0, sizeof(NetConfig)},
     {"time", kTimeFields, countOf(kTimeFields), offsetof(Config, time), 0, sizeof(TimeConfig)},
     {"syslog", kSyslogFields, countOf(kSyslogFields), offsetof(Config, syslog), 0,
@@ -289,7 +294,7 @@ const Group kGroups[] = {
      sizeof(CalibScheduleConfig)},
     {"failsafe", kFailsafeFields, countOf(kFailsafeFields), offsetof(Config, failsafe), 0,
      sizeof(FailsafeConfig)},
-    {nullptr, kRootTail, countOf(kRootTail), 0, 0, sizeof(Config)},
+    {nullptr, kRootTail, countOf(kRootTail), 0, 0, sizeof(Config)},  // NOMUTATE
 };
 
 constexpr size_t kGroupCount = countOf(kGroups);
@@ -357,9 +362,10 @@ bool hostListValid(const char* s, size_t len) {
     size_t end = pos;
     while (end < len && s[end] != ',') ++end;
     size_t b = pos, e = end;
-    while (b < e && s[b] == ' ') ++b;
+    // NOMUTATE on the next line: s[end] is ',' or the NUL, never a space.
+    while (b < e && s[b] == ' ') ++b;  // NOMUTATE
     while (e > b && s[e - 1] == ' ') --e;
-    char host[kAllowedHostsMax + 1];
+    char host[kAllowedHostsMax + 1];  // NOMUTATE: a larger buffer is equivalent
     memcpy(host, s + b, e - b);
     host[e - b] = '\0';
     if (++entries > 4 || !isHostName(host, kHostMax)) return false;
@@ -940,17 +946,16 @@ SetResult setField(Config& c, const Group& g, uint8_t element, const Field& f,
       int64_t i;
       const Conv r = toInteger(v, i);
       if (r != Conv::Ok) return fromConv(r);
-      // Stored like the field, then checked like a stored value, so the
-      // special values (kFailsafeHold, 0 = off) follow the one rule.
-      const bool wide = f.kind == Kind::U16 || f.kind == Kind::OffOrRange;
-      if (i < 0 || i > (wide ? UINT16_MAX : UINT8_MAX)) return SetResult::OutOfRange;
-      uint8_t probe[2] = {static_cast<uint8_t>(i), 0};
-      if (wide) {
+      // [min, max], or the special value of the kind (hold, off).
+      const bool special = (f.kind == Kind::PctHold && i == kFailsafeHold) ||
+                           (f.kind == Kind::OffOrRange && i == 0);
+      if (!special && (i < f.min || i > f.max)) return SetResult::OutOfRange;
+      if (f.kind == Kind::U8 || f.kind == Kind::PctHold) {
+        *p = static_cast<uint8_t>(i);
+      } else {
         const uint16_t u = static_cast<uint16_t>(i);
-        memcpy(probe, &u, sizeof u);
+        memcpy(p, &u, sizeof u);
       }
-      if (!fieldValid(f, probe)) return SetResult::OutOfRange;
-      memcpy(p, probe, wide ? 2 : 1);
       return SetResult::Ok;
     }
     case Kind::Str:

@@ -2186,6 +2186,30 @@ TEST_CASE("config binary: an unterminated string is encoded at most cap-1 bytes"
 
 // ---------------------------------------------------------------- keys after 2.0.0
 
+TEST_CASE("config: one-byte fields are stored in one byte") {
+  Config c;
+  REQUIRE(set(c, "valves.2.topic", S("t")) == SetResult::Ok);
+  REQUIRE(set(c, "valves.2.failsafePct", I(7)) == SetResult::Ok);
+  CHECK(c.valves[1].failsafePct == 7);
+  CHECK(std::string(c.valves[1].topic) == "t");
+  REQUIRE(set(c, "net.iface", I(2)) == SetResult::Ok);
+  CHECK(c.net.iface == NetInterface::Wifi);
+  CHECK(c.net.dhcp);
+  REQUIRE(set(c, "calib.minute", I(9)) == SetResult::Ok);
+  REQUIRE(set(c, "calib.hour", I(5)) == SetResult::Ok);
+  REQUIRE(set(c, "calib.dayMask", I(3)) == SetResult::Ok);
+  CHECK(c.calib.minute == 9);
+  CHECK(c.calib.hour == 5);
+  CHECK(c.calib.dayMask == 3);
+  // Two-byte fields keep their high byte.
+  REQUIRE(set(c, "failsafe.timeoutMin", I(1440)) == SetResult::Ok);
+  CHECK(c.failsafe.timeoutMin == 1440);
+  REQUIRE(set(c, "mqtt.port", I(65535)) == SetResult::Ok);
+  CHECK(c.mqtt.port == 65535);
+  CHECK(set(c, "mqtt.port", I(65536)) == SetResult::OutOfRange);
+  CHECK(c.mqtt.port == 65535);
+}
+
 TEST_CASE("config: failsafe keys accept exactly their range (C-1)") {
   Config c;
   for (int64_t ok : {0, 1, 99, 100, 255}) {
@@ -2241,6 +2265,7 @@ TEST_CASE("config: string keys after 2.0.0 and their rules (C-1)") {
   const std::string h80 = h79 + "d";
   const std::string h81 = h80 + "d";
   const std::string label65 = std::string(65, 'a');
+  const std::string a80 = std::string(80, 'a');
   const std::string c64(64, 'c'), c65(65, 'c');
   const std::string p32 = "ha/" + std::string(29, 'p'), p33 = p32 + "p";
   const Row rows[] = {
@@ -2262,6 +2287,17 @@ TEST_CASE("config: string keys after 2.0.0 and their rules (C-1)") {
       {"web.allowedHosts", "a b", SetResult::OutOfRange},
       {"web.allowedHosts", "a,-b", SetResult::OutOfRange},
       {"web.allowedHosts", label65.c_str(), SetResult::OutOfRange},
+      {"web.allowedHosts", a80.c_str(), SetResult::OutOfRange},  // one entry, whole buffer
+      {"mqtt.clientId", "azAZ09._-", SetResult::Ok},
+      {"mqtt.clientId", "a`", SetResult::OutOfRange},
+      {"mqtt.clientId", "a{", SetResult::OutOfRange},
+      {"mqtt.clientId", "A[", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "azAZ09_-/x", SetResult::Ok},
+      {"mqtt.discoveryPrefix", "a`", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "a{", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "A@", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "A[", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "0:", SetResult::OutOfRange},
       {"mqtt.rootTopic", "", SetResult::Ok},
       {"mqtt.rootTopic", "VdMotFBH", SetResult::Ok},
       {"mqtt.rootTopic", "Dom 1", SetResult::Ok},
