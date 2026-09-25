@@ -82,7 +82,7 @@ def changelog_section(repo: str, version: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tag", required=True, help="git tag, e.g. v2.0.0-revamped")
+    ap.add_argument("--tag", required=True, help="git tag, e.g. v2.1.0-revamped")
     ap.add_argument("--artifacts", help="downloaded CI artifacts directory")
     ap.add_argument("--from-builds", help="repo root with local .pio builds")
     ap.add_argument("--out", required=True)

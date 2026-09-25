@@ -44,7 +44,7 @@ TEST_CASE("Terminal_Init: USART6 on PA12/PA11 at 115200, banner with version and
   CHECK(Serial6.txPin == PA11);
   CHECK(Serial6.baud == 115200);
   CHECK(Serial6.config == SERIAL_8N1);
-  CHECK(fake::takeTx(Serial6) == "VdMot Controller 2.0.0-revamped_C2\r\n");
+  CHECK(fake::takeTx(Serial6) == "VdMot Controller 2.1.0-revamped_C2\r\n");
   CHECK(Serial6.flushes == 1);
 }
 
@@ -85,7 +85,7 @@ TEST_CASE("Terminal_Serve: settar, gvers and stdet 255") {
   CHECK(out == "set valve 2 to 40\r\n");
   CHECK(+myvalvemots[2].target_position == 40);
   CHECK(command("gvers\n", out) == 0);
-  CHECK(out == "Version: 2.0.0-revamped\r\n");
+  CHECK(out == "Version: 2.1.0-revamped\r\n");
   CHECK(command("stdet 255\n", out) == 0);
   CHECK(out == "got detect valve status request - reset all valves\r\nstdet \r\n");
   CHECK(fake::takeTx(Serial1).empty());

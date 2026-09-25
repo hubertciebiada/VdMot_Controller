@@ -44,7 +44,7 @@ TEST_CASE("communication_setup: USART1 on PA10/PA9 at 115200 8N1, bytes of the b
 
 TEST_CASE("v1 replies: gvers, gproto, gtgtp, stgtp") {
   begin();
-  CHECK(request("gvers\n") == "gvers 2.0.0-revamped_C2 1 \r\n");
+  CHECK(request("gvers\n") == "gvers 2.1.0-revamped_C2 1 \r\n");
   CHECK(request("gproto\n") == "gproto 3\r\n");
   myvalvemots[0].target_position = 30;
   CHECK(request("gtgtp 0\n") == "gtgtp 0 30 \r\n");
