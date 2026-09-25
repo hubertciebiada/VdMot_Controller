@@ -9,7 +9,6 @@ namespace vdm {
 namespace {
 
 constexpr size_t kMaxDecoded = 130;
-constexpr size_t kMaxEncoded = (kMaxDecoded + 2) / 3 * 4;  // 176
 
 // 0..63 for a base64 alphabet character, -1 otherwise.
 int base64Value(char c) {
@@ -23,10 +22,11 @@ int base64Value(char c) {
 
 // Strict RFC 4648 decode: length a multiple of 4, '=' only as the last one or
 // two characters, unused bits of the last group zero. False on any violation
-// or when the result does not fit `cap`.
+// or when the result does not fit `cap` (checked before any group is decoded,
+// so an overlong header costs nothing). len > 0.
 bool base64Decode(const char* in, size_t len, uint8_t* out, size_t cap, size_t& outLen) {
   outLen = 0;
-  if (len == 0 || len % 4 != 0) return false;
+  if (len % 4 != 0) return false;
   size_t pad = 0;
   if (in[len - 1] == '=') pad = (in[len - 2] == '=') ? 2 : 1;
   if (len / 4 * 3 - pad > cap) return false;
@@ -69,7 +69,7 @@ bool checkBasicAuth(const char* header, size_t len, const char* user, const char
   if (header == nullptr || user == nullptr || password == nullptr || user[0] == '\0') return false;
   static const char kScheme[] = "basic ";
   constexpr size_t kSchemeLen = sizeof kScheme - 1;
-  if (len <= kSchemeLen || len - kSchemeLen > kMaxEncoded) return false;
+  if (len <= kSchemeLen) return false;
   for (size_t i = 0; i < kSchemeLen; ++i) {
     char c = header[i];
     if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');

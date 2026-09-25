@@ -34,7 +34,8 @@ bool resetGuardOnBoot(ResetGuardCell& c, BootReason reason) {
   if (isCold(reason) || c.magic != kResetGuardMagic || c.crc != guardCrc(c)) {
     clearWindow(c);
   } else {
-    c.windowS = c.windowS > UINT32_MAX - c.lastUptimeS ? UINT32_MAX : c.windowS + c.lastUptimeS;
+    const uint32_t sum = c.windowS + c.lastUptimeS;  // wraps on overflow
+    c.windowS = sum < c.windowS ? UINT32_MAX : sum;
     if (isWatchdog(reason)) {
       if (c.count == 0 || c.windowS > kSafeModeWindowS) {
         c.count = 1;

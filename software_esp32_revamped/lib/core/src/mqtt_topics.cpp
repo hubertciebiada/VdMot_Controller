@@ -285,11 +285,9 @@ void addTargetFilters(const TopicContext& ctx, const char* main, size_t ml, cons
   b.add("valves/");
   b.add(seg);
   b.add(ctx.separate ? "/target/set" : "/target");
-  const size_t len = b.finish();
-  addSubscription(out, cap, n, f, len, 1);
-  if (len == 0 || len + 4 > kTopicMax) return;
-  memcpy(f + len, "/set", 5);
-  addSubscription(out, cap, n, f, len + 4, 1);
+  addSubscription(out, cap, n, f, b.finish(), 1);
+  b.add("/set");
+  addSubscription(out, cap, n, f, b.finish(), 1);
 }
 
 bool startsWith(const char* s, size_t n, const char* prefix, size_t pl) {

@@ -2271,3 +2271,54 @@ TEST_CASE("flasher: the new application may take up to 60 s") {
   CHECK(none.f.status().error == FlashError::AppNotResponding);
   CHECK(none.f.status().finishedMs - none.sim.resets.back().first == 60000);
 }
+
+TEST_CASE("validate: board markers ending in 0 and 9") {
+  const ImageInfo c10 = scanned(tagged({"VDM-HW:C10"}));
+  CHECK(std::string(c10.hwTag) == "C10");
+  CHECK_FALSE(c10.hwConflict);
+  CHECK(std::string(scanned(tagged({"VDM-HW:C9"})).hwTag) == "C9");
+}
+
+TEST_CASE("flasher: a board tag of three chars is kept whole") {
+  Rig rig(tagged({"VDM-HW:C12"}));
+  memcpy(rig.opt.boardHw, "C12", 4);
+  REQUIRE(rig.begin());
+  CHECK(std::string(rig.f.status().boardHw) == "C12");
+}
+
+TEST_CASE("flasher: board and application failures report address 0") {
+  Rig mismatch(tagged({"VDM-HW:C2"}));
+  memcpy(mismatch.opt.boardHw, "C1", 3);
+  CHECK(mismatch.beginAndRun() == FlashPhase::Failed);
+  CHECK(mismatch.f.status().error == FlashError::BoardMismatch);
+  CHECK(mismatch.f.status().errorAddress == 0);
+  Rig required(tagged({"VDM-HW:C2"}));
+  CHECK(required.beginAndRun() == FlashPhase::Failed);
+  CHECK(required.f.status().error == FlashError::BoardRequired);
+  CHECK(required.f.status().errorAddress == 0);
+  Rig app(tagged({"VDM-HW:C2"}));
+  memcpy(app.opt.boardHw, "C2", 3);
+  app.sim.appReply = "gvers 2.1.0-revamped_C1 1 ";
+  CHECK(app.beginAndRun() == FlashPhase::Failed);
+  CHECK(app.f.status().error == FlashError::AppVersionMismatch);
+  CHECK(app.f.status().errorAddress == 0);
+}
+
+TEST_CASE("flasher: two sync attempts send exactly two 0x7F") {
+  Rig rig(makeImage(1024));
+  rig.opt.fallbackBaud = 0;
+  rig.opt.syncAttempts = 2;
+  rig.sim.syncSilent = 100;
+  CHECK(rig.beginAndRun() == FlashPhase::Failed);
+  CHECK(rig.f.status().error == FlashError::SyncFailed);
+  CHECK(rig.sim.syncTimes.size() == 2);
+}
+
+TEST_CASE("flasher: an image of whole blocks is written in exactly its blocks") {
+  Rig rig(makeImage(1024));
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  size_t writes = 0;
+  for (uint8_t c : rig.sim.commands) writes += c == 0x31 ? 1 : 0;
+  CHECK(writes == 4);
+  CHECK(rig.flashMatchesImage());
+}
