@@ -1,0 +1,4 @@
+[
+  {"line": 21, "col": 11, "original": ">=", "replacement": ">", "text": "if (len >= 4 && memcmp(in + len - 4, \".bin\", 4) == 0) len -= 4;", "reason": "the only four-character name with the suffix is \".bin\", rejected either way: empty after stripping, or by its leading '.'"},
+  {"line": 21, "col": 14, "original": "4", "replacement": "5", "text": "if (len >= 4 && memcmp(in + len - 4, \".bin\", 4) == 0) len -= 4;", "reason": "the only four-character name with the suffix is \".bin\", rejected either way: empty after stripping, or by its leading '.'"}
+]
