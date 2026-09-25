@@ -1,0 +1,10 @@
+[
+  {"line": 28, "col": 23, "original": "4", "replacement": "5", "text": "memcpy(b, &r.magic, 4);", "reason": "the fifth byte lands in b[4], which the next line overwrites with r.status; the read stays inside the record"},
+  {"line": 120, "col": 13, "original": "65", "replacement": "64", "text": "char host[65];", "reason": "only the first 16 chars of the host name are used; any buffer of at least 17 bytes gives the same id"},
+  {"line": 120, "col": 13, "original": "65", "replacement": "66", "text": "char host[65];", "reason": "only the first 16 chars of the host name are used; any buffer of at least 17 bytes gives the same id"},
+  {"line": 122, "col": 9, "original": ">", "replacement": ">=", "text": "if (n > 16) n = 16;", "reason": "n == 16 is set to itself"},
+  {"line": 146, "col": 16, "original": "<", "replacement": "<=", "text": "return valve < kValveCount && ((valid_ >> valve) & 1u) != 0 && value_[valve] == value;", "reason": "bit kValveCount of valid_ is never set (published() ignores valve >= kValveCount), so the mask test rejects it before value_ is read"},
+  {"line": 211, "col": 23, "original": "0", "replacement": "1", "text": "uint8_t pos = 0;", "reason": "dead initial value: parseTargetPayload() sets pos when it returns Ok and pos is only read then"},
+  {"line": 331, "col": 25, "original": "<", "replacement": "<=", "text": "for (uint8_t k = 0; k < kValveCount; ++k) {", "reason": "k == kValveCount visits (from + kValveCount) % kValveCount, the valve k == 0 already checked"},
+  {"line": 342, "col": 16, "original": "<", "replacement": "<=", "text": "return valve < kValveCount && ((mask_ >> valve) & 1u) != 0;", "reason": "bit kValveCount of mask_ is never set (set() ignores valve >= kValveCount), so the mask test answers false"}
+]

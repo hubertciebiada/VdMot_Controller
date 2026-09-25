@@ -31,11 +31,11 @@ uint16_t haRecordCrc(const HaStatusRecord& r) {
   return static_cast<uint16_t>(crc32(b, sizeof b) & 0xFFFFu);
 }
 
-InboundDecision reject(RejectReason reason, int8_t valve, int32_t detail = 0) {
+InboundDecision reject(RejectReason reason, uint8_t valve = kNoValve, int32_t detail = 0) {
   InboundDecision d;
   d.action = InboundAction::Reject;
   d.reason = reason;
-  d.valve = valve >= 0 ? static_cast<uint8_t>(valve) : kNoValve;
+  d.valve = valve;
   d.detail = detail;
   return d;
 }
@@ -197,15 +197,15 @@ InboundDecision decideInbound(const InboundContext& c, const char* topic, size_t
     case InboundKind::Target:
     case InboundKind::CalibrateValve: {
       if (t.valve < 0) {
-        d = reject(RejectReason::UnknownValve, -1);
+        d = reject(RejectReason::UnknownValve);
       } else if (((c.activeMask >> t.valve) & 1u) == 0) {
-        d = reject(RejectReason::Inactive, t.valve);
+        d = reject(RejectReason::Inactive, static_cast<uint8_t>(t.valve));
       } else if (t.kind == InboundKind::CalibrateValve) {
         if (parseButtonPayload(p, len)) {
           d.action = InboundAction::CalibrateValve;
           d.valve = static_cast<uint8_t>(t.valve);
         } else {
-          d = reject(RejectReason::Payload, t.valve);
+          d = reject(RejectReason::Payload, static_cast<uint8_t>(t.valve));
         }
       } else {
         uint8_t pos = 0;
@@ -220,15 +220,16 @@ InboundDecision decideInbound(const InboundContext& c, const char* topic, size_t
           d.action = InboundAction::StopValve;
           d.valve = static_cast<uint8_t>(t.valve);
         } else if (r == TargetPayload::Stop) {
-          d = reject(RejectReason::Unsupported, t.valve);
+          d = reject(RejectReason::Unsupported, static_cast<uint8_t>(t.valve));
         } else {
-          d = reject(RejectReason::Payload, t.valve, static_cast<int32_t>(r));
+          d = reject(RejectReason::Payload, static_cast<uint8_t>(t.valve),
+                     static_cast<int32_t>(r));
         }
       }
       break;
     }
     case InboundKind::UnknownCommand:
-      d = reject(RejectReason::UnknownCommand, -1);
+      d = reject(RejectReason::UnknownCommand);
       break;
     default: {
       static const InboundAction kActions[] = {
@@ -239,9 +240,9 @@ InboundDecision decideInbound(const InboundContext& c, const char* topic, size_t
           kActions[static_cast<uint8_t>(t.kind) - static_cast<uint8_t>(InboundKind::CalibrateAll)];
       const bool v3Only = a == InboundAction::StopAll || a == InboundAction::StmSafeExit;
       if (!parseButtonPayload(p, len)) {
-        d = reject(RejectReason::Payload, -1);
+        d = reject(RejectReason::Payload);
       } else if (v3Only && !c.stmV3) {
-        d = reject(RejectReason::Unsupported, -1);
+        d = reject(RejectReason::Unsupported);
       } else {
         d.action = a;
       }
