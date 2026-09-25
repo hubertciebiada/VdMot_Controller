@@ -9,10 +9,11 @@
 #include <string.h>
 
 #include <vdm/config.h>
+#include <vdm/event_limiter.h>
 #include <vdm/ha_discovery.h>
-#include <vdm/health_monitor.h>
 #include <vdm/json_writer.h>
 #include <vdm/mqtt_topics.h>
+#include <vdm/mqtt_values.h>
 
 #include "app.h"
 #include "boot_alloc.h"

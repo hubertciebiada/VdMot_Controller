@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include <vdm/event_log.h>
-#include <vdm/health_monitor.h>
+#include <vdm/ota_policy.h>
 
 #include "app.h"
 #include "logger.h"

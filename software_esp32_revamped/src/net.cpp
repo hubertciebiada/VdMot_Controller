@@ -12,7 +12,7 @@
 #include <time.h>
 
 #include <vdm/event_log.h>
-#include <vdm/health_monitor.h>
+#include <vdm/net_policy.h>
 
 #include "board.h"
 #include "boot_alloc.h"
