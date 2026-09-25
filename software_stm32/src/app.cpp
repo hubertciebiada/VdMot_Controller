@@ -34,12 +34,20 @@
 #include "motor.h"
 #include "owDevices.h"
 #include "eeprom.h"
+#include "vdm/failsafe.h"
+#include "vdm/lease.h"
 #include "vdm/settings.h"
 #include "vdm/target_rejection.h"
+#include "vdm/valve_codes.h"
 
 static_assert(VALVE_NO_TARGET == vdm::kNoRejectedTarget, "one marker for no rejected target");
 static_assert(LEARN_AFTER_MOVEMENTS_DEFAULT == vdm::kLearnMovementsDefault, "one learn movements default");
 static_assert(LEARN_AFTER_TIME_DEFAULT == vdm::kLearnTimeDefaultS, "one learn time default");
+static_assert(VLV_STATE_IDLE == vdm::kStIdle && VLV_STATE_OPENING == vdm::kStOpening &&
+              VLV_STATE_CLOSING == vdm::kStClosing && VLV_STATE_FAILED == vdm::kStFailed &&
+              VLV_STATE_UNKNOWN == vdm::kStUnknown && VLV_STATE_OPENCIR == vdm::kStOpenCircuit &&
+              VLV_STATE_FULLOPEN == vdm::kStFullOpen && VLV_STATE_PRESENT == vdm::kStPresent &&
+              VLV_STATE_BLOCKS == vdm::kStBlocked, "valve status codes of the protocol");
 
 
 volatile struct valve myvalves[ACTUATOR_COUNT];
@@ -575,8 +583,113 @@ void reset_check () {
       COMM_DBG.println("soft reset now");
     #endif
     HAL_NVIC_SystemReset();
-   // #define AIRCR_VECTKEY_MASK    (0x05FA0000)    
+   // #define AIRCR_VECTKEY_MASK    (0x05FA0000)
    //   SCB->AIRCR = AIRCR_VECTKEY_MASK | 0x04;
-    while(1);   
+    while(1);
   }
+}
+
+
+// protocol 3: not implemented yet. The functions keep today's behaviour: no lease (the targets
+// never expire), no failsafe position (hold), nothing kept across a reset, nothing to stop.
+
+void app_1s_tick (uint32_t elapsedS) {
+  (void) elapsedS;
+}
+
+
+void app_restore (void) {
+}
+
+
+void app_warm_save (void) {
+}
+
+
+void app_lease_poll (void) {
+}
+
+
+void app_lease_command (void) {
+}
+
+
+void app_lease_heartbeat (bool alive) {
+  (void) alive;
+}
+
+
+void app_lease_configure (uint16_t minutes) {
+  (void) minutes;
+}
+
+
+uint8_t app_lease_state (void) {
+  return (uint8_t) vdm::LeaseState::Off;
+}
+
+
+uint32_t app_lease_remaining_s (void) {
+  return 0;
+}
+
+
+bool app_lease_client (void) {
+  return false;
+}
+
+
+uint16_t app_lease_timeout (void) {
+  return vdm::kLeaseTimeoutOff;
+}
+
+
+uint16_t app_failsafe_mask (void) {
+  return 0;
+}
+
+
+void app_set_failsafe (uint16_t valve, uint8_t pct) {
+  (void) valve;
+  (void) pct;
+}
+
+
+uint8_t app_failsafe_pct (uint16_t valve) {
+  (void) valve;
+  return vdm::kFailsafeHold;
+}
+
+
+int16_t app_stop (uint16_t valve) {
+  return (valve < ACTUATOR_COUNT || valve == 255) ? 0 : -1;
+}
+
+
+uint32_t app_get_learntime (void) {
+  return learning_time;
+}
+
+
+void app_temp_cycle_done (void) {
+}
+
+
+uint32_t app_temp_age_s (void) {
+  return 0;
+}
+
+
+bool app_protect_suspended (void) {
+  return false;
+}
+
+
+void app_get_valve_v3 (uint16_t valve, struct valve_v3_info &out) {
+  out.flags = 0;
+  out.fault = (uint8_t) vdm::ValveFault::None;
+  out.fsPct = vdm::kFailsafeHold;
+  out.drive = valve < ACTUATOR_COUNT ? myvalvemots[valve].target_position : 0;
+  out.retryS = 0;
+  out.retries = 0;
 }

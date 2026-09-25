@@ -616,6 +616,43 @@ void eeprom_changed (uint16_t fields) {
 }
 
 
+// a changed sensor slot marks the whole sensor assignment (slots are not tracked one by one yet)
+void eeprom_changed_slot (uint8_t slot) {
+	(void) slot;
+	eeprom_changed(EEP_CHANGED_SENSORS);
+}
+
+
+// calibration records (blocks C) are not stored yet
+void eeprom_store_calib (uint8_t valve, const vdm::CalibRecord &rec) {
+	(void) valve;
+	(void) rec;
+}
+
+
+// blocks A, B and C are not checked at the load yet: no findings, no repairs
+uint8_t eeprom_cfg_flags () {
+	return 0;
+}
+
+
+uint32_t eeprom_cfg_events () {
+	return 0;
+}
+
+
+// write steps are not counted yet
+uint32_t eeprom_writes () {
+	return 0;
+}
+
+
+// the lease timeout is not taken from the EEPROM yet
+uint8_t eeprom_lease_source () {
+	return vdm::kLeaseSourceDefault;
+}
+
+
 // health of the configuration storage for gstat
 uint8_t eeprom_state () {
 	if (eep_read_failed) return vdm::kEepStateReadFailed;

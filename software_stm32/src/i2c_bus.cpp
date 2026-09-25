@@ -38,3 +38,8 @@ void i2c_bus_recover() {
   pinMode(I2C_SDA_PIN, INPUT);
   pinMode(I2C_SCL_PIN, INPUT);
 }
+
+
+// not used yet: EEPROM retries do not restart the bus
+void i2c_bus_restart() {
+}

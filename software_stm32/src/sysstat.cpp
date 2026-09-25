@@ -52,3 +52,18 @@ uint32_t sysstat_resets (void) {
 vdm::BootReason sysstat_boot_reason (void) {
 	return boot_reason;
 }
+
+
+// safe mode is not implemented yet: never active, no reset window
+bool sysstat_safe_mode (void) {
+	return false;
+}
+
+
+uint8_t sysstat_wdg_resets (void) {
+	return 0;
+}
+
+
+void sysstat_leave_safe_mode (void) {
+}

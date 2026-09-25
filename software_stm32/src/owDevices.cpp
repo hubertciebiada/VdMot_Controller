@@ -341,3 +341,12 @@ void temp_command(int command) {
   else if (temp_cmd == TEMP_CMD_NONE) temp_cmd = command;
 
 }
+
+bool temp_locked(void) {
+  return lock != 0;
+}
+
+// the time of the enumeration is not kept yet
+uint32_t ow_scan_age_s(void) {
+  return 0;
+}

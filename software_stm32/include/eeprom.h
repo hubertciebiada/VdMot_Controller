@@ -52,6 +52,12 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay);
 #define EEP_CHANGED_ALL				vdm::kChangedAll
 
 void eeprom_changed(uint16_t fields);
+void eeprom_changed_slot(uint8_t slot);			// sensor slot changed: 0..11 owsensors1, 12..23 owsensors2
+void eeprom_store_calib(uint8_t valve, const vdm::CalibRecord &rec);	// calibration record of the valve, stored when it differs
+uint8_t eeprom_cfg_flags(void);					// gstax cfgFlags: vdm::kCfg* of the last load
+uint32_t eeprom_cfg_events(void);				// gstax cfgEvents: loads since start-up that repaired or defaulted a block
+uint32_t eeprom_writes(void);					// gstax eepWrites: successful write steps since start-up
+uint8_t eeprom_lease_source(void);				// where the start-up load took the lease timeout from (vdm::kLeaseSource*)
 bool eeprom_free();
 uint8_t eeprom_state();		// gstat eepState: vdm::kEepStateOk/Pending/WriteFailed/ReadFailed
 

@@ -64,6 +64,29 @@ int16_t app_match_sensors();
 void reset_check();
 void reset_STM32();
 
+// protocol 3: lease of the targets, failsafe positions, stop, learn time, warm restart, diagnostics
+void app_1s_tick(uint32_t elapsedS);                 // main loop, every second: lease, retries, learn time rule
+void app_restore(void);                              // start-up, after valve_setup() and before the valve timer
+void app_warm_save(void);                            // main loop, 10 ms branch after app_loop()
+void app_lease_poll(void);                           // gvlvd/gvlvx request: renews the lease only without a lease client
+void app_lease_command(void);                        // slhbt/slcfg/sfspo/glcfg: a lease client is present
+void app_lease_heartbeat(bool alive);                // slhbt
+void app_lease_configure(uint16_t minutes);          // slcfg, validated and persisted by the caller
+uint8_t app_lease_state(void);                       // 0 off, 1 running, 2 expired
+uint32_t app_lease_remaining_s(void);
+bool app_lease_client(void);
+uint16_t app_lease_timeout(void);
+uint16_t app_failsafe_mask(void);                    // bit v: valve v is at its failsafe position (lease expired)
+void app_set_failsafe(uint16_t valve, uint8_t pct);  // valve 0..11 or 255; runtime only
+uint8_t app_failsafe_pct(uint16_t valve);
+int16_t app_stop(uint16_t valve);                    // sstop: valve 0..11 or 255; -1 invalid
+uint32_t app_get_learntime(void);                    // stored learn time (gtlnt)
+void app_temp_cycle_done(void);                      // owDevices: a temperature cycle completed
+uint32_t app_temp_age_s(void);                       // seconds since the last complete temperature cycle
+bool app_protect_suspended(void);                    // short and inrush limits suspended until the next start
+struct valve_v3_info { uint16_t flags; uint8_t fault; uint8_t fsPct; uint8_t drive; uint32_t retryS; uint8_t retries; };
+void app_get_valve_v3(uint16_t valve, struct valve_v3_info &out);   // gvlvy values 20..25
+
 // struct valvemotor {
 // //typedef struct valves {
 //   unsigned int closing_count;  

@@ -87,6 +87,17 @@ extern void comm_print_valve_sensor_ids (Print &out, uint16_t valve, char delimi
 #define APP_PRE_GETSTATUS           "gstat"     // health
 #define APP_PRE_GETMOTLIMITS        "gmotx"     // ranges of the smotc values
 
+// protocol 3 (see PROTOCOL_V2.md)
+#define APP_PRE_LEASEHEARTBEAT      "slhbt"     // lease heartbeat
+#define APP_PRE_SETLEASE            "slcfg"     // set the lease timeout
+#define APP_PRE_SETFAILSAFE         "sfspo"     // set failsafe positions
+#define APP_PRE_GETLEASE            "glcfg"     // lease timeout and failsafe positions
+#define APP_PRE_GETVLVEXT3          "gvlvy"     // gvlvx plus flags, fault, failsafe, drive target, retry
+#define APP_PRE_GETSTATUS3          "gstax"     // gstat plus lease, safe mode, UART, EEPROM and temperatures
+#define APP_PRE_STOP                "sstop"     // stop the move or calibration of a valve
+#define APP_PRE_GETLEARNTIME        "gtlnt"     // stored learn time
+#define APP_PRE_SAFEMODE            "ssafe"     // leave safe mode
+
 #define APP_PRE_GETACTUALPOS       	"gactp"     // not implemented
 #define APP_PRE_GETMEANCURR        	"gmenc"     // not implemented
 
