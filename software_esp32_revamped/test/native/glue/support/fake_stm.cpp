@@ -49,6 +49,7 @@ std::string withValve(const std::string& line, const std::string& valve) {
 
 FakeStm::FakeStm() {
   protocol(2);
+  bootAtMs_ = fakes::nowMs();
   fakes::serial(2).peer = this;
   previousOnWrite_ = fakes::gpio().onWrite;
   fakes::gpio().onWrite = [this](int pin, uint8_t level) {
@@ -146,6 +147,8 @@ void FakeStm::onNrst(uint8_t level) {
     held_ = false;
     ++resets_;
     bootUntilMs_ = fakes::nowMs() + bootMs;
+    bootAtMs_ = fakes::nowMs();
+    uptimeBaseS_ = 0;
   }
 }
 
@@ -161,7 +164,7 @@ void FakeStm::onLine(const std::string& line) {
 }
 
 std::string FakeStm::reply(const std::string& cmd, const std::vector<std::string>& args,
-                           const std::string& line) const {
+                           const std::string& line) {
   auto it = answers_.find(cmd);
   if (it != answers_.end()) return it->second(line);
   const std::string valve = args.empty() ? "0" : args[0];
@@ -176,6 +179,30 @@ std::string FakeStm::reply(const std::string& cmd, const std::vector<std::string
   if (cmd == "gvers") return "gvers " + version_;
   if (cmd == "gproto") return "gproto " + std::to_string(protocol_);
   if (cmd == "eepst") return "eepst " + std::to_string(eep_) + " ";
+  if (cmd == "gstat" || cmd == "gstax") {
+    const uint64_t up = uptimeBaseS_ + (fakes::nowMs() - bootAtMs_) / 1000;
+    return withValve(golden(cmd), std::to_string(up));
+  }
+  if (cmd == "slcfg") {
+    if (!args.empty()) leaseTimeout_ = static_cast<uint32_t>(std::stoul(args[0]));
+    return "slcfg ok";
+  }
+  if (cmd == "sfspo" && args.size() == 2) {
+    const uint32_t pct = static_cast<uint32_t>(std::stoul(args[1]));
+    for (int v = 0; v < 12; ++v) {
+      if (valve == "255" || valve == std::to_string(v)) failsafe_[v] = pct;
+    }
+  }
+  if (cmd == "glcfg") {
+    std::string out = "glcfg " + std::to_string(leaseTimeout_);
+    for (uint32_t p : failsafe_) out += " " + std::to_string(p);
+    return out;
+  }
+  if (cmd == "stlnt") {
+    if (!args.empty()) learnTime_ = static_cast<uint32_t>(std::stoul(args[0]));
+    return "stlnt";
+  }
+  if (cmd == "gtlnt") return "gtlnt " + std::to_string(learnTime_);
   if (cmd == "gonec" || cmd == "gowvc") return cmd + " 0 ";
   if (cmd == "gvlon") {
     const std::string zero = "00-00-00-00-00-00-00-00";

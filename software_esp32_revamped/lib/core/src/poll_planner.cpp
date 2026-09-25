@@ -1,5 +1,7 @@
 #include "vdm/poll_planner.h"
 
+#include <string.h>
+
 #include <algorithm>
 
 namespace vdm {
@@ -11,7 +13,7 @@ bool sameRequest(const RequestLine& a, const RequestLine& b) {
 }
 
 // Index of the lowest set bit of a non-zero mask.
-uint8_t lowestBit(uint32_t mask) { return static_cast<uint8_t>(__builtin_ctz(mask)); }
+uint8_t lowestBit(uint64_t mask) { return static_cast<uint8_t>(__builtin_ctzll(mask)); }
 
 }  // namespace
 
@@ -20,8 +22,7 @@ PollPlanner::PollPlanner(const PollCadence& cadence) : cadence_(cadence) {}
 // ---------------------------------------------------------------- inputs
 
 void PollPlanner::setProtocol(uint8_t proto) {
-  proto_ = std::min<uint8_t>(proto, 2);
-  if (proto_ >= 2) reprobed_ = false;
+  proto_ = std::min<uint8_t>(proto, 3);
   if (proto_ < 2) {
     pending_ &= ~kV2Items;
     inflight_ &= ~kV2Items;
@@ -52,11 +53,14 @@ void PollPlanner::requestResync() {
   lastWasResync_ = false;
   pending_ &= ~kResyncCovered;
   inflight_ &= ~kResyncCovered;
+  support_ = StmSupport::Unknown;
   setProtocol(0);
 }
 
 void PollPlanner::setPending(uint8_t item) {
-  const uint32_t bit = 1u << item;
+  // An unsupported STM gets gvers and target read-backs (gtgtp) only.
+  if (support_ == StmSupport::TooOld && item >= kItemProfile) return;
+  const uint64_t bit = uint64_t{1} << item;
   if (pending_ & bit) return;  // coalesced
   pending_ |= bit;
   inflight_ &= ~bit;
@@ -81,6 +85,16 @@ void PollPlanner::requestProfile(uint8_t valve) {
   if (valve < kValveCount && proto_ >= 2) setPending(static_cast<uint8_t>(kItemProfile + valve));
 }
 
+void PollPlanner::requestStatus() {
+  if (proto_ >= 2) setPending(kItemStatus);
+}
+
+void PollPlanner::requestMatchSensors(uint32_t nowMs) {
+  if (pending_ & (uint64_t{1} << kItemMatchSensors)) return;  // coalesced, keeps its delay
+  setPending(kItemMatchSensors);
+  hold(itemHold_[kItemMatchSensors], nowMs, kScanMatchDelayMs);
+}
+
 // ---------------------------------------------------------------- helpers
 
 bool PollPlanner::holdExpired(const Hold& h, uint32_t nowMs) {
@@ -93,13 +107,21 @@ void PollPlanner::hold(Hold& h, uint32_t nowMs, uint16_t ms) {
 }
 
 bool PollPlanner::valveRequest(uint8_t valve, RequestLine& out) const {
-  return proto_ >= 2 ? buildValveEx(valve, out) : buildValveData(valve, out);
+  if (proto_ >= 3) return buildValveExV3(valve, out);
+  return proto_ == 2 ? buildValveEx(valve, out) : buildValveData(valve, out);
+}
+
+bool PollPlanner::readBackRequest(uint8_t valve, RequestLine& out) const {
+  if (proto_ >= 3) return buildValveExV3(valve, out);
+  return proto_ == 2 ? buildValveEx(valve, out) : buildGetTarget(valve, out);
+}
+
+bool PollPlanner::statusRequest(RequestLine& out) const {
+  return proto_ >= 3 ? buildGetStatusV3(out) : buildGetStatus(out);
 }
 
 bool PollPlanner::buildItem(uint8_t item, RequestLine& out) const {
-  if (item < kItemProfile) {  // kItemTarget == 0: the item is the valve
-    return proto_ >= 2 ? buildValveEx(item, out) : buildGetTarget(item, out);
-  }
+  if (item < kItemProfile) return readBackRequest(item, out);  // kItemTarget == 0: the item is the valve
   if (item < kItemTempList) return buildProfile(static_cast<uint8_t>(item - kItemProfile), out);
   switch (item) {
     case kItemTempList: return buildTempList(out);
@@ -107,7 +129,10 @@ bool PollPlanner::buildItem(uint8_t item, RequestLine& out) const {
     case kItemValveSensors: return buildValveSensors(kAllValves, out);
     case kItemMotorChars: return buildGetMotorChars(out);
     case kItemLearnMovements: return buildGetLearnMovements(out);
-    default: return buildGetBreakaway(out);  // kItemBreakaway
+    case kItemBreakaway: return buildGetBreakaway(out);
+    case kItemProbe: return buildGetProto(out);
+    case kItemStatus: return statusRequest(out);
+    default: return buildMatchSensors(out);  // kItemMatchSensors
   }
 }
 
@@ -124,7 +149,7 @@ bool PollPlanner::buildStep(RequestLine& out) const {
     case ResyncStep::ValveSensors: return buildValveSensors(kAllValves, out);
     case ResyncStep::ValveStates: return buildValveStates(out);
     default:  // Targets (never called for Done)
-      return proto_ >= 2 ? buildValveEx(stepValve_, out) : buildGetTarget(stepValve_, out);
+      return readBackRequest(stepValve_, out);
   }
 }
 
@@ -161,11 +186,11 @@ void PollPlanner::prime(uint32_t nowMs) {
 
 bool PollPlanner::nextOneShot(uint32_t nowMs, RequestLine& out) {
   // Lowest item index first: that is the one-shot priority order.
-  for (uint32_t m = pending_; m != 0; m &= m - 1) {
+  for (uint64_t m = pending_; m != 0; m &= m - 1) {
     const uint8_t i = lowestBit(m);
     if (!holdExpired(itemHold_[i], nowMs)) continue;
     buildItem(i, out);  // cannot fail for an item index
-    inflight_ |= 1u << i;
+    inflight_ |= uint64_t{1} << i;
     hold(itemHold_[i], nowMs, kLostRequestMs);
     return true;
   }
@@ -196,6 +221,12 @@ bool PollPlanner::nextPeriodic(uint32_t nowMs, RequestLine& out) {
     }
   };
 
+  if (support_ == StmSupport::TooOld) {
+    // Only the version is polled, until an update makes the STM supported.
+    if (elapsedMs(nowMs, versionLastMs_) < cadence_.unsupportedVersionMs) return false;
+    versionLastMs_ = nowMs;
+    return buildGetVersion(out);
+  }
   // Candidates in tie-break order.
   considerValves(0, cadence_.valveBusyMs);
   considerValves(1, cadence_.valveActiveMs);
@@ -212,7 +243,7 @@ bool PollPlanner::nextPeriodic(uint32_t nowMs, RequestLine& out) {
       return false;
     case kStatus:
       statusLastMs_ = nowMs;
-      return buildGetStatus(out);
+      return statusRequest(out);
     case kTemp:
       tempLastMs_ = nowMs;
       buildTempData(tempIndex_, out);
@@ -244,7 +275,10 @@ bool PollPlanner::next(uint32_t nowMs, RequestLine& out) {
 
   skipStepsForProtocol();
   const bool stepReady = step_ != ResyncStep::Done && holdExpired(stepHold_, nowMs);
-  if (!(stepReady && !lastWasResync_)) {
+  // Nothing else goes out before the protocol and the version are known.
+  const bool exclusive = step_ == ResyncStep::Proto || step_ == ResyncStep::Version;
+  if (exclusive && !stepReady) return false;
+  if (!exclusive && !(stepReady && !lastWasResync_)) {
     if (nextOneShot(nowMs, out) || nextPeriodic(nowMs, out)) {
       lastWasResync_ = false;
       return true;
@@ -260,10 +294,29 @@ bool PollPlanner::next(uint32_t nowMs, RequestLine& out) {
 
 // ---------------------------------------------------------------- results
 
-void PollPlanner::onVersion(bool revamped) {
-  if (!revamped || proto_ != 1 || reprobed_) return;
-  reprobed_ = true;
-  requestResync();
+void PollPlanner::onVersion(const Version& v) {
+  char text[sizeof versionText_];
+  const size_t len = formatVersion(v, text, sizeof text);
+  const bool changed = len > 0 && versionText_[0] != '\0' && strcmp(text, versionText_) != 0;
+  if (len > 0) memcpy(versionText_, text, len + 1);
+  const StmSupport before = support_;
+  support_ = stmSupport(v);
+  if (support_ == StmSupport::TooOld) {
+    step_ = ResyncStep::Done;
+    stepInflight_ = false;
+    lastWasResync_ = false;
+    pending_ = 0;
+    inflight_ = 0;
+    return;
+  }
+  if ((support_ == StmSupport::Supported && before == StmSupport::TooOld) ||
+      (changed && !resyncActive())) {
+    requestResync();
+    return;
+  }
+  // A revamped STM that answered no probe (it may have been starting up):
+  // probe again with every gvers.
+  if (proto_ == 1 && isRevamped(v)) setPending(kItemProbe);
 }
 
 void PollPlanner::onResult(const RequestLine& request, bool ok, uint32_t nowMs) {
@@ -280,16 +333,23 @@ void PollPlanner::onResult(const RequestLine& request, bool ok, uint32_t nowMs) 
     }
   }
 
-  for (uint32_t m = inflight_; m != 0; m &= m - 1) {
+  for (uint64_t m = inflight_; m != 0; m &= m - 1) {
     const uint8_t i = lowestBit(m);
     buildItem(i, expected);  // cannot fail for an item index
     if (!sameRequest(expected, request)) continue;
-    const uint32_t bit = 1u << i;
+    const uint64_t bit = uint64_t{1} << i;
     inflight_ &= ~bit;
-    if (ok) {
-      pending_ &= ~bit;
-    } else {
+    if (!ok && i == kItemProbe) {
+      pending_ &= ~bit;  // no answer: protocol 1 stays, the next gvers probes again
+    } else if (!ok) {
       hold(itemHold_[i], nowMs, cadence_.valveActiveMs);
+    }
+    if (!ok) continue;
+    pending_ &= ~bit;
+    // The re-probe found protocol 2+: re-sync in that protocol.
+    if (i == kItemProbe && proto_ >= 2) {
+      requestResync();
+      return;
     }
   }
 }

@@ -24,15 +24,21 @@ class HealthMonitor {
   //  - calibrating false->true: CalibStarted; true->false: CalibOk when the
   //    new status is Idle, CalibFailed when Blocked; calibRetries increase
   //    during calibration: CalibRetry;
-  //  - ValveBlocked, ValveFailed and CalibFailed carry arg2 -1 (no failsafe
-  //    position, no fault);
+  //  - ValveBlocked and CalibFailed carry arg2 = the failsafe position the
+  //    STM drives the blocked valve to (protocol 3 FS_BLOCKED flag, fsPct not
+  //    hold), else -1; ValveFailed arg2 = the fault (protocol 3), else -1;
+  //  - CalibStarted arg1 2 when the calibration is an automatic retry
+  //    (autoRetry), else 0;
+  //  - kHealthStrokeShort set: CalibStrokeShort (arg1 min(openCount,
+  //    closeCount), arg2 setMinCounts());
   //  - earlyStops / cmdRejected increase: EarlyStop / CmdRejected;
   //  - kHealthTargetUnconfirmed set (sync -> Failed): TargetNotConfirmed;
   //    kHealthStale set: ValveStale (arg1 = the model's default staleness
   //    threshold in s); either flag clearing: ValveRecovered with arg1 0
   //    and arg2 = the cleared flag bits;
-  //  - desired target change by the web or MQTT: TargetSet (Info); adopting
-  //    the STM's target (source Stm) is silent;
+  //  - desired target change by the web, MQTT or an assembly: TargetSet
+  //    (Info); adopting the STM's target (source Stm) and restoring one
+  //    (Restored) are silent;
   //  - any other status change: ValveStateChanged (Debug).
   // A calibration outcome replaces the status event it implies: CalibFailed
   // suppresses ValveBlocked, and CalibOk/CalibFailed suppress
@@ -42,6 +48,25 @@ class HealthMonitor {
   // most severe kinds (status, calibration) come first.
   size_t onValve(uint8_t valve, const ValveState& before, const ValveState& after,
                  bool active, Event* out, size_t maxOut);
+  // minCounts of the STM (gmotc), arg2 of CalibStrokeShort.
+  void setMinCounts(uint16_t minCounts) { minCounts_ = minCounts; }
+
+  // Protocol 3 system events from two gstax statuses; before == nullptr (or
+  // not protocol 3): the first status since the ESP booted or the STM
+  // rebooted. Only when after.v3:
+  //  - safeMode 0 -> 1, or 1 on the first status: StmSafeMode (arg1
+  //    wdgResets); 1 -> 0: StmSafeModeEnded;
+  //  - cfgEvents increased, or > 0 on the first status while the STM uptime
+  //    is below 600 s (an old repair is not reported again after a
+  //    restart): StmConfigRepaired (arg1 cfgFlags, arg2 cfgEvents);
+  //  - uartOre + uartFe + uartNe + rxDropped increased (the first status is
+  //    the baseline, a lower total re-baselines silently, at most one event
+  //    per 10 min with the latest totals): StmUartErrors (arg1 ore + fe + ne,
+  //    arg2 rxDropped);
+  //  - sysFlags PROTECT_SUSPENDED set, not set before (or on the first
+  //    status): StmProtectionSuspended.
+  size_t onStmStatus(const StmStatus* before, const StmStatus& after, uint32_t nowMs, Event* out,
+                     size_t maxOut);
 
   // LinkUp / LinkDegraded / LinkDown on state transitions (Booting and
   // Suspended are silent: the reset/flash events describe them).
@@ -75,6 +100,8 @@ class HealthMonitor {
   static bool counterIncreased(CounterTrack& t, uint32_t total, uint32_t nowMs);
   CounterTrack rxOverflow_[2];
   CounterTrack parseErr_[2];
+  CounterTrack uart_;
+  uint16_t minCounts_ = 0;
 };
 
 }  // namespace vdm

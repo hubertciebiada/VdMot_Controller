@@ -9,6 +9,7 @@
 
 #include "doctest.h"
 #include "vdm/poll_planner.h"
+#include "vdm/version.h"
 
 using namespace vdm;
 
@@ -85,6 +86,19 @@ std::vector<std::string> v1Steps() {
   std::vector<std::string> s = {"gproto", "gvers",     "ghwin",     "gmotc",     "gtlnm",
                                 "gonec 255", "gowvc 255", "gvlon 255", "gvlst"};
   for (int v = 0; v < 12; ++v) s.push_back("gtgtp " + std::to_string(v));
+  return s;
+}
+
+Version ver(const char* s) {
+  Version v;
+  parseVersion(s, strlen(s), v);
+  return v;
+}
+
+std::vector<std::string> v3Steps() {
+  std::vector<std::string> s = {"gproto", "gvers", "ghwin", "gmotc", "gtlnm", "gcalx",
+                                "gonec 255", "gowvc 255", "gvlon 255"};
+  for (int v = 0; v < 12; ++v) s.push_back("gvlvy " + std::to_string(v));
   return s;
 }
 
@@ -191,7 +205,7 @@ TEST_CASE("planner: v2 uses gvlvx and polls gstat") {
   CHECK(next(p, 9999) == "-");
   CHECK(next(p, 10000) == "gstat");
   p.setProtocol(7);
-  CHECK(p.protocol() == 2);
+  CHECK(p.protocol() == 3);
   p.setProtocol(1);
   CHECK(p.protocol() == 1);
   CHECK(next(p, 20000) == "-");  // no gstat on v1
@@ -354,9 +368,10 @@ TEST_CASE("planner: resync steps alternate with due items") {
       p.onResult(r, true, 0);
     }
   }
-  CHECK(seq == std::vector<std::string>{"gproto", "gvlvx 0", "gvers", "gvlvx 1", "ghwin",
-                                        "gvlvx 2", "gmotc", "gvlvx 3"});
-  CHECK(isStep == std::vector<bool>{true, false, true, false, true, false, true, false});
+  // gproto and gvers go out alone, then steps alternate with valve polls.
+  CHECK(seq == std::vector<std::string>{"gproto", "gvers", "gvlvx 0", "ghwin", "gvlvx 1",
+                                        "gmotc", "gvlvx 2", "gtlnm"});
+  CHECK(isStep == std::vector<bool>{true, true, false, true, false, true, false, true});
 }
 
 TEST_CASE("planner: steps go back to back when nothing else is due") {
@@ -750,67 +765,263 @@ TEST_CASE("planner: a shrinking sensor count restarts the round robin at index 0
   CHECK(std::count(due.begin(), due.end(), "gowvd 1") == 1);
 }
 
-TEST_CASE("planner: a revamped gvers after a gproto timeout probes once more") {
+TEST_CASE("planner: protocol 3 polls gvlvy and gstax, reads back with gvlvy, re-syncs with gvlvy") {
   PollPlanner p;
+  p.setProtocol(4);
+  CHECK(p.protocol() == 3);
+  p.setProtocol(3);
+  std::vector<std::string> first = drain(p, 0);
+  REQUIRE(first.size() == 13);
+  CHECK(first[0] == "gstax");
+  CHECK(first[1] == "gvlvy 0");
+  CHECK(first[12] == "gvlvy 11");
+  CHECK(next(p, 9999) == "-");
+  CHECK(next(p, 10000) == "gstax");
+  p.requestTarget(5);
+  CHECK(next(p, 10000) == "gvlvy 5");
   p.requestResync();
-  uint32_t now = 0;
-  CHECK(runResync(p, now, 0) == v1Steps());
-  REQUIRE(p.protocol() == 1);
-  p.onVersion(false);  // legacy STM: v1 is right
+  uint32_t now = 20000;
+  CHECK(runResync(p, now, 3) == v3Steps());
+  CHECK(p.protocol() == 3);
+}
+
+TEST_CASE("planner: gproto and gvers go out alone; valve polls wait for the version") {
+  PollPlanner p;
+  p.setActiveMask(0x0FFF);
+  p.requestResync();
+  RequestLine r;
+  REQUIRE(p.next(0, r));
+  CHECK(text(r) == "gproto");
+  CHECK(p.lastWasResync());
+  CHECK(next(p, 0) == "-");  // in flight: nothing else goes out
+  CHECK(next(p, 9999) == "-");
+  p.onResult(r, false, 100);  // probe timed out: protocol 1
+  REQUIRE(p.next(100, r));
+  CHECK(text(r) == "gvers");
+  CHECK(next(p, 100) == "-");
+  p.onResult(r, false, 200);  // failed: retried after valveActiveMs, nothing in between
+  CHECK(next(p, 2199) == "-");
+  REQUIRE(p.next(2200, r));
+  CHECK(text(r) == "gvers");
+  p.onResult(r, true, 2300);
+  CHECK(next(p, 2300) == "gvlvd 0");
+  CHECK(p.resyncStep() == ResyncStep::HwId);
+}
+
+TEST_CASE("planner: an STM below 1.4.0 ends the re-sync and gets gvers every 30 s") {
+  PollPlanner p;
+  p.setActiveMask(0x0FFF);
+  CHECK(p.support() == StmSupport::Unknown);
+  CHECK(PollCadence{}.unsupportedVersionMs == 30000);
+  p.requestResync();
+  RequestLine r;
+  REQUIRE(p.next(0, r));
+  p.onResult(r, false, 0);  // gproto: silent
+  REQUIRE(p.next(0, r));
+  CHECK(text(r) == "gvers");
+  p.requestTempList();
+  p.requestMotorParams();
+  p.onVersion(ver("1.3.5_C2"));
+  CHECK(p.support() == StmSupport::TooOld);
   CHECK_FALSE(p.resyncActive());
-  p.onVersion(true);
+  p.onResult(r, true, 10);  // the gvers result of the finished step changes nothing
+  CHECK_FALSE(p.resyncActive());
+  CHECK(next(p, 10) == "-");  // one-shots dropped, no valve polls
+  CHECK(next(p, 29999) == "-");
+  CHECK(next(p, 30000) == "gvers");
+  CHECK(next(p, 30000) == "-");
+  CHECK(next(p, 59999) == "-");
+  CHECK(next(p, 60000) == "gvers");
+  // Only target read-backs are still taken.
+  p.requestTempList();
+  p.requestVoltList();
+  p.requestValveSensors();
+  p.requestMotorParams();
+  p.requestProfile(1);
+  p.requestStatus();
+  p.requestMatchSensors(60000);
+  CHECK(next(p, 70000) == "-");
+  p.requestTarget(0);
+  CHECK(next(p, 70000) == "gtgtp 0");
+  // The same too old version again changes nothing.
+  p.onVersion(ver("1.3.5_C2"));
+  CHECK_FALSE(p.resyncActive());
+  CHECK(p.support() == StmSupport::TooOld);
+  // A supported version (after an update) restarts the re-sync.
+  p.onVersion(ver("1.4.9_C2"));
   CHECK(p.resyncActive());
   CHECK(p.resyncStep() == ResyncStep::Proto);
+  CHECK(p.support() == StmSupport::Unknown);
   CHECK(p.protocol() == 0);
-  // The STM stays silent again: v1, and no further probe for it.
-  CHECK(runResync(p, now, 0) == v1Steps());
-  CHECK(p.protocol() == 1);
-  p.onVersion(true);
-  CHECK_FALSE(p.resyncActive());
 }
 
-TEST_CASE("planner: a successful v2 probe re-arms the revamped re-probe") {
-  PollPlanner p;
-  p.requestResync();
-  uint32_t now = 0;
-  runResync(p, now, 0);
-  p.onVersion(true);                         // re-probe #1
-  CHECK(runResync(p, now, 2) == v2Steps());  // answered this time
-  CHECK(p.protocol() == 2);
-  p.onVersion(true);  // v2 already: nothing to do
-  CHECK_FALSE(p.resyncActive());
-  // Later the STM is re-flashed and its probe times out again.
-  p.requestResync();
-  runResync(p, now, 0);
-  REQUIRE(p.protocol() == 1);
-  p.onVersion(true);
-  CHECK(p.resyncActive());
-}
-
-TEST_CASE("planner: onVersion does nothing while the protocol is unknown") {
+TEST_CASE("planner: a supported version marks support and keeps the re-sync going") {
   PollPlanner p;
   p.requestResync();
   RequestLine r;
   REQUIRE(p.next(0, r));
-  CHECK(r.cmd == Cmd::Gproto);
-  p.onVersion(true);
-  CHECK(p.protocol() == 0);
-  CHECK(p.resyncStep() == ResyncStep::Proto);
   p.setProtocol(2);
-  p.onVersion(true);
-  CHECK(p.protocol() == 2);
+  p.onResult(r, true, 0);
+  REQUIRE(p.next(0, r));
+  CHECK(text(r) == "gvers");
+  p.onVersion(ver("2.0.0-revamped_C2"));
+  CHECK(p.support() == StmSupport::Supported);
+  CHECK(p.resyncStep() == ResyncStep::Version);
+  p.onResult(r, true, 0);
+  CHECK(p.resyncStep() == ResyncStep::HwId);
+  p.onVersion(ver("garbage"));
+  CHECK(p.support() == StmSupport::Unknown);
 }
 
-TEST_CASE("planner: a re-probe answered with protocol 1 does not re-arm the re-probe") {
+TEST_CASE("planner: a different version outside a re-sync restarts it, the same one does not") {
+  PollPlanner p;
+  p.onVersion(ver("2.0.0-revamped_C2"));  // first version ever: no re-sync
+  CHECK_FALSE(p.resyncActive());
+  p.onVersion(ver("2.0.0-revamped_C2"));
+  CHECK_FALSE(p.resyncActive());
+  p.onVersion(ver("garbage"));  // an unparsable version keeps the last text
+  CHECK_FALSE(p.resyncActive());
+  p.onVersion(ver("2.0.0-revamped_C2"));
+  CHECK_FALSE(p.resyncActive());
+  p.onVersion(ver("2.1.0-revamped_C2"));
+  CHECK(p.resyncActive());
+  // Inside the re-sync another change does not restart it again.
+  RequestLine r;
+  REQUIRE(p.next(0, r));
+  p.onResult(r, false, 0);
+  REQUIRE(p.next(0, r));
+  CHECK(text(r) == "gvers");
+  p.onVersion(ver("2.1.1-revamped_C2"));
+  CHECK(p.resyncStep() == ResyncStep::Version);
+  p.onResult(r, true, 0);
+  CHECK(p.resyncStep() == ResyncStep::HwId);
+}
+
+TEST_CASE("planner: a revamped gvers on protocol 1 arms a gproto probe; success re-syncs") {
   PollPlanner p;
   p.requestResync();
   uint32_t now = 0;
-  runResync(p, now, 0);  // probe timed out: v1
+  CHECK(runResync(p, now, 0) == v1Steps());
   REQUIRE(p.protocol() == 1);
-  p.onVersion(true);  // re-probe #1
-  REQUIRE(p.resyncActive());
-  runResync(p, now, 1);  // this time the STM answers "1"
-  CHECK(p.protocol() == 1);
-  p.onVersion(true);  // only a successful v2 probe re-arms it
+  drain(p, now);
+  p.onVersion(ver("2.1.0-revamped_C2"));
   CHECK_FALSE(p.resyncActive());
+  RequestLine r;
+  REQUIRE(p.next(now, r));
+  CHECK(text(r) == "gproto");
+  CHECK(r.probe);
+  CHECK_FALSE(p.lastWasResync());
+  p.setProtocol(3);
+  p.onResult(r, true, now);
+  CHECK(p.resyncActive());
+  CHECK(p.resyncStep() == ResyncStep::Proto);
+  CHECK(p.protocol() == 0);
+}
+
+TEST_CASE("planner: a timed-out probe leaves protocol 1 and the next gvers arms it again") {
+  PollPlanner p;
+  p.requestResync();
+  uint32_t now = 0;
+  runResync(p, now, 0);
+  drain(p, now);
+  p.onVersion(ver("2.1.0-revamped_C2"));
+  RequestLine r;
+  REQUIRE(p.next(now, r));
+  REQUIRE(text(r) == "gproto");
+  p.onResult(r, false, now);
+  CHECK(p.protocol() == 1);
+  CHECK_FALSE(p.resyncActive());
+  // A timeout drops the probe until the next gvers.
+  for (const std::string& s : drain(p, now + 100000)) CHECK(s != "gproto");
+  now += 100000;
+  p.onVersion(ver("2.1.0-revamped_C2"));
+  REQUIRE(p.next(now, r));
+  CHECK(text(r) == "gproto");
+  p.onResult(r, true, now);  // answered, but protocol 1 is still set: no re-sync
+  CHECK_FALSE(p.resyncActive());
+  CHECK(p.protocol() == 1);
+  drain(p, now);
+  p.onVersion(ver("2.1.0-revamped_C2"));
+  CHECK(next(p, now) == "gproto");
+}
+
+TEST_CASE("planner: no probe for a legacy version or on protocol 0, 2 and 3") {
+  for (uint8_t proto : {0, 2, 3}) {
+    CAPTURE(int(proto));
+    PollPlanner p;
+    p.setProtocol(proto);
+    drain(p, 0);
+    p.onVersion(ver("2.1.0-revamped_C2"));
+    for (const std::string& s : drain(p, 100000)) CHECK(s != "gproto");
+  }
+  PollPlanner p;
+  p.requestResync();
+  uint32_t now = 0;
+  runResync(p, now, 0);
+  drain(p, now);
+  p.onVersion(ver("1.4.9_C2"));
+  for (const std::string& s : drain(p, now + 100000)) CHECK(s != "gproto");
+}
+
+TEST_CASE("planner: requestStatus asks gstax on 3, gstat on 2, nothing on 0/1") {
+  const char* want[] = {"-", "-", "gstat", "gstax"};
+  for (uint8_t proto = 0; proto <= 3; ++proto) {
+    CAPTURE(int(proto));
+    PollPlanner p;
+    p.setProtocol(proto);
+    drain(p, 0);
+    p.requestStatus();
+    CHECK(next(p, 1) == want[proto]);
+  }
+}
+
+TEST_CASE("planner: a status one-shot is dropped when the protocol falls below 2") {
+  PollPlanner p;
+  p.setProtocol(3);
+  drain(p, 0);
+  p.requestStatus();
+  p.setProtocol(1);
+  CHECK(next(p, 1) == "-");
+}
+
+TEST_CASE("planner: masns waits 5 s after the request, coalesces and retries after a failure") {
+  PollPlanner p;
+  drain(p, 0);
+  p.requestMatchSensors(1000);
+  CHECK(next(p, 5999) == "-");
+  p.requestMatchSensors(3000);  // coalesced: the first delay stays
+  RequestLine r;
+  REQUIRE(p.next(6000, r));
+  CHECK(text(r) == "masns");
+  CHECK(next(p, 6000) == "-");
+  p.onResult(r, false, 6000);
+  CHECK(next(p, 7999) == "-");
+  REQUIRE(p.next(8000, r));
+  CHECK(text(r) == "masns");
+  p.onResult(r, true, 8000);
+  CHECK(next(p, 8000 + PollPlanner::kLostRequestMs) != "masns");
+}
+
+TEST_CASE("planner: requestResync drops a pending masns") {
+  PollPlanner p;
+  drain(p, 0);
+  p.requestMatchSensors(0);
+  p.requestResync();
+  uint32_t now = 10000;
+  runResync(p, now, 0);
+  for (const std::string& s : drain(p, now + 100000)) CHECK(s != "masns");
+}
+
+TEST_CASE("planner: one-shot priority ends with probe, status, masns") {
+  PollPlanner p;
+  p.setProtocol(2);
+  drain(p, 0);
+  p.requestMatchSensors(0);
+  p.requestStatus();
+  p.requestMotorParams();
+  CHECK(next(p, 5000) == "gmotc");
+  CHECK(next(p, 5000) == "gtlnm");
+  CHECK(next(p, 5000) == "gcalx");
+  CHECK(next(p, 5000) == "gstat");
+  CHECK(next(p, 5000) == "masns");
 }

@@ -2,7 +2,7 @@
 // non-blocking state machine over an abstract byte transport, plus image
 // validation. Hardware-free; the stm_link glue implements the transport on
 // Serial2/NRST and calls step() every 1-2 ms from the STM task while the
-// LinkPolicy is suspended. References: specs/02-stm-flashing.md §7, §11.
+// LinkPolicy is suspended.
 #pragma once
 
 #include <stddef.h>
@@ -54,8 +54,8 @@ enum class FlashPhase : uint8_t {
   Done,
   Failed,
 };
-const char* flashPhaseName(FlashPhase p);  // "idle","validating",... (spec 02 R8)
-// Legacy /stmupdstatus status code 0..8 for the old UI (spec 02 §8).
+const char* flashPhaseName(FlashPhase p);  // "idle","validating",...
+// Legacy /stmupdstatus status code 0..8 for the old UI.
 uint8_t legacyFlashStatus(FlashPhase p);
 
 enum class FlashError : uint8_t {
@@ -105,7 +105,7 @@ bool boardTagValid(const char* s);
 // Mismatch. nullptr counts as "". At most 4 chars of each are read.
 BoardCheck checkBoard(const char* imageHw, const char* boardHw);
 
-// Pure image checks (spec 02 R3). chipPid 0 = not known yet (then only the
+// Pure image checks. chipPid 0 = not known yet (then only the
 // family-independent checks run: size 1..512 KiB, SP in (0x20000000,
 // 0x20020000] and 4-aligned (an SP equal to the RAM base leaves no stack),
 // reset vector odd and inside [0x08000000, 0x08000000+size)). With a PID,
@@ -191,16 +191,28 @@ class StmFlasher {
   // object must outlive the run.
   //
   // Wire details beyond DESIGN.md §15:
-  //  - The handshake sends "DEADBEEF\n" (9 bytes). The v1 STM compares fixed
-  //    8-byte chunks without resync, so a stray byte at reset would misalign
-  //    a pure 8-byte stream forever; the 9-byte period re-aligns within 8
-  //    sends. The hardened STM ignores CR/LF.
+  //  - The handshake sends "DEADBEEF\n" (9 bytes). The STM compares fixed
+  //    8-byte chunks without resync (1.x and 2.x alike), so a stray byte at
+  //    reset would misalign a pure 8-byte stream forever; the 9-byte period
+  //    re-aligns within 8 sends.
   //  - Normal mode opens the UART at 115200 8E1 for the handshake (the v1
   //    boot window listens only there) and switches to opt.baud when BEEFIT
   //    arrives; blank mode opens it at opt.baud directly.
   //  - Every ACK timeout starts when the frame is queued and includes the
-  //    frame's wire time at opt.baud (11 bits per byte), so slow bauds do not
-  //    time out a 258-byte data frame that is still being sent.
+  //    frame's wire time at the session baud (11 bits per byte), so slow
+  //    bauds do not time out a 258-byte data frame that is still being sent.
+  //  - Validating ends with the board check (checkBoard(image hwTag,
+  //    opt.boardHw)): a mismatch or two different markers fail with
+  //    BoardMismatch, an unknown board with a tagged image with
+  //    BoardRequired, both unless force; an untagged image flashes
+  //    (status().board Untagged). Nothing is touched before.
+  //  - SyncFailed or a GetId without any answer start one more session at
+  //    opt.fallbackBaud (new NRST pulse) unless it is 0 or the session ran at
+  //    it already; status().baud is the session baud.
+  //  - Blank mode ends Done after the verify with manualReset (BOOT0 still
+  //    set: no reset, no gvers); the UART is back at 115200 8N1.
+  //  - After the flash a gvers board tag other than the image's marker fails
+  //    with AppVersionMismatch unless force.
   //  - GetId first sends GET (0x00) for the bootloader version; a failed GET
   //    is not fatal (the byte stays 0).
   //  - The verify pass recomputes the image CRC32; a difference from the
@@ -245,10 +257,12 @@ class StmFlasher {
   void stepVerifying(uint32_t nowMs);
   void stepWaitingApp(uint32_t nowMs);
   void onAppLine(uint32_t nowMs);
+  bool fallbackSession(uint32_t nowMs);
 
   FlashTransport& t_;
   FlashImage* img_ = nullptr;
   FlashOptions opt_;
+  uint32_t sessionBaud_ = 0;   // opt_.baud, or opt_.fallbackBaud in the fallback session
   FlashStatus st_;
   detail::ImageScan scan_;
   uint32_t phaseStartMs_ = 0;

@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "vdm/stm_codec.h"
+#include "vdm/version.h"
 
 namespace vdm {
 
@@ -22,10 +23,12 @@ struct PollCadence {
   uint16_t sensorCountMs = 30000;   // gonec / gowvc count check
   uint16_t statusMs = 10000;        // gstat (v2 only)
   uint32_t versionMs = 300000;      // gvers re-read (both protocols)
+  uint16_t unsupportedVersionMs = 30000;  // gvers while the STM firmware is too old (the only poll)
 };
 
 // Re-sync steps in the order they are issued. v2-only steps are skipped on a
-// v1 STM; Gproto is always first and its timeout means "v1".
+// v1 STM; Gproto is always first and its timeout means "v1". Proto and
+// Version go out alone: nothing else is sent before the version is known.
 enum class ResyncStep : uint8_t {
   Proto,          // gproto
   Version,        // gvers
@@ -37,7 +40,7 @@ enum class ResyncStep : uint8_t {
   VoltList,       // gowvc 255
   ValveSensors,   // gvlon 255
   ValveStates,    // gvlst (v1 only; v2 uses gvlvx)
-  Targets,        // gtgtp 0..11 (v1) / gvlvx 0..11 (v2): adopt STM targets
+  Targets,        // gtgtp 0..11 (v1) / gvlvx 0..11 (v2) / gvlvy 0..11 (v3): adopt STM targets
   Done,
 };
 
@@ -45,9 +48,9 @@ class PollPlanner {
  public:
   explicit PollPlanner(const PollCadence& cadence = PollCadence());
 
-  // 0 = unknown (probe pending), 1 = v1, 2 = v2 (higher values count as 2).
-  // Selects gvlvd vs gvlvx and enables gstat/gcalx/gprof; below 2 pending
-  // v2-only one-shots are dropped.
+  // 0 = unknown (probe pending), 1, 2, 3 (higher values count as 3).
+  // Selects gvlvd / gvlvx / gvlvy and gstat / gstax, enables gcalx/gprof
+  // from 2; below 2 pending v2-only one-shots are dropped.
   void setProtocol(uint8_t proto);
   uint8_t protocol() const { return proto_; }
   void setActiveMask(uint16_t mask);                 // bit i = valve i active
@@ -55,10 +58,12 @@ class PollPlanner {
   void setSensorCounts(uint8_t temps, uint8_t volts);  // from gonec/gowvc (clamped to 34/8)
 
   // Starts the full re-sync sequence (ESP boot, STM reboot detected, link
-  // recovered, after flashing). Periodic polling of valves continues
-  // interleaved: when a re-sync step and another item are both due they
-  // alternate, so at most every second request is a re-sync step while other
-  // work is waiting (with nothing else due, steps go back to back).
+  // recovered, after flashing). The Proto and Version steps go out alone;
+  // after them periodic polling of valves continues interleaved: when a
+  // re-sync step and another item are both due they alternate, so at most
+  // every second request is a re-sync step while other work is waiting
+  // (with nothing else due, steps go back to back). support() is Unknown
+  // until the next gvers.
   // The protocol goes back to 0 (the STM may have been re-flashed; v1
   // commands work on both, so nothing v2-only is sent until `gproto`
   // answers). Pending one-shots the sequence re-reads anyway (lists, motor
@@ -77,6 +82,13 @@ class PollPlanner {
   void requestMotorParams();           // gmotc + gtlnm (+ gcalx on v2)
   void requestTarget(uint8_t valve);   // gtgtp (v1) / gvlvx (v2) read-back
   void requestProfile(uint8_t valve);  // gprof (v2 only; ignored on v1)
+  void requestStatus();                // gstax (3) / gstat (2); ignored on 0/1
+  static constexpr uint16_t kScanMatchDelayMs = 5000;
+  // masns, not handed out before nowMs + kScanMatchDelayMs (a legacy STM
+  // blocks its main loop during the 1-Wire search after stons).
+  void requestMatchSensors(uint32_t nowMs);
+  // While support() is TooOld every request*() except requestTarget() is
+  // ignored.
 
   // Produces the next request, or false when nothing is due. Priority:
   // re-sync step > target read-backs > profiles > sensor/param one-shots >
@@ -95,12 +107,17 @@ class PollPlanner {
   // period. Results of requests the planner did not hand out are ignored.
   void onResult(const RequestLine& request, bool ok, uint32_t nowMs);
 
-  // A parsed gvers reply. A revamped STM (isRevamped) always speaks v2, so
-  // when the probe had timed out (protocol 1, e.g. the probe hit the STM's
-  // start-up window) the re-sync is restarted once to probe again. Armed
-  // again only after a successful v2 probe, so an STM that really stays
-  // silent on gproto is not probed in a loop.
-  void onVersion(bool revamped);
+  // A parsed gvers reply (re-sync step or periodic read):
+  //  - support() := stmSupport(v). TooOld: the re-sync ends and every
+  //    pending one-shot is dropped; from then on next() hands out target
+  //    read-backs (gtgtp) and gvers every unsupportedVersionMs only.
+  //  - Supported after TooOld, or a version text different from the last
+  //    one while no re-sync runs: requestResync().
+  //  - Protocol 1 with a revamped version (the probe may have hit the STM's
+  //    start-up window): a gproto probe one-shot; its success with protocol
+  //    2+ restarts the re-sync, a timeout leaves protocol 1.
+  void onVersion(const Version& v);
+  StmSupport support() const { return support_; }
 
   static constexpr uint16_t kLostRequestMs = 10000;
 
@@ -114,13 +131,19 @@ class PollPlanner {
   static constexpr uint8_t kItemMotorChars = kItemValveSensors + 1;
   static constexpr uint8_t kItemLearnMovements = kItemMotorChars + 1;
   static constexpr uint8_t kItemBreakaway = kItemLearnMovements + 1;
-  static constexpr uint8_t kItemCount = kItemBreakaway + 1;
-  static constexpr uint32_t kResyncCovered =
-      ((1u << kValveCount) - 1u) << kItemTarget | 1u << kItemTempList | 1u << kItemVoltList |
-      1u << kItemValveSensors | 1u << kItemMotorChars | 1u << kItemLearnMovements |
-      1u << kItemBreakaway;
-  static constexpr uint32_t kV2Items = ((1u << kValveCount) - 1u) << kItemProfile |
-                                       1u << kItemBreakaway;
+  static constexpr uint8_t kItemProbe = kItemBreakaway + 1;         // 30: gproto (probe)
+  static constexpr uint8_t kItemStatus = kItemProbe + 1;            // 31
+  static constexpr uint8_t kItemMatchSensors = kItemStatus + 1;     // 32: masns
+  static constexpr uint8_t kItemCount = kItemMatchSensors + 1;
+  static constexpr uint64_t kOne = 1;
+  static constexpr uint64_t kValveBits = (kOne << kValveCount) - 1u;
+  static constexpr uint64_t kResyncCovered =
+      kValveBits << kItemTarget | kOne << kItemTempList | kOne << kItemVoltList |
+      kOne << kItemValveSensors | kOne << kItemMotorChars | kOne << kItemLearnMovements |
+      kOne << kItemBreakaway | kOne << kItemProbe | kOne << kItemStatus |
+      kOne << kItemMatchSensors;
+  static constexpr uint64_t kV2Items =
+      kValveBits << kItemProfile | kOne << kItemBreakaway | kOne << kItemStatus;
 
   // A hold makes an item ineligible until holdFor ms after heldAt.
   struct Hold {
@@ -133,6 +156,8 @@ class PollPlanner {
   bool buildItem(uint8_t item, RequestLine& out) const;
   bool buildStep(RequestLine& out) const;
   bool valveRequest(uint8_t valve, RequestLine& out) const;
+  bool readBackRequest(uint8_t valve, RequestLine& out) const;
+  bool statusRequest(RequestLine& out) const;
   void skipStepsForProtocol();
   void advanceStep();
   bool nextResync(uint32_t nowMs, RequestLine& out);
@@ -143,7 +168,8 @@ class PollPlanner {
 
   PollCadence cadence_;
   uint8_t proto_ = 0;
-  bool reprobed_ = false;
+  StmSupport support_ = StmSupport::Unknown;
+  char versionText_[32] = {0};  // last gvers (formatVersion), "" none
   uint16_t activeMask_ = 0;
   uint16_t busyMask_ = 0;
   uint8_t tempCount_ = 0;
@@ -155,8 +181,8 @@ class PollPlanner {
   Hold stepHold_;
   bool lastWasResync_ = false;
 
-  uint32_t pending_ = 0;
-  uint32_t inflight_ = 0;
+  uint64_t pending_ = 0;
+  uint64_t inflight_ = 0;
   Hold itemHold_[kItemCount];
 
   bool primed_ = false;

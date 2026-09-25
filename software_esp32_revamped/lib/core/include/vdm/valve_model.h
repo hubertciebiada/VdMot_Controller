@@ -14,7 +14,7 @@ namespace vdm {
 
 class SensorModel;
 
-// Legacy text for a status value (MQTT plain-text payloads, spec 03 §5.2):
+// Legacy text for a status value (MQTT plain-text payloads):
 // 0 "", 1 "idle", 2 "opens", 3 "closes", 4 "failed", 5 "unknown",
 // 6 "no valve", 7 "full open", 8 "connected", 9 "blocked", >= 10 "".
 const char* valveStatusText(uint8_t status);
@@ -146,6 +146,9 @@ uint32_t diffValve(const ValveState& before, const ValveState& after);
 FailsafeKind failsafeKind(const ValveState& v);
 // failsafeKind(v) == FailsafeKind::Lease.
 bool valveAtFailsafe(const ValveState& v);
+// Calibration stroke close to the minimum: minCounts, openCount and
+// closeCount known (> 0) and min(openCount, closeCount) < 1.2 x minCounts.
+bool strokeNearMinimum(uint32_t openCount, uint32_t closeCount, uint16_t minCounts);
 
 struct ValveModelParams {
   uint32_t staleMs = 60000;          // active valve without data -> kHealthStale
@@ -182,10 +185,14 @@ class ValveModel {
   void applyValveSensors(const ValveSensors& s, const OneWireId* slotIds, uint8_t slotCount);
   // Protocol v2 polls gvlvx, which has no temperatures, instead of gvlvd:
   // temp1/temp2 come from the gvlon assignment and the goned readings. Per
-  // sensor: the raw reading (sentinels included) of the assigned sensor when
-  // it is on the bus and was read within maxAgeMs, else kTempUnassigned (not
-  // assigned, garbage id, not listed or read yet, stale: nothing to publish).
-  void applySensorTemps(const SensorModel& sensors, uint32_t nowMs, uint32_t maxAgeMs);
+  // sensor: zero id or a bad CRC -> kTempUnassigned (nothing assigned); on
+  // the bus and fresh (SensorModel::tempFresh) -> the raw reading (sentinels
+  // included); on the bus, read before but no longer fresh ->
+  // kTempReadError; never read or not on the bus -> kTempReadError once the
+  // sensors are `settled` (link up, re-sync and sensor grace over), else
+  // kTempUnassigned.
+  void applySensorTemps(const SensorModel& sensors, uint32_t nowMs, uint32_t maxAgeMs,
+                        bool settled = false);
 
   // Whether a calibrating valve gets no stgtp (default true). STM 1.x acks
   // a target during a calibration but drops it; protocol v2 takes it and
@@ -194,9 +201,12 @@ class ValveModel {
 
   // Target delivery driven by the stm_link task:
   // Next stgtp to send: a valve in Pending (or Failed past failedRetryMs),
-  // active, known, not calibrating (only while held, see above),
-  // pushRetryMs since the last push. Round robin over valves. Moves that
-  // valve to AwaitAck and counts the attempt.
+  // active, known (valve data or a target read-back), not calibrating (only
+  // while held, see above), not waiting for the first read-back of a
+  // restored target, pushRetryMs since the last push. Round robin over
+  // valves. Moves that valve to AwaitAck and counts the attempt; `pos` is
+  // pushTarget(valve). A forcePush valve is pushed although its read-back
+  // equals the target (once, after an STM reboot).
   bool nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos);
   // The stgtp handed out by nextTargetPush() could not be queued: back to
   // Pending, the attempt is not counted; the next try waits pushRetryMs.
@@ -208,9 +218,52 @@ class ValveModel {
   bool nextVerify(uint8_t& valve) const;
 
   // STM rebooted or was reset/re-flashed: every valve with a desired target
-  // goes to Pending (re-push), STM targets become unknown, v2 counters
-  // re-baseline. Valves without a desired target adopt the STM value again.
+  // goes to Pending with forcePush (pushed once even when the read-back
+  // equals it), STM targets become unknown, v2 counters re-baseline. Valves
+  // without a desired target adopt the STM value again.
   void onStmRebooted(uint32_t nowMs);
+
+  // Assembly (staop) was queued for valveOrAll: every addressed active valve
+  // gets desired 100, source Assembly, sync AwaitAck until the staop result
+  // (no stgtp is pushed: it would end the STM's assembly hold). The ESP
+  // failsafe emulation never overrides such a valve.
+  void setAssembly(uint8_t valveOrAll, uint32_t nowMs);
+  void onAssemblyAck(uint8_t valveOrAll, uint32_t nowMs);     // AwaitAck -> AwaitVerify
+  // No answer / rejected: Pending (a stgtp 100, or a staop again, follows),
+  // Failed after maxPushAttempts like a target push.
+  void onAssemblyFailed(uint8_t valveOrAll, uint32_t nowMs);
+  // Protocol >= 2: a Pending valve with source Assembly is delivered with a
+  // staop (nextAssemblyPush) instead of stgtp 100, so the STM keeps its
+  // assembly hold; a protocol 3 read-back counts only with the Assembly
+  // flag. Off (default): stgtp 100.
+  void setAssemblyViaStaop(bool on) { assemblyViaStaop_ = on; }
+  // Like nextTargetPush for the staop deliveries; the valve waits for the
+  // staop result (onAssemblyAck/onAssemblyFailed).
+  bool nextAssemblyPush(uint32_t nowMs, uint8_t& valve);
+
+  // Desired target restored at ESP boot (RTC/NVS copy). Active valves only;
+  // source Restored (Assembly stays Assembly); sync Pending and no push
+  // before the first read-back (equal -> Synced without a push). False for
+  // an invalid valve/pos or an inactive valve.
+  bool restoreDesired(uint8_t valve, uint8_t pos, TargetSource src);
+  // +1 whenever desiredValid/desired/source of any valve changes.
+  uint32_t desiredRevision() const { return desiredRev_; }
+
+  // ESP failsafe emulation (protocols 1/2): for valves in mask that are
+  // active, have a desired target, are not in assembly and have pct <= 100,
+  // the value pushed to and verified on the STM is pct[v] instead of
+  // desired (fsOverride); desired and source never change. A valve whose
+  // pushed value changes goes Pending (attempts 0), or Synced when the known
+  // STM target already equals it. mask 0 ends every override. Valves
+  // without protocol 3 data take fsPct from pct.
+  void setFailsafeDrive(uint16_t mask, const uint8_t (&pct)[kValveCount]);
+  uint8_t pushTarget(uint8_t valve) const;  // fsOverride ? fsTarget : desired; 0 out of range
+  // From gmotc; 0 = unknown (no stroke check).
+  void setMinCounts(uint16_t minCounts);
+  uint16_t minCounts() const { return minCounts_; }
+  // STM firmware unsupported: every valve known = false, STM data back to
+  // defaults; desired targets, sources and the failsafe override stay.
+  void forgetStmData();
 
   // Staleness evaluation; call about once per second.
   void tick(uint32_t nowMs);
@@ -225,7 +278,12 @@ class ValveModel {
  private:
   bool isActive(uint8_t i) const;
   void markSeen(uint8_t i, uint32_t nowMs);
-  void applyReadBack(uint8_t i, uint8_t target);
+  // holdOk false: a protocol 3 read-back of an Assembly valve without the
+  // STM's Assembly flag (the hold is gone even when the target matches).
+  void applyReadBack(uint8_t i, uint8_t target, bool holdOk = true);
+  // Shared selection of nextTargetPush/nextAssemblyPush.
+  bool nextDelivery(uint32_t nowMs, bool assembly, uint8_t& valve);
+  void assemblyResult(uint8_t valveOrAll, bool ok);
   void markSynced(uint8_t i);
   // Recomputes health and bumps the revision when anything changed.
   void commit(uint8_t i, const ValveState& before);
@@ -244,9 +302,21 @@ class ValveModel {
   // A Failed delivery that is being retried keeps kHealthTargetUnconfirmed
   // until a read-back confirms it, so a stuck valve does not flap the flag.
   bool keepUnconfirmed_[kValveCount] = {};
+  bool assemblyPending_[kValveCount] = {};  // AwaitAck waits for a staop result
+  bool readBackFirst_[kValveCount] = {};    // restored target: no push before a read-back
+  bool assemblyViaStaop_ = false;
+  uint16_t minCounts_ = 0;
+  uint32_t desiredRev_ = 0;
 };
 
 // ---------------------------------------------------------------- sensors
+
+// Consecutive failed readings (goned 0, a sentinel or out-of-range value)
+// before a reading is failed; a single failure keeps the previous reading.
+constexpr uint8_t kSensorFailDebounce = 2;
+// gstax tempAgeS above this: every temperature reading is stale (60 s STM
+// refresh + 120 s move timeout + margin).
+constexpr uint32_t kStmTempMaxAgeS = 200;
 
 struct TempReading {
   OneWireId id;              // from goned (authoritative) or gonec list
@@ -280,9 +350,21 @@ class SensorModel {
   bool applyTempList(const OneWireList& l, uint32_t nowMs);
   bool applyVoltList(const OneWireList& l, uint32_t nowMs);
   // goned/gowvd for the bus index that was requested (the reply carries no
-  // index). Invalid form ("goned 0") marks the index as not seen.
+  // index). A good reading (valid form, tempRawValid/vadValid) stores it and
+  // resets failStreak. A failed one (invalid form "goned 0", sentinel or out
+  // of range) increments failStreak (saturating); below
+  // kSensorFailDebounce the previous reading is kept, from then on it is
+  // applied: the invalid form marks the index as not seen, a sentinel is
+  // stored as the reading.
   void applyTempData(uint8_t busIndex, const TempData& d, uint32_t nowMs);
   void applyVoltData(uint8_t busIndex, const VoltData& d, uint32_t nowMs);
+  // A late reply that answered no request: applied to the bus index of its
+  // id (true), false when the id is not on the list (nothing changes).
+  bool applyStrayTempData(const TempData& d, uint32_t nowMs);
+  bool applyStrayVoltData(const VoltData& d, uint32_t nowMs);
+  // gstax tempAgeS (protocol 3): seconds since the STM's last complete
+  // temperature cycle, reported at nowMs.
+  void setStmTempAge(uint32_t ageS, uint32_t nowMs);
   // After stons: forget everything until the next list.
   void clear();
 
@@ -293,7 +375,9 @@ class SensorModel {
   // Bus index of the sensor with this id, or -1.
   int findTemp(const OneWireId& id) const;
   int findVolt(const OneWireId& id) const;
-  // Reading older than maxAgeMs counts as stale for display/publishing.
+  // Reading older than maxAgeMs counts as stale for display/publishing; so
+  // does every reading while the STM's temperature age (reported age + whole
+  // seconds since the report) is above kStmTempMaxAgeS.
   bool tempFresh(uint8_t busIndex, uint32_t nowMs, uint32_t maxAgeMs) const;
 
  private:
@@ -301,6 +385,14 @@ class SensorModel {
   VoltReading volts_[kVoltSlotCount];
   uint8_t tempCount_ = 0;
   uint8_t voltCount_ = 0;
+  bool haveStmAge_ = false;
+  uint32_t stmAgeS_ = 0;
+  uint32_t stmAgeAtMs_ = 0;
 };
+
+// goned/gowvd request: sets r.expect to the id the SensorModel knows at bus
+// index r.arg (zero when unknown, then any id matches). Other commands are
+// left alone.
+void expectSensor(RequestLine& r, const SensorModel& s);
 
 }  // namespace vdm

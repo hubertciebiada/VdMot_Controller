@@ -1162,6 +1162,7 @@ TEST_CASE("flasher: sync retries, NACK counts as synced, gives up after the atte
   }
   SUBCASE("never answered") {
     Rig rig(makeImage(1024));
+    rig.opt.fallbackBaud = 0;
     rig.sim.syncSilent = 100;
     CHECK(rig.beginAndRun() == FlashPhase::Failed);
     CHECK(rig.f.status().error == FlashError::SyncFailed);
@@ -1171,6 +1172,7 @@ TEST_CASE("flasher: sync retries, NACK counts as synced, gives up after the atte
   }
   SUBCASE("syncAttempts 0 behaves like 1") {
     Rig rig(makeImage(1024));
+    rig.opt.fallbackBaud = 0;
     rig.opt.syncAttempts = 0;
     rig.sim.syncSilent = 100;
     CHECK(rig.beginAndRun() == FlashPhase::Failed);
@@ -1214,6 +1216,7 @@ TEST_CASE("flasher: GET is optional, GET ID is required and checked") {
   }
   SUBCASE("GET ID never answers") {
     Rig rig(makeImage(1024));
+    rig.opt.fallbackBaud = 0;
     rig.sim.getIdSilent = 4;
     CHECK(rig.beginAndRun() == FlashPhase::Failed);
     CHECK(rig.f.status().error == FlashError::Timeout);
@@ -1235,6 +1238,7 @@ TEST_CASE("flasher: GET is optional, GET ID is required and checked") {
   }
   SUBCASE("blockRetries 0: no GET ID retry") {
     Rig rig(makeImage(1024));
+    rig.opt.fallbackBaud = 0;
     rig.opt.blockRetries = 0;
     rig.sim.getIdSilent = 1;
     CHECK(rig.beginAndRun() == FlashPhase::Failed);
@@ -2009,4 +2013,261 @@ TEST_CASE("flasher: fixed-seed fault fuzz always ends clean" * doctest::test_sui
   }
   CHECK(done > 0);
   CHECK(failed > 0);
+}
+
+// ================================================================ board revision (W8)
+
+namespace {
+
+// makeImage() with printable strings (each "\x01" <s> "\0") written from `at`.
+std::vector<uint8_t> tagged(std::vector<std::string> strings, size_t size = 4096, size_t at = 1024,
+                            const std::string& version = "2.1.0-revamped") {
+  std::vector<uint8_t> v = makeImage(size, 0x20020000u, 0, true, version);
+  for (const std::string& str : strings) {
+    putStr(v, at, "\x01" + str + std::string(1, '\0'));
+    at += str.size() + 2;
+  }
+  return v;
+}
+
+ImageInfo scanned(const std::vector<uint8_t>& d) {
+  ImageInfo info;
+  REQUIRE(validate(d, 0, false, info) == FlashError::None);
+  return info;
+}
+
+}  // namespace
+
+TEST_CASE("validate: the board marker must end a short printable run") {
+  CHECK(std::string(scanned(tagged({"VDM-HW:C2"})).hwTag) == "C2");
+  CHECK(std::string(scanned(tagged({"xyVDM-HW:C1"})).hwTag) == "C1");
+  CHECK(std::string(scanned(tagged({"VDM-HW:C12"})).hwTag) == "C12");
+  CHECK(std::string(scanned(tagged({"VDM-HW:C"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({"VDM-HW:C123"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({"VDM-HW:C2x"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({"VDM-HW:X2"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({"DM-HW:C2"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({"VDM-HW:Cx2"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({"VDM-HW:"})).hwTag).empty());
+  CHECK(std::string(scanned(tagged({std::string(22, 'a') + "VDM-HW:C2"})).hwTag) == "C2");  // 31
+  CHECK(std::string(scanned(tagged({std::string(23, 'a') + "VDM-HW:C2"})).hwTag).empty());  // 32
+  CHECK(std::string(scanned(tagged({std::string(21, 'a') + "VDM-HW:C12"})).hwTag) == "C12");
+  CHECK(std::string(scanned(tagged({})).hwTag).empty());
+  // The version is still found next to the marker.
+  CHECK(std::string(scanned(tagged({"VDM-HW:C2"})).version) == "2.1.0-revamped");
+}
+
+TEST_CASE("validate: two different markers are a conflict, the same twice is not") {
+  ImageInfo a = scanned(tagged({"VDM-HW:C1", "VDM-HW:C2"}));
+  CHECK(std::string(a.hwTag) == "C1");
+  CHECK(a.hwConflict);
+  ImageInfo b = scanned(tagged({"VDM-HW:C2", "VDM-HW:C2"}));
+  CHECK(std::string(b.hwTag) == "C2");
+  CHECK_FALSE(b.hwConflict);
+  ImageInfo c = scanned(tagged({"VDM-HW:C2", "VDM-HW:C22"}));
+  CHECK(c.hwConflict);
+  CHECK_FALSE(scanned(tagged({"VDM-HW:C2"})).hwConflict);
+}
+
+TEST_CASE("validate: the Validating phase finds the same marker as validateImage") {
+  for (const auto& strs : std::vector<std::vector<std::string>>{
+           {"VDM-HW:C2"}, {"VDM-HW:C1", "VDM-HW:C2"}, {"VDM-HW:C123"}, {}}) {
+    const std::vector<uint8_t> img = tagged(strs, 53760, 20000);
+    const ImageInfo ref = scanned(img);
+    Rig rig(img);
+    rig.opt.force = true;  // no board check: only compare the scan
+    REQUIRE(rig.begin());
+    rig.run([](Rig& r) {
+      if (r.f.status().phase != FlashPhase::Validating) r.f.abort();
+    });
+    CHECK(std::string(rig.f.status().image.hwTag) == ref.hwTag);
+    CHECK(rig.f.status().image.hwConflict == ref.hwConflict);
+  }
+}
+
+TEST_CASE("flasher: a C2 image on a C1 board fails in Validating before any reset") {
+  Rig rig(tagged({"VDM-HW:C2"}));
+  memcpy(rig.opt.boardHw, "C1", 3);
+  CHECK(rig.beginAndRun() == FlashPhase::Failed);
+  CHECK(rig.f.status().error == FlashError::BoardMismatch);
+  CHECK(rig.f.status().errorPhase == FlashPhase::Validating);
+  CHECK(rig.f.status().board == BoardCheck::Mismatch);
+  CHECK(std::string(rig.f.status().boardHw) == "C1");
+  CHECK(rig.untouched());
+}
+
+TEST_CASE("flasher: force flashes a mismatching image") {
+  Rig rig(tagged({"VDM-HW:C2"}));
+  memcpy(rig.opt.boardHw, "C1", 3);
+  rig.opt.force = true;
+  rig.sim.appReply = "gvers 2.1.0-revamped_C1 1 ";
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  CHECK(rig.f.status().board == BoardCheck::Mismatch);
+}
+
+TEST_CASE("flasher: a conflicting image fails like a mismatch") {
+  Rig rig(tagged({"VDM-HW:C1", "VDM-HW:C2"}));
+  memcpy(rig.opt.boardHw, "C1", 3);
+  CHECK(rig.beginAndRun() == FlashPhase::Failed);
+  CHECK(rig.f.status().error == FlashError::BoardMismatch);
+  CHECK(rig.f.status().board == BoardCheck::Ok);
+  CHECK(rig.untouched());
+}
+
+TEST_CASE("flasher: a tagged image needs a known board") {
+  Rig rig(tagged({"VDM-HW:C2"}));
+  CHECK(rig.beginAndRun() == FlashPhase::Failed);
+  CHECK(rig.f.status().error == FlashError::BoardRequired);
+  CHECK(rig.f.status().board == BoardCheck::BoardRequired);
+  CHECK(rig.untouched());
+  Rig forced(tagged({"VDM-HW:C2"}));
+  forced.opt.force = true;
+  forced.sim.appReply = "gvers 2.1.0-revamped_C2 1 ";
+  CHECK(forced.beginAndRun() == FlashPhase::Done);
+}
+
+TEST_CASE("flasher: an untagged image flashes with the Untagged warning") {
+  Rig rig(tagged({}, 4096, 1024, "1.4.9_Dev"));
+  memcpy(rig.opt.boardHw, "C2", 3);
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  CHECK(rig.f.status().board == BoardCheck::Untagged);
+}
+
+TEST_CASE("flasher: a matching board flashes; the new application must report the same tag") {
+  Rig ok(tagged({"VDM-HW:C2"}));
+  memcpy(ok.opt.boardHw, "C2", 3);
+  ok.sim.appReply = "gvers 2.1.0-revamped_C2 1 ";
+  CHECK(ok.beginAndRun() == FlashPhase::Done);
+  CHECK(ok.f.status().board == BoardCheck::Ok);
+  Rig other(tagged({"VDM-HW:C2"}));
+  memcpy(other.opt.boardHw, "C2", 3);
+  other.sim.appReply = "gvers 2.1.0-revamped_C1 1 ";
+  CHECK(other.beginAndRun() == FlashPhase::Failed);
+  CHECK(other.f.status().error == FlashError::AppVersionMismatch);
+  Rig untaggedApp(tagged({"VDM-HW:C2"}));
+  memcpy(untaggedApp.opt.boardHw, "C2", 3);
+  untaggedApp.sim.appReply = "gvers 2.1.0-revamped 1 ";
+  CHECK(untaggedApp.beginAndRun() == FlashPhase::Done);
+  Rig forced(tagged({"VDM-HW:C2"}));
+  memcpy(forced.opt.boardHw, "C2", 3);
+  forced.opt.force = true;
+  forced.sim.appReply = "gvers 2.1.0-revamped_C1 1 ";
+  CHECK(forced.beginAndRun() == FlashPhase::Done);
+}
+
+// ================================================================ blank mode and baud (E6)
+
+TEST_CASE("flasher: blank mode ends after the verify without a reset or gvers") {
+  Rig rig(makeImage(4096));
+  rig.opt.blank = true;
+  rig.sim.hasBootLoop = false;
+  rig.sim.bootPinResets = 100;  // BOOT0 held: every release boots the ROM bootloader
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  CHECK(rig.f.status().manualReset);
+  CHECK(rig.f.status().percent == 100);
+  CHECK(rig.sim.resets.size() == 2);  // the one pulse of Resetting
+  CHECK(rig.sim.gversTimes.empty());
+  CHECK(rig.sim.writesEqual(bytesOf("gvers \r\n")) == 0);
+  CHECK(rig.flashMatchesImage());
+  CHECK(rig.sim.configs.back() == std::make_pair(uint32_t{115200}, false));
+  CHECK(rig.f.status().baud == 115200);
+}
+
+TEST_CASE("flasher: normal mode is not a manual reset") {
+  Rig rig(makeImage(1024));
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  CHECK_FALSE(rig.f.status().manualReset);
+  CHECK(rig.f.status().baud == 115200);
+}
+
+TEST_CASE("flasher: a bootloader that only syncs at 57600 gets a second session") {
+  Rig rig(makeImage(4096));
+  rig.opt.blank = true;
+  rig.sim.hasBootLoop = false;
+  rig.sim.bootPinResets = 100;
+  rig.sim.bootMaxBaud = 57600;
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  CHECK(rig.f.status().baud == 57600);
+  CHECK(rig.sim.resets.size() == 4);  // a new pulse for the second session
+  CHECK(rig.sim.configs[0] == std::make_pair(uint32_t{115200}, true));
+  CHECK(std::count(rig.sim.configs.begin(), rig.sim.configs.end(),
+                   std::make_pair(uint32_t{57600}, true)) == 1);
+  CHECK(rig.flashMatchesImage());
+  CHECK(rig.percentMonotonic());
+}
+
+TEST_CASE("flasher: the fallback in normal mode handshakes at 115200 again") {
+  Rig rig(makeImage(4096));
+  rig.sim.bootMaxBaud = 57600;
+  CHECK(rig.beginAndRun() == FlashPhase::Done);
+  CHECK(rig.f.status().baud == 57600);
+  CHECK(rig.sim.syncTimes.size() == 1);  // the 115200 ones never reach the bootloader
+  CHECK(rig.sim.resets.size() == 6);     // Resetting twice, Starting
+  CHECK(rig.flashMatchesImage());
+  CHECK(rig.percentMonotonic());
+}
+
+TEST_CASE("flasher: a bootloader that never answers fails after the second session") {
+  Rig rig(makeImage(1024));
+  rig.opt.blank = true;
+  rig.sim.hasBootLoop = false;
+  rig.sim.bootPinResets = 100;
+  rig.sim.syncSilent = 1000;
+  CHECK(rig.beginAndRun() == FlashPhase::Failed);
+  CHECK(rig.f.status().error == FlashError::SyncFailed);
+  CHECK(rig.sim.syncTimes.size() == 6);
+  CHECK(rig.f.status().baud == 57600);
+  CHECK(rig.leftClean());
+  CHECK(rig.percentMonotonic());
+}
+
+TEST_CASE("flasher: no fallback without a fallback baud or when already at it") {
+  Rig off(makeImage(1024));
+  off.opt.fallbackBaud = 0;
+  off.sim.syncSilent = 1000;
+  CHECK(off.beginAndRun() == FlashPhase::Failed);
+  CHECK(off.sim.syncTimes.size() == 3);
+  Rig at(makeImage(1024));
+  at.opt.baud = 57600;
+  at.sim.syncSilent = 1000;
+  CHECK(at.beginAndRun() == FlashPhase::Failed);
+  CHECK(at.sim.syncTimes.size() == 3);
+  CHECK(at.f.status().baud == 57600);
+}
+
+TEST_CASE("flasher: a silent GetId falls back, a NACK does not") {
+  Rig silent(makeImage(1024));
+  silent.sim.getIdSilent = 1000;
+  CHECK(silent.beginAndRun() == FlashPhase::Failed);
+  CHECK(silent.f.status().error == FlashError::Timeout);
+  CHECK(silent.f.status().baud == 57600);
+  CHECK(silent.sim.syncTimes.size() == 2);
+  Rig nack(makeImage(1024));
+  nack.sim.getIdBadEnd = 1000;
+  CHECK(nack.beginAndRun() == FlashPhase::Failed);
+  CHECK(nack.f.status().error == FlashError::Nack);
+  CHECK(nack.f.status().baud == 115200);
+  CHECK(nack.sim.syncTimes.size() == 1);
+}
+
+// ================================================================ application wait (W13)
+
+TEST_CASE("flasher: the new application may take up to 60 s") {
+  CHECK(FlashOptions{}.appTimeoutMs == 60000);
+  Rig late(makeImage(1024));
+  late.sim.appAnswers = false;
+  REQUIRE(late.begin());
+  late.run([](Rig& r) {
+    if (r.f.status().phase == FlashPhase::WaitingApp &&
+        r.now - r.sim.resets.back().first >= 58990) {
+      r.sim.appAnswers = true;
+    }
+  });
+  CHECK(late.f.status().phase == FlashPhase::Done);
+  Rig none(makeImage(1024));
+  none.sim.appAnswers = false;
+  REQUIRE(none.begin());
+  CHECK(none.run([](Rig&) {}, 120000, 1) == FlashPhase::Failed);
+  CHECK(none.f.status().error == FlashError::AppNotResponding);
+  CHECK(none.f.status().finishedMs - none.sim.resets.back().first == 60000);
 }

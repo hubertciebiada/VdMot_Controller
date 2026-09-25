@@ -1,5 +1,7 @@
 #include "vdm/calib_schedule.h"
 
+#include <string.h>
+
 namespace vdm {
 
 namespace {
@@ -67,6 +69,17 @@ bool scheduleEnabled(const CalibScheduleConfig& cfg) {
 
 }  // namespace
 
+const char* calibFailureName(CalibFailure f) {
+  switch (f) {
+    case CalibFailure::None: return "none";
+    case CalibFailure::NoReply: return "no_reply";
+    case CalibFailure::NotSent: return "not_sent";
+    case CalibFailure::NoResult: return "no_result";
+    case CalibFailure::Unsupported: return "stm_unsupported";
+  }
+  return "unknown";
+}
+
 uint32_t calibSlotKey(const LocalTime& t) {
   if (!localTimeValid(t)) return 0;
   return static_cast<uint32_t>(t.year) * 10000u + static_cast<uint32_t>(t.month) * 100u + t.mday;
@@ -75,13 +88,19 @@ uint32_t calibSlotKey(const LocalTime& t) {
 CalibScheduler::CalibScheduler(uint16_t graceMinutes, uint32_t noTimeReportMs)
     : graceMinutes_(graceMinutes == 0 ? 1 : graceMinutes), noTimeReportMs_(noTimeReportMs) {}
 
+int64_t calibSlotEpoch(uint32_t slotKey, uint8_t hour, uint8_t minute, const LocalTime& ref) {
+  if (slotKey == 0 || !ref.valid) return 0;
+  const int32_t days = daysFromKey(slotKey) - daysFromCivil(ref.year, ref.month, ref.mday);
+  const int32_t secs = (hour - ref.hour) * 3600 + (minute - ref.minute) * 60 - ref.second;
+  return ref.epoch + static_cast<int64_t>(days) * 86400 + secs;
+}
+
 void CalibScheduler::restoreLastSlot(uint32_t slotKey) {
   lastSlot_ = keyValid(slotKey) ? slotKey : 0;
 }
 
 CalibDecision CalibScheduler::evaluate(const CalibScheduleConfig& cfg, const LocalTime& now,
                                        uint32_t upMs) {
-  lateMinutes_ = 0;
   const bool enabled = scheduleEnabled(cfg);
   const uint32_t key = calibSlotKey(now);
   if (key == 0) {
@@ -92,19 +111,53 @@ CalibDecision CalibScheduler::evaluate(const CalibScheduleConfig& cfg, const Loc
     return CalibDecision::None;
   }
 
+  if (pending_ && elapsedMs(upMs, attemptAtMs_) >= kResultTimeoutMs) {
+    pending_ = false;
+    holdValid_ = true;
+    holdFromMs_ = upMs;
+    return CalibDecision::NoResult;
+  }
+
   const int32_t today = daysFromKey(key);
-  // lastSlot_ is 0 or a valid key (restoreLastSlot / evaluate).
+  // lastSlot_ is 0 or a valid key (restoreLastSlot / onResult).
   if (lastSlot_ != 0 && daysFromKey(lastSlot_) - today > 2) lastSlot_ = 0;
+
+  const uint32_t nowMin = now.hour * 60u + now.minute;
+  const uint32_t slotMin = cfg.hour * 60u + cfg.minute;
+  const bool inWindow = nowMin >= slotMin && nowMin < slotMin + graceMinutes_;
+  if (!pending_ && attemptKey_ != 0 && !booked_ && missedKey_ != attemptKey_ &&
+      (key != attemptKey_ || !inWindow)) {
+    missedKey_ = attemptKey_;
+    return CalibDecision::Missed;
+  }
 
   if (!enabled || (cfg.dayMask & (1u << now.wday)) == 0 || key <= lastSlot_) {
     return CalibDecision::None;
   }
-  const uint32_t nowMin = now.hour * 60u + now.minute;
-  const uint32_t slotMin = cfg.hour * 60u + cfg.minute;
-  if (nowMin < slotMin || nowMin >= slotMin + graceMinutes_) return CalibDecision::None;
-  lastSlot_ = key;
+  if (!inWindow || pending_) return CalibDecision::None;
+  if (holdValid_ && elapsedMs(upMs, holdFromMs_) < kRetryMs) return CalibDecision::None;
+  holdValid_ = false;
+  if (key != attemptKey_) attempts_ = 0;
+  attemptKey_ = key;
+  booked_ = false;
+  if (attempts_ < UINT8_MAX) ++attempts_;
+  pending_ = true;
+  attemptAtMs_ = upMs;
   lateMinutes_ = static_cast<uint16_t>(nowMin - slotMin);
   return CalibDecision::Fire;
+}
+
+bool CalibScheduler::onResult(bool ok, uint32_t upMs) {
+  if (!pending_) return false;
+  pending_ = false;
+  if (!ok) {
+    holdValid_ = true;
+    holdFromMs_ = upMs;
+    return false;
+  }
+  lastSlot_ = attemptKey_;
+  booked_ = true;
+  return true;
 }
 
 uint32_t CalibScheduler::nextSlot(const CalibScheduleConfig& cfg, const LocalTime& now) const {
@@ -120,6 +173,100 @@ uint32_t CalibScheduler::nextSlot(const CalibScheduleConfig& cfg, const LocalTim
     return k;
   }
   return 0;
+}
+
+// ---------------------------------------------------------------- LearnTimeSync
+
+uint32_t stmLearnTime(const CalibScheduleConfig& cfg) {
+  return scheduleEnabled(cfg) ? 0 : kStmLearnTimeDefaultS;
+}
+
+void LearnTimeSync::setDesired(uint32_t seconds) {
+  if (haveDesired_ && seconds == desired_) return;
+  haveDesired_ = true;
+  desired_ = seconds;
+  if (step_ == Step::Done) step_ = Step::Read;
+}
+
+void LearnTimeSync::setProtocol(uint8_t proto) {
+  if (proto == proto_) return;
+  proto_ = proto;
+  newSession();
+}
+
+void LearnTimeSync::onStmReboot() { newSession(); }
+
+void LearnTimeSync::newSession() {
+  step_ = Step::Read;
+  inFlight_ = false;
+  holdValid_ = false;
+  zeroSent_ = false;
+  sentValid_ = false;
+}
+
+void LearnTimeSync::fail(uint32_t nowMs) {
+  holdValid_ = true;
+  holdFromMs_ = nowMs;
+  if (step_ != Step::Done) step_ = Step::Read;
+}
+
+bool LearnTimeSync::next(uint32_t nowMs, RequestLine& out) {
+  out = RequestLine{};
+  if (!haveDesired_ || proto_ == 0) return false;
+  if (inFlight_) {
+    if (elapsedMs(nowMs, inFlightAtMs_) < kLostRequestMs) return false;
+    const RequestLine lost = inFlightReq_;
+    onCompletion(lost, Outcome::Timeout, nullptr, nowMs);
+  }
+  if (holdValid_ && elapsedMs(nowMs, holdFromMs_) < kRetryMs) return false;
+  if (proto_ >= 3) {
+    if (step_ == Step::Done) return false;
+    if (step_ == Step::Write) {
+      buildSetLearnTime(desired_, out);
+      inFlightValue_ = desired_;
+    } else {
+      buildGetLearnTime(out);
+    }
+  } else {
+    const bool sentNow = sentValid_ && sentValue_ == desired_;
+    if (sentNow || (desired_ != 0 && !zeroSent_)) return false;
+    buildSetLearnTime(desired_, out);
+    inFlightValue_ = desired_;
+  }
+  inFlight_ = true;
+  inFlightReq_ = out;
+  inFlightAtMs_ = nowMs;
+  return true;
+}
+
+void LearnTimeSync::onCompletion(const RequestLine& req, Outcome o, const Reply* rep,
+                                 uint32_t nowMs) {
+  if (!inFlight_ || req.cmd != inFlightReq_.cmd || req.len != inFlightReq_.len ||
+      memcmp(req.text, inFlightReq_.text, req.len) != 0) {
+    return;
+  }
+  inFlight_ = false;
+  if (o != Outcome::Ok || rep == nullptr) {
+    fail(nowMs);
+    return;
+  }
+  holdValid_ = false;
+  if (req.cmd == Cmd::Stlnt) {
+    if (inFlightValue_ == 0) zeroSent_ = true;
+    sentValid_ = true;
+    sentValue_ = inFlightValue_;
+    step_ = Step::Verify;
+    return;
+  }
+  haveStm_ = true;
+  stmValue_ = rep->learnTime;
+  if (stmValue_ == desired_) {
+    step_ = Step::Done;
+  } else if (step_ == Step::Verify) {
+    fail(nowMs);
+  } else {
+    step_ = Step::Write;
+  }
 }
 
 }  // namespace vdm

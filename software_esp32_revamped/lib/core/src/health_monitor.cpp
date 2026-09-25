@@ -13,6 +13,13 @@ constexpr uint16_t kRecoverableFlags = kHealthStale | kHealthTargetUnconfirmed;
 // arg2 of ValveBlocked/CalibFailed (failsafe position) and ValveFailed
 // (fault) when the snapshot has neither: the message leaves it out.
 constexpr int32_t kArgNone = -1;
+constexpr uint32_t kCfgEventMaxUptimeS = 600;  // an older repair is not re-reported after a restart
+
+// Position the STM drives a blocked valve to (protocol 3), else kArgNone.
+int32_t blockedPosition(const ValveState& v) {
+  if (!v.hasV3 || (v.stmFlags & kStmFlagFsBlocked) == 0 || v.fsPct == kFailsafeHold) return kArgNone;
+  return v.fsPct;
+}
 
 // Bounded event sink for one call.
 class Sink {
@@ -40,11 +47,15 @@ uint8_t badStatus(const ValveState& v, bool active) {
 }
 
 // The event of a bad status (badStatus() != 0).
-void addBad(Sink& sink, uint8_t valve, uint8_t status, uint8_t calibRetries) {
+void addBad(Sink& sink, uint8_t valve, uint8_t status, const ValveState& v) {
   switch (status) {
-    case kStatusBlocked: sink.add(EventCode::ValveBlocked, valve, calibRetries, kArgNone); break;
-    case kStatusFailed: sink.add(EventCode::ValveFailed, valve, calibRetries, kArgNone); break;
-    default: sink.add(EventCode::ValveNoValve, valve, calibRetries); break;
+    case kStatusBlocked:
+      sink.add(EventCode::ValveBlocked, valve, v.calibRetries, blockedPosition(v));
+      break;
+    case kStatusFailed:
+      sink.add(EventCode::ValveFailed, valve, v.calibRetries, v.hasV3 ? v.fault : kArgNone);
+      break;
+    default: sink.add(EventCode::ValveNoValve, valve, v.calibRetries); break;
   }
 }
 
@@ -54,7 +65,10 @@ bool rose(const ValveState& before, const ValveState& after, uint16_t flag) {
 
 void addTargetSet(Sink& sink, uint8_t valve, const ValveState& before, const ValveState& after) {
   if (!after.desiredValid) return;
-  if (after.source != TargetSource::Web && after.source != TargetSource::Mqtt) return;
+  if (after.source != TargetSource::Web && after.source != TargetSource::Mqtt &&
+      after.source != TargetSource::Assembly) {
+    return;
+  }
   if (before.desiredValid && before.desired == after.desired) return;
   sink.add(EventCode::TargetSet, valve, after.desired, static_cast<int32_t>(after.source));
 }
@@ -63,7 +77,7 @@ void addTargetSet(Sink& sink, uint8_t valve, const ValveState& before, const Val
 // ValveStateChanged. Returns true when a status-related event covered the
 // status change.
 bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const ValveState& after,
-                    bool active) {
+                    bool active, uint16_t minCounts) {
   const uint8_t prevBad = badStatus(before, active);
   const uint8_t curBad = badStatus(after, active);
 
@@ -71,13 +85,13 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
   bool calibOk = false;
   bool calibFailed = false;
   if (!before.calibrating && after.calibrating) {
-    sink.add(EventCode::CalibStarted, valve, 0);
+    sink.add(EventCode::CalibStarted, valve, after.autoRetry ? 2 : 0);
   } else if (before.calibrating && !after.calibrating) {
     // v2 reports the outcome itself (calState bit 3); 1.x only by the status.
     const bool failed = after.status == kStatusBlocked ||
                         (after.hasExtended && (after.calFlags & kCalFlagLastFailed) != 0);
     if (failed) {
-      sink.add(EventCode::CalibFailed, valve, after.calibRetries, kArgNone);
+      sink.add(EventCode::CalibFailed, valve, after.calibRetries, blockedPosition(after));
       calibFailed = true;
     } else if (after.status == kStatusIdle) {
       sink.add(EventCode::CalibOk, valve, static_cast<int32_t>(after.openCount),
@@ -94,7 +108,7 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
   if (curBad != prevBad) {
     if (curBad != 0) {
       if (!(calibFailed && curBad == kStatusBlocked)) {
-        addBad(sink, valve, curBad, after.calibRetries);
+        addBad(sink, valve, curBad, after);
       }
     } else if (!covered) {
       sink.add(EventCode::ValveRecovered, valve, prevBad, 0);
@@ -117,6 +131,10 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
   if (rose(before, after, kHealthStale)) {
     sink.add(EventCode::ValveStale, valve, static_cast<int32_t>(ValveModelParams().staleMs / 1000u));
   }
+  if (rose(before, after, kHealthStrokeShort)) {
+    const uint32_t stroke = after.openCount < after.closeCount ? after.openCount : after.closeCount;
+    sink.add(EventCode::CalibStrokeShort, valve, static_cast<int32_t>(stroke), minCounts);
+  }
   const uint16_t cleared = static_cast<uint16_t>(before.health & ~after.health & kRecoverableFlags);
   if (cleared != 0) sink.add(EventCode::ValveRecovered, valve, 0, cleared);
   return covered;
@@ -133,9 +151,9 @@ size_t HealthMonitor::onValve(uint8_t valve, const ValveState& before, const Val
   bool statusChanged = false;
   if (!before.known && after.known) {
     const uint8_t bad = badStatus(after, active);
-    if (bad != 0) addBad(sink, valve, bad, after.calibRetries);
+    if (bad != 0) addBad(sink, valve, bad, after);
   } else if (after.known) {
-    statusChanged = !addTransitions(sink, valve, before, after, active) &&
+    statusChanged = !addTransitions(sink, valve, before, after, active, minCounts_) &&
                     before.status != after.status;
   }
   addTargetSet(sink, valve, before, after);
@@ -193,6 +211,36 @@ size_t HealthMonitor::onStmCounters(uint32_t rxOverflowTotal, uint32_t parseErrT
   }
   if (counterIncreased(parseErr_[side], parseErrTotal, nowMs)) {
     sink.add(EventCode::StmParseErrors, kNoValve, static_cast<int32_t>(parseErrTotal), side);
+  }
+  return sink.count();
+}
+
+size_t HealthMonitor::onStmStatus(const StmStatus* before, const StmStatus& after, uint32_t nowMs,
+                                  Event* out, size_t maxOut) {
+  if (!after.v3) return 0;
+  Sink sink(out, maxOut);
+  const StmStatus* prev = before != nullptr && before->v3 ? before : nullptr;
+  if (after.safeMode && (prev == nullptr || !prev->safeMode)) {
+    sink.add(EventCode::StmSafeMode, kNoValve, after.wdgResets);
+  } else if (!after.safeMode && prev != nullptr && prev->safeMode) {
+    sink.add(EventCode::StmSafeModeEnded, kNoValve);
+  }
+  const bool repaired = prev == nullptr
+                            ? after.cfgEvents > 0 && after.uptimeS < kCfgEventMaxUptimeS
+                            : after.cfgEvents > prev->cfgEvents;
+  if (repaired) {
+    sink.add(EventCode::StmConfigRepaired, kNoValve, after.cfgFlags,
+             static_cast<int32_t>(after.cfgEvents));
+  }
+  const uint32_t lineErrors = after.uartOre + after.uartFe + after.uartNe;
+  if (prev == nullptr) uart_.baselined = false;
+  if (counterIncreased(uart_, lineErrors + after.rxDropped, nowMs)) {
+    sink.add(EventCode::StmUartErrors, kNoValve, static_cast<int32_t>(lineErrors),
+             static_cast<int32_t>(after.rxDropped));
+  }
+  const bool suspended = (after.sysFlags & kStmSysProtectSuspended) != 0;
+  if (suspended && (prev == nullptr || (prev->sysFlags & kStmSysProtectSuspended) == 0)) {
+    sink.add(EventCode::StmProtectionSuspended, kNoValve);
   }
   return sink.count();
 }

@@ -7,7 +7,6 @@
 //             numbers are non-negative decimal; max 5 args; line <= 63 chars.
 //   reply   : "<cmd>" { " " <arg> } [" "] and CR/LF (one line per request).
 // Replies are matched to requests by their 5-char command (see replyMatches).
-// References: specs/01-uart-protocol.md §5, architecture §2.3 (v2 commands).
 #pragma once
 
 #include <stddef.h>
@@ -119,7 +118,7 @@ struct MotorChars {
 };
 
 // Values smotc may send: those the v1 STM keeps across a reboot as well
-// (spec 01 §5.18 boot acceptance): factors 10..40, startOnPower 0..100,
+// (its boot acceptance): factors 10..40, startOnPower 0..100,
 // minCounts 0..60000, maxCalibRetries 0..2.
 bool motorCharsValid(const MotorChars& m);
 
@@ -267,7 +266,7 @@ struct VoltData {
 
 // gvlon single "gvlon v id1 id2" or list "gvlon 12 a1,a2,b1,b2,..." (24 ids).
 // Ids are reported verbatim; a v1 STM may report garbage for unassigned
-// sensors (spec 01 §5.7), so consumers resolve them against known ids.
+// sensors, so consumers resolve them against known ids.
 struct ValveSensors {
   bool isList = false;
   uint8_t valve = 0;  // single form only

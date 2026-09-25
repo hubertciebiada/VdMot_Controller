@@ -20,4 +20,28 @@ void flushForRestart() {
   fakes::note("stm_service.flushForRestart");
 }
 
+void storeDesiredTargets(const vdm::PersistedTargets& t) {
+  sib::stmService().storedTargets.push_back(t);
+}
+
+void storeLeaseRecord(const vdm::LeaseClient::Snapshot& s) {
+  sib::stmService().leaseRecords.push_back(s);
+}
+
+void postScheduledCalibResult(uint16_t attempt, bool ok, vdm::CalibFailure reason) {
+  sib::stmService().calibResults.push_back({attempt, ok, reason});
+  fakes::note("stm_service.postScheduledCalibResult " + std::to_string(attempt) + " " +
+              (ok ? "ok" : "failed") + " " + vdm::calibFailureName(reason));
+}
+
+const vdm::PersistedTargets& bootTargets(vdm::RestoreSource& src) {
+  src = sib::stmService().bootSource;
+  return sib::stmService().bootTargets;
+}
+
+bool bootLease(vdm::LeaseClient::Snapshot& out) {
+  out = sib::stmService().bootLease;
+  return sib::stmService().bootLeaseValid;
+}
+
 }  // namespace stm_service
