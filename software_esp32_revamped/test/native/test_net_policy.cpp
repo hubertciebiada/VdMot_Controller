@@ -1,8 +1,21 @@
-// NetWatchdog.
+// NetWatchdog, network evidence names.
+#include <string>
+
 #include "doctest.h"
 #include "vdm/net_policy.h"
 
 using namespace vdm;
+
+TEST_CASE("netEvidenceName") {
+  CHECK(std::string(netEvidenceName(NetEvidence::None)) == "none");
+  CHECK(std::string(netEvidenceName(NetEvidence::GatewayPing)) == "ping");
+  CHECK(std::string(netEvidenceName(NetEvidence::Mqtt)) == "mqtt");
+  CHECK(std::string(netEvidenceName(NetEvidence::TimeSync)) == "ntp");
+  CHECK(std::string(netEvidenceName(NetEvidence::InboundHttp)) == "http");
+  CHECK(std::string(netEvidenceName(NetEvidence::DhcpLease)) == "dhcp");
+  CHECK(std::string(netEvidenceName(static_cast<NetEvidence>(6))) == "unknown");
+  CHECK(static_cast<uint8_t>(NetEvidence::DhcpLease) == 5);
+}
 
 TEST_CASE("NetWatchdog") {
   NetWatchdog off;

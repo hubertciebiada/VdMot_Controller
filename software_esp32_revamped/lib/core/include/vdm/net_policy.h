@@ -6,6 +6,13 @@
 
 namespace vdm {
 
+// Traffic that proves the network works end to end: a gateway ping reply,
+// the MQTT session, an SNTP sync, an HTTP request from a LAN peer, a DHCP
+// lease (events, /api/health).
+enum class NetEvidence : uint8_t { None = 0, GatewayPing = 1, Mqtt = 2, TimeSync = 3,
+                                   InboundHttp = 4, DhcpLease = 5 };
+const char* netEvidenceName(NetEvidence e);  // "none","ping","mqtt","ntp","http","dhcp"; "unknown"
+
 // Network watchdog (legacy netConnTO): the ESP restarts after `minutes`
 // consecutive minutes without an IP address. 0 disables it. The first
 // minutes after boot count as well.

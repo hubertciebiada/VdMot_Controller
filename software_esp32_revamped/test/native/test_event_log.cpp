@@ -21,64 +21,103 @@ struct CodeRow {
   uint16_t number;
   const char* name;
   Severity sev;
+  EventMqtt mqtt;
 };
 
-// DESIGN.md §13, the binding table.
+constexpr EventMqtt kNo = EventMqtt::No;
+constexpr EventMqtt kWarn = EventMqtt::WarnPlus;
+constexpr EventMqtt kAlways = EventMqtt::Always;
+
+// DESIGN.md §13, the binding table (registry order).
 const CodeRow kTable[] = {
-    {EventCode::Boot, 100, "boot", Severity::Info},
-    {EventCode::ConfigImported, 101, "config_imported", Severity::Info},
-    {EventCode::ConfigSaved, 102, "config_saved", Severity::Info},
-    {EventCode::ConfigDefaults, 103, "config_defaults", Severity::Error},
-    {EventCode::FsFormatted, 104, "fs_formatted", Severity::Warning},
-    {EventCode::EspOtaStarted, 105, "esp_ota_started", Severity::Info},
-    {EventCode::EspOtaDone, 106, "esp_ota_done", Severity::Info},
-    {EventCode::EspOtaFailed, 107, "esp_ota_failed", Severity::Error},
-    {EventCode::AppMarkedValid, 108, "app_marked_valid", Severity::Info},
-    {EventCode::RebootRequested, 109, "reboot_requested", Severity::Info},
-    {EventCode::LowHeap, 110, "low_heap", Severity::Warning},
-    {EventCode::TimeSynced, 111, "time_synced", Severity::Info},
-    {EventCode::CalibTimeMissing, 112, "calib_time_missing", Severity::Warning},
-    {EventCode::NetUp, 200, "net_up", Severity::Info},
-    {EventCode::NetDown, 201, "net_down", Severity::Warning},
-    {EventCode::MqttConnected, 202, "mqtt_connected", Severity::Info},
-    {EventCode::MqttDisconnected, 203, "mqtt_disconnected", Severity::Warning},
-    {EventCode::MqttCommandRejected, 204, "mqtt_command_rejected", Severity::Warning},
-    {EventCode::HaDiscoverySent, 205, "ha_discovery_sent", Severity::Info},
-    {EventCode::AuthFailed, 206, "auth_failed", Severity::Warning},
-    {EventCode::LinkUp, 300, "link_up", Severity::Info},
-    {EventCode::LinkDegraded, 301, "link_degraded", Severity::Info},
-    {EventCode::LinkDown, 302, "link_down", Severity::Error},
-    {EventCode::StmResetByPolicy, 303, "stm_reset_by_policy", Severity::Error},
-    {EventCode::StmResetByUser, 304, "stm_reset_by_user", Severity::Info},
-    {EventCode::StmRebootDetected, 305, "stm_reboot_detected", Severity::Warning},
-    {EventCode::StmVersion, 306, "stm_version", Severity::Info},
-    {EventCode::StmIncompatible, 307, "stm_incompatible", Severity::Error},
-    {EventCode::StmRxOverflow, 308, "stm_rx_overflow", Severity::Warning},
-    {EventCode::StmParseErrors, 309, "stm_parse_errors", Severity::Warning},
-    {EventCode::StmQueueFull, 310, "stm_queue_full", Severity::Warning},
-    {EventCode::StmFlashStarted, 311, "stm_flash_started", Severity::Info},
-    {EventCode::StmFlashDone, 312, "stm_flash_done", Severity::Info},
-    {EventCode::StmFlashFailed, 313, "stm_flash_failed", Severity::Critical},
-    {EventCode::TargetSet, 400, "target_set", Severity::Info},
-    {EventCode::ValveStateChanged, 401, "valve_state_changed", Severity::Debug},
-    {EventCode::ValveBlocked, 402, "valve_blocked", Severity::Error},
-    {EventCode::ValveFailed, 403, "valve_failed", Severity::Error},
-    {EventCode::ValveNoValve, 404, "valve_no_valve", Severity::Warning},
-    {EventCode::ValveRecovered, 405, "valve_recovered", Severity::Info},
-    {EventCode::CalibStarted, 406, "calib_started", Severity::Info},
-    {EventCode::CalibOk, 407, "calib_ok", Severity::Info},
-    {EventCode::CalibRetry, 408, "calib_retry", Severity::Warning},
-    {EventCode::CalibFailed, 409, "calib_failed", Severity::Error},
-    {EventCode::EarlyStop, 410, "early_stop", Severity::Warning},
-    {EventCode::CmdRejected, 411, "cmd_rejected", Severity::Warning},
-    {EventCode::TargetNotConfirmed, 412, "target_not_confirmed", Severity::Warning},
-    {EventCode::ValveStale, 413, "valve_stale", Severity::Warning},
-    {EventCode::ServiceMoveDone, 414, "service_move_done", Severity::Info},
-    {EventCode::TempSensorFailed, 500, "temp_sensor_failed", Severity::Warning},
-    {EventCode::TempSensorRecovered, 501, "temp_sensor_recovered", Severity::Info},
-    {EventCode::SensorCountChanged, 502, "sensor_count_changed", Severity::Info},
-    {EventCode::VoltSensorFailed, 503, "volt_sensor_failed", Severity::Warning},
-    {EventCode::ScheduledCalibration, 600, "scheduled_calibration", Severity::Info},
+    {EventCode::Boot, 100, "boot", Severity::Info, kWarn},
+    {EventCode::ConfigImported, 101, "config_imported", Severity::Info, kWarn},
+    {EventCode::ConfigSaved, 102, "config_saved", Severity::Info, kWarn},
+    {EventCode::ConfigDefaults, 103, "config_defaults", Severity::Error, kWarn},
+    {EventCode::FsFormatted, 104, "fs_formatted", Severity::Warning, kWarn},
+    {EventCode::EspOtaStarted, 105, "esp_ota_started", Severity::Info, kWarn},
+    {EventCode::EspOtaDone, 106, "esp_ota_done", Severity::Info, kWarn},
+    {EventCode::EspOtaFailed, 107, "esp_ota_failed", Severity::Error, kWarn},
+    {EventCode::AppMarkedValid, 108, "app_marked_valid", Severity::Info, kWarn},
+    {EventCode::RebootRequested, 109, "reboot_requested", Severity::Info, kWarn},
+    {EventCode::LowHeap, 110, "low_heap", Severity::Warning, kWarn},
+    {EventCode::TimeSynced, 111, "time_synced", Severity::Info, kWarn},
+    {EventCode::CalibTimeMissing, 112, "calib_time_missing", Severity::Warning, kWarn},
+    {EventCode::FactoryResetSkipped, 113, "factory_reset_skipped", Severity::Warning, kWarn},
+    {EventCode::StackLow, 114, "stack_low", Severity::Warning, kWarn},
+    {EventCode::HeapFragmented, 115, "heap_fragmented", Severity::Warning, kWarn},
+    {EventCode::LogWriteFailed, 116, "log_write_failed", Severity::Warning, kWarn},
+    {EventCode::ImportDropped, 117, "import_dropped", Severity::Warning, kWarn},
+    {EventCode::ConfigRestored, 118, "config_restored", Severity::Warning, kWarn},
+    {EventCode::ConfigRepaired, 119, "config_repaired", Severity::Warning, kWarn},
+    {EventCode::ConfigNewerSchema, 120, "config_newer_schema", Severity::Warning, kWarn},
+    {EventCode::FilesRemoved, 121, "files_removed", Severity::Info, kNo},
+    {EventCode::NetUp, 200, "net_up", Severity::Info, kWarn},
+    {EventCode::NetDown, 201, "net_down", Severity::Warning, kWarn},
+    {EventCode::MqttConnected, 202, "mqtt_connected", Severity::Info, kWarn},
+    {EventCode::MqttDisconnected, 203, "mqtt_disconnected", Severity::Warning, kWarn},
+    {EventCode::MqttCommandRejected, 204, "mqtt_command_rejected", Severity::Warning, kWarn},
+    {EventCode::HaDiscoverySent, 205, "ha_discovery_sent", Severity::Info, kWarn},
+    {EventCode::AuthFailed, 206, "auth_failed", Severity::Warning, kWarn},
+    {EventCode::NetTrialStarted, 207, "net_trial_started", Severity::Info, kNo},
+    {EventCode::NetTrialConfirmed, 208, "net_trial_confirmed", Severity::Info, kNo},
+    {EventCode::NetTrialReverted, 209, "net_trial_reverted", Severity::Warning, kWarn},
+    {EventCode::NetUnreachable, 210, "net_unreachable", Severity::Warning, kWarn},
+    {EventCode::NetReachable, 211, "net_reachable", Severity::Info, kNo},
+    {EventCode::NetInterfaceRestart, 212, "net_interface_restart", Severity::Warning, kWarn},
+    {EventCode::RequestRefused, 213, "request_refused", Severity::Warning, kWarn},
+    {EventCode::AuthLocked, 214, "auth_locked", Severity::Warning, kWarn},
+    {EventCode::LinkUp, 300, "link_up", Severity::Info, kWarn},
+    {EventCode::LinkDegraded, 301, "link_degraded", Severity::Info, kWarn},
+    {EventCode::LinkDown, 302, "link_down", Severity::Error, kWarn},
+    {EventCode::StmResetByPolicy, 303, "stm_reset_by_policy", Severity::Error, kWarn},
+    {EventCode::StmResetByUser, 304, "stm_reset_by_user", Severity::Info, kWarn},
+    {EventCode::StmRebootDetected, 305, "stm_reboot_detected", Severity::Warning, kWarn},
+    {EventCode::StmVersion, 306, "stm_version", Severity::Info, kWarn},
+    {EventCode::StmIncompatible, 307, "stm_incompatible", Severity::Error, kWarn},
+    {EventCode::StmRxOverflow, 308, "stm_rx_overflow", Severity::Warning, kWarn},
+    {EventCode::StmParseErrors, 309, "stm_parse_errors", Severity::Warning, kWarn},
+    {EventCode::StmQueueFull, 310, "stm_queue_full", Severity::Warning, kWarn},
+    {EventCode::StmFlashStarted, 311, "stm_flash_started", Severity::Info, kWarn},
+    {EventCode::StmFlashDone, 312, "stm_flash_done", Severity::Info, kWarn},
+    {EventCode::StmFlashFailed, 313, "stm_flash_failed", Severity::Critical, kWarn},
+    {EventCode::FailsafeActive, 314, "failsafe_active", Severity::Warning, kAlways},
+    {EventCode::FailsafeEnded, 315, "failsafe_ended", Severity::Info, kAlways},
+    {EventCode::RegulatorLost, 316, "regulator_lost", Severity::Warning, kWarn},
+    {EventCode::RegulatorBack, 317, "regulator_back", Severity::Info, kAlways},
+    {EventCode::LeaseConfigFailed, 318, "lease_config_failed", Severity::Warning, kWarn},
+    {EventCode::StmSafeMode, 319, "stm_safe_mode", Severity::Critical, kAlways},
+    {EventCode::StmSafeModeEnded, 320, "stm_safe_mode_ended", Severity::Info, kAlways},
+    {EventCode::StmConfigRepaired, 321, "stm_config_repaired", Severity::Warning, kWarn},
+    {EventCode::StmUartErrors, 322, "stm_uart_errors", Severity::Warning, kWarn},
+    {EventCode::StmEepromWaitTimeout, 323, "stm_eeprom_wait_timeout", Severity::Warning, kWarn},
+    {EventCode::TargetsRestored, 324, "targets_restored", Severity::Info, kNo},
+    {EventCode::StmProtectionSuspended, 325, "stm_protection_suspended", Severity::Error, kWarn},
+    {EventCode::TargetSet, 400, "target_set", Severity::Info, kWarn},
+    {EventCode::ValveStateChanged, 401, "valve_state_changed", Severity::Debug, kWarn},
+    {EventCode::ValveBlocked, 402, "valve_blocked", Severity::Error, kWarn},
+    {EventCode::ValveFailed, 403, "valve_failed", Severity::Error, kWarn},
+    {EventCode::ValveNoValve, 404, "valve_no_valve", Severity::Warning, kWarn},
+    {EventCode::ValveRecovered, 405, "valve_recovered", Severity::Info, kWarn},
+    {EventCode::CalibStarted, 406, "calib_started", Severity::Info, kWarn},
+    {EventCode::CalibOk, 407, "calib_ok", Severity::Info, kAlways},
+    {EventCode::CalibRetry, 408, "calib_retry", Severity::Warning, kAlways},
+    {EventCode::CalibFailed, 409, "calib_failed", Severity::Error, kAlways},
+    {EventCode::EarlyStop, 410, "early_stop", Severity::Warning, kWarn},
+    {EventCode::CmdRejected, 411, "cmd_rejected", Severity::Warning, kWarn},
+    {EventCode::TargetNotConfirmed, 412, "target_not_confirmed", Severity::Warning, kWarn},
+    {EventCode::ValveStale, 413, "valve_stale", Severity::Warning, kWarn},
+    {EventCode::ServiceMoveDone, 414, "service_move_done", Severity::Info, kWarn},
+    {EventCode::CalibStrokeShort, 415, "calib_stroke_short", Severity::Warning, kWarn},
+    {EventCode::TempSensorFailed, 500, "temp_sensor_failed", Severity::Warning, kWarn},
+    {EventCode::TempSensorRecovered, 501, "temp_sensor_recovered", Severity::Info, kWarn},
+    {EventCode::SensorCountChanged, 502, "sensor_count_changed", Severity::Info, kWarn},
+    {EventCode::VoltSensorFailed, 503, "volt_sensor_failed", Severity::Warning, kWarn},
+    {EventCode::ScheduledCalibration, 600, "scheduled_calibration", Severity::Info, kWarn},
+    {EventCode::ScheduledCalibrationFailed, 601, "scheduled_calibration_failed",
+     Severity::Warning, kWarn},
+    {EventCode::ScheduledCalibrationMissed, 602, "scheduled_calibration_missed", Severity::Error,
+     kWarn},
 };
 
 Event ev(EventCode c, uint8_t valve = kNoValve, int32_t a1 = 0, int32_t a2 = 0,
@@ -142,13 +181,57 @@ TEST_CASE("event code registry matches the design table") {
     CHECK(static_cast<uint16_t>(r.code) == r.number);
     CHECK(strcmp(eventCodeName(r.code), r.name) == 0);
     CHECK(eventDefaultSeverity(r.code) == r.sev);
+    CHECK(eventMqtt(r.code) == r.mqtt);
     const bool outcome = r.number == 407 || r.number == 408 || r.number == 409;
     CHECK(eventIsCalibrationOutcome(r.code) == outcome);
   }
   CHECK(strcmp(eventCodeName(static_cast<EventCode>(0)), "unknown") == 0);
   CHECK(strcmp(eventCodeName(static_cast<EventCode>(999)), "unknown") == 0);
   CHECK(eventDefaultSeverity(static_cast<EventCode>(999)) == Severity::Info);
+  CHECK(eventMqtt(static_cast<EventCode>(999)) == EventMqtt::No);
   CHECK_FALSE(eventIsCalibrationOutcome(static_cast<EventCode>(999)));
+}
+
+TEST_CASE("eventMqttNames lists every published code in registry order") {
+  std::vector<std::string> expected;
+  for (const CodeRow& r : kTable) {
+    if (r.mqtt != EventMqtt::No) expected.push_back(r.name);
+  }
+  REQUIRE(expected.size() == 81);
+  const char* names[100] = {};
+  CHECK(eventMqttNames(names, 100) == expected.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    CAPTURE(i);
+    REQUIRE(names[i] != nullptr);
+    CHECK(expected[i] == names[i]);
+  }
+  CHECK(names[expected.size()] == nullptr);
+  // A short array gets the first names, the total is still returned.
+  const char* few[3] = {};
+  CHECK(eventMqttNames(few, 2) == expected.size());
+  CHECK(std::string(few[0]) == "boot");
+  CHECK(std::string(few[1]) == "config_imported");
+  CHECK(few[2] == nullptr);
+  CHECK(eventMqttNames(nullptr, 5) == expected.size());
+  CHECK(eventMqttNames(few, 0) == expected.size());
+}
+
+TEST_CASE("eventReachesMqtt: Always, or WarnPlus at Warning and above") {
+  CHECK(eventReachesMqtt(makeEvent(EventCode::CalibOk, Severity::Info, 1, 0, 0, "")));
+  CHECK(eventReachesMqtt(makeEvent(EventCode::CalibOk, Severity::Debug, 1, 0, 0, "")));
+  CHECK(eventReachesMqtt(makeEvent(EventCode::FailsafeEnded, Severity::Info, kNoValve, 0, 0, "")));
+  CHECK_FALSE(eventReachesMqtt(makeEvent(EventCode::Boot, Severity::Info, kNoValve, 0, 0, "")));
+  CHECK(eventReachesMqtt(makeEvent(EventCode::Boot, Severity::Warning, kNoValve, 0, 0, "")));
+  CHECK(eventReachesMqtt(makeEvent(EventCode::EarlyStop, Severity::Warning, 1, 0, 0, "")));
+  CHECK(eventReachesMqtt(makeEvent(EventCode::LinkDown, Severity::Error, kNoValve, 0, 0, "")));
+  CHECK(eventReachesMqtt(makeEvent(EventCode::StmFlashFailed, Severity::Critical, kNoValve, 0, 0,
+                                   "")));
+  CHECK_FALSE(eventReachesMqtt(makeEvent(EventCode::ServiceMoveDone, Severity::Info, 1, 0, 0, "")));
+  // Codes without MQTT never reach it, whatever the severity.
+  CHECK_FALSE(eventReachesMqtt(makeEvent(EventCode::FilesRemoved, Severity::Critical, kNoValve,
+                                         0, 0, "")));
+  CHECK_FALSE(eventReachesMqtt(makeEvent(static_cast<EventCode>(999), Severity::Critical,
+                                         kNoValve, 0, 0, "")));
 }
 
 TEST_CASE("makeEvent fills and truncates") {
@@ -337,11 +420,49 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::RebootRequested, kNoValve, 2), "restart requested (net watchdog)"},
       {ev(EventCode::RebootRequested, kNoValve, 3), "restart requested (factory reset)"},
       {ev(EventCode::RebootRequested, kNoValve, 4), "restart requested (rollback)"},
-      {ev(EventCode::RebootRequested, kNoValve, 5), "restart requested (unknown)"},
+      {ev(EventCode::RebootRequested, kNoValve, 5), "restart requested (network revert)"},
+      {ev(EventCode::RebootRequested, kNoValve, 6), "restart requested (unknown)"},
       {ev(EventCode::RebootRequested, kNoValve, -1), "restart requested (unknown)"},
+      {ev(EventCode::RebootRequested, kNoValve, 2, 10), "restart requested (net watchdog, after 10 min)"},
+      {ev(EventCode::RebootRequested, kNoValve, 2, 1), "restart requested (net watchdog, after 1 min)"},
+      {ev(EventCode::RebootRequested, kNoValve, 2, -5), "restart requested (net watchdog)"},
+      {ev(EventCode::RebootRequested, kNoValve, 0, 10), "restart requested (user)"},
+      {ev(EventCode::RebootRequested, kNoValve, 4, 7), "restart requested (rollback, missing net, http, stm)"},
+      {ev(EventCode::RebootRequested, kNoValve, 4, 1), "restart requested (rollback, missing net)"},
+      {ev(EventCode::RebootRequested, kNoValve, 4, 2), "restart requested (rollback, missing http)"},
+      {ev(EventCode::RebootRequested, kNoValve, 4, 4), "restart requested (rollback, missing stm)"},
+      {ev(EventCode::RebootRequested, kNoValve, 4, 5), "restart requested (rollback, missing net, stm)"},
+      {ev(EventCode::RebootRequested, kNoValve, 4, 8), "restart requested (rollback)"},
+      {ev(EventCode::RebootRequested, kNoValve, 5, 7), "restart requested (network revert)"},
+      {ev(EventCode::RebootRequested, kNoValve, 3, 7), "restart requested (factory reset)"},
       {ev(EventCode::LowHeap, kNoValve, 29000, 20000), "low heap (free 29000, min 20000)"},
       {ev(EventCode::TimeSynced, kNoValve, -3), "time synced (step -3 s)"},
       {ev(EventCode::CalibTimeMissing, kNoValve, 20260923), "scheduled calibration skipped, no valid time (slot 20260923)"},
+      {ev(EventCode::FactoryResetSkipped), "factory reset pin still set: settings kept, remove the jumper"},
+      {ev(EventCode::StackLow, kNoValve, 480, 6144, "stm"), "task stm: stack low (480 of 6144 bytes free)"},
+      {ev(EventCode::StackLow, kNoValve, 1, 2), "task : stack low (1 of 2 bytes free)"},
+      {ev(EventCode::HeapFragmented, kNoValve, 7000, 90000), "heap fragmented (largest block 7000, free 90000)"},
+      {ev(EventCode::LogWriteFailed, kNoValve, 1, 3), "log file write failed (open, 3 events lost)"},
+      {ev(EventCode::LogWriteFailed, kNoValve, 2, 0), "log file write failed (write, 0 events lost)"},
+      {ev(EventCode::LogWriteFailed, kNoValve, 3, 1), "log file write failed (rotate, 1 events lost)"},
+      {ev(EventCode::LogWriteFailed, kNoValve, 4, 9), "log file write failed (size limit, 9 events lost)"},
+      {ev(EventCode::LogWriteFailed, kNoValve, 0, 9), "log file write failed (unknown, 9 events lost)"},
+      {ev(EventCode::LogWriteFailed, kNoValve, 5, 9), "log file write failed (unknown, 9 events lost)"},
+      {ev(EventCode::ImportDropped, kNoValve, 3, 31, "ignored 14 keys"), "legacy import dropped pi, window, messenger, ds18Timeout, legacyFailsafe (3 PI valves, ignored 14 keys)"},
+      {ev(EventCode::ImportDropped, kNoValve, 0, 2), "legacy import dropped window (0 PI valves)"},
+      {ev(EventCode::ImportDropped, kNoValve, 1, 1, "x"), "legacy import dropped pi (1 PI valves, x)"},
+      {ev(EventCode::ImportDropped, kNoValve, 0, 16), "legacy import dropped legacyFailsafe (0 PI valves)"},
+      {ev(EventCode::ImportDropped, kNoValve, 0, 12), "legacy import dropped messenger, ds18Timeout (0 PI valves)"},
+      {ev(EventCode::ImportDropped, kNoValve, 2, 0), "legacy import dropped nothing (2 PI valves)"},
+      {ev(EventCode::ImportDropped, kNoValve, 2, 32), "legacy import dropped nothing (2 PI valves)"},
+      {ev(EventCode::ConfigRestored, kNoValve, 0), "configuration restored from the backup (NVS empty)"},
+      {ev(EventCode::ConfigRestored, kNoValve, 3), "configuration restored from the backup (decode error 3)"},
+      {ev(EventCode::ConfigRestored, kNoValve, -1), "configuration restored from the backup (decode error -1)"},
+      {ev(EventCode::ConfigRepaired, kNoValve, 5, 2, "calib.hour"), "configuration repaired (2 fields, first calib.hour)"},
+      {ev(EventCode::ConfigRepaired, kNoValve, 5, 1), "configuration repaired (1 fields)"},
+      {ev(EventCode::ConfigNewerSchema, kNoValve, 2, 3), "configuration written by a newer firmware (schema 2, 3 unknown settings kept)"},
+      {ev(EventCode::FilesRemoved, kNoValve, 2, 96, "legacy images"), "removed 2 files (96 KiB): legacy images"},
+      {ev(EventCode::FilesRemoved, kNoValve, 1, 0), "removed 1 files (0 KiB)"},
       {ev(EventCode::NetUp, kNoValve, 1, 0, "192.168.1.5"), "network up (eth, 192.168.1.5)"},
       {ev(EventCode::NetUp, kNoValve, 2), "network up (wifi)"},
       {ev(EventCode::NetUp, kNoValve, 3), "network up (unknown)"},
@@ -355,6 +476,37 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::HaDiscoverySent, kNoValve, 80, 170), "HA discovery sent (80 configs, 170 deletes)"},
       {ev(EventCode::AuthFailed, kNoValve, 3, 0, "10.0.0.9"), "authentication failed (3 in window, 10.0.0.9)"},
       {ev(EventCode::AuthFailed, kNoValve, 3), "authentication failed (3 in window)"},
+      {ev(EventCode::NetTrialStarted, kNoValve, 120, 0, "192.168.1.50"), "network settings on trial for 120 s (192.168.1.50)"},
+      {ev(EventCode::NetTrialStarted, kNoValve, 120), "network settings on trial for 120 s"},
+      {ev(EventCode::NetTrialConfirmed, kNoValve, 40, 0), "network settings confirmed after 40 s"},
+      {ev(EventCode::NetTrialConfirmed, kNoValve, 40, 1), "network settings confirmed after 40 s (by a newer change)"},
+      {ev(EventCode::NetTrialConfirmed, kNoValve, 40, 2), "network settings confirmed after 40 s"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 1, 0, "dhcp"), "network settings reverted (not confirmed, back to dhcp)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 2, 0), "network settings reverted (no network)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 3, 0, "10.0.0.2"), "network settings reverted (interrupted, back to 10.0.0.2)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 4, 0), "network settings reverted (user)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 5, 0), "network settings reverted (unknown)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 1, -1, "dhcp"), "network settings could not be reverted (not confirmed)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 1, -2), "network settings reverted (not confirmed)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 1, 1), "network settings reverted (not confirmed)"},
+      {ev(EventCode::NetUnreachable, kNoValve, 150, 1), "network unreachable (nothing for 150 s, last ping)"},
+      {ev(EventCode::NetUnreachable, kNoValve, 150, 0), "network unreachable (nothing for 150 s, last none)"},
+      {ev(EventCode::NetUnreachable, kNoValve, 150, 5), "network unreachable (nothing for 150 s, last dhcp)"},
+      {ev(EventCode::NetUnreachable, kNoValve, 150, 6), "network unreachable (nothing for 150 s, last unknown)"},
+      {ev(EventCode::NetUnreachable, kNoValve, 150, 257), "network unreachable (nothing for 150 s, last unknown)"},
+      {ev(EventCode::NetUnreachable, kNoValve, 150, -1), "network unreachable (nothing for 150 s, last unknown)"},
+      {ev(EventCode::NetReachable, kNoValve, 300), "network reachable again after 300 s"},
+      {ev(EventCode::NetInterfaceRestart, kNoValve, 300, 1), "network interface restarted (eth, after 300 s)"},
+      {ev(EventCode::NetInterfaceRestart, kNoValve, 300, 2), "network interface restarted (wifi, after 300 s)"},
+      {ev(EventCode::NetInterfaceRestart, kNoValve, 300, 3), "network interface restarted (eth+wifi, after 300 s)"},
+      {ev(EventCode::NetInterfaceRestart, kNoValve, 300, 4), "network interface restarted (unknown, after 300 s)"},
+      {ev(EventCode::RequestRefused, kNoValve, 1, 0, "10.0.0.9"), "request refused (host) from 10.0.0.9"},
+      {ev(EventCode::RequestRefused, kNoValve, 2), "request refused (origin)"},
+      {ev(EventCode::RequestRefused, kNoValve, 3), "request refused (header)"},
+      {ev(EventCode::RequestRefused, kNoValve, 4), "request refused (content type)"},
+      {ev(EventCode::RequestRefused, kNoValve, 0), "request refused (unknown)"},
+      {ev(EventCode::AuthLocked, kNoValve, 60, 1, "10.0.0.2"), "login locked for 60 s (lockout 1) for 10.0.0.2"},
+      {ev(EventCode::AuthLocked, kNoValve, 900, 3), "login locked for 900 s (lockout 3)"},
       {ev(EventCode::LinkUp), "STM link up"},
       {ev(EventCode::LinkDegraded, kNoValve, 1), "STM link degraded (1 timeouts)"},
       {ev(EventCode::LinkDown, kNoValve, 5), "STM link down (5 timeouts)"},
@@ -381,6 +533,34 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::StmFlashDone, kNoValve, 21000), "STM flash done in 21000 ms"},
       {ev(EventCode::StmFlashFailed, kNoValve, 4, 0x08004000, "writing"), "STM flash failed (error 4 at 0x08004000, writing)"},
       {ev(EventCode::StmFlashFailed, kNoValve, 4, -1), "STM flash failed (error 4 at 0xffffffff)"},
+      {ev(EventCode::FailsafeActive, kNoValve, 0x0FFF, 1), "failsafe active on 12 valves (STM lease)"},
+      {ev(EventCode::FailsafeActive, kNoValve, 0x0005, 2), "failsafe active on 2 valves (ESP)"},
+      {ev(EventCode::FailsafeActive, kNoValve, 0, 3), "failsafe active on 0 valves (unknown)"},
+      {ev(EventCode::FailsafeActive, kNoValve, -1, 0), "failsafe active on 32 valves (unknown)"},
+      {ev(EventCode::FailsafeEnded, kNoValve, 3600, 1), "failsafe ended after 3600 s (STM lease)"},
+      {ev(EventCode::FailsafeEnded, kNoValve, 60, 2), "failsafe ended after 60 s (ESP)"},
+      {ev(EventCode::RegulatorLost, kNoValve, 1), "regulator lost (MQTT broker disconnected)"},
+      {ev(EventCode::RegulatorLost, kNoValve, 2), "regulator lost (Home Assistant offline)"},
+      {ev(EventCode::RegulatorLost, kNoValve, 0), "regulator lost (unknown)"},
+      {ev(EventCode::RegulatorLost, kNoValve, 3), "regulator lost (unknown)"},
+      {ev(EventCode::RegulatorBack, kNoValve, 125), "regulator back after 125 s"},
+      {ev(EventCode::LeaseConfigFailed, kNoValve, 1, 3), "failsafe settings not accepted by the STM (no reply, 3 attempts)"},
+      {ev(EventCode::LeaseConfigFailed, kNoValve, 2, 1), "failsafe settings not accepted by the STM (rejected, 1 attempts)"},
+      {ev(EventCode::LeaseConfigFailed, kNoValve, 3, 3), "failsafe settings not accepted by the STM (read-back differs, 3 attempts)"},
+      {ev(EventCode::LeaseConfigFailed, kNoValve, 4, 3), "failsafe settings not accepted by the STM (unknown, 3 attempts)"},
+      {ev(EventCode::StmSafeMode, kNoValve, 3), "STM in safe mode (3 watchdog resets)"},
+      {ev(EventCode::StmSafeModeEnded), "STM left safe mode"},
+      {ev(EventCode::StmConfigRepaired, kNoValve, 5, 1), "STM configuration repaired (flags 0x05, 1 repairs)"},
+      {ev(EventCode::StmConfigRepaired, kNoValve, 0xC0, 2), "STM configuration repaired (flags 0xc0, 2 repairs)"},
+      {ev(EventCode::StmUartErrors, kNoValve, 7, 2), "STM UART errors (7 total, 2 bytes dropped)"},
+      {ev(EventCode::StmEepromWaitTimeout, kNoValve, 10000, 1), "STM EEPROM write still pending after 10000 ms (STM reset)"},
+      {ev(EventCode::StmEepromWaitTimeout, kNoValve, 10000, 2), "STM EEPROM write still pending after 10000 ms (flash)"},
+      {ev(EventCode::StmEepromWaitTimeout, kNoValve, 12000, 3, "stm task silent"), "STM EEPROM write still pending after 12000 ms (ESP restart): stm task silent"},
+      {ev(EventCode::StmEepromWaitTimeout, kNoValve, 1, 0), "STM EEPROM write still pending after 1 ms (unknown)"},
+      {ev(EventCode::TargetsRestored, kNoValve, 12, 1), "desired targets restored for 12 valves (RTC)"},
+      {ev(EventCode::TargetsRestored, kNoValve, 3, 2), "desired targets restored for 3 valves (NVS)"},
+      {ev(EventCode::TargetsRestored, kNoValve, 3, 3), "desired targets restored for 3 valves (unknown)"},
+      {ev(EventCode::StmProtectionSuspended), "STM short-circuit and inrush limits suspended until the next STM start"},
       {ev(EventCode::TargetSet, 0, 55, 3), "valve 1: target 55 % (mqtt)"},
       {ev(EventCode::TargetSet, 11, 0, 2), "valve 12: target 0 % (web)"},
       {ev(EventCode::TargetSet, 1, 1, 9), "valve 2: target 1 % (unknown)"},
@@ -391,8 +571,15 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::ValveStateChanged, 2, 300, -1), "valve 3: state invalid -> invalid"},
       {ev(EventCode::ValveStateChanged, 2, 256, 0), "valve 3: state invalid -> nodata"},
       {ev(EventCode::ValveStateChanged, 2, 9, 265), "valve 3: state blocked -> invalid"},
-      {ev(EventCode::ValveBlocked, 2, 2), "valve 3: blocked (calibration retries 2)"},
-      {ev(EventCode::ValveFailed, 2), "valve 3: failed"},
+      {ev(EventCode::ValveBlocked, 2, 2, -1), "valve 3: blocked (calibration retries 2)"},
+      {ev(EventCode::ValveBlocked, 2, 2, 50), "valve 3: blocked (calibration retries 2, failsafe 50 %)"},
+      {ev(EventCode::ValveBlocked, 2, 2, 0), "valve 3: blocked (calibration retries 2, failsafe 0 %)"},
+      {ev(EventCode::ValveFailed, 2, 0, -1), "valve 3: failed"},
+      {ev(EventCode::ValveFailed, 2, 0, 0), "valve 3: failed (none)"},
+      {ev(EventCode::ValveFailed, 2, 0, 3), "valve 3: failed (short)"},
+      {ev(EventCode::ValveFailed, 2, 0, 5), "valve 3: failed (inrush_trip)"},
+      {ev(EventCode::ValveFailed, 2, 0, 6), "valve 3: failed (unknown)"},
+      {ev(EventCode::ValveFailed, 2, 0, 256), "valve 3: failed (unknown)"},
       {ev(EventCode::ValveNoValve, 2), "valve 3: no valve detected"},
       {ev(EventCode::ValveRecovered, 2, 9), "valve 3: recovered (was blocked)"},
       {ev(EventCode::ValveRecovered, 2, 0, kHealthStale), "valve 3: recovered (data again)"},
@@ -401,10 +588,13 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::ValveRecovered, 2, 0, 0), "valve 3: recovered ()"},
       {ev(EventCode::CalibStarted, 2, 0), "valve 3: calibration started"},
       {ev(EventCode::CalibStarted, kAllValves, 1), "all valves: calibration started (scheduled)"},
-      {ev(EventCode::CalibStarted, kAllValves, 2), "all valves: calibration started"},
+      {ev(EventCode::CalibStarted, kAllValves, 2), "all valves: calibration started (automatic retry)"},
+      {ev(EventCode::CalibStarted, 2, 3), "valve 3: calibration started"},
       {ev(EventCode::CalibOk, 2, 3120, 3350), "valve 3: calibration ok (oc 3120, cc 3350)"},
       {ev(EventCode::CalibRetry, 2, 1), "valve 3: calibration retry 1"},
-      {ev(EventCode::CalibFailed, 2, 2), "valve 3: calibration failed after 2 retries"},
+      {ev(EventCode::CalibFailed, 2, 2, -1), "valve 3: calibration failed after 2 retries"},
+      {ev(EventCode::CalibFailed, 2, 2, 50), "valve 3: calibration failed after 2 retries, failsafe 50 %"},
+      {ev(EventCode::CalibFailed, 2, 2, 0), "valve 3: calibration failed after 2 retries, failsafe 0 %"},
       {ev(EventCode::EarlyStop, 2, 2, 2), "valve 3: early stop (total 2, endstop)"},
       {ev(EventCode::EarlyStop, 2, 2, 3), "valve 3: early stop (total 2, early_endstop)"},
       {ev(EventCode::EarlyStop, 2, 2, -1), "valve 3: early stop (total 2, unknown)"},
@@ -416,6 +606,7 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::TargetNotConfirmed, 2, 40, 5), "valve 3: target 40 % not confirmed after 5 attempts"},
       {ev(EventCode::ValveStale, 2, 60), "valve 3: no data for 60 s"},
       {ev(EventCode::ServiceMoveDone, 2, 500, 1), "valve 3: service move done (500 counts, target)"},
+      {ev(EventCode::CalibStrokeShort, 2, 3599, 3000), "valve 3: calibration stroke 3599 close to the minimum 3000"},
       {ev(EventCode::TempSensorFailed, kNoValve, 4, -1270, "28-84-37-94-97-ff-03-23"), "temp sensor 4 failed (raw -1270, 28-84-37-94-97-ff-03-23)"},
       {ev(EventCode::TempSensorFailed, kNoValve, 4, 850), "temp sensor 4 failed (raw 850)"},
       {ev(EventCode::TempSensorRecovered, kNoValve, 4), "temp sensor 4 recovered"},
@@ -423,6 +614,12 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::SensorCountChanged, kNoValve, 2, 1), "volt sensor count 2"},
       {ev(EventCode::VoltSensorFailed, kNoValve, 1, -1000), "volt sensor 1 failed (raw -1000)"},
       {ev(EventCode::ScheduledCalibration, kNoValve, 20260923, 3), "scheduled calibration (slot 20260923, 3 min late)"},
+      {ev(EventCode::ScheduledCalibrationFailed, kNoValve, 20260923, 1), "scheduled calibration not confirmed (slot 20260923, no reply)"},
+      {ev(EventCode::ScheduledCalibrationFailed, kNoValve, 20260923, 2), "scheduled calibration not confirmed (slot 20260923, not sent)"},
+      {ev(EventCode::ScheduledCalibrationFailed, kNoValve, 20260923, 3), "scheduled calibration not confirmed (slot 20260923, no result)"},
+      {ev(EventCode::ScheduledCalibrationFailed, kNoValve, 20260923, 4), "scheduled calibration not confirmed (slot 20260923, STM unsupported)"},
+      {ev(EventCode::ScheduledCalibrationFailed, kNoValve, 20260923, 5), "scheduled calibration not confirmed (slot 20260923, unknown)"},
+      {ev(EventCode::ScheduledCalibrationMissed, kNoValve, 20260923, 3), "scheduled calibration missed (slot 20260923, 3 attempts)"},
       {ev(static_cast<EventCode>(999)), "event 999"},
       {ev(EventCode::NetUp, 12, 1), "network up (eth)"},  // valve 12 is not a valve
   };
@@ -471,15 +668,21 @@ TEST_CASE("event message truncation and bad buffers") {
 TEST_CASE("event lines with UTC time or uptime") {
   Event e = ev(EventCode::EarlyStop, 2, 2, 2, "", Severity::Warning);
   e.epoch = 1790172185;
+  e.seq = 7;
   char line[160];
   const size_t n = formatEventLine(e, line, sizeof line);
   CHECK(n == strlen(line));
   CHECK(std::string(line) ==
-        "2026-09-23T14:03:05Z WARNING early_stop v3 valve 3: early stop (total 2, endstop)");
+        "#7 2026-09-23T14:03:05Z WARNING early_stop v3 valve 3: early stop (total 2, endstop)");
+  Event big = ev(EventCode::MqttConnected);
+  big.seq = 4294967295u;
+  formatEventLine(big, line, sizeof line);
+  CHECK(std::string(line) == "#4294967295 +0s INFO mqtt_connected MQTT connected");
+  e.seq = 0;
   Event b = ev(EventCode::MqttConnected);
   b.uptimeS = 123;
   formatEventLine(b, line, sizeof line);
-  CHECK(std::string(line) == "+123s INFO mqtt_connected MQTT connected");
+  CHECK(std::string(line) == "#0 +123s INFO mqtt_connected MQTT connected");
 
   struct T {
     uint32_t epoch;
@@ -496,7 +699,7 @@ TEST_CASE("event lines with UTC time or uptime") {
   for (const T& t : times) {
     b.epoch = t.epoch;
     formatEventLine(b, line, sizeof line);
-    CHECK(std::string(line) == std::string(t.prefix) + " INFO mqtt_connected MQTT connected");
+    CHECK(std::string(line) == "#0 " + std::string(t.prefix) + " INFO mqtt_connected MQTT connected");
   }
   const Severity sevs[] = {Severity::Debug, Severity::Error, Severity::Critical,
                            static_cast<Severity>(7), static_cast<Severity>(5)};
@@ -506,28 +709,33 @@ TEST_CASE("event lines with UTC time or uptime") {
   for (int i = 0; i < 5; ++i) {
     b.severity = sevs[i];
     formatEventLine(b, line, sizeof line);
-    CHECK(std::string(line) == std::string("+0s ") + upper[i] + " mqtt_connected MQTT connected");
+    CHECK(std::string(line) == std::string("#0 +0s ") + upper[i] + " mqtt_connected MQTT connected");
   }
   Event all = ev(EventCode::CalibStarted, kAllValves, 1);
+  all.seq = 12;
   formatEventLine(all, line, sizeof line);
-  CHECK(std::string(line) == "+0s INFO calib_started all valves: calibration started (scheduled)");
+  CHECK(std::string(line) ==
+        "#12 +0s INFO calib_started all valves: calibration started (scheduled)");
 
   // Truncation keeps the prefix and stays terminated.
   char single[1] = {'X'};
   CHECK(formatEventLine(e, single, 1) == 0);
   CHECK(single[0] == '\0');
-  char small[12];
-  CHECK(formatEventLine(e, small, sizeof small) == 11);
-  CHECK(std::string(small) == "2026-09-23T");
-  char mid[30];
-  CHECK(formatEventLine(e, mid, sizeof mid) == 29);
-  CHECK(std::string(mid) == "2026-09-23T14:03:05Z WARNING ");
-  char exact[43];  // prefix fills it up to the message
-  CHECK(formatEventLine(e, exact, sizeof exact) == 42);
-  CHECK(std::string(exact) == "2026-09-23T14:03:05Z WARNING early_stop v3");
-  char exact2[44];
-  CHECK(formatEventLine(e, exact2, sizeof exact2) == 43);
-  CHECK(std::string(exact2) == "2026-09-23T14:03:05Z WARNING early_stop v3 ");
+  char three[3];
+  CHECK(formatEventLine(e, three, sizeof three) == 2);
+  CHECK(std::string(three) == "#0");
+  char small[15];
+  CHECK(formatEventLine(e, small, sizeof small) == 14);
+  CHECK(std::string(small) == "#0 2026-09-23T");
+  char mid[33];
+  CHECK(formatEventLine(e, mid, sizeof mid) == 32);
+  CHECK(std::string(mid) == "#0 2026-09-23T14:03:05Z WARNING ");
+  char exact[46];  // prefix fills it up to the message
+  CHECK(formatEventLine(e, exact, sizeof exact) == 45);
+  CHECK(std::string(exact) == "#0 2026-09-23T14:03:05Z WARNING early_stop v3");
+  char exact2[47];
+  CHECK(formatEventLine(e, exact2, sizeof exact2) == 46);
+  CHECK(std::string(exact2) == "#0 2026-09-23T14:03:05Z WARNING early_stop v3 ");
   CHECK(formatEventLine(e, nullptr, 10) == 0);
   CHECK(formatEventLine(e, small, 0) == 0);
 }
@@ -545,10 +753,10 @@ TEST_CASE("event line dates match an independent calendar for every day to 2106"
     e.epoch = day * 86400u + sod;
     if (e.epoch == 0) e.epoch = 1;
     formatEventLine(e, line, sizeof line);
-    snprintf(expect, sizeof expect, "%04u-%02u-%02uT%02u:%02u:%02uZ", y, m, d,
+    snprintf(expect, sizeof expect, "#0 %04u-%02u-%02uT%02u:%02u:%02uZ", y, m, d,
              static_cast<unsigned>(e.epoch % 86400u / 3600), static_cast<unsigned>(e.epoch % 3600 / 60),
              static_cast<unsigned>(e.epoch % 60));
-    if (strncmp(line, expect, 20) != 0) {
+    if (strncmp(line, expect, 23) != 0) {
       FAIL_CHECK("day " << day << ": " << line << " != " << expect);
       break;
     }
@@ -567,9 +775,10 @@ TEST_CASE("event line dates match an independent calendar for every day to 2106"
   for (uint32_t sod = 0; sod < 86400; ++sod) {
     e.epoch = 1790121600u + sod;  // 2026-09-23
     formatEventLine(e, line, sizeof line);
-    snprintf(expect, sizeof expect, "2026-09-23T%02u:%02u:%02uZ", static_cast<unsigned>(sod / 3600),
-             static_cast<unsigned>(sod / 60 % 60), static_cast<unsigned>(sod % 60));
-    if (strncmp(line, expect, 20) != 0) {
+    snprintf(expect, sizeof expect, "#0 2026-09-23T%02u:%02u:%02uZ",
+             static_cast<unsigned>(sod / 3600), static_cast<unsigned>(sod / 60 % 60),
+             static_cast<unsigned>(sod % 60));
+    if (strncmp(line, expect, 23) != 0) {
       FAIL_CHECK(line << " != " << expect);
       break;
     }
@@ -620,6 +829,99 @@ TEST_CASE("event JSON") {
   char tiny[40];
   JsonWriter small(tiny, sizeof tiny);
   CHECK_FALSE(writeEventJson(small, e));
+}
+
+TEST_CASE("MQTT event JSON: single and aggregate (W14-3)") {
+  Event e = ev(EventCode::ValveStale, 2, 60, 0, "", Severity::Warning);
+  e.seq = 7;
+  e.uptimeS = 12;
+  char buf[512];
+  JsonWriter jw(buf, sizeof buf);
+  REQUIRE(writeMqttEventJson(jw, e, 0));
+  CHECK(std::string(buf) ==
+        "{\"seq\":7,\"t\":null,\"up\":12,\"sev\":\"warning\",\"code\":413,\"name\":\"valve_stale\","
+        "\"event_type\":\"valve_stale\",\"valve\":3,\"a1\":60,\"a2\":0,\"text\":\"\","
+        "\"msg\":\"valve 3: no data for 60 s\"}");
+  // One valve bit is not an aggregate: the event's own valve counts.
+  jw.reset();
+  REQUIRE(writeMqttEventJson(jw, e, 1u << 7));
+  CHECK(std::string(buf).find("\"valve\":3,\"a1\"") != std::string::npos);
+  CHECK(std::string(buf).find("valves") == std::string::npos);
+
+  jw.reset();
+  REQUIRE(writeMqttEventJson(jw, e, (1u << 0) | (1u << 1) | (1u << 11)));
+  CHECK(std::string(buf) ==
+        "{\"seq\":7,\"t\":null,\"up\":12,\"sev\":\"warning\",\"code\":413,\"name\":\"valve_stale\","
+        "\"event_type\":\"valve_stale\",\"valve\":null,\"valves\":[1,2,12],\"a1\":60,\"a2\":0,"
+        "\"text\":\"\",\"msg\":\"valves 1, 2, 12: no data for 60 s\"}");
+  // Bits above valve 12 are ignored: bit 0 + bit 12 is a single valve.
+  jw.reset();
+  REQUIRE(writeMqttEventJson(jw, e, 0x1001));
+  CHECK(std::string(buf).find("\"valve\":3,\"a1\"") != std::string::npos);
+  jw.reset();
+  REQUIRE(writeMqttEventJson(jw, e, 0xFFFF));
+  CHECK(std::string(buf).find("\"valves\":[1,2,3,4,5,6,7,8,9,10,11,12]") != std::string::npos);
+  CHECK(std::string(buf).find("\"msg\":\"valves 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12: no data for "
+                              "60 s\"") != std::string::npos);
+  // The plain event JSON has no event_type.
+  jw.reset();
+  REQUIRE(writeEventJson(jw, e));
+  CHECK(std::string(buf).find("event_type") == std::string::npos);
+  // A system event keeps "valve":null.
+  Event s = ev(EventCode::FailsafeActive, kNoValve, 3, 1, "", Severity::Warning);
+  jw.reset();
+  REQUIRE(writeMqttEventJson(jw, s, 0));
+  CHECK(std::string(buf).find("\"event_type\":\"failsafe_active\",\"valve\":null,\"a1\":3") !=
+        std::string::npos);
+  char tiny[60];
+  JsonWriter small(tiny, sizeof tiny);
+  CHECK_FALSE(writeMqttEventJson(small, e, 3));
+}
+
+TEST_CASE("formatEventMessageMulti") {
+  const Event e = ev(EventCode::ValveStale, 4, 60);
+  char buf[160];
+  CHECK(formatEventMessageMulti(e, 0, buf, sizeof buf) == strlen("valve 5: no data for 60 s"));
+  CHECK(std::string(buf) == "valve 5: no data for 60 s");
+  formatEventMessageMulti(e, 1u << 3, buf, sizeof buf);
+  CHECK(std::string(buf) == "valve 5: no data for 60 s");
+  formatEventMessageMulti(e, (1u << 3) | (1u << 9), buf, sizeof buf);
+  CHECK(std::string(buf) == "valves 4, 10: no data for 60 s");
+  formatEventMessageMulti(e, 0x0003, buf, sizeof buf);
+  CHECK(std::string(buf) == "valves 1, 2: no data for 60 s");
+  formatEventMessageMulti(e, 0xF000, buf, sizeof buf);
+  CHECK(std::string(buf) == "valve 5: no data for 60 s");
+  const Event all = ev(EventCode::CalibStarted, kAllValves, 0);
+  formatEventMessageMulti(all, 0, buf, sizeof buf);
+  CHECK(std::string(buf) == "all valves: calibration started");
+  char cut[10];
+  CHECK(formatEventMessageMulti(e, 0x0003, cut, sizeof cut) == 9);
+  CHECK(std::string(cut) == "valves 1,");
+  CHECK(formatEventMessageMulti(e, 0x0003, nullptr, 10) == 0);
+  CHECK(formatEventMessageMulti(e, 0x0003, cut, 0) == 0);
+}
+
+TEST_CASE("formatUtcTimestamp (E29-2)") {
+  char buf[40];
+  CHECK(formatUtcTimestamp(0, buf, sizeof buf) == 25);
+  CHECK(std::string(buf) == "1970-01-01T00:00:00+00:00");
+  CHECK(formatUtcTimestamp(1790072393, buf, sizeof buf) == 25);
+  CHECK(std::string(buf) == "2026-09-22T10:19:53+00:00");
+  CHECK(formatUtcTimestamp(4102444799u, buf, sizeof buf) == 25);
+  CHECK(std::string(buf) == "2099-12-31T23:59:59+00:00");
+  CHECK(formatUtcTimestamp(1709164800, buf, sizeof buf) == 25);
+  CHECK(std::string(buf) == "2024-02-29T00:00:00+00:00");
+  char exact[26];
+  CHECK(formatUtcTimestamp(1790072393, exact, sizeof exact) == 25);
+  CHECK(std::string(exact) == "2026-09-22T10:19:53+00:00");
+  char shortBuf[25];
+  memset(shortBuf, 'x', sizeof shortBuf);
+  CHECK(formatUtcTimestamp(1790072393, shortBuf, sizeof shortBuf) == 0);
+  CHECK(shortBuf[0] == '\0');
+  char one[1] = {'x'};
+  CHECK(formatUtcTimestamp(0, one, 0) == 0);
+  CHECK(one[0] == 'x');
+  CHECK(formatUtcTimestamp(0, nullptr, 40) == 0);
 }
 
 TEST_CASE("parseSeverity fuzz: random bytes only ever match a case-folded name") {

@@ -4,6 +4,18 @@
 
 namespace vdm {
 
+const char* netEvidenceName(NetEvidence e) {
+  switch (e) {
+    case NetEvidence::None: return "none";
+    case NetEvidence::GatewayPing: return "ping";
+    case NetEvidence::Mqtt: return "mqtt";
+    case NetEvidence::TimeSync: return "ntp";
+    case NetEvidence::InboundHttp: return "http";
+    case NetEvidence::DhcpLease: return "dhcp";
+  }
+  return "unknown";
+}
+
 void NetWatchdog::configure(uint8_t minutes) {
   minutes_ = minutes;
   fired_ = false;
