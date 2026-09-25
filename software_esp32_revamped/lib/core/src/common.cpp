@@ -164,6 +164,71 @@ bool isHostName(const char* s, size_t maxLen) {
 
 namespace {
 
+// U+00C0..U+017F -> ASCII base letter; '\0' = two-letter form (kTwoLetter),
+// '_' = not a letter (U+00D7, U+00F7).
+const char kLatinBase[192 + 1] =
+    "AAAAAA\0CEEEEIIII"   // U+00C0
+    "DNOOOOO_OUUUUY\0\0"  // U+00D0
+    "aaaaaa\0ceeeeiiii"   // U+00E0
+    "dnooooo_ouuuuy\0y"   // U+00F0
+    "AaAaAaCcCcCcCcDd"    // U+0100
+    "DdEeEeEeEeEeGgGg"    // U+0110
+    "GgGgHhHhIiIiIiIi"    // U+0120
+    "Ii\0\0JjKkkLlLlLlL"  // U+0130
+    "lLlNnNnNnnNnOoOo"    // U+0140
+    "Oo\0\0RrRrRrSsSsSs"  // U+0150
+    "SsTtTtTtUuUuUuUu"    // U+0160
+    "UuUuWwYyYZzZzZzs";   // U+0170
+static_assert(sizeof kLatinBase == 193, "one byte per code point");
+const uint16_t kTwoLetterCp[] = {0xC6, 0xDE, 0xDF, 0xE6, 0xFE, 0x132, 0x133, 0x152, 0x153};
+const char kTwoLetter[] = "AETHssaethIJijOEoe";
+
+bool isIdChar(uint8_t c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+         c == '-';
+}
+
+}  // namespace
+
+size_t buildHaId(const char* in, size_t len, char* out, size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  len = boundedLength(in, len);
+  size_t n = 0;
+  for (size_t i = 0; i < len;) {
+    const uint8_t c = static_cast<uint8_t>(in[i]);
+    char id[3] = {'_', '\0', '\0'};
+    size_t step = 1;
+    if (c < 0x80) {
+      if (isIdChar(c)) id[0] = static_cast<char>(c);
+    } else {
+      const size_t seq = utf8SequenceLength(in + i, len - i);
+      if (seq != 0) step = seq;  // an invalid byte is one '_' of its own
+      const uint32_t cp =
+          seq == 2 ? (c & 0x1Fu) << 6 | (static_cast<uint8_t>(in[i + 1]) & 0x3Fu) : 0;
+      if (cp >= 0xC0 && cp <= 0x17F) {
+        id[0] = kLatinBase[cp - 0xC0];
+        for (size_t k = 0; k < sizeof kTwoLetterCp / sizeof *kTwoLetterCp; ++k) {
+          if (kTwoLetterCp[k] != cp) continue;
+          id[0] = kTwoLetter[2 * k];
+          id[1] = kTwoLetter[2 * k + 1];
+        }
+      }
+    }
+    for (const char* p = id; *p != '\0'; ++p) {
+      if (n + 1 >= cap) {
+        out[0] = '\0';
+        return 0;
+      }
+      out[n++] = *p;
+    }
+    i += step;
+  }
+  out[n] = '\0';
+  return n;
+}
+
+namespace {
+
 // Parses 1..10 decimal digits into a 64-bit accumulator.
 bool parseDigits(const char* s, size_t len, uint64_t& out) {
   if (s == nullptr || len == 0 || len > 10) return false;
@@ -227,6 +292,12 @@ size_t formatIpv4(uint32_t ip, char* out, size_t cap) {
     return 0;
   }
   return static_cast<size_t>(n);
+}
+
+bool roundTargetPercent(double v, uint8_t& out) {
+  if (!(v >= 0.0 && v <= 100.0)) return false;  // also NaN
+  out = static_cast<uint8_t>(v + 0.5);
+  return true;
 }
 
 bool operator==(const OneWireId& a, const OneWireId& b) { return memcmp(a.b, b.b, 8) == 0; }
