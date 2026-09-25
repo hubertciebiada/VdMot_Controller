@@ -1139,8 +1139,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
 
   static int cyclecnt = 0;
   static int debouncecnt = 0;
-  static int testcnt = 0;
- 
+
   static int normalcurrcnt = 0;
 
   static uint16_t meancurrent_cnt = 0;          // counts meancurrent values
@@ -1300,7 +1299,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     cyclecnt++;
                                 
                     if(debouncecnt<255) debouncecnt++;
-                    if(testcnt<255) testcnt++;
 
                     last_turning_current = current_mA;
                     move_profile.add(isr_counter, last_turning_current);

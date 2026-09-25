@@ -198,8 +198,6 @@ void loop_system() {
   static uint8_t ledTimer = 0;
   static uint32_t lastValveTicks = 0;
 
-  int16_t recvcmd;
-  
   sysstat_loop();
 
 
@@ -231,7 +229,7 @@ void loop_system() {
       digitalWrite(LED,HIGH);
       ledTimer=0;  
     }
-    recvcmd = Terminal_Serve();
+    Terminal_Serve();
     
     // button test
     if (digitalRead(BUTTON) > 0 && buttontest == 0) 

@@ -139,7 +139,6 @@ void setDeviceAddress() {
 }
 
 void temperature_setup() {
-  uint8_t thisSensorAddress [8];
 
     #ifdef tempDebug
       COMM_DBG.println("starting 1-wire setup"); 
@@ -171,7 +170,6 @@ void temperature_loop() {
     static int devDS2438Cnt = 0;
     static unsigned int timer = 0;
 
-    DeviceAddress currAddress;
     float temp = 0;
     float v = 0;
 
