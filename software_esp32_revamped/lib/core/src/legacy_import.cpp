@@ -528,15 +528,25 @@ class Importer {
 
   // ------------------------------------------------------------ cross-field rules
 
-  using Name = char[kItemNameMax + 1];
+  // Bit i: item i has a non-empty name / topic. The repairs only clear them.
+  template <typename Item>
+  static uint64_t setBits(const Item* items, uint8_t count, bool topic) {
+    uint64_t bits = 0;
+    for (uint8_t i = 0; i < count; ++i) {
+      if ((topic ? items[i].topic : items[i].name)[0] != '\0') bits |= 1ull << i;
+    }
+    return bits;
+  }
 
   // sanitizeConfig() makes the result valid; every repair is reported under
-  // the legacy key it came from, in the order of the rules.
+  // the legacy key it came from, in the order of the rules. The item repair
+  // sanitizeConfig() made first (Repairs::first) is reported before the
+  // other item repairs, so firstRejected names it; the rest follow by number.
   void repair() {
-    Name temps[kTempSlotCount];
-    Name volts[kVoltSlotCount];
-    for (uint8_t i = 0; i < kTempSlotCount; ++i) memcpy(temps[i], c_.temps[i].name, sizeof temps[i]);
-    for (uint8_t i = 0; i < kVoltSlotCount; ++i) memcpy(volts[i], c_.volts[i].name, sizeof volts[i]);
+    const uint64_t tempNames = setBits(c_.temps, kTempSlotCount, false);
+    const uint64_t tempTopics = setBits(c_.temps, kTempSlotCount, true);
+    const uint64_t voltNames = setBits(c_.volts, kVoltSlotCount, false);
+    const uint64_t voltTopics = setBits(c_.volts, kVoltSlotCount, true);
     Repairs r;
     sanitizeConfig(c_, &r);
     struct Bit {
@@ -554,32 +564,53 @@ class Importer {
     for (const Bit& b : kKeys) {
       if ((r.mask & b.bit) != 0) rejected(b.ns, b.key);
     }
+    static const char* const kItemNs[][2] = {
+        {"valves.", "valvesCfg"}, {"temps.", "tempsCfg"}, {"volts.", "voltsCfg"}};
+    lead_ = "";
+    for (const auto& k : kItemNs) {
+      if (strncmp(r.first, k[0], strlen(k[0])) != 0) continue;
+      rejected(k[1], r.first);
+      lead_ = r.first;
+    }
     for (uint8_t i = 0; i < kValveCount; ++i) {
-      if ((r.valveNames >> i) & 1u) rejectedElem("valvesCfg", "valves", i, "name");
-      if ((r.valveTopics >> i) & 1u) rejectedElem("valvesCfg", "valves", i, "topic");
+      if ((r.valveNames >> i) & 1u) item("valvesCfg", "valves", i, "name");
+      if ((r.valveTopics >> i) & 1u) item("valvesCfg", "valves", i, "topic");
       if (((r.valveNames | r.valveTopics) >> i) & 1u) markRenamed(ItemKind::Valve, i);
     }
-    slotRepairs(c_.temps, kTempSlotCount, temps, r.tempIds, r.tempActive, ItemKind::Temp,
-                "tempsCfg", "temps");
-    slotRepairs(c_.volts, kVoltSlotCount, volts, r.voltIds, r.voltActive, ItemKind::Volt,
-                "voltsCfg", "volts");
+    slotRepairs(c_.temps, kTempSlotCount, tempNames, tempTopics, r.tempIds, r.tempActive,
+                ItemKind::Temp, "tempsCfg", "temps");
+    slotRepairs(c_.volts, kVoltSlotCount, voltNames, voltTopics, r.voltIds, r.voltActive,
+                ItemKind::Volt, "voltsCfg", "volts");
   }
 
-  // Ids and active flags per slot, then the names cleared for one HA id.
+  // One item repair, unless it is the lead already reported.
+  void item(const char* ns, const char* key, uint8_t i, const char* field) {
+    char k[32];
+    snprintf(k, sizeof k, "%s.%u.%s", key, static_cast<unsigned>(i + 1), field);
+    if (strcmp(k, lead_) != 0) rejected(ns, k);
+  }
+
+  // Ids and active flags per slot, then the names and topic overrides
+  // cleared for one HA id.
   template <typename Slot, typename Bits>
-  void slotRepairs(const Slot* slots, uint8_t count, const Name* before, Bits ids, Bits active,
-                   ItemKind kind, const char* ns, const char* key) {
+  void slotRepairs(const Slot* slots, uint8_t count, uint64_t names, uint64_t topics, Bits ids,
+                   Bits active, ItemKind kind, const char* ns, const char* key) {
     for (uint8_t i = 0; i < count; ++i) {
-      if ((ids >> i) & 1u) rejectedElem(ns, key, i, "id");
-      if ((active >> i) & 1u) rejectedElem(ns, key, i, "active");
+      if ((ids >> i) & 1u) item(ns, key, i, "id");
+      if ((active >> i) & 1u) item(ns, key, i, "active");
     }
+    const uint64_t names2 = setBits(slots, count, false);
+    const uint64_t topics2 = setBits(slots, count, true);
     for (uint8_t i = 0; i < count; ++i) {
-      if (strcmp(before[i], slots[i].name) == 0) continue;
-      rejectedElem(ns, key, i, "name");
-      markRenamed(kind, i);
+      const bool name = ((names & ~names2) >> i) & 1u;
+      const bool topic = ((topics & ~topics2) >> i) & 1u;
+      if (name) item(ns, key, i, "name");
+      if (topic) item(ns, key, i, "topic");
+      if (name || topic) markRenamed(kind, i);
     }
   }
 
+  const char* lead_ = "";
   LegacyNvsReader& nvs_;
   Config& c_;
   ImportReport& r_;

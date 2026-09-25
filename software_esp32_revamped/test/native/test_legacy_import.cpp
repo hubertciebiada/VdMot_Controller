@@ -1027,7 +1027,7 @@ TEST_CASE("legacy: valves blob") {
     CHECK(std::string(c.valves[1].name) == "x");
     CHECK(std::string(c.valves[7].name) == "8");
     CHECK(r.rejected == 2);
-    CHECK(first(r) == "valvesCfg/valves.1.name");  // repairs are reported by valve number
+    CHECK(first(r) == "valvesCfg/valves.4.name");
     CHECK(r.renamedValves == ((1u << 0) | (1u << 3)));
     CHECK(valid(c));
   }
@@ -1182,7 +1182,7 @@ TEST_CASE("legacy: a sensor named like the number of a later unnamed one loses i
   CHECK(c.temps[2].active);
   CHECK(c.temps[6].active);
   CHECK(r.rejected == 2);
-  CHECK(first(r) == "tempsCfg/temps.1.name");  // repairs are reported by slot number
+  CHECK(first(r) == "tempsCfg/temps.3.name");
   CHECK(r.renamedTemps == ((1ull << 0) | (1ull << 2)));
   CHECK(valid(c));
 }
@@ -1200,7 +1200,30 @@ TEST_CASE("legacy: a sensor name cleared for one clash is checked again") {
   CHECK(std::string(c.temps[1].name).empty());
   CHECK(std::string(c.temps[2].name).empty());
   CHECK(r.rejected == 2);
-  CHECK(first(r) == "tempsCfg/temps.2.name");  // repairs are reported by slot number
+  CHECK(first(r) == "tempsCfg/temps.3.name");
+  CHECK(valid(c));
+}
+
+TEST_CASE("legacy: a sensor topic override cleared for one clash is reported") {
+  FakeNvs n;
+  auto t = tempsBlob();
+  setTemp(t, 0, "Bad/WC", 1, 0, kIdA);
+  setTemp(t, 1, "Bad/WC", 1, 0, kIdB);
+  n.putBlob("tempsCfg", "temps", t);
+  auto w = voltsBlob();
+  setVolt(w, 0, "Bad/WC", 1, 0.0f, 1.0f, "", kIdV);
+  setVolt(w, 1, "Bad/WC", 1, 0.0f, 1.0f, "", "26-11-22-33-44-55-66-01");
+  n.putBlob("voltsCfg", "volts", w);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.temps[0].topic) == "Bad/WC");
+  CHECK(c.temps[1].topic[0] == '\0');
+  CHECK(std::string(c.volts[0].topic) == "Bad/WC");
+  CHECK(c.volts[1].topic[0] == '\0');
+  CHECK(first(r) == "tempsCfg/temps.2.topic");
+  CHECK(r.rejected >= 2);
+  CHECK(r.renamedTemps == 3);
+  CHECK(r.renamedVolts == 3);
   CHECK(valid(c));
 }
 
