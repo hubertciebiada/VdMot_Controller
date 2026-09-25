@@ -25,11 +25,14 @@ const char* valveStatusKey(uint8_t status);
 // Who set the desired target (event log, API).
 enum class TargetSource : uint8_t {
   None = 0,
-  Stm,      // adopted from the STM at (re)sync (gtgtp/gvlvx), ESP boot
-  Web,      // HTTP /api/valves/{n}/target
-  Mqtt,     // MQTT valves/<V>/target
+  Stm,       // adopted from the STM at (re)sync (gtgtp/gvlvx), ESP boot
+  Web,       // HTTP /api/valves/{n}/target
+  Mqtt,      // MQTT valves/<V>/target
+  Restored,  // from the RTC/NVS copy at ESP boot
+  Assembly,  // staop: 100 %, held until the next web/MQTT target
 };
-const char* targetSourceName(TargetSource s);  // "none","stm","web","mqtt"
+// "none","stm","web","mqtt","restored","assembly"; "unknown" out of range
+const char* targetSourceName(TargetSource s);
 
 // Delivery state of the desired target (see DESIGN.md "Target delivery").
 enum class TargetSync : uint8_t {
@@ -53,6 +56,8 @@ enum HealthFlag : uint16_t {
   kHealthStale = 1u << 6,             // active valve: no data for staleMs
   kHealthTargetUnconfirmed = 1u << 7, // TargetSync::Failed, and while that target is retried
   kHealthTempFailed = 1u << 8,        // an assigned sensor reports a sentinel
+  kHealthFailsafe = 1u << 9,          // at its lease failsafe position (STM or ESP emulation)
+  kHealthStrokeShort = 1u << 10,      // calibration stroke close to minCounts
 };
 
 struct ValveState {
@@ -95,6 +100,21 @@ struct ValveState {
   // +1 on every change of any field above except the lastSeenMs/lastPushMs
   // timestamps (a poll that returns the same data is not a change).
   uint32_t revision = 0;
+  // protocol 3 (gvlvy)
+  bool hasV3 = false;
+  uint16_t stmFlags = 0;             // kStmFlag*
+  uint8_t fault = 0;                 // ValveFault
+  // Failsafe position that applies: gvlvy (protocol 3) or the ESP config
+  // (protocols 1/2, kFailsafeHold for inactive valves).
+  uint8_t fsPct = kFailsafeHold;
+  uint8_t drive = 0;                 // target the STM drives to
+  uint32_t retryS = 0;               // s to the next automatic calibration retry
+  uint8_t retries = 0;               // automatic retries since the fault began
+  bool autoRetry = false;            // retries rose since the last calibration end
+  // ESP failsafe emulation (protocols 1/2): fsTarget is pushed instead of desired.
+  bool fsOverride = false;
+  uint8_t fsTarget = 0;
+  bool forcePush = false;            // push the desired target once even if the read-back equals it
 };
 
 // Field groups for change detection (publishing, events).
@@ -113,9 +133,19 @@ enum ValveChange : uint32_t {
   kChangeSensors = 1u << 11,
   kChangeHealth = 1u << 12,
   kChangeKnown = 1u << 13,
+  kChangeFailsafe = 1u << 14,    // hasV3, stmFlags, fault, fsPct, drive, retries, autoRetry,
+                                 // fsOverride, fsTarget
 };
 // Bitmask of groups that differ between two snapshots of one valve.
 uint32_t diffValve(const ValveState& before, const ValveState& after);
+
+// Failsafe state of a valve for the API and MQTT: Blocked when the STM
+// reports it at its failsafe position because it is blocked (protocol 3),
+// Lease when it is at its lease failsafe position (STM flag, or the ESP
+// emulation overrides its target), else None.
+FailsafeKind failsafeKind(const ValveState& v);
+// failsafeKind(v) == FailsafeKind::Lease.
+bool valveAtFailsafe(const ValveState& v);
 
 struct ValveModelParams {
   uint32_t staleMs = 60000;          // active valve without data -> kHealthStale
@@ -223,6 +253,7 @@ struct TempReading {
   int16_t raw = kTempUnassigned;
   bool seen = false;         // at least one goned for this bus index
   uint32_t lastSeenMs = 0;
+  uint8_t failStreak = 0;    // consecutive failed readings (saturating)
 };
 
 struct VoltReading {
@@ -230,6 +261,7 @@ struct VoltReading {
   int32_t vad = kVadFailed;  // 10 mV
   bool seen = false;
   uint32_t lastSeenMs = 0;
+  uint8_t failStreak = 0;    // consecutive failed readings (saturating)
 };
 
 // Raw temperature is a real reading (not -500, -1270 or 850) and within

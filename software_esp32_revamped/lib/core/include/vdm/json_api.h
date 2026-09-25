@@ -107,7 +107,7 @@ struct ValveView {
 // One entry per view (the glue passes all 12), idx = array position + 1.
 // "health" lists HealthFlag names in bit order: "blocked","failed","noValve",
 // "calibRetries","earlyStop","cmdRejected","stale","targetUnconfirmed",
-// "tempFailed". "sensors" lists only assigned slots (slot != 0). "peak" is
+// "tempFailed","failsafe","strokeShort". "sensors" lists only assigned slots (slot != 0). "peak" is
 // in mA with one decimal. A null state/config pointer renders as empty.
 bool writeValvesJson(JsonWriter& jw, const ValveView* views, uint8_t count, uint32_t nowMs);
 

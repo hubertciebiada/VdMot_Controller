@@ -37,7 +37,8 @@ const char* resetReasonName(uint8_t r) {
 // HealthFlag bit order.
 const char* const kHealthNames[] = {"blocked",     "failed",      "noValve",
                                     "calibRetries", "earlyStop",   "cmdRejected",
-                                    "stale",       "targetUnconfirmed", "tempFailed"};
+                                    "stale",       "targetUnconfirmed", "tempFailed",
+                                    "failsafe",    "strokeShort"};
 constexpr uint8_t kHealthCount = sizeof kHealthNames / sizeof kHealthNames[0];
 
 void ipValue(JsonWriter& jw, const char* k, uint32_t ip) {

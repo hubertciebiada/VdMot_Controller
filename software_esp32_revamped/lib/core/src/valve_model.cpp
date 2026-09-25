@@ -49,9 +49,19 @@ const char* targetSourceName(TargetSource s) {
     case TargetSource::Stm: return "stm";
     case TargetSource::Web: return "web";
     case TargetSource::Mqtt: return "mqtt";
+    case TargetSource::Restored: return "restored";
+    case TargetSource::Assembly: return "assembly";
   }
   return "unknown";
 }
+
+FailsafeKind failsafeKind(const ValveState& v) {
+  if (v.hasV3 && (v.stmFlags & kStmFlagFsBlocked) != 0) return FailsafeKind::Blocked;
+  if (v.fsOverride || (v.hasV3 && (v.stmFlags & kStmFlagFsLease) != 0)) return FailsafeKind::Lease;
+  return FailsafeKind::None;
+}
+
+bool valveAtFailsafe(const ValveState& v) { return failsafeKind(v) == FailsafeKind::Lease; }
 
 const char* targetSyncName(TargetSync s) {
   switch (s) {
