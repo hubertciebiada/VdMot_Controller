@@ -178,7 +178,8 @@ mutate dead --jobs 2
   fail "not_compiled mutants counted as run: $(report dead "r['totals']['run']")"
 ok "not_compiled detection, not counted as run"
 
-# --- a mutant that only warns (-Wparentheses) is built and counted; a compile error is stillborn
+# --- a mutant that only warns (-Wparentheses) is built and counted; a compile error in the file
+# and an undefined symbol are stillborn
 project warn
 cat >"$T/warn/proj/src/w.cpp" <<'CPP'
 static_assert(sizeof(int) == 4, "int");
@@ -186,8 +187,16 @@ bool w(bool a, bool b, bool c) {
   if (a && b && c) return true;
   return false;
 }
+int missing();
+int present() { return 7; }
+int pick() {
+  if constexpr (true)
+    return present();
+  else
+    return missing();  // NOMUTATE: the discarded branch, only the mutant of the condition runs it
+}
 CPP
-printf '#include "src/w.cpp"\nint main() { return w(true, true, true) && !w(false, true, true) && !w(true, false, true) && !w(true, true, false) ? 0 : 1; }\n' \
+printf '#include "src/w.cpp"\nint main() { return w(true, true, true) && !w(false, true, true) && !w(true, false, true) && !w(true, true, false) && pick() == 7 ? 0 : 1; }\n' \
   >"$T/warn/proj/test_w.cpp"
 config warn '{"threshold": 0}'
 mutate warn --jobs 2
@@ -196,10 +205,34 @@ printf 'bool w(bool a, bool b, bool c) { if (a || b && c) return true; return fa
   g++ -Wall -Wextra -fsyntax-only -x c++ - 2>&1 | grep -q "Wparentheses" || fail "g++ does not warn about the mutant"
 [ "$(report warn "[m['status'] for m in M if m['line'] == 3 and m['col'] == 9 and m['replacement'] == '||'][0]")" = "killed" ] ||
   fail "the -Wparentheses mutant was not built and counted"
-[ "$(report warn "r['totals']['stillborn']")" -ge 1 ] || fail "no stillborn mutant"
+[ "$(report warn "all(m['status'] == 'stillborn' for m in M if m['line'] == 1)")" = "True" ] ||
+  fail "the static_assert mutants are not stillborn"
+report warn "[m['detail'] for m in M if m['line'] == 9 and m['replacement'] == 'false'][0]" | grep -q "undefined reference" ||
+  fail "the undefined symbol is not stillborn: $(report warn "[(m['status'], m['detail']) for m in M if m['line'] == 9]")"
 [ "$(report warn "r['totals']['counted'] == r['totals']['killed'] + r['totals']['survived'] + r['totals']['timeout']")" = "True" ] ||
   fail "stillborn mutants were counted"
-ok "-Wparentheses mutant built and counted, stillborn excluded"
+ok "-Wparentheses mutant built and counted; compile error and undefined symbol stillborn, excluded"
+
+# --- a build that fails without an error in the mutated file (full disk, linker I/O) is an
+# error: never stillborn, never cached
+project infra
+printf 'int i1(int a) {\n  return a;\n}\n' >"$T/infra/proj/src/i.cpp"
+printf '#include "src/i.cpp"\nint main() { return i1(4) == 4 ? 0 : 1; }\n' >"$T/infra/proj/test_i.cpp"
+cat >"$T/infra/proj/build.sh" <<'SH'
+if [ -n "${INFRA_MSG:-}" ] && ! grep -q "return a;" src/i.cpp; then echo "$INFRA_MSG"; exit 1; fi
+exec g++ -std=c++17 -O0 -I. "test_$2.cpp" -o "$1/t_$2"
+SH
+config infra '{"threshold": 0}'
+INFRA_MSG="cc1plus: fatal error: error writing to /tmp/ccq.s: No space left on device" mutate infra --jobs 1
+[ "$RC" -eq 2 ] || fail "full disk: exit $RC, expected 2"
+[ "$(report infra "[m['status'] for m in M]")" = "['error']" ] || fail "full disk: $(report infra "[m['status'] for m in M]")"
+INFRA_MSG="ld: error: cannot open output file build/t_i: Input/output fault" mutate infra --jobs 1
+[ "$RC" -eq 2 ] || fail "linker I/O: exit $RC, expected 2"
+[ "$(report infra "[m['status'] for m in M]")" = "['error']" ] || fail "linker I/O: $(report infra "[m['status'] for m in M]")"
+report infra "M[0]['detail']" | grep -q "without a compiler error in src/i.cpp" || fail "linker I/O: detail"
+mutate infra --jobs 1
+[ "$RC" -eq 0 ] && grep -q "0 from the cache" "$T/out" || fail "an error result was cached"
+ok "build failures of the environment are errors, not stillborn, not cached"
 
 # --- exit codes of the glue runner: 124 (a case timed out) is a timeout that a solo re-run
 # confirms, 125 (the runner failed) an error; neither is a kill by itself

@@ -46,10 +46,11 @@ Source markers: "// NOMUTATE: <reason>" on a line suppresses its mutants; NOMUTA
 reason is a configuration error. Preprocessor directive lines are never mutated.
 
 Statuses: killed; survived; timeout (confirmed by a solo re-run, counts as killed; a mutant
-that fails its tests in the solo re-run is killed); stillborn (the compiler printed "error:");
-not_compiled; equivalent; error (a timeout that passes its tests alone, compiler crash or build
-timeout, a test run that did not start or whose runner failed (exit 125-127); never cached, the
-run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
+that fails its tests in the solo re-run is killed); stillborn (a compiler error on a line of the
+mutated file, or an undefined symbol); not_compiled; equivalent; error (a timeout that passes
+its tests alone, a build that failed for another reason, e.g. a compiler crash, a full disk or a
+build timeout, a test run that did not start or whose runner failed (exit 125-127); never
+cached, the run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
 <config>.cache.json (key: file, source hash, config hash, position, operator, replacement), so
 an interrupted run resumes; survivors always run again. The checkout is never written: every
 worker is a copy under --workdir. The mean s/mutant covers the mutants built in this run; a
@@ -134,7 +135,10 @@ NOT_RUN = (125, 126, 127)
 CACHEABLE = ("killed", "timeout", "stillborn", "not_compiled")
 STATUSES = ("killed", "survived", "timeout", "stillborn", "not_compiled", "equivalent", "error")
 BUILD_CRASHES = ("internal compiler error", "Killed signal terminated program",
-                 "virtual memory exhausted", "out of memory", "interrupted by user")
+                 "virtual memory exhausted", "out of memory", "interrupted by user",
+                 "No space left on device", "ninja: error", "Cannot allocate memory",
+                 "Input/output error")
+LINK_ERRORS = ("undefined reference to", "undefined symbol")
 
 
 class ConfigError(Exception):
@@ -625,7 +629,10 @@ def tail(text: str, n: int = 3000) -> str:
     return text[-n:]
 
 
-def classify_build_failure(rc: int, out: str) -> tuple[str, str]:
+def classify_build_failure(rc: int, out: str, rel: str) -> tuple[str, str]:
+    """A failed mutant build is stillborn when the compiler reports an error and names a line of
+    the mutated file (directly or as the origin of a template or macro error), or when the linker
+    misses a symbol; any other failure is an error of the build environment."""
     if rc == TIMEOUT_RC:
         return "error", "build timeout"
     for pattern in BUILD_CRASHES:
@@ -633,10 +640,15 @@ def classify_build_failure(rc: int, out: str) -> tuple[str, str]:
             return "error", f"build failed: {pattern}"
     if rc < 0:
         return "error", f"build killed by signal {-rc}"
-    for line in out.splitlines():
-        if "error:" in line:
-            return "stillborn", line.strip()[:200]
-    return "error", f"build failed (exit {rc}) without a compiler error"
+    lines = [line.strip() for line in out.splitlines()]
+    errors = [line for line in lines if "error:" in line]
+    at_file = re.compile(r"(?:^|[\s/\\])" + re.escape(os.path.basename(rel)) + r":\d+:")
+    in_file = [line for line in lines if at_file.search(line)]
+    missing = [line for line in lines if any(p in line for p in LINK_ERRORS)]
+    if errors and (in_file or missing):
+        detail = next((e for e in errors if at_file.search(e)), (missing or errors)[0])
+        return "stillborn", detail[:200]
+    return "error", f"build failed (exit {rc}) without a compiler error in {rel}"
 
 
 # ---------------------------------------------------------------- workers
@@ -775,7 +787,7 @@ def evaluate(m: Mutant, w: Worker, cfg: dict, budgets: dict, quick: bool, runner
     try:
         rc, out, _ = runner.run(fmt(cfg["build"], w.build, stem), w.root, cfg["timeout_build"], env)
         if rc != 0:
-            m.status, m.detail = classify_build_failure(rc, out)
+            m.status, m.detail = classify_build_failure(rc, out, m.file)
             return
         stages = [(1, cfg["test_file"])]
         if cfg.get("test") and not quick:
