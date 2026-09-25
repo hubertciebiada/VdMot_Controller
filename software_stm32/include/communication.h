@@ -41,7 +41,7 @@
 extern void communication_setup (void);
 extern int16_t communication_loop (void);
 
-// helpers shared with the debug terminal
+// functions shared with the debug terminal
 // valve: 0..ACTUATOR_COUNT-1; return 0 on success, -1 on invalid arguments
 extern int16_t comm_set_valve_sensors (uint16_t valve, const char *first, const char *second);
 extern int16_t comm_set_valve_sensor_index (uint16_t valve, uint8_t slot, uint16_t sensor);
