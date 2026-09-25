@@ -19,7 +19,8 @@ namespace {
 constexpr size_t kVersionMaxLen = 31;
 // The suffix is what follows the shortest numeric part "0.0.0", so it always
 // fits and parseVersion needs no runtime length check for it.
-static_assert(sizeof(Version::suffix) >= kVersionMaxLen - 5 + 1, "suffix");  // NOMUTATE
+static_assert(sizeof(Version::suffix) >= kVersionMaxLen - 5 + 1,  // NOMUTATE: compile-time check
+              "suffix");
 
 bool isSuffixChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||

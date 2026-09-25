@@ -98,8 +98,7 @@ constexpr int32_t kSecretMaxI = static_cast<int32_t>(kSecretMax);
 constexpr int32_t kHostMaxI = static_cast<int32_t>(kHostMax);
 constexpr int32_t kItemNameMaxI = static_cast<int32_t>(kItemNameMax);
 // Longest string the patch reader keeps (PatchWalker).
-// NOMUTATE on the next line: any size above the longest field (80) is equivalent.
-constexpr size_t kPatchStrMax = 96;  // NOMUTATE
+constexpr size_t kPatchStrMax = 96;  // NOMUTATE: any size above the longest field is equivalent
 
 constexpr Field kRootHead[] = {
     strField("station", Kind::Str, offsetof(Config, station), sizeof(Config::station), 1,
@@ -240,24 +239,23 @@ constexpr Field kRootTail[] = {
 // buffer, and shorter than what the patch reader keeps (so a cut string is
 // still too long). Checked at compile time for every table.
 constexpr bool fits(const Field& f) {  // NOMUTATE: compile-time check
-  return (f.kind != Kind::Str && f.kind != Kind::Secret) ||  // NOMUTATE
-         (f.max < f.cap && f.cap <= kAllowedHostsMax + 1 &&   // NOMUTATE
-          static_cast<size_t>(f.max) < kPatchStrMax);           // NOMUTATE
+  return (f.kind != Kind::Str && f.kind != Kind::Secret) ||  // NOMUTATE: compile-time check
+         (f.max < f.cap && f.cap <= kAllowedHostsMax + 1 &&   // NOMUTATE: compile-time check
+          static_cast<size_t>(f.max) < kPatchStrMax);           // NOMUTATE: compile-time check
 }
 template <size_t N>
 constexpr bool allFit(const Field (&a)[N]) {
-  for (const Field& f : a) {  // NOMUTATE
-    if (!fits(f)) return false;  // NOMUTATE
+  for (const Field& f : a) {     // NOMUTATE: compile-time check
+    if (!fits(f)) return false;  // NOMUTATE: compile-time check
   }
-  return true;  // NOMUTATE
+  return true;  // NOMUTATE: compile-time check
 }
-// NOMUTATE on the next lines: compile-time check.
-static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&  // NOMUTATE
-                  allFit(kSyslogFields) && allFit(kWebFields) &&                 // NOMUTATE
-                  allFit(kMqttFields) && allFit(kValveFields) &&                 // NOMUTATE
-                  allFit(kTempFields) && allFit(kVoltFields) &&                  // NOMUTATE
-                  allFit(kCalibFields) && allFit(kFailsafeFields) &&             // NOMUTATE
-                  allFit(kRootTail),
+static_assert(allFit(kRootHead) && allFit(kNetFields) &&          // NOMUTATE: compile-time check
+                  allFit(kTimeFields) && allFit(kSyslogFields) &&  // NOMUTATE: compile-time check
+                  allFit(kWebFields) && allFit(kMqttFields) &&     // NOMUTATE: compile-time check
+                  allFit(kValveFields) && allFit(kTempFields) &&   // NOMUTATE: compile-time check
+                  allFit(kVoltFields) && allFit(kCalibFields) &&   // NOMUTATE: compile-time check
+                  allFit(kFailsafeFields) && allFit(kRootTail),    // NOMUTATE: compile-time check
               "string field limits");
 
 struct Group {
@@ -274,10 +272,10 @@ constexpr uint8_t countOf(const T (&)[N]) {
   return static_cast<uint8_t>(N);
 }
 
-// NOMUTATE on the two root rows: a root group has no index, its count is
-// never read.
+// A root group (name nullptr) has no index: count 0 and 1 both give one element.
 const Group kGroups[] = {
-    {nullptr, kRootHead, countOf(kRootHead), 0, 0, sizeof(Config)},  // NOMUTATE
+    {nullptr, kRootHead, countOf(kRootHead), 0, 0,  // NOMUTATE: root count 0 and 1 are equal
+     sizeof(Config)},
     {"net", kNetFields, countOf(kNetFields), offsetof(Config, net), 0, sizeof(NetConfig)},
     {"time", kTimeFields, countOf(kTimeFields), offsetof(Config, time), 0, sizeof(TimeConfig)},
     {"syslog", kSyslogFields, countOf(kSyslogFields), offsetof(Config, syslog), 0,
@@ -294,7 +292,8 @@ const Group kGroups[] = {
      sizeof(CalibScheduleConfig)},
     {"failsafe", kFailsafeFields, countOf(kFailsafeFields), offsetof(Config, failsafe), 0,
      sizeof(FailsafeConfig)},
-    {nullptr, kRootTail, countOf(kRootTail), 0, 0, sizeof(Config)},  // NOMUTATE
+    {nullptr, kRootTail, countOf(kRootTail), 0, 0,  // NOMUTATE: root count 0 and 1 are equal
+     sizeof(Config)},
 };
 
 constexpr size_t kGroupCount = countOf(kGroups);
@@ -362,8 +361,7 @@ bool hostListValid(const char* s, size_t len) {
     size_t end = pos;
     while (end < len && s[end] != ',') ++end;
     size_t b = pos, e = end;
-    // NOMUTATE on the next line: s[end] is ',' or the NUL, never a space.
-    while (b < e && s[b] == ' ') ++b;  // NOMUTATE
+    while (s[b] == ' ') ++b;  // s[end] is ',' or the NUL
     while (e > b && s[e - 1] == ' ') --e;
     char host[kAllowedHostsMax + 1];  // NOMUTATE: a larger buffer is equivalent
     memcpy(host, s + b, e - b);

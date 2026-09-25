@@ -25,9 +25,9 @@ void EventRateLimiter::refill(uint32_t nowMs) {
   refillRemainder_ = static_cast<uint32_t>(num % kHourMs);
   if (tokensMilli_ + add >= capacity) {
     tokensMilli_ = capacity;
-    // NOMUTATE on the next line: remainders are multiples of 1000 (so is an
-    // hour in ms), a remainder off by < 1000 never changes a refill.
-    refillRemainder_ = 0;  // NOMUTATE
+    // Remainders are multiples of 1000 (so is an hour in ms): a remainder
+    // off by < 1000 never changes a refill.
+    refillRemainder_ = 0;  // NOMUTATE: any value below 1000 is equivalent
   } else {
     tokensMilli_ += static_cast<uint32_t>(add);
   }
