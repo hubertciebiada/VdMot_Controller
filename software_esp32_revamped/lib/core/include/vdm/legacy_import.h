@@ -84,10 +84,13 @@ struct ImportReport {
 // level without server -> 0; web user or password alone -> both cleared;
 // MQTT without broker -> off ("protCfg/brokerIp"); minDelay above the
 // publish interval -> clamped ("protCfg/brokerMD"); HA without separate
-// topics -> MQTT ("protCfg/dataProt"); duplicate valve segments and names
+// topics -> MQTT ("protCfg/dataProt"); HA with the decimal comma -> dot
+// ("protCfg/brokerMQF"); duplicate valve segments or HA ids and names
 // equal to another unnamed valve's number -> later names cleared (repeated
 // until stable); duplicate sensor ids -> later id cleared; active slots
-// without id -> inactive. As a last resort (never reached by the rules
+// without id -> inactive; active slots with one HA id -> the later name
+// cleared, or the earlier one when the later slot is unnamed (repeated
+// until stable). As a last resort (never reached by the rules
 // above) a result that still fails validateConfig() is replaced by the
 // defaults and reported as "validate/<path>". The result always passes
 // validateConfig(). The temps blob buffer (1496 B) is static, so the

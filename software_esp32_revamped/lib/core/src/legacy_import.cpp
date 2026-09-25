@@ -459,6 +459,11 @@ class Importer {
       m.mode = MqttMode::Mqtt;
       rejected("protCfg", "dataProt");
     }
+    // Home Assistant reads a decimal point (legacy HA mode allowed the comma).
+    if (m.mode == MqttMode::MqttHa && m.germanDecimal) {
+      m.germanDecimal = false;
+      rejected("protCfg", "brokerMQF");
+    }
     fixValveNames();
     fixSlots();
 
@@ -470,13 +475,21 @@ class Importer {
     }
   }
 
-  static bool sameSegment(const char* a, const char* b) {
-    for (;; ++a, ++b) {
-      const char ca = *a == ' ' ? '_' : *a;
-      const char cb = *b == ' ' ? '_' : *b;
-      if (ca != cb) return false;
-      if (ca == '\0') return true;
-    }
+  using HaId = char[kItemNameMax + 1];
+
+  // buildHaId() of item i's MQTT segment.
+  void haId(ItemKind kind, uint8_t i, HaId& out) const {
+    HaId seg;
+    buildHaId(seg, itemSegment(c_, kind, i, seg, sizeof seg), out, sizeof out);
+  }
+
+  // One HA id for two items (also true for one MQTT segment: "a b"/"a_b").
+  bool sameHaId(ItemKind kind, uint8_t a, uint8_t b) const {
+    HaId ida;
+    HaId idb;
+    haId(kind, a, ida);
+    haId(kind, b, idb);
+    return strcmp(ida, idb) == 0;
   }
 
   // "1".."12" without leading zero -> 1..12, else 0.
@@ -486,9 +499,10 @@ class Importer {
     return static_cast<uint8_t>(v);
   }
 
-  // Later duplicates lose their name; a name that equals the number segment
-  // of another unnamed valve is cleared too. Clearing can create a new
-  // number collision, so repeat until stable (at most 12 rounds).
+  // Later duplicates (one MQTT segment or one HA id: "Bad 1"/"Bad.1") lose
+  // their name; a name that equals the number segment of another unnamed
+  // valve is cleared too. Clearing can create a new number collision, so
+  // repeat until stable (at most 12 rounds).
   void fixValveNames() {
     for (bool changed = true; changed;) {
       changed = false;
@@ -496,7 +510,7 @@ class Importer {
         char* name = c_.valves[i].name;
         if (name[0] == '\0') continue;
         bool clash = false;
-        for (uint8_t j = 0; j < i && !clash; ++j) clash = sameSegment(name, c_.valves[j].name);
+        for (uint8_t j = 0; j < i && !clash; ++j) clash = sameHaId(ItemKind::Valve, i, j);
         const uint8_t num = numberSegment(name);
         if (num != 0 && c_.valves[num - 1].name[0] == '\0') clash = true;
         if (clash) {
@@ -528,9 +542,31 @@ class Importer {
     }
   }
 
+  // Active slots (each has an id by now) with one HA id: the later slot loses
+  // its name; when it has none (its segment is its number), the earlier slot
+  // named like that number does. Clearing can create a new clash, so repeat
+  // until stable (every round clears one name).
+  template <typename Slot>
+  void fixSlotHaIds(Slot* slots, uint8_t count, ItemKind kind, const char* ns, const char* key) {
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (uint8_t i = 0; i < count && !changed; ++i) {
+        for (uint8_t j = 0; j < i && !changed; ++j) {
+          if (!slots[i].active || !slots[j].active || !sameHaId(kind, i, j)) continue;
+          const uint8_t k = slots[i].name[0] != '\0' ? i : j;
+          slots[k].name[0] = '\0';
+          rejectedElem(ns, key, k, "name");
+          changed = true;
+        }
+      }
+    }
+  }
+
   void fixSlots() {
     fixSlotArray(c_.temps, kTempSlotCount, "tempsCfg", "temps");
     fixSlotArray(c_.volts, kVoltSlotCount, "voltsCfg", "volts");
+    fixSlotHaIds(c_.temps, kTempSlotCount, ItemKind::Temp, "tempsCfg", "temps");
+    fixSlotHaIds(c_.volts, kVoltSlotCount, ItemKind::Volt, "voltsCfg", "volts");
   }
 
   LegacyNvsReader& nvs_;

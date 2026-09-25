@@ -212,6 +212,30 @@ FakeNvs typicalDevice() {
   return n;
 }
 
+// typicalDevice() with a static address, which a reset to the defaults
+// would lose.
+FakeNvs staticDevice() {
+  FakeNvs n = typicalDevice();
+  n.putInt("netCfg", "dhcp", 0);
+  n.putInt("netCfg", "staticIp", 0x3201A8C0);  // 192.168.1.50
+  n.putInt("netCfg", "mask", 0x00FFFFFF);
+  n.putInt("netCfg", "gw", 0x0101A8C0);
+  return n;
+}
+
+// Station, network and MQTT of staticDevice() came through.
+void checkKept(const Config& c) {
+  CHECK(std::string(c.station) == "VdMotFBH");
+  CHECK_FALSE(c.net.dhcp);
+  CHECK(c.net.ip == 0x3201A8C0u);
+  CHECK(c.net.gateway == 0x0101A8C0u);
+  CHECK(c.mqtt.mode == MqttMode::MqttHa);
+  CHECK(std::string(c.mqtt.host) == "192.168.1.100");
+  CHECK(std::string(c.mqtt.password) == "secret");
+  CHECK(std::string(c.time.tzName) == "Europe/Warsaw");
+  CHECK(valid(c));
+}
+
 }  // namespace
 
 TEST_CASE("legacy: empty NVS gives the defaults and no legacy flag") {
@@ -1056,6 +1080,101 @@ TEST_CASE("legacy: slot repairs keep everything else") {
   CHECK(first(r) == "tempsCfg/temps.1.active");
 }
 
+TEST_CASE("legacy: HA mode with the decimal comma switches to the dot") {
+  FakeNvs n = staticDevice();
+  n.putInt("protCfg", "brokerMQF", 4);
+  Config c;
+  ImportReport r = importLegacyConfig(n, c);
+  CHECK_FALSE(c.mqtt.germanDecimal);
+  CHECK(r.rejected == 1);
+  CHECK(first(r) == "protCfg/brokerMQF");
+  checkKept(c);
+  // HA without separate topics becomes plain MQTT first, which keeps the comma.
+  n.putInt("protCfg", "brokerPF", 0x7A);
+  r = importLegacyConfig(n, c);
+  CHECK(c.mqtt.mode == MqttMode::Mqtt);
+  CHECK(c.mqtt.germanDecimal);
+  CHECK(r.rejected == 1);
+  CHECK(first(r) == "protCfg/dataProt");
+  n.putInt("protCfg", "brokerPF", 0x7B);
+  n.putInt("protCfg", "dataProt", 1);
+  r = importLegacyConfig(n, c);
+  CHECK(c.mqtt.germanDecimal);
+  CHECK(r.rejected == 0);
+}
+
+TEST_CASE("legacy: valve names with one HA id keep the first name") {
+  FakeNvs n = staticDevice();
+  auto v = valvesBlob();
+  setValve(v, 0, "Bad 1", 1);
+  setValve(v, 1, "Bad.1", 1);          // HA id "Bad_1" like valve 1
+  setValve(v, 2, "K\xC3\xBC" "che", 1);
+  setValve(v, 3, "Kuche", 0);          // HA id "Kuche" like valve 3, also when inactive
+  setValve(v, 4, "Bad-1", 1);          // '-' stays: another id
+  n.putBlob("valvesCfg", "valves", v);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.valves[0].name) == "Bad 1");
+  CHECK(std::string(c.valves[1].name).empty());
+  CHECK(c.valves[1].active);
+  CHECK(std::string(c.valves[2].name) == "K\xC3\xBC" "che");
+  CHECK(std::string(c.valves[3].name).empty());
+  CHECK(std::string(c.valves[4].name) == "Bad-1");
+  CHECK(r.rejected == 2);
+  CHECK(first(r) == "valvesCfg/valves.2.name");
+  checkKept(c);
+}
+
+TEST_CASE("legacy: active sensors with one HA id keep the first name") {
+  FakeNvs n = staticDevice();
+  auto t = tempsBlob();
+  setTemp(t, 0, "Flur", 1, -7, kIdA);
+  setTemp(t, 5, "Flur", 1, 12, kIdB);  // later: name cleared, the rest kept
+  setTemp(t, 6, "Bad", 0, 0, "");      // inactive: no HA entity, no clash
+  setTemp(t, 7, "Bad", 1, 0, "28-00-00-00-00-00-00-01");
+  setTemp(t, 8, "Flur", 0, 0, "28-00-00-00-00-00-00-02");
+  n.putBlob("tempsCfg", "temps", t);
+  auto w = voltsBlob();
+  setVolt(w, 0, "Akku", 1, 0.5f, 0.01f, "V", kIdV);
+  setVolt(w, 3, "Akku", 1, 0.0f, 1.0f, "V", "26-00-00-00-00-00-00-01");
+  n.putBlob("voltsCfg", "volts", w);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.temps[0].name) == "Flur");
+  CHECK(std::string(c.temps[5].name).empty());
+  CHECK(c.temps[5].active);
+  CHECK(c.temps[5].id == oid(kIdB));
+  CHECK(c.temps[5].offset == 12);
+  CHECK(std::string(c.temps[6].name) == "Bad");
+  CHECK(std::string(c.temps[7].name) == "Bad");
+  CHECK(std::string(c.temps[8].name) == "Flur");
+  CHECK(std::string(c.volts[0].name) == "Akku");
+  CHECK(std::string(c.volts[3].name).empty());
+  CHECK(c.volts[3].active);
+  CHECK(r.rejected == 2);
+  CHECK(first(r) == "tempsCfg/temps.6.name");
+  checkKept(c);
+}
+
+TEST_CASE("legacy: a sensor named like the number of a later unnamed one loses its name") {
+  FakeNvs n;
+  auto t = tempsBlob();
+  setTemp(t, 0, "3", 1, 0, kIdA);  // HA id "3" like slot 3 once that one is cleared
+  setTemp(t, 2, "7", 1, 0, kIdB);  // HA id "7" like the unnamed slot 7
+  setTemp(t, 6, "", 1, 0, "28-00-00-00-00-00-00-01");
+  n.putBlob("tempsCfg", "temps", t);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.temps[0].name).empty());
+  CHECK(std::string(c.temps[2].name).empty());
+  CHECK(c.temps[0].active);
+  CHECK(c.temps[2].active);
+  CHECK(c.temps[6].active);
+  CHECK(r.rejected == 2);
+  CHECK(first(r) == "tempsCfg/temps.3.name");
+  CHECK(valid(c));
+}
+
 TEST_CASE("legacy: temps blob") {
   SUBCASE("wrong size") {
     FakeNvs n;
@@ -1264,18 +1383,21 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
       {"protCfg", "brokerPort"},   {"protCfg", "publishInterval"}, {"protCfg", "brokerPF"},
       {"protCfg", "brokerKAT"},    {"protCfg", "brokerMD"},    {"protCfg", "brokerMQF"},
       {"valvesCfg", "dayOfCalib"}, {"valvesCfg", "hourOfCalib"}, {"Misc", "MiscLC"}};
+  // tZCfg/tZ is always "Europe/Warsaw": nothing resets the whole config.
   const char* strKeys[][2] = {{"sysCfg", "stName"},     {"netCfg", "ssid"},
                               {"netCfg", "pwd"},        {"netCfg", "userName"},
                               {"netCfg", "userPwd"},    {"netCfg", "timeServer"},
-                              {"tZCfg", "tZ"},          {"tZCfg", "tZCode"},
+                              {"tZCfg", "tZCode"},
                               {"protCfg", "brokerUser"}, {"protCfg", "brokerPwd"}};
-  const char* pool[] = {"", "a", "1", "3", "x y", "a b", "a_b", "Bad", "12345678",
+  // The first 10 are names, the last 3 ids.
+  const char* pool[] = {"", "a", "1", "3", "x y", "a b", "a_b", "a.b", "Bad", "12345678",
                         "pool.ntp.org", "1.2.3.4", "a:b", "bad/x", "EST5EDT", kIdA, kIdB,
                         "00-00-00-00-00-00-00-00"};
   const int64_t ints[] = {0, 1, 2, 3, 4, 7, 23, 24, 127, 128, 255, 300, 3600, 65535, 65536,
                           -1, 0x00FFFFFF, 0x0101A8C0, 1760000000, 0xFFFFFFFFll};
   for (int iter = 0; iter < 1500; ++iter) {
     FakeNvs n;
+    n.putStr("tZCfg", "tZ", "Europe/Warsaw");
     for (auto& k : intKeys) {
       if (rng() % 2) n.putInt(k[0], k[1], ints[rng() % (sizeof ints / sizeof ints[0])]);
     }
@@ -1289,7 +1411,7 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
     if (rng() % 2) {
       auto b = valvesBlob();
       for (size_t i = 0; i < 12; ++i) {
-        if (rng() % 2) setValve(b, i, pool[rng() % 9], static_cast<uint8_t>(rng() % 3));
+        if (rng() % 2) setValve(b, i, pool[rng() % 10], static_cast<uint8_t>(rng() % 3));
       }
       if (rng() % 6 == 0) {
         for (auto& x : b) x = static_cast<uint8_t>(rng());
@@ -1300,8 +1422,8 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
       auto b = tempsBlob();
       for (size_t i = 0; i < 34; ++i) {
         if (rng() % 3 == 0) {
-          setTemp(b, i, pool[rng() % 9], static_cast<uint8_t>(rng() % 3),
-                  static_cast<int32_t>(rng() % 400) - 200, pool[14 + rng() % 3]);
+          setTemp(b, i, pool[rng() % 10], static_cast<uint8_t>(rng() % 3),
+                  static_cast<int32_t>(rng() % 400) - 200, pool[15 + rng() % 3]);
         }
       }
       if (rng() % 6 == 0) {
@@ -1319,6 +1441,7 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
     CHECK(valid(c));
+    CHECK(std::string(c.time.tzName) == "Europe/Warsaw");
     CHECK(strlen(r.firstRejected) < sizeof r.firstRejected);
     CHECK((r.rejected == 0) == (r.firstRejected[0] == '\0'));
   }
