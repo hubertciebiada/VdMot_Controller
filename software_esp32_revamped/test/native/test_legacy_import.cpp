@@ -1135,8 +1135,8 @@ TEST_CASE("legacy: active sensors with one HA id keep the first name") {
   setTemp(t, 8, "Flur", 0, 0, "28-00-00-00-00-00-00-02");
   n.putBlob("tempsCfg", "temps", t);
   auto w = voltsBlob();
-  setVolt(w, 0, "Akku", 1, 0.5f, 0.01f, "V", kIdV);
-  setVolt(w, 3, "Akku", 1, 0.0f, 1.0f, "V", "26-00-00-00-00-00-00-01");
+  setVolt(w, 0, "U", 1, 0.5f, 0.01f, "V", kIdV);
+  setVolt(w, 1, "U", 1, 0.0f, 1.0f, "V", "26-00-00-00-00-00-00-01");  // neighbours, one char
   n.putBlob("voltsCfg", "volts", w);
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
@@ -1148,9 +1148,9 @@ TEST_CASE("legacy: active sensors with one HA id keep the first name") {
   CHECK(std::string(c.temps[6].name) == "Bad");
   CHECK(std::string(c.temps[7].name) == "Bad");
   CHECK(std::string(c.temps[8].name) == "Flur");
-  CHECK(std::string(c.volts[0].name) == "Akku");
-  CHECK(std::string(c.volts[3].name).empty());
-  CHECK(c.volts[3].active);
+  CHECK(std::string(c.volts[0].name) == "U");
+  CHECK(std::string(c.volts[1].name).empty());
+  CHECK(c.volts[1].active);
   CHECK(r.rejected == 2);
   CHECK(first(r) == "tempsCfg/temps.6.name");
   checkKept(c);
@@ -1170,6 +1170,23 @@ TEST_CASE("legacy: a sensor named like the number of a later unnamed one loses i
   CHECK(c.temps[0].active);
   CHECK(c.temps[2].active);
   CHECK(c.temps[6].active);
+  CHECK(r.rejected == 2);
+  CHECK(first(r) == "tempsCfg/temps.3.name");
+  CHECK(valid(c));
+}
+
+TEST_CASE("legacy: a sensor name cleared for one clash is checked again") {
+  FakeNvs n;
+  auto t = tempsBlob();
+  setTemp(t, 0, "x", 1, 0, kIdA);
+  setTemp(t, 1, "3", 1, 0, kIdB);  // clashes with slot 3 once its "x" is cleared
+  setTemp(t, 2, "x", 1, 0, "28-00-00-00-00-00-00-01");
+  n.putBlob("tempsCfg", "temps", t);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.temps[0].name) == "x");
+  CHECK(std::string(c.temps[1].name).empty());
+  CHECK(std::string(c.temps[2].name).empty());
   CHECK(r.rejected == 2);
   CHECK(first(r) == "tempsCfg/temps.3.name");
   CHECK(valid(c));

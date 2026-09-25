@@ -475,7 +475,7 @@ class Importer {
     }
   }
 
-  using HaId = char[kItemNameMax + 1];
+  using HaId = char[sizeof(ValveConfig::name)];  // a segment is never longer than a name
 
   // buildHaId() of item i's MQTT segment.
   void haId(ItemKind kind, uint8_t i, HaId& out) const {
@@ -499,10 +499,10 @@ class Importer {
     return static_cast<uint8_t>(v);
   }
 
-  // Later duplicates (one MQTT segment or one HA id: "Bad 1"/"Bad.1") lose
-  // their name; a name that equals the number segment of another unnamed
-  // valve is cleared too. Clearing can create a new number collision, so
-  // repeat until stable (at most 12 rounds).
+  // Later duplicates of a name (one MQTT segment or one HA id: "Bad 1"/
+  // "Bad.1") are cleared; a name that equals the number segment of another
+  // unnamed valve is cleared too. Clearing can create a new number
+  // collision, so repeat until stable (at most 12 rounds).
   void fixValveNames() {
     for (bool changed = true; changed;) {
       changed = false;
@@ -510,7 +510,9 @@ class Importer {
         char* name = c_.valves[i].name;
         if (name[0] == '\0') continue;
         bool clash = false;
-        for (uint8_t j = 0; j < i && !clash; ++j) clash = sameHaId(ItemKind::Valve, i, j);
+        for (uint8_t j = 0; j < i && !clash; ++j) {
+          clash = c_.valves[j].name[0] != '\0' && sameHaId(ItemKind::Valve, i, j);
+        }
         const uint8_t num = numberSegment(name);
         if (num != 0 && c_.valves[num - 1].name[0] == '\0') clash = true;
         if (clash) {
@@ -550,10 +552,11 @@ class Importer {
   void fixSlotHaIds(Slot* slots, uint8_t count, ItemKind kind, const char* ns, const char* key) {
     for (bool changed = true; changed;) {
       changed = false;
-      for (uint8_t i = 0; i < count && !changed; ++i) {
-        for (uint8_t j = 0; j < i && !changed; ++j) {
-          if (!slots[i].active || !slots[j].active || !sameHaId(kind, i, j)) continue;
-          const uint8_t k = slots[i].name[0] != '\0' ? i : j;
+      // Slot a before slot b.
+      for (uint8_t a = count; a-- > 0 && !changed;) {
+        for (uint8_t b = a + 1; b < count && !changed; ++b) {
+          if (!slots[a].active || !slots[b].active || !sameHaId(kind, a, b)) continue;
+          const uint8_t k = slots[b].name[0] != '\0' ? b : a;
           slots[k].name[0] = '\0';
           rejectedElem(ns, key, k, "name");
           changed = true;
