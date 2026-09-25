@@ -1920,9 +1920,10 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
   }
 }
 
-TEST_CASE("config: a stored config with two valves on one MQTT segment is not loaded") {
+TEST_CASE("config: the loader without repairs rejects two valves on one MQTT segment") {
   // The 2.0.0 rule: names compare with ' ' == '_', each against every earlier
-  // valve.
+  // valve. (sanitizeConfig() is still a pass-through, so decodeConfig drops
+  // such a blob like 2.0.0 did.)
   struct Pair {
     uint8_t a;
     uint8_t b;
@@ -1939,6 +1940,12 @@ TEST_CASE("config: a stored config with two valves on one MQTT segment is not lo
     Config out;
     CHECK(decodeConfig(b.data(), b.size(), out) == DecodeResult::Invalid);
   }
+  // A name equal to the number of an unnamed valve is that valve's segment.
+  Config num;
+  strcpy(num.valves[4].name, "1");
+  const std::vector<uint8_t> nb = encode(num);
+  Config numOut;
+  CHECK(decodeConfig(nb.data(), nb.size(), numOut) == DecodeResult::Invalid);
   Config ok;
   strcpy(ok.valves[3].name, "x_y");
   strcpy(ok.valves[7].name, "x-y");
