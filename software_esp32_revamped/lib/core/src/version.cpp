@@ -113,4 +113,20 @@ const char* firmwareVersion() { return VDM_VERSION; }
 
 const char* minStmVersion() { return VDM_MIN_STM_VERSION; }
 
+const char* stmSupportName(StmSupport s) {
+  switch (s) {
+    case StmSupport::Unknown: return "unknown";
+    case StmSupport::Supported: return "ok";
+    case StmSupport::TooOld: return "too_old";
+  }
+  return "unknown";
+}
+
+StmSupport stmSupport(const Version& v) {
+  if (!v.valid) return StmSupport::Unknown;
+  Version min;
+  parseVersion(minStmVersion(), strlen(minStmVersion()), min);
+  return compareVersion(v, min) < 0 ? StmSupport::TooOld : StmSupport::Supported;
+}
+
 }  // namespace vdm

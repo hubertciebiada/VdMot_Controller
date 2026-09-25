@@ -234,6 +234,25 @@ TEST_CASE("version: build constants") {
   CHECK(compareVersion(ver("2.0.0-revamped_C2"), min) >= 0);
 }
 
+TEST_CASE("version: stmSupport against the 1.4.0 minimum (W13.1)") {
+  CHECK(stmSupport(ver("1.3.7_C2")) == StmSupport::TooOld);
+  CHECK(stmSupport(ver("1.3.99")) == StmSupport::TooOld);
+  CHECK(stmSupport(ver("0.9.9")) == StmSupport::TooOld);
+  CHECK(stmSupport(ver("1.4.0_C1")) == StmSupport::Supported);
+  CHECK(stmSupport(ver("1.4.0")) == StmSupport::Supported);
+  CHECK(stmSupport(ver("1.4.9_Dev_C2")) == StmSupport::Supported);
+  CHECK(stmSupport(ver("2.1.0-revamped_C2")) == StmSupport::Supported);
+  CHECK(stmSupport(Version{}) == StmSupport::Unknown);
+  Version invalid;
+  CHECK_FALSE(parse("1.4", invalid));
+  CHECK(stmSupport(invalid) == StmSupport::Unknown);
+
+  CHECK(std::string(stmSupportName(StmSupport::Unknown)) == "unknown");
+  CHECK(std::string(stmSupportName(StmSupport::Supported)) == "ok");
+  CHECK(std::string(stmSupportName(StmSupport::TooOld)) == "too_old");
+  CHECK(std::string(stmSupportName(static_cast<StmSupport>(3))) == "unknown");
+}
+
 TEST_CASE("version: fuzz") {
   std::mt19937 rng(777);
   const char alphabet[] = "0123456789._-+Cc revampedDv\x01\xff";
