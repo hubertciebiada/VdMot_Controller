@@ -1,6 +1,6 @@
 name: Build firmware
 
-# VdMot Revamped CI/CD (hc-version + the revamped/* PR stack).
+# VdMot Revamped CI/CD (hc-version + the revamped branch).
 #   native     : host unit tests of the pure-logic cores (STM + new ESP), ASan/UBSan, -Werror
 #   mutation   : mutation testing of the cores and the glue (stm32, stm32-glue, esp32,
 #                esp32-glue). PR/push: changed files only; weekly + manual: everything.
@@ -15,10 +15,10 @@ name: Build firmware
 
 on:
   push:
-    branches: [hc-version, 'revamped/**']
+    branches: [hc-version, revamped]
     tags: ['v*']
   pull_request:
-    branches: [hc-version, 'revamped/**']
+    branches: [hc-version, revamped]
   schedule:
     - cron: '17 3 * * 1'        # weekly full mutation run
   workflow_dispatch:
