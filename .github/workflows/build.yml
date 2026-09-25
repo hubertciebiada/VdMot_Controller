@@ -2,9 +2,10 @@ name: Build firmware
 
 # VdMot Revamped CI/CD (hc-version + the revamped/* PR stack).
 #   native     : host unit tests of the pure-logic cores (STM + new ESP), ASan/UBSan, -Werror
-#   mutation   : mutation testing of the cores. PR/push: changed core files only;
-#                weekly + manual: everything. Kill cache is kept between runs.
-#                Informational (does not block a release): a full ESP run takes hours.
+#   mutation   : mutation testing of the cores and the glue (stm32, stm32-glue, esp32,
+#                esp32-glue). PR/push: changed files only; weekly + manual: everything.
+#                Kill cache is kept between runs. Informational (does not block a release);
+#                the release gate is tools/native/docker.sh mutate-all.
 #   stm32      : all release envs (F401 + F411, HW C1 + C2)
 #   esp32      : new firmware (software_esp32_revamped) + legacy firmware (software_esp32)
 #   release    : tag v*-revamped -> packaged VdMot Revamped release (tools/release/package.py)
@@ -71,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [stm32, esp32]
+        target: [stm32, stm32-glue, esp32, esp32-glue]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,6 +89,9 @@ jobs:
       - name: Select files
         id: sel
         run: |
+          if [ ! -f tools/mutation/${{ matrix.target }}.json ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No config for ${{ matrix.target }}." >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
           FULL=false
           case "${{ github.event_name }}" in
             schedule) FULL=true ;;
@@ -101,8 +105,11 @@ jobs:
             BASE=$(git rev-parse HEAD~1)
           fi
           FILES=$(python3 tools/mutation/mutate.py --config tools/mutation/${{ matrix.target }}.json --changed-since "$BASE")
-          if [ -z "$FILES" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "No core files changed." >> "$GITHUB_STEP_SUMMARY"; else
+          if [ -z "$FILES" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "No mutated files changed." >> "$GITHUB_STEP_SUMMARY"; else
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "args=--files $FILES" >> "$GITHUB_OUTPUT"; fi
+      - name: Toolchain of the mutation builds (as tools/native/Dockerfile)
+        if: steps.sel.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build mold ccache
       - name: Mutation testing
         if: steps.sel.outputs.run == 'true'
         run: |
