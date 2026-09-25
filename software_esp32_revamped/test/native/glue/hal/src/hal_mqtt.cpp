@@ -212,18 +212,21 @@ boolean PubSubClient::loop() {
   fakes::Mqtt& m = fakes::mqtt();
   ++m.loops;
   if (!m.connected) return false;
-  if (m.inbox.empty() || !callback) return true;
-  const fakes::MqttMessage msg = m.inbox.front();
-  m.inbox.pop_front();
-  releaseDelivery();
-  deliveryTopic_ = new char[msg.topic.size() + 1];
-  memcpy(deliveryTopic_, msg.topic.c_str(), msg.topic.size() + 1);
-  deliveryPayload_ = new uint8_t[msg.payload.size() > 0 ? msg.payload.size() : 1];
-  memcpy(deliveryPayload_, msg.payload.data(), msg.payload.size());
-  m.inCallback = true;
-  callback(deliveryTopic_, deliveryPayload_, static_cast<unsigned>(msg.payload.size()));
-  m.inCallback = false;
-  releaseDelivery();
+  if (!callback) return true;
+  do {
+    if (m.inbox.empty()) return true;
+    const fakes::MqttMessage msg = m.inbox.front();
+    m.inbox.pop_front();
+    releaseDelivery();
+    deliveryTopic_ = new char[msg.topic.size() + 1];
+    memcpy(deliveryTopic_, msg.topic.c_str(), msg.topic.size() + 1);
+    deliveryPayload_ = new uint8_t[msg.payload.size() > 0 ? msg.payload.size() : 1];
+    memcpy(deliveryPayload_, msg.payload.data(), msg.payload.size());
+    m.inCallback = true;
+    callback(deliveryTopic_, deliveryPayload_, static_cast<unsigned>(msg.payload.size()));
+    m.inCallback = false;
+    releaseDelivery();
+  } while (m.burst);
   return true;
 }
 

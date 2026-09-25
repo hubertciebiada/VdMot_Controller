@@ -14,8 +14,8 @@
 namespace mqtt {
 
 // Binding numbers (DESIGN.md "MQTT").
-constexpr uint16_t kBufferSize = 1792;        // PubSubClient packet buffer (topic + payload;
-                                              // discovery payloads up to 1535)
+constexpr uint16_t kBufferSize = 2304;        // PubSubClient packet buffer (topic + payload;
+                                              // discovery payloads up to 2047)
 constexpr uint16_t kSocketTimeoutS = 5;       // CONNACK / read wait (independent of keepalive)
 constexpr uint32_t kConnectTimeoutMs = 3000;  // TCP connect (WiFiClient default)
 constexpr uint32_t kBackoffMinMs = 2000;      // reconnect back-off, doubles per failure
@@ -34,6 +34,8 @@ struct Status {
   uint32_t eventsSuppressed = 0;
   bool discoveryRunning = false;
   char clientId[24] = {0};                         // of the current session
+                                                   // (display only: a longer configured id
+                                                   // is cut here, the broker gets it whole)
   vdm::HaStatus haStatus = vdm::HaStatus::Unknown;  // last homeassistant/status seen
 };
 Status status();

@@ -109,3 +109,166 @@ TEST_CASE("EventRateLimiter: entries expire across a millis() wrap") {
   CHECK_FALSE(rl.allow(event(EventCode::EarlyStop, 0), t0 + 599999u));
   CHECK(rl.allow(event(EventCode::EarlyStop, 0), t0 + 600000u));
 }
+
+TEST_CASE("EventRateLimiter: Error events have their own bucket") {
+  EventRateLimiter rl;
+  for (uint8_t i = 0; i < 30; ++i) REQUIRE(rl.allow(event(EventCode::EarlyStop, i), 0));
+  CHECK_FALSE(rl.allow(event(EventCode::EarlyStop, 30), 0));  // Normal bucket empty
+  CHECK(rl.allow(event(EventCode::LinkDown, kNoValve, Severity::Error), 0));
+  CHECK(rl.suppressed() == 1);
+  EventRateLimiter e;
+  for (uint8_t i = 0; i < 30; ++i) {
+    REQUIRE(e.allow(event(EventCode::CalibFailed, i, Severity::Error), 0));
+  }
+  CHECK_FALSE(e.allow(event(EventCode::CalibFailed, 30, Severity::Error), 0));  // Error bucket empty
+  CHECK(e.allow(event(EventCode::EarlyStop, 0), 0));                             // Warning still passes
+  CHECK(e.suppressed() == 1);
+  // The Error bucket refills on its own: one token per 3600000 / 30 ms.
+  CHECK_FALSE(e.allow(event(EventCode::CalibFailed, 31, Severity::Error), 119999));
+  CHECK(e.allow(event(EventCode::CalibFailed, 32, Severity::Error), 120000));
+  // Its size is the third parameter.
+  EventRateLimiter s(600000, 30, 1);
+  CHECK(s.allow(event(EventCode::LinkDown, 0, Severity::Error), 0));
+  CHECK_FALSE(s.allow(event(EventCode::LinkDown, 1, Severity::Error), 0));
+  CHECK(s.allow(event(EventCode::EarlyStop, 1), 0));
+  // An Error key is held perKeyMs (not the Critical minute).
+  EventRateLimiter k(600000, 30, 30, 1000);
+  CHECK(k.allow(event(EventCode::LinkDown, 0, Severity::Error), 0));
+  CHECK_FALSE(k.allow(event(EventCode::LinkDown, 0, Severity::Error), 599999));
+  CHECK(k.allow(event(EventCode::LinkDown, 0, Severity::Error), 600000));
+}
+
+TEST_CASE("EventRateLimiter: Critical events bypass the buckets, one per key per minute") {
+  EventRateLimiter rl(600000, 30, 30);
+  for (uint8_t i = 0; i < 30; ++i) {
+    REQUIRE(rl.allow(event(EventCode::EarlyStop, i), 0));
+    REQUIRE(rl.allow(event(EventCode::CalibFailed, i, Severity::Error), 0));
+  }
+  const Event crit = event(EventCode::StmFlashFailed, kNoValve, Severity::Critical);
+  CHECK(rl.allow(crit, 0));
+  CHECK_FALSE(rl.allow(crit, 59999));
+  CHECK(rl.suppressed() == 1);
+  CHECK(rl.allow(crit, 60000));
+  CHECK_FALSE(rl.allow(crit, 119999));
+  CHECK(rl.allow(crit, 120000));
+  // Critical takes no tokens: both buckets refilled exactly one each by now.
+  CHECK(rl.allow(event(EventCode::EarlyStop, 100), 120000));
+  CHECK_FALSE(rl.allow(event(EventCode::EarlyStop, 101), 120000));
+  CHECK(rl.allow(event(EventCode::CalibFailed, 100, Severity::Error), 120000));
+  CHECK_FALSE(rl.allow(event(EventCode::CalibFailed, 101, Severity::Error), 120000));
+  // Another per-key time for Critical.
+  EventRateLimiter c(600000, 30, 30, 1000);
+  CHECK(c.allow(crit, 0));
+  CHECK_FALSE(c.allow(crit, 999));
+  CHECK(c.allow(crit, 1000));
+}
+
+TEST_CASE("EventRateLimiter: events that do not reach MQTT are refused without counting") {
+  EventRateLimiter rl;
+  CHECK_FALSE(rl.allow(event(EventCode::FilesRemoved, kNoValve, Severity::Warning), 0));  // column No
+  CHECK_FALSE(rl.allow(event(EventCode::LinkDown, kNoValve, Severity::Info), 0));  // below Warning
+  CHECK(rl.suppressed() == 0);
+  CHECK(rl.allow(event(EventCode::CalibOk, 0, Severity::Info), 0));  // Always
+}
+
+namespace {
+
+Event at(EventCode c, uint8_t valve, uint32_t seq, Severity sev = Severity::Warning) {
+  Event e = makeEvent(c, sev, valve, 60, 0, "");
+  e.seq = seq;
+  return e;
+}
+
+}  // namespace
+
+TEST_CASE("EventAggregator: one event for the same code on several valves") {
+  EventAggregator a;
+  PublishEvent f;
+  for (uint8_t v = 0; v < kValveCount; ++v) {
+    CHECK_FALSE(a.offer(at(EventCode::ValveStale, v, 10u + v), v, f));
+  }
+  PublishEvent out;
+  CHECK_FALSE(a.poll(1999, out));
+  REQUIRE(a.poll(2000, out));
+  CHECK(out.valveMask == 0x0FFF);
+  CHECK(out.event.valve == kAllValves);
+  CHECK(out.event.seq == 10);  // the first event's
+  CHECK(out.event.arg1 == 60);
+  CHECK(out.event.code == EventCode::ValveStale);
+  CHECK_FALSE(a.poll(100000, out));
+  CHECK(a.duplicates() == 0);
+}
+
+TEST_CASE("EventAggregator: a single valve is the original event") {
+  EventAggregator a;
+  PublishEvent f;
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 3, 7, Severity::Info), 100, f));
+  PublishEvent out;
+  CHECK_FALSE(a.poll(2099, out));
+  REQUIRE(a.poll(2100, out));
+  CHECK(out.valveMask == 0x0008);
+  CHECK(out.event.valve == 3);
+  CHECK(out.event.seq == 7);
+  CHECK(out.event.severity == Severity::Info);
+}
+
+TEST_CASE("EventAggregator: highest severity, duplicates, non-valve events, flushAll, reset") {
+  EventAggregator a;
+  PublishEvent f;
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 0, 1, Severity::Warning), 0, f));
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 1, 2, Severity::Critical), 1, f));
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 2, 3, Severity::Info), 2, f));
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 1, 4, Severity::Error), 3, f));  // duplicate valve
+  CHECK(a.duplicates() == 1);
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, kNoValve, 5), 4, f));  // not taken
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, kAllValves, 6), 4, f));
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, kValveCount, 6), 4, f));
+  PublishEvent out;
+  CHECK_FALSE(a.poll(5, out));
+  REQUIRE(a.poll(5, out, true));
+  CHECK(out.valveMask == 0x0007);
+  CHECK(out.event.severity == Severity::Critical);
+  CHECK(out.event.seq == 1);
+  CHECK_FALSE(a.poll(5, out, true));
+  // Two valves at the first event's severity when nothing is higher.
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 4, 8, Severity::Error), 10, f));
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 5, 9, Severity::Warning), 10, f));
+  REQUIRE(a.poll(5000, out));
+  CHECK(out.event.severity == Severity::Error);
+  CHECK(out.valveMask == 0x0030);
+  CHECK_FALSE(a.offer(at(EventCode::EarlyStop, 0, 7), 10, f));
+  a.reset();
+  CHECK_FALSE(a.poll(100000, out, true));
+  CHECK(a.duplicates() == 1);  // reset keeps the counter
+}
+
+TEST_CASE("EventAggregator: a fifth code flushes the oldest slot") {
+  EventAggregator a;
+  PublishEvent f;
+  const EventCode codes[] = {EventCode::EarlyStop, EventCode::ValveStale, EventCode::CalibFailed,
+                             EventCode::TargetNotConfirmed, EventCode::CmdRejected};
+  CHECK_FALSE(a.offer(at(codes[0], 0, 1), 10, f));
+  CHECK_FALSE(a.offer(at(codes[1], 1, 2), 5, f));  // opened earlier: the oldest
+  CHECK_FALSE(a.offer(at(codes[2], 2, 3), 20, f));
+  CHECK_FALSE(a.offer(at(codes[3], 3, 4), 30, f));
+  REQUIRE(a.offer(at(codes[4], 4, 5), 40, f));
+  CHECK(f.event.code == EventCode::ValveStale);
+  CHECK(f.event.valve == 1);
+  CHECK(f.valveMask == 0x0002);
+  // Oldest first when several windows passed.
+  PublishEvent out;
+  REQUIRE(a.poll(100000, out));
+  CHECK(out.event.code == EventCode::EarlyStop);
+  REQUIRE(a.poll(100000, out));
+  CHECK(out.event.code == EventCode::CalibFailed);
+  REQUIRE(a.poll(100000, out));
+  CHECK(out.event.code == EventCode::TargetNotConfirmed);
+  REQUIRE(a.poll(100000, out));
+  CHECK(out.event.code == EventCode::CmdRejected);
+  CHECK_FALSE(a.poll(100000, out));
+  // Windows across a millis() wrap.
+  EventAggregator w;
+  CHECK_FALSE(w.offer(at(codes[0], 0, 1), 0xFFFFFF00u, f));
+  CHECK_FALSE(w.poll(0xFFFFFF00u + 1999u, out));
+  CHECK(w.poll(0xFFFFFF00u + 2000u, out));
+}

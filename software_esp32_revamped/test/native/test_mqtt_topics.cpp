@@ -1,5 +1,5 @@
 // MQTT topic tree, command parsing, payload formatters and publish cadence.
-// Golden strings follow specs/03-mqtt-ha-compat.md (legacy byte format).
+// Golden strings follow the legacy byte format (software_esp32/src/mqtt.cpp).
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,10 +34,6 @@ using Segments = char[kValveCount][kSegmentMax + 1];
 
 void fillSegments(Segments& s, const char* const names[kValveCount]) {
   for (uint8_t i = 0; i < kValveCount; ++i) buildSegment(names ? names[i] : "", i, s[i], sizeof s[i]);
-}
-
-int parse(const TopicContext& c, const char* t, const Segments* s) {
-  return parseTargetCommandTopic(c, t, strlen(t), s ? *s : nullptr);
 }
 
 TargetPayload payload(const char* p, uint8_t& out) { return parseTargetPayload(p, strlen(p), out); }
@@ -129,6 +125,21 @@ TEST_CASE("segments") {
   CHECK(buildSegment("ab", 0, small, 0) == 0);
 }
 
+TEST_CASE("topic segments: '/' only between two non-empty parts") {
+  for (const char* ok : {"a", "Bad/WC", "a/b/c", "0123456789", "x y", "K\xc3\xbc" "che", "/"}) {
+    CAPTURE(ok);
+    CHECK(topicSegmentValid(ok, strlen(ok)) == (std::string(ok) != "/"));
+  }
+  for (const char* bad : {"/a", "a/", "a//b", "a+", "#", "01234567890", "a/b/"}) {
+    CAPTURE(bad);
+    CHECK_FALSE(topicSegmentValid(bad, strlen(bad)));
+  }
+  CHECK_FALSE(topicSegmentValid("", 0));
+  CHECK_FALSE(topicSegmentValid(nullptr, 1));
+  CHECK_FALSE(topicSegmentValid("a\0b", 3));
+  CHECK(topicSegmentValid("ab", 1));  // len is authoritative
+}
+
 TEST_CASE("compat and new topics, byte exact") {
   const TopicContext s = ctxOf("VdMot");
   const TopicContext p = ctxOf("VdMot", false);
@@ -136,7 +147,7 @@ TEST_CASE("compat and new topics, byte exact") {
     Topic t;
     const char* seg;
     const char* separate;
-    const char* plain;
+    const char* plain;  // nullptr: no suffix rule (same as separate)
   };
   const Row rows[] = {
       {Topic::CommonIp, nullptr, "VdMot/common/ip/value", "VdMot/common/ip"},
@@ -174,10 +185,32 @@ TEST_CASE("compat and new topics, byte exact") {
       {Topic::DiagCalibrationActive, nullptr, "VdMot/diag/calibration/active", nullptr},
       {Topic::Events, nullptr, "VdMot/events", nullptr},
       {Topic::Status, nullptr, "VdMot/status", nullptr},
+      {Topic::ValveRequested, "3", "VdMot/valves/3/requested/value", "VdMot/valves/3/requested"},
+      {Topic::ValveSync, "3", "VdMot/valves/3/sync/value", "VdMot/valves/3/sync"},
+      {Topic::ValveFailsafe, "3", "VdMot/valves/3/failsafe/value", "VdMot/valves/3/failsafe"},
+      {Topic::ValveProblem, "3", "VdMot/valves/3/problem/value", "VdMot/valves/3/problem"},
+      {Topic::StmStatus, nullptr, "VdMot/stm/status", nullptr},
+      {Topic::Failsafe, nullptr, "VdMot/failsafe", nullptr},
+      {Topic::DiagStmVersion, nullptr, "VdMot/diag/stm/version", nullptr},
+      {Topic::DiagStmStarted, nullptr, "VdMot/diag/stm/started", nullptr},
+      {Topic::DiagStmLease, nullptr, "VdMot/diag/stm/lease", nullptr},
+      {Topic::DiagStmSafeMode, nullptr, "VdMot/diag/stm/safeMode", nullptr},
+      {Topic::DiagMqttEventsSuppressed, nullptr, "VdMot/diag/mqtt/eventsSuppressed", nullptr},
+      {Topic::DiagMqttCommandsRejected, nullptr, "VdMot/diag/mqtt/commandsRejected", nullptr},
+      {Topic::DiagCalibrationNext, nullptr, "VdMot/diag/calibration/next", nullptr},
+      {Topic::CmdValveCalibrate, "Bad_1", "VdMot/cmd/valves/Bad_1/calibrate", nullptr},
+      {Topic::CmdCalibrate, nullptr, "VdMot/cmd/calibrate", nullptr},
+      {Topic::CmdRestart, nullptr, "VdMot/cmd/restart", nullptr},
+      {Topic::CmdStmReset, nullptr, "VdMot/cmd/stmReset", nullptr},
+      {Topic::CmdDetect, nullptr, "VdMot/cmd/detect", nullptr},
+      {Topic::CmdStop, nullptr, "VdMot/cmd/stop", nullptr},
+      {Topic::CmdStmSafeExit, nullptr, "VdMot/cmd/stmSafeExit", nullptr},
   };
   static_assert(sizeof rows / sizeof rows[0] == kTopicCount, "every topic covered");
-  for (const Row& r : rows) {
+  for (size_t i = 0; i < kTopicCount; ++i) {
+    const Row& r = rows[i];
     CAPTURE(r.separate);
+    CHECK(static_cast<size_t>(r.t) == i);
     CHECK(topic(s, r.t, r.seg) == r.separate);
     CHECK(topic(p, r.t, r.seg) == (r.plain ? r.plain : r.separate));
     CHECK(topicIsCompat(r.t) == (r.plain != nullptr));
@@ -185,14 +218,17 @@ TEST_CASE("compat and new topics, byte exact") {
   CHECK(topic(ctxOf("VdMot", true, true), Topic::ValveTarget, "1") == "/VdMot/valves/1/target/value");
   CHECK(topic(ctxOf(""), Topic::Status) == "VdMotFBH/status");
   CHECK(topic(ctxOf("My St"), Topic::CommonIp) == "My St/common/ip/value");
-  // Non-item topics ignore the segment.
+  // Non-item topics ignore the segment; topic overrides may span levels.
   CHECK(topic(s, Topic::Status, "x") == "VdMot/status");
+  CHECK(topic(s, Topic::ValveState, "Bad/WC") == "VdMot/valves/Bad/WC/state/value");
+  CHECK(topic(ctxOf("VdMotFBH"), Topic::CmdValveCalibrate, "Bad/WC") == "VdMotFBH/cmd/valves/Bad/WC/calibrate");
 }
 
 TEST_CASE("buildTopic rejects bad segments, topics and buffers") {
   const TopicContext s = ctxOf("VdMot");
   char buf[kTopicMax + 1];
-  for (const char* bad : {static_cast<const char*>(nullptr), "", "a/b", "a+", "#", "01234567890"}) {
+  for (const char* bad : {static_cast<const char*>(nullptr), "", "/b", "a/", "a//b", "a+", "#",
+                          "01234567890"}) {
     CHECK(buildTopic(s, Topic::ValveTarget, bad, buf, sizeof buf) == 0);
     CHECK(buf[0] == '\0');
   }
@@ -222,10 +258,14 @@ TEST_CASE("retain flags") {
   for (uint8_t i = 0; i < kTopicCount; ++i) {
     const Topic t = static_cast<Topic>(i);
     CAPTURE(i);
-    if (t == Topic::Status || t == Topic::DiagCalibrationActive) {
+    const bool always = t == Topic::Status || t == Topic::DiagCalibrationActive ||
+                        t == Topic::StmStatus || t == Topic::Failsafe;
+    const bool never = t == Topic::Events || t == Topic::DiagValveProfile ||
+                       (t >= Topic::CmdValveCalibrate && t <= Topic::CmdStmSafeExit);
+    if (always) {
       CHECK(topicRetained(t, false));
       CHECK(topicRetained(t, true));
-    } else if (t == Topic::Events || t == Topic::DiagValveProfile) {
+    } else if (never) {
       CHECK_FALSE(topicRetained(t, false));
       CHECK_FALSE(topicRetained(t, true));
     } else {
@@ -245,100 +285,255 @@ TEST_CASE("target command subscription topic") {
   CHECK(std::string(buf) == "VdMot/valves/Bad_1/target");
   buildTargetCommandTopic(ctxOf("VdMot", true, true), "2", buf, sizeof buf);
   CHECK(std::string(buf) == "/VdMot/valves/2/target/set");
+  buildTargetCommandTopic(ctxOf("VdMot"), "Bad/WC", buf, sizeof buf);
+  CHECK(std::string(buf) == "VdMot/valves/Bad/WC/target/set");
   CHECK(buildTargetCommandTopic(ctxOf("VdMot"), "", buf, sizeof buf) == 0);
-  CHECK(buildTargetCommandTopic(ctxOf("VdMot"), "a/b", buf, sizeof buf) == 0);
+  CHECK(buildTargetCommandTopic(ctxOf("VdMot"), "a//b", buf, sizeof buf) == 0);
   char small[20];
   CHECK(buildTargetCommandTopic(ctxOf("VdMot"), "1", small, sizeof small) == 0);
   CHECK(small[0] == '\0');
   CHECK(buildTargetCommandTopic(ctxOf("VdMot"), "1", nullptr, 20) == 0);
 }
 
-TEST_CASE("parseTargetCommandTopic") {
+TEST_CASE("HA status topic") {
+  char buf[kTopicMax + 1];
+  CHECK(buildHaStatusTopic("homeassistant", buf, sizeof buf) == 20);
+  CHECK(std::string(buf) == "homeassistant/status");
+  CHECK(buildHaStatusTopic("ha/x", buf, sizeof buf) == 11);
+  CHECK(std::string(buf) == "ha/x/status");
+  memset(buf, 'X', sizeof buf);
+  CHECK(buildHaStatusTopic("", buf, sizeof buf) == 0);
+  CHECK(buf[0] == '\0');
+  CHECK(buildHaStatusTopic(nullptr, buf, sizeof buf) == 0);
+  CHECK(buildHaStatusTopic("ha", nullptr, 10) == 0);
+  char nine[9];  // "ha/status" needs 10
+  CHECK(buildHaStatusTopic("ha", nine, sizeof nine) == 0);
+  char ten[10];
+  CHECK(buildHaStatusTopic("ha", ten, sizeof ten) == 9);
+}
+
+namespace {
+
+std::vector<std::string> subs(const TopicContext& c, MqttMode mode, const char* prefix,
+                              const Segments* seg = nullptr, size_t cap = kMaxSubscriptions) {
+  Subscription out[kMaxSubscriptions + 1];
+  const size_t n = buildSubscriptions(c, mode, prefix, seg ? *seg : nullptr, out, cap);
+  std::vector<std::string> v;
+  for (size_t i = 0; i < n; ++i) v.push_back(std::string(out[i].filter) + " q" + std::to_string(out[i].qos));
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("subscriptions per mode, separate and prefix") {
+  using V = std::vector<std::string>;
+  const TopicContext s = ctxOf("VdMot");
+  CHECK(subs(s, MqttMode::MqttHa, "homeassistant") ==
+        V{"VdMot/valves/+/target/set q1", "VdMot/valves/+/target/set/set q1", "VdMot/cmd/# q0",
+          "homeassistant/status q1"});
+  CHECK(subs(s, MqttMode::MqttHa, "ha") ==
+        V{"VdMot/valves/+/target/set q1", "VdMot/valves/+/target/set/set q1", "VdMot/cmd/# q0",
+          "homeassistant/status q1", "ha/status q1"});
+  CHECK(subs(s, MqttMode::MqttHa, nullptr) ==
+        V{"VdMot/valves/+/target/set q1", "VdMot/valves/+/target/set/set q1", "VdMot/cmd/# q0",
+          "homeassistant/status q1"});
+  CHECK(subs(ctxOf("VdMot", false), MqttMode::Mqtt, "ha") ==
+        V{"VdMot/valves/+/target q1", "VdMot/valves/+/target/set q1", "VdMot/cmd/# q0"});
+  CHECK(subs(ctxOf("VdMot", true, true), MqttMode::Mqtt, "homeassistant") ==
+        V{"/VdMot/valves/+/target/set q1", "/VdMot/valves/+/target/set/set q1", "/VdMot/cmd/# q0"});
+  CHECK(subs(s, MqttMode::Off, "homeassistant").empty());
+  CHECK(subs(s, MqttMode::MqttHa, "homeassistant", nullptr, 2) ==
+        V{"VdMot/valves/+/target/set q1", "VdMot/valves/+/target/set/set q1"});
+  CHECK(subs(s, MqttMode::MqttHa, "ha", nullptr, 0).empty());
+  Subscription one[1];
+  CHECK(buildSubscriptions(s, MqttMode::Mqtt, "ha", nullptr, nullptr, 5) == 0);
+  CHECK(buildSubscriptions(s, MqttMode::Mqtt, "ha", nullptr, one, 1) == 1);
+  // An unusable root: only the HA status.
+  CHECK(subs(ctxOf("a+b"), MqttMode::MqttHa, "homeassistant") == V{"homeassistant/status q1"});
+  // Segments with '/' are spelled out ('+' matches one level only).
+  const char* names[kValveCount] = {"Bad", "", "x", "", "", "", "", "", "", "", "", ""};
+  Segments seg;
+  fillSegments(seg, names);
+  copyString(seg[2], sizeof seg[2], "Bad/WC");
+  copyString(seg[5], sizeof seg[5], "a/b/c");
+  copyString(seg[6], sizeof seg[6], "a//b");  // invalid: never subscribed
+  CHECK(subs(s, MqttMode::Mqtt, "homeassistant", &seg) ==
+        V{"VdMot/valves/+/target/set q1", "VdMot/valves/+/target/set/set q1", "VdMot/cmd/# q0",
+          "VdMot/valves/Bad/WC/target/set q1", "VdMot/valves/Bad/WC/target/set/set q1",
+          "VdMot/valves/a/b/c/target/set q1", "VdMot/valves/a/b/c/target/set/set q1"});
+  CHECK(subs(ctxOf("VdMot", false), MqttMode::MqttHa, "homeassistant", &seg) ==
+        V{"VdMot/valves/+/target q1", "VdMot/valves/+/target/set q1", "VdMot/cmd/# q0",
+          "VdMot/valves/Bad/WC/target q1", "VdMot/valves/Bad/WC/target/set q1",
+          "VdMot/valves/a/b/c/target q1", "VdMot/valves/a/b/c/target/set q1",
+          "homeassistant/status q1"});
+  // Every valve spelled out still fits kMaxSubscriptions.
+  Segments all;
+  for (uint8_t i = 0; i < kValveCount; ++i) snprintf(all[i], sizeof all[i], "V/%u", i + 1u);
+  CHECK(subs(s, MqttMode::MqttHa, "ha", &all).size() == kMaxSubscriptions);
+  // A root so long that "/set" no longer fits after the spelled-out filter.
+  const TopicContext longRoot = ctxOf("abcdefghijklmnopqrst", true, true);
+  CHECK(subs(longRoot, MqttMode::Mqtt, "ha").size() == 3);
+}
+
+namespace {
+
+std::string inbound(const TopicContext& c, const char* t, const Segments* seg,
+                    const char* prefix = "homeassistant") {
+  const InboundTopic r = parseInboundTopic(c, prefix, t, strlen(t), seg ? *seg : nullptr);
+  static const char* const kKinds[] = {"None",   "HaStatus", "Target",      "CalibrateValve",
+                                       "CalibrateAll", "Restart", "StmReset", "Detect",
+                                       "StopAll", "StmSafeExit", "UnknownCommand"};
+  std::string s = kKinds[static_cast<int>(r.kind)];
+  if (r.kind == InboundKind::Target || r.kind == InboundKind::CalibrateValve) {
+    s += " " + std::to_string(r.valve);
+  } else {
+    CHECK(r.valve == -1);
+  }
+  if (r.stateForm) s += " state";
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("parseInboundTopic: targets") {
   const char* names[kValveCount] = {"Bad 1", "", "Kitchen", "", "", "", "", "", "", "", "", "12"};
   Segments seg;
   fillSegments(seg, names);
   const TopicContext s = ctxOf("VdMot");
-  CHECK(parse(s, "VdMot/valves/Bad_1/target/set", &seg) == 0);
-  CHECK(parse(s, "VdMot/valves/Bad_1/target/set/set", &seg) == 0);
-  CHECK(parse(s, "/VdMot/valves/Bad_1/target/set", &seg) == 0);
-  CHECK(parse(s, "VdMot/valves/2/target/set", &seg) == 1);
-  CHECK(parse(s, "VdMot/valves/Kitchen/target/set", &seg) == 2);
-  CHECK(parse(s, "VdMot/valves/3/target/set", &seg) == 2);   // number of a named valve
-  CHECK(parse(s, "VdMot/valves/1/target/set", &seg) == 0);
-  CHECK(parse(s, "VdMot/valves/12/target/set", &seg) == 11);  // valve 12 named "12"
-  CHECK(parse(s, "VdMot/valves/11/target/set", &seg) == 10);
-  for (const char* bad : {
+  CHECK(inbound(s, "VdMot/valves/Bad_1/target/set", &seg) == "Target 0");
+  CHECK(inbound(s, "VdMot/valves/Bad_1/target/set/set", &seg) == "Target 0");
+  CHECK(inbound(s, "/VdMot/valves/Bad_1/target/set", &seg) == "Target 0");
+  CHECK(inbound(s, "VdMot/valves/2/target/set", &seg) == "Target 1");
+  CHECK(inbound(s, "VdMot/valves/Kitchen/target/set", &seg) == "Target 2");
+  CHECK(inbound(s, "VdMot/valves/3/target/set", &seg) == "Target 2");   // number of a named valve
+  CHECK(inbound(s, "VdMot/valves/1/target/set", &seg) == "Target 0");
+  CHECK(inbound(s, "VdMot/valves/12/target/set", &seg) == "Target 11");  // valve 12 named "12"
+  CHECK(inbound(s, "VdMot/valves/11/target/set", &seg) == "Target 10");
+  // Target topics naming no valve.
+  for (const char* unknown : {
            "VdMot/valves/13/target/set", "VdMot/valves/0/target/set", "VdMot/valves/03/target/set",
-           "VdMot/valves//target/set", "VdMot/valves/-1/target/set", "VdMot/valves/1a/target/set",
-           "VdMot/valves/Unknown/target/set", "VdMot/valves/01234567890/target/set",
-           "VdMot/valves/1/target", "VdMot/valves/1/target/value", "VdMot/valves/1/target/set/set/set",
-           "VdMot/valves/1/target/", "VdMot/valves/1/targetx/set", "VdMot/valves/1/state/set",
-           "VdMot/valves/1", "VdMot/valves/1/", "VdMot/valves/", "VdMot/valves", "VdMot/common/state/set",
-           "Other/valves/1/target/set", "VdMo/valves/1/target/set", "VdMotX/valves/1/target/set",
-           "vdmot/valves/1/target/set", "//VdMot/valves/1/target/set", "VdMot/Valves/1/target/set",
+           "VdMot/valves/-1/target/set", "VdMot/valves/1a/target/set", "VdMot/valves/Old/target/set",
+           "VdMot/valves/Unknown/target/set", "VdMot/valves/12345678901/target/set",
            "VdMot/valves/Bad 1/target/set", "VdMot/valves/4294967297/target/set",
-           "VdMot/valves/1/set/target", ""}) {
-    CAPTURE(bad);
-    CHECK(parse(s, bad, &seg) == -1);
+           "VdMot/valves/a/b/target/set"}) {
+    CAPTURE(unknown);
+    CHECK(inbound(s, unknown, &seg) == "Target -1");
   }
-  // Not separate: bare topic and one /set.
+  for (const char* none : {
+           "VdMot/valves//target/set", "VdMot/valves/1/target", "VdMot/valves/1/target/value",
+           "VdMot/valves/1/target/", "VdMot/valves/1/targetx/set", "VdMot/valves/1/state/set",
+           "VdMot/valves/1", "VdMot/valves/1/", "VdMot/valves/", "VdMot/valves",
+           "VdMot/common/state/set", "Other/valves/1/target/set", "VdMo/valves/1/target/set",
+           "VdMotX/valves/1/target/set", "vdmot/valves/1/target/set", "//VdMot/valves/1/target/set",
+           "VdMot/Valves/1/target/set", "VdMot/valves/target/set", "VdMot/valves/1/set/target",
+           "VdMot/status", "homeassistant/statu", "ha/status", "VdMot/", ""}) {
+    CAPTURE(none);
+    CHECK(inbound(s, none, &seg) == "None");
+  }
+  // Not separate: the state form and one /set.
   const TopicContext p = ctxOf("VdMot", false);
-  CHECK(parse(p, "VdMot/valves/2/target", &seg) == 1);
-  CHECK(parse(p, "VdMot/valves/2/target/set", &seg) == 1);
-  CHECK(parse(p, "VdMot/valves/2/target/set/set", &seg) == -1);
+  CHECK(inbound(p, "VdMot/valves/2/target", &seg) == "Target 1 state");
+  CHECK(inbound(p, "VdMot/valves/2/target/set", &seg) == "Target 1");
+  CHECK(inbound(p, "VdMot/valves/Old/target", &seg) == "Target -1 state");
+  CHECK(inbound(p, "VdMot/valves/2/target/set/set", &seg) == "None");
   // pathAsRoot: the leading '/' is optional on both sides.
   const TopicContext r = ctxOf("VdMot", true, true);
-  CHECK(parse(r, "/VdMot/valves/2/target/set", &seg) == 1);
-  CHECK(parse(r, "VdMot/valves/2/target/set", &seg) == 1);
-  // Fallback main topic.
-  CHECK(parse(ctxOf(""), "VdMotFBH/valves/2/target/set", &seg) == 1);
-  CHECK(parse(ctxOf("a+b"), "a+b/valves/2/target/set", &seg) == -1);
-  CHECK(parse(ctxOf("a+b"), "valves/2/target/set", &seg) == -1);
-  CHECK(parse(ctxOf("a+b"), "/valves/2/target/set", &seg) == -1);
+  CHECK(inbound(r, "/VdMot/valves/2/target/set", &seg) == "Target 1");
+  CHECK(inbound(r, "VdMot/valves/2/target/set", &seg) == "Target 1");
+  // Fallback main topic and an unusable root.
+  CHECK(inbound(ctxOf(""), "VdMotFBH/valves/2/target/set", &seg) == "Target 1");
+  CHECK(inbound(ctxOf("a+b"), "a+b/valves/2/target/set", &seg) == "None");
+  CHECK(inbound(ctxOf("a+b"), "valves/2/target/set", &seg) == "None");
+  CHECK(inbound(ctxOf("a+b"), "homeassistant/status", &seg) == "HaStatus");
   // Without segment table: numbers only.
-  CHECK(parse(s, "VdMot/valves/5/target/set", nullptr) == 4);
-  CHECK(parse(s, "VdMot/valves/Bad_1/target/set", nullptr) == -1);
+  CHECK(inbound(s, "VdMot/valves/5/target/set", nullptr) == "Target 4");
+  CHECK(inbound(s, "VdMot/valves/Bad_1/target/set", nullptr) == "Target -1");
   // First name match wins; names beat numbers.
   const char* dup[kValveCount] = {"x", "", "", "", "x", "", "", "", "", "", "", "3"};
   Segments d;
   fillSegments(d, dup);
-  CHECK(parse(s, "VdMot/valves/x/target/set", &d) == 0);
-  CHECK(parse(s, "VdMot/valves/3/target/set", &d) == 2);  // valve 3's own segment "3" first
+  CHECK(inbound(s, "VdMot/valves/x/target/set", &d) == "Target 0");
+  CHECK(inbound(s, "VdMot/valves/3/target/set", &d) == "Target 2");  // valve 3's own segment "3"
   const char* named3[kValveCount] = {"3", "", "Z", "", "", "", "", "", "", "", "", ""};
   Segments n3;
   fillSegments(n3, named3);
-  CHECK(parse(s, "VdMot/valves/3/target/set", &n3) == 0);
+  CHECK(inbound(s, "VdMot/valves/3/target/set", &n3) == "Target 0");
+  // Multi-level segments (topic overrides) are matched before the number form.
+  Segments ml;
+  fillSegments(ml, names);
+  copyString(ml[2], sizeof ml[2], "Bad/WC");
+  copyString(ml[4], sizeof ml[4], "1/2");
+  CHECK(inbound(s, "VdMot/valves/Bad/WC/target/set", &ml) == "Target 2");
+  CHECK(inbound(s, "VdMot/valves/Bad/WC/target/set/set", &ml) == "Target 2");
+  CHECK(inbound(s, "VdMot/valves/1/2/target/set", &ml) == "Target 4");
+  CHECK(inbound(p, "VdMot/valves/Bad/WC/target", &ml) == "Target 2 state");
+  CHECK(inbound(p, "VdMot/valves/Bad/WC/target/set", &ml) == "Target 2");
   // An empty entry in the table (invalid name) never matches.
   Segments holes;
   fillSegments(holes, names);
   holes[4][0] = '\0';
-  CHECK(parse(s, "VdMot/valves//target/set", &holes) == -1);
-  CHECK(parse(s, "VdMot/valves/5/target/set", &holes) == 4);
+  CHECK(inbound(s, "VdMot/valves/5/target/set", &holes) == "Target 4");
   // Unterminated segment entries are read bounded.
   Segments raw;
   memset(raw, 'q', sizeof raw);
-  CHECK(parse(s, "VdMot/valves/qqqqqqqqqq/target/set", &raw) == 0);
+  CHECK(inbound(s, "VdMot/valves/qqqqqqqqqq/target/set", &raw) == "Target 0");
   // len is authoritative; NUL bytes and oversize input are rejected.
   const char withTail[] = "VdMot/valves/2/target/setGARBAGE";
-  CHECK(parseTargetCommandTopic(s, withTail, strlen("VdMot/valves/2/target/set"), seg) == 1);
+  CHECK(parseInboundTopic(s, "ha", withTail, strlen("VdMot/valves/2/target/set"), seg).valve == 1);
   const char withNul[] = "VdMot/valves/2\0/target/set";
-  CHECK(parseTargetCommandTopic(s, withNul, sizeof withNul - 1, seg) == -1);
-  CHECK(parseTargetCommandTopic(s, nullptr, 10, seg) == -1);
-  CHECK(parseTargetCommandTopic(s, "VdMot/valves/2/target/set", 0, seg) == -1);
+  CHECK(parseInboundTopic(s, "ha", withNul, sizeof withNul - 1, seg).kind == InboundKind::None);
+  CHECK(parseInboundTopic(s, "ha", nullptr, 10, seg).kind == InboundKind::None);
+  CHECK(parseInboundTopic(s, "ha", "VdMot/valves/2/target/set", 0, seg).kind == InboundKind::None);
   std::string huge = "VdMot/valves/2/target/set";
-  huge += std::string(kTopicMax, '/');
-  CHECK(parseTargetCommandTopic(s, huge.c_str(), huge.size(), seg) == -1);
-  std::string edge = "/VdMot/valves/2/target/set";
-  CHECK(parseTargetCommandTopic(s, edge.c_str(), edge.size(), seg) == 1);
+  huge = std::string(kTopicMax + 1 - huge.size(), '/') + huge;
+  CHECK(parseInboundTopic(s, "ha", huge.c_str(), huge.size(), seg).kind == InboundKind::None);
+  std::string edge = "VdMot/valves/1/target/set";
+  edge = "/VdMot/valves/" + std::string(kTopicMax - 25, '1') + "/target/set";
+  REQUIRE(edge.size() == kTopicMax);
+  CHECK(parseInboundTopic(s, "ha", edge.c_str(), edge.size(), seg).kind == InboundKind::Target);
 }
 
-TEST_CASE("parseTargetCommandTopic fuzz (fixed seed)" * doctest::test_suite("fuzz")) {
+TEST_CASE("parseInboundTopic: HA status and cmd topics") {
+  const char* names[kValveCount] = {"Bad 1", "", "", "", "", "", "", "", "", "", "", ""};
+  Segments seg;
+  fillSegments(seg, names);
+  const TopicContext s = ctxOf("VdMot");
+  CHECK(inbound(s, "homeassistant/status", &seg) == "HaStatus");
+  CHECK(inbound(s, "homeassistant/status", &seg, "ha") == "HaStatus");
+  CHECK(inbound(s, "ha/status", &seg, "ha") == "HaStatus");
+  CHECK(inbound(s, "ha/status", &seg, "") == "None");
+  CHECK(inbound(s, "ha/status", &seg, nullptr) == "None");
+  CHECK(inbound(s, "/homeassistant/status", &seg) == "None");
+  CHECK(inbound(s, "homeassistant/status/x", &seg) == "None");
+  CHECK(inbound(s, "VdMot/cmd/valves/Bad_1/calibrate", &seg) == "CalibrateValve 0");
+  CHECK(inbound(s, "VdMot/cmd/valves/2/calibrate", &seg) == "CalibrateValve 1");
+  CHECK(inbound(s, "VdMot/cmd/valves/13/calibrate", &seg) == "CalibrateValve -1");
+  CHECK(inbound(s, "/VdMot/cmd/valves/1/calibrate", &seg) == "CalibrateValve 0");
+  CHECK(inbound(s, "VdMot/cmd/valves//calibrate", &seg) == "UnknownCommand");
+  CHECK(inbound(s, "VdMot/cmd/valves/calibrate", &seg) == "UnknownCommand");
+  CHECK(inbound(s, "VdMot/cmd/calibrate", &seg) == "CalibrateAll");
+  CHECK(inbound(s, "VdMot/cmd/restart", &seg) == "Restart");
+  CHECK(inbound(s, "VdMot/cmd/stmReset", &seg) == "StmReset");
+  CHECK(inbound(s, "VdMot/cmd/detect", &seg) == "Detect");
+  CHECK(inbound(s, "VdMot/cmd/stop", &seg) == "StopAll");
+  CHECK(inbound(s, "VdMot/cmd/stmSafeExit", &seg) == "StmSafeExit");
+  for (const char* other : {"VdMot/cmd/foo", "VdMot/cmd/", "VdMot/cmd/restart/x", "VdMot/cmd/Restart",
+                            "VdMot/cmd/detec", "VdMot/cmd/stops"}) {
+    CAPTURE(other);
+    CHECK(inbound(s, other, &seg) == "UnknownCommand");
+  }
+  CHECK(inbound(s, "VdMot/cmd", &seg) == "None");
+  CHECK(inbound(s, "VdMot/cmdx/restart", &seg) == "None");
+  CHECK(inbound(s, "Other/cmd/restart", &seg) == "None");
+}
+
+TEST_CASE("parseInboundTopic fuzz (fixed seed)" * doctest::test_suite("fuzz")) {
   const char* names[kValveCount] = {"a", "b b", "", "", "", "", "", "", "", "", "", ""};
   Segments seg;
   fillSegments(seg, names);
   const TopicContext s = ctxOf("VdMot");
   srand(12345);
-  const char alphabet[] = "VdMot/valves/target/set0123456789ab_ \x01\xff+#";
+  const char alphabet[] = "VdMot/valves/target/set/cmd0123456789ab_ \x01\xff+#";
   char buf[160];
   for (int iter = 0; iter < 50000; ++iter) {
     const size_t len = static_cast<size_t>(rand() % 150);
@@ -346,8 +541,9 @@ TEST_CASE("parseTargetCommandTopic fuzz (fixed seed)" * doctest::test_suite("fuz
       buf[i] = (rand() % 4 == 0) ? static_cast<char>(rand() % 256)
                                  : alphabet[rand() % (sizeof alphabet - 1)];
     }
-    const int r = parseTargetCommandTopic(s, buf, len, seg);
-    CHECK((r >= -1 && r < kValveCount));
+    const InboundTopic r = parseInboundTopic(s, "ha", buf, len, seg);
+    CHECK((r.valve >= -1 && r.valve < kValveCount));
+    CHECK(static_cast<uint8_t>(r.kind) <= static_cast<uint8_t>(InboundKind::UnknownCommand));
   }
   // Mutations of a valid topic stay in range and mostly fail.
   const std::string good = "VdMot/valves/b_b/target/set";
@@ -356,11 +552,11 @@ TEST_CASE("parseTargetCommandTopic fuzz (fixed seed)" * doctest::test_suite("fuz
     std::string t = good;
     const size_t pos = static_cast<size_t>(rand()) % t.size();
     t[pos] = static_cast<char>(rand() % 256);
-    const int r = parseTargetCommandTopic(s, t.data(), t.size(), seg);
-    CHECK((r >= -1 && r < kValveCount));
-    if (r >= 0) {
+    const InboundTopic r = parseInboundTopic(s, "ha", t.data(), t.size(), seg);
+    CHECK((r.valve >= -1 && r.valve < kValveCount));
+    if (r.valve >= 0) {
       ++accepted;
-      CHECK((r == 1 || t == good));
+      CHECK((r.valve == 1 || t == good));
     }
   }
   CHECK(accepted < 20000);
@@ -374,7 +570,11 @@ TEST_CASE("parseTargetPayload") {
   const Ok oks[] = {{"55", 55},     {"0", 0},          {"100", 100},   {" 55\r\n", 55},
                     {"\t7 ", 7},    {"55.0", 55},      {"55.00", 55},  {"100.000", 100},
                     {"007", 7},     {"OPEN", 100},     {"CLOSE", 0},   {" OPEN\n", 100},
-                    {"0000000000000100", 100},         {"1", 1},       {"99", 99}};
+                    {"0000000000000100", 100},         {"1", 1},       {"99", 99},
+                    {"43.7", 44},   {"43,7", 44},      {"43.5", 44},   {"43.49999", 43},
+                    {"0.4", 0},     {"0,5", 1},        {"99.5", 100},  {"100.0", 100},
+                    {"00055.50", 56}, {" 42 ", 42},    {"55,0", 55},   {"55.01", 55},
+                    {"100.000000000000", 100},         {"  55            ", 55}};
   for (const Ok& o : oks) {
     CAPTURE(o.p);
     uint8_t out = 200;
@@ -390,39 +590,47 @@ TEST_CASE("parseTargetPayload") {
       {"\r\n", TargetPayload::Empty},      {"101", TargetPayload::OutOfRange},
       {"1000", TargetPayload::OutOfRange}, {"255", TargetPayload::OutOfRange},
       {"256", TargetPayload::OutOfRange},  {"99999999999999", TargetPayload::OutOfRange},
-      {"101.0", TargetPayload::OutOfRange},
+      {"101.0", TargetPayload::OutOfRange}, {"100.01", TargetPayload::OutOfRange},
+      {"100.5", TargetPayload::OutOfRange}, {"100.00000000001", TargetPayload::OutOfRange},
       {"55.", TargetPayload::NotNumber},   {".5", TargetPayload::NotNumber},
-      {"55.5", TargetPayload::NotNumber},  {"55.01", TargetPayload::NotNumber},
+      {",5", TargetPayload::NotNumber},    {"1.2.3", TargetPayload::NotNumber},
+      {"1,2,3", TargetPayload::NotNumber}, {"1.2,3", TargetPayload::NotNumber},
       {"-5", TargetPayload::NotNumber},    {"+5", TargetPayload::NotNumber},
       {"-0", TargetPayload::NotNumber},    {"1e2", TargetPayload::NotNumber},
       {"0x10", TargetPayload::NotNumber},  {"nan", TargetPayload::NotNumber},
       {"inf", TargetPayload::NotNumber},   {"5 5", TargetPayload::NotNumber},
-      {"55,0", TargetPayload::NotNumber},  {"open", TargetPayload::NotNumber},
-      {"Close", TargetPayload::NotNumber}, {"STOP", TargetPayload::NotNumber},
+      {"5. 5", TargetPayload::NotNumber},  {"open", TargetPayload::NotNumber},
+      {"Close", TargetPayload::NotNumber}, {"stop", TargetPayload::NotNumber},
       {"OPENX", TargetPayload::NotNumber}, {"55a", TargetPayload::NotNumber},
+      {"5.5a", TargetPayload::NotNumber},
       {"00000000000001000", TargetPayload::NotNumber},  // 17 chars
-      {"  55            ", TargetPayload::Ok},
+      {"STOP", TargetPayload::Stop},       {" STOP\n", TargetPayload::Stop},
   };
   for (const Bad& b : bads) {
     CAPTURE(b.p);
     uint8_t out = 200;
     CHECK(payload(b.p, out) == b.r);
-    if (b.r != TargetPayload::Ok) CHECK(out == 200);
+    CHECK(out == 200);
   }
   uint8_t out = 200;
   CHECK(parseTargetPayload(nullptr, 3, out) == TargetPayload::Empty);
   CHECK(parseTargetPayload("55", 0, out) == TargetPayload::Empty);
   CHECK(parseTargetPayload("55\0", 3, out) == TargetPayload::NotNumber);
   CHECK(parseTargetPayload("5\0005", 3, out) == TargetPayload::NotNumber);
+  CHECK(parseTargetPayload("5.\0", 3, out) == TargetPayload::NotNumber);
   CHECK(parseTargetPayload("559", 2, out) == TargetPayload::Ok);  // len bounded
   CHECK(out == 55);
+  CHECK(parseTargetPayload("43.51", 4, out) == TargetPayload::Ok);  // "43.5"
+  CHECK(out == 44);
   // Exact-size buffers (no terminator to lean on).
   struct Exact {
     const char* p;
     TargetPayload r;
   };
   for (const Exact& x : {Exact{"   ", TargetPayload::Empty}, Exact{" 5 ", TargetPayload::Ok},
-                         Exact{"5", TargetPayload::Ok}, Exact{"OPEN", TargetPayload::Ok}}) {
+                         Exact{"5", TargetPayload::Ok}, Exact{"OPEN", TargetPayload::Ok},
+                         Exact{"4.5", TargetPayload::Ok},
+                         Exact{"99.999999999999", TargetPayload::Ok}}) {
     std::vector<char> exact(x.p, x.p + strlen(x.p));
     uint8_t v = 200;
     CHECK(parseTargetPayload(exact.data(), exact.size(), v) == x.r);
@@ -430,6 +638,10 @@ TEST_CASE("parseTargetPayload") {
   std::string seventeen(17, ' ');
   seventeen[8] = '5';
   CHECK(parseTargetPayload(seventeen.data(), seventeen.size(), out) == TargetPayload::NotNumber);
+  std::string sixteen(16, ' ');
+  sixteen[8] = '5';
+  CHECK(parseTargetPayload(sixteen.data(), sixteen.size(), out) == TargetPayload::Ok);
+  CHECK(out == 5);
 
   // Fuzz: never out of range, never a crash.
   srand(777);
@@ -437,7 +649,7 @@ TEST_CASE("parseTargetPayload") {
   for (int iter = 0; iter < 50000; ++iter) {
     const size_t len = static_cast<size_t>(rand() % 20);
     for (size_t i = 0; i < len; ++i) {
-      buf[i] = (rand() % 3 == 0) ? static_cast<char>(rand() % 256) : "0123456789. \r\nOPENCLS"[rand() % 22];
+      buf[i] = (rand() % 3 == 0) ? static_cast<char>(rand() % 256) : "0123456789., \r\nOPENCLS"[rand() % 23];
     }
     uint8_t v = 200;
     const TargetPayload r = parseTargetPayload(buf, len, v);
@@ -447,6 +659,16 @@ TEST_CASE("parseTargetPayload") {
       CHECK(v == 200);
     }
   }
+}
+
+TEST_CASE("parseButtonPayload") {
+  CHECK(parseButtonPayload("PRESS", 5));
+  CHECK(parseButtonPayload("PRESSx", 5));  // len is authoritative
+  for (const char* bad : {"press", "PRESS ", " PRESS", "PRES", "PRESSED", "", "ON"}) {
+    CAPTURE(bad);
+    CHECK_FALSE(parseButtonPayload(bad, strlen(bad)));
+  }
+  CHECK_FALSE(parseButtonPayload(nullptr, 5));
 }
 
 TEST_CASE("every builder leaves cap 0 untouched and clears the output on failure") {
@@ -508,7 +730,7 @@ TEST_CASE("every builder leaves cap 0 untouched and clears the output on failure
   CHECK(buildTopic(ctxOf("a+b"), Topic::CommonIp, nullptr, buf, sizeof buf) == 0);
   CHECK(buf[0] == '\0');
   prefill();
-  CHECK(buildTopic(s, Topic::ValveTarget, "a/b", buf, sizeof buf) == 0);
+  CHECK(buildTopic(s, Topic::ValveTarget, "a//b", buf, sizeof buf) == 0);
   CHECK(buf[0] == '\0');
   prefill();
   CHECK(buildTopic(s, Topic::ValveTarget, nullptr, buf, sizeof buf) == 0);
@@ -843,7 +1065,7 @@ TEST_CASE("topics: an empty inbound topic is rejected before looking at its byte
   TopicContext s;
   copyString(s.station, sizeof s.station, "VdMot");
   const char* t = "/VdMot/valves/1/target/set";
-  CHECK(parseTargetCommandTopic(s, t, 0, nullptr) == -1);
-  CHECK(parseTargetCommandTopic(s, t, strlen(t), nullptr) == 0);
-  CHECK(parseTargetCommandTopic(s, t, 1, nullptr) == -1);
+  CHECK(parseInboundTopic(s, "ha", t, 0, nullptr).kind == InboundKind::None);
+  CHECK(parseInboundTopic(s, "ha", t, strlen(t), nullptr).valve == 0);
+  CHECK(parseInboundTopic(s, "ha", t, 1, nullptr).kind == InboundKind::None);
 }
