@@ -122,8 +122,8 @@ class LinkPolicy {
   // is evicted for it) and false is returned; otherwise (or when nothing can
   // be evicted) the request completes with Outcome::Timeout -> true, `out`
   // filled.
-  // A gproto probe (v2 feature detection) never counts toward
-  // consecutiveTimeouts because a v1 STM stays silent by design.
+  // A probe (RequestLine::probe: gproto, which a v1 STM leaves unanswered by
+  // design) never counts toward consecutiveTimeouts.
   bool poll(uint32_t nowMs, Completion& out);
 
   // R6: true when consecutiveTimeouts >= resetMinTimeouts AND the first of
@@ -155,6 +155,8 @@ class LinkPolicy {
   size_t queued() const { return count_; }
   size_t queued(Priority p) const;
   bool busy() const { return outstanding_; }
+  // A request of priority p is outstanding.
+  bool busyWith(Priority p) const { return outstanding_ && current_.priority == p; }
 
  private:
   // queue_[0..count_) is kept sorted by priority, FIFO within a priority.
@@ -200,23 +202,37 @@ class LinkPolicy {
 // re-push the desired targets.
 class RebootDetector {
  public:
-  // v2: gstat. True when uptime decreased or the reset counter changed
-  // compared with the previous gstat (the first gstat only primes).
-  bool onStatus(const StmStatus& s);
+  static constexpr uint32_t kUptimeSlackS = 5;
+  enum class Recovery : uint8_t { None, Reboot, CheckStatus };
+
+  // gstat/gstax. The first status after reset() only primes. Returns the
+  // cause of the StmRebootDetected event, 0 = no reboot:
+  //  2 when the reset counter differs from the previous status;
+  //  1 when the uptime decreased, or uptime + kUptimeSlackS + e / 1000 <
+  //    previous uptime + e, where e is the whole seconds between the two
+  //    statuses on the ESP clock (a power-on restart after a long outage).
+  // Clears an armed link-recovery check.
+  uint8_t onStatus(const StmStatus& s, uint32_t nowMs);
   // v1 heuristic (spec 01 §10): true when a valve that previously reported
   // openCount>0 or closeCount>0 now reports openCount==0 && closeCount==0 &&
   // moves==0 with status Unknown(5), Connected(8) or NoValve(6).
   bool onValveData(const ValveData& d);
-  // True on the transition Down -> Up (the STM may have been power cycled
-  // while silent; re-sync is cheap and always safe).
-  bool onLinkState(LinkState prev, LinkState cur);
+  // Down -> Up: Reboot on protocol <= 1 (no gstat), CheckStatus on 2/3 (arms
+  // a check: the caller asks for gstat/gstax at once, onStatus() decides).
+  // Any other transition: None.
+  Recovery onLinkState(LinkState prev, LinkState cur, uint8_t proto);
+  // The status request of an armed check timed out: true (once) = treat it
+  // as a reboot (cause 4).
+  bool onStatusFailed();
   // Forget history (after an ESP-initiated reset or a re-flash, where the
-  // reboot is known).
+  // reboot is known); also disarms the check.
   void reset();
 
  private:
   bool haveStatus_ = false;
   StmStatus last_{};
+  uint32_t lastMs_ = 0;
+  bool checkArmed_ = false;
   bool calibrated_[kValveCount] = {false};
 };
 

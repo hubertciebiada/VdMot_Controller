@@ -688,7 +688,7 @@ TEST_CASE("link: downAfter parameter") {
   CHECK(lp.state(900) == LinkState::Down);
 }
 
-TEST_CASE("link: gproto timeouts never count toward the failure counter") {
+TEST_CASE("link: gproto probe timeouts never count toward the failure counter") {
   LinkPolicy lp;
   lp.enqueue(proto(), Priority::Config);
   uint32_t now = 0;
@@ -912,23 +912,72 @@ TEST_CASE("reboot: gstat uptime decrease or reset counter change") {
   StmStatus s;
   s.uptimeS = 100;
   s.resets = 3;
-  CHECK_FALSE(d.onStatus(s));  // primes
+  CHECK(d.onStatus(s, 0) == 0);  // primes
   s.uptimeS = 110;
-  CHECK_FALSE(d.onStatus(s));
-  CHECK_FALSE(d.onStatus(s));  // equal uptime is not a reboot
+  CHECK(d.onStatus(s, 10000) == 0);
+  CHECK(d.onStatus(s, 10000) == 0);  // equal uptime at the same ESP time is not a reboot
   s.uptimeS = 109;
-  CHECK(d.onStatus(s));
+  CHECK(d.onStatus(s, 10000) == 1);
   s.uptimeS = 200;
-  CHECK_FALSE(d.onStatus(s));
+  CHECK(d.onStatus(s, 10000) == 0);
   s.resets = 4;
-  CHECK(d.onStatus(s));
+  CHECK(d.onStatus(s, 10000) == 2);
   s.resets = 2;
   s.uptimeS = 300;
-  CHECK(d.onStatus(s));
-  CHECK_FALSE(d.onStatus(s));
+  CHECK(d.onStatus(s, 10000) == 2);
+  CHECK(d.onStatus(s, 10000) == 0);
+  s.resets = 3;
+  s.uptimeS = 1;
+  CHECK(d.onStatus(s, 10000) == 2);  // the reset counter wins over the uptime
   d.reset();
   s.uptimeS = 1;
-  CHECK_FALSE(d.onStatus(s));  // primes again
+  CHECK(d.onStatus(s, 10000) == 0);  // primes again
+}
+
+TEST_CASE("reboot: the uptime must keep pace with the ESP clock, 5 s slack plus 1 s per 1000 s") {
+  RebootDetector d;
+  StmStatus s;
+  s.uptimeS = 1000;
+  CHECK(d.onStatus(s, 50000) == 0);
+  s.uptimeS = 1005;  // +5 after 10 s: slack 5 + 0
+  CHECK(d.onStatus(s, 60000) == 0);
+  s.uptimeS = 1009;  // +4 after 10.999 s
+  CHECK(d.onStatus(s, 70999) == 1);
+  d.reset();
+  s.uptimeS = 1000;
+  CHECK(d.onStatus(s, 0) == 0);
+  s.uptimeS = 1010;
+  CHECK(d.onStatus(s, 10000) == 0);  // +10 after 10 s
+  s.uptimeS = 30;
+  CHECK(d.onStatus(s, 70000) == 1);  // power-on: 30 s after 60 s
+  d.reset();
+  s.uptimeS = 5000;
+  CHECK(d.onStatus(s, 1000) == 0);
+  s.uptimeS = 5000 + 9985;  // e = 10000 s: slack 5 + 10
+  CHECK(d.onStatus(s, 10001000) == 0);
+  s.uptimeS = 5000 + 9985 + 9984;
+  CHECK(d.onStatus(s, 20001000) == 1);
+  d.reset();
+  s.uptimeS = 5000;
+  CHECK(d.onStatus(s, 1000) == 0);
+  s.uptimeS = 5000 + 9985;
+  CHECK(d.onStatus(s, 10001999) == 0);  // 10000.999 s count as 10000 whole seconds
+  d.reset();
+  s.uptimeS = 5000;
+  CHECK(d.onStatus(s, 1000) == 0);
+  s.uptimeS = 5000 + 9985;
+  CHECK(d.onStatus(s, 10000999) == 0);  // 9999 s: slack 5 + 9
+  s.uptimeS = 5000 + 9985 + 9984;
+  CHECK(d.onStatus(s, 20000999) == 1);  // 10000 s: slack 15, one second short
+}
+
+TEST_CASE("reboot: a large uptime near the counter limit does not overflow the check") {
+  RebootDetector d;
+  StmStatus s;
+  s.uptimeS = 0xFFFFFFF0u;
+  CHECK(d.onStatus(s, 0) == 0);
+  s.uptimeS = 0xFFFFFFFAu;
+  CHECK(d.onStatus(s, 10000) == 0);
 }
 
 namespace {
@@ -982,17 +1031,143 @@ TEST_CASE("reboot: reset forgets calibration history") {
   CHECK_FALSE(d.onValveData(vd(11, 5, 0, 0, 0)));
 }
 
-TEST_CASE("reboot: link Down -> Up only") {
-  RebootDetector d;
+TEST_CASE("reboot: link Down -> Up recovers by reboot on protocol 0/1, by a status check on 2/3") {
   const LinkState all[] = {LinkState::Unknown, LinkState::Up,      LinkState::Degraded,
                            LinkState::Down,    LinkState::Booting, LinkState::Suspended};
-  for (LinkState a : all) {
-    for (LinkState b : all) {
-      CAPTURE(linkStateName(a));
-      CAPTURE(linkStateName(b));
-      CHECK(d.onLinkState(a, b) == (a == LinkState::Down && b == LinkState::Up));
+  for (uint8_t proto = 0; proto <= 3; ++proto) {
+    for (LinkState a : all) {
+      for (LinkState b : all) {
+        RebootDetector d;
+        CAPTURE(int(proto));
+        CAPTURE(linkStateName(a));
+        CAPTURE(linkStateName(b));
+        const bool recovery = a == LinkState::Down && b == LinkState::Up;
+        const RebootDetector::Recovery want =
+            !recovery ? RebootDetector::Recovery::None
+                      : (proto <= 1 ? RebootDetector::Recovery::Reboot
+                                    : RebootDetector::Recovery::CheckStatus);
+        CHECK(d.onLinkState(a, b, proto) == want);
+        CHECK(d.onStatusFailed() == (want == RebootDetector::Recovery::CheckStatus));
+      }
     }
   }
+}
+
+TEST_CASE("reboot: a failed status check counts once; a status or reset disarms it") {
+  RebootDetector d;
+  CHECK_FALSE(d.onStatusFailed());
+  CHECK(d.onLinkState(LinkState::Down, LinkState::Up, 2) == RebootDetector::Recovery::CheckStatus);
+  CHECK(d.onStatusFailed());
+  CHECK_FALSE(d.onStatusFailed());
+  CHECK(d.onLinkState(LinkState::Down, LinkState::Up, 3) == RebootDetector::Recovery::CheckStatus);
+  StmStatus s;
+  d.onStatus(s, 0);
+  CHECK_FALSE(d.onStatusFailed());
+  CHECK(d.onLinkState(LinkState::Down, LinkState::Up, 3) == RebootDetector::Recovery::CheckStatus);
+  d.reset();
+  CHECK_FALSE(d.onStatusFailed());
+  CHECK(d.onLinkState(LinkState::Down, LinkState::Up, 1) == RebootDetector::Recovery::Reboot);
+  CHECK_FALSE(d.onStatusFailed());
+}
+
+TEST_CASE("link: busyWith names the priority of the outstanding request only") {
+  LinkPolicy lp;
+  CHECK_FALSE(lp.busyWith(Priority::User));
+  CHECK_FALSE(lp.busyWith(Priority::Config));
+  CHECK_FALSE(lp.busyWith(Priority::Poll));
+  lp.enqueue(valveData(0), Priority::Config);
+  CHECK_FALSE(lp.busyWith(Priority::Config));  // queued, not sent
+  send(lp, 0);
+  CHECK_FALSE(lp.busyWith(Priority::User));
+  CHECK(lp.busyWith(Priority::Config));
+  CHECK_FALSE(lp.busyWith(Priority::Poll));
+  Completion c;
+  REQUIRE(lp.onReply(reply(gvlvd(0).c_str()), 10, c));
+  CHECK_FALSE(lp.busyWith(Priority::Config));
+  lp.enqueue(valveData(1), Priority::User);
+  send(lp, 100);
+  CHECK(lp.busyWith(Priority::User));
+  CHECK_FALSE(lp.busyWith(Priority::Config));
+}
+
+TEST_CASE("link: a probe request never counts toward the failure counter, the same line without it does") {
+  RequestLine r = valveData(0);
+  r.probe = true;
+  LinkPolicy lp;
+  lp.enqueue(r, Priority::Poll);
+  uint32_t now = 0;
+  send(lp, now);
+  Completion c = expire(lp, now);
+  CHECK(c.attempts == 3);
+  CHECK(lp.stats().consecutiveTimeouts == 0);
+  CHECK(lp.state(now) == LinkState::Unknown);
+  r.probe = false;
+  lp.enqueue(r, Priority::Poll);
+  now += 10;
+  send(lp, now);
+  c = expire(lp, now);
+  CHECK(lp.stats().consecutiveTimeouts == 3);
+  CHECK(lp.state(now) == LinkState::Degraded);
+}
+
+TEST_CASE("link: only the gproto builder marks its request as a probe") {
+  RequestLine r;
+  REQUIRE(buildGetProto(r));
+  CHECK(r.probe);
+  CHECK_FALSE(valveData(0).probe);
+  CHECK_FALSE(setTarget(0, 1).probe);
+  CHECK_FALSE(calibrate(0).probe);
+  RequestLine g;
+  REQUIRE(buildGetVersion(g));
+  CHECK_FALSE(g.probe);
+  REQUIRE(buildGetStatusV3(g));
+  CHECK_FALSE(g.probe);
+}
+
+namespace {
+void checkOutcome(const RequestLine& req, const char* line, Outcome want) {
+  CAPTURE(line);
+  LinkPolicy lp;
+  lp.enqueue(req, Priority::Config);
+  send(lp, 0);
+  Completion c;
+  REQUIRE(lp.onReply(reply(line), 10, c));
+  CHECK(c.outcome == want);
+}
+}  // namespace
+
+TEST_CASE("link: error forms of the protocol 3 commands complete as Rejected") {
+  RequestLine r;
+  REQUIRE(buildHeartbeat(true, r));
+  checkOutcome(r, "slhbt err", Outcome::Rejected);
+  checkOutcome(r, "slhbt 1 3600", Outcome::Ok);
+  REQUIRE(buildSetLeaseTimeout(60, r));
+  checkOutcome(r, "slcfg err", Outcome::Rejected);
+  checkOutcome(r, "slcfg ok", Outcome::Ok);
+  REQUIRE(buildLeaveSafeMode(r));
+  checkOutcome(r, "ssafe err", Outcome::Rejected);
+  checkOutcome(r, "ssafe ok", Outcome::Ok);
+  REQUIRE(buildSetFailsafe(2, 50, r));
+  checkOutcome(r, "sfspo 2 err 1", Outcome::Rejected);
+  checkOutcome(r, "sfspo -1 err 1", Outcome::Rejected);
+  checkOutcome(r, "sfspo 2 ok", Outcome::Ok);
+  REQUIRE(buildStop(2, r));
+  checkOutcome(r, "sstop 2 err 1", Outcome::Rejected);
+  checkOutcome(r, "sstop -1 err 1", Outcome::Rejected);
+  checkOutcome(r, "sstop 2 ok", Outcome::Ok);
+}
+
+TEST_CASE("link: svmov -1 err 1 rejects the outstanding svmov, another index is stray") {
+  RequestLine r;
+  REQUIRE(buildServiceMove(3, MoveDir::Open, 100, 50, r));
+  LinkPolicy lp;
+  lp.enqueue(r, Priority::User);
+  send(lp, 0);
+  Completion c;
+  CHECK_FALSE(lp.onReply(reply("svmov 4 ok"), 5, c));
+  CHECK(lp.stats().strayLines == 1);
+  REQUIRE(lp.onReply(reply("svmov -1 err 1"), 10, c));
+  CHECK(c.outcome == Outcome::Rejected);
 }
 
 // ================================================================ edge cases

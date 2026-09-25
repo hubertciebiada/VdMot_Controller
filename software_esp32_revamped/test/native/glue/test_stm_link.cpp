@@ -84,7 +84,7 @@ TEST_CASE("stm_link task: the link comes up with a protocol 3 STM within 10 s") 
   runTask(10000);
   CHECK(sib::app().published.link == vdm::LinkState::Up);
   CHECK(stm.requestsOf("gproto").size() >= 1);
-  CHECK(sib::app().proto == 2);  // the poll planner talks protocol 2 to a protocol 3 STM
+  CHECK(sib::app().proto == 3);
 }
 
 TEST_CASE("stm_link task: a silent STM is reset by the link policy") {

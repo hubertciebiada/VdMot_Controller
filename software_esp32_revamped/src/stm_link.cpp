@@ -336,7 +336,7 @@ void onVersion(const vdm::Reply& rep) {
     gIncompatibleLogged = true;
     logger::log(vdm::EventCode::StmIncompatible, vdm::kNoValve, 0, 0, ver);
   }
-  gPlanner.onVersion(vdm::isRevamped(rep.version));
+  gPlanner.onVersion(rep.version);
   gSnap.proto = gPlanner.protocol();
 }
 
@@ -410,7 +410,7 @@ void applyReply(const vdm::Reply& rep, const vdm::RequestLine* req, uint32_t now
     case vdm::Cmd::Gstat:
       gSnap.status = rep.status;
       gSnap.haveStatus = true;
-      if (gReboot.onStatus(rep.status)) onRebootDetected(now, 1);
+      if (const uint8_t cause = gReboot.onStatus(rep.status, now)) onRebootDetected(now, cause);
       break;
     case vdm::Cmd::Gprof:
       if (rep.profile.valve < vdm::kValveCount) gSnap.profiles[rep.profile.valve] = rep.profile;
@@ -663,7 +663,10 @@ void publish(uint32_t now) {
   if (ls != gPrevLink) {
     logEvents(ev, gHealth.onLink(gPrevLink, ls, gLink.stats().consecutiveTimeouts, ev,
                                  vdm::kMaxEventsPerUpdate));
-    if (gReboot.onLinkState(gPrevLink, ls)) onRebootDetected(now, 4);
+    if (gReboot.onLinkState(gPrevLink, ls, gPlanner.protocol()) ==
+        vdm::RebootDetector::Recovery::Reboot) {
+      onRebootDetected(now, 4);
+    }
     gPrevLink = ls;
     gDirty = true;
   }

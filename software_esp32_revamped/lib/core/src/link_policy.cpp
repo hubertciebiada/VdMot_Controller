@@ -15,9 +15,16 @@ bool isRejection(const Reply& r) {
   switch (r.cmd) {
     case Cmd::Smotc:
     case Cmd::Scalx:
+    case Cmd::Slhbt:
+    case Cmd::Slcfg:
+    case Cmd::Ssafe:
       return r.ack.error;
     case Cmd::Svmov:
       return !r.serviceMove.ok;
+    case Cmd::Sfspo:
+      return !r.failsafe.ok;
+    case Cmd::Sstop:
+      return !r.stop.ok;
     case Cmd::Goned:
       return !r.tempData.valid;
     case Cmd::Gowvd:
@@ -203,7 +210,7 @@ bool LinkPolicy::poll(uint32_t nowMs, Completion& out) {
   if (!outstanding_ || elapsedMs(nowMs, sentAtMs_) < timeoutFor(current_.line)) return false;
 
   ++stats_.timeouts;
-  if (current_.line.cmd != Cmd::Gproto) {
+  if (!current_.line.probe) {
     if (stats_.consecutiveTimeouts == 0) firstTimeoutMs_ = nowMs;
     if (stats_.consecutiveTimeouts < 0xFF) ++stats_.consecutiveTimeouts;
   }
@@ -282,11 +289,23 @@ LinkState LinkPolicy::state(uint32_t nowMs) const {
 
 // ---------------------------------------------------------------- reboot
 
-bool RebootDetector::onStatus(const StmStatus& s) {
-  const bool rebooted = haveStatus_ && (s.uptimeS < last_.uptimeS || s.resets != last_.resets);
+uint8_t RebootDetector::onStatus(const StmStatus& s, uint32_t nowMs) {
+  checkArmed_ = false;
+  uint8_t cause = 0;
+  if (haveStatus_) {
+    const uint32_t e = elapsedMs(nowMs, lastMs_) / 1000;
+    if (s.resets != last_.resets) {
+      cause = 2;
+    } else if (s.uptimeS < last_.uptimeS ||
+               static_cast<uint64_t>(s.uptimeS) + kUptimeSlackS + e / 1000 <
+                   static_cast<uint64_t>(last_.uptimeS) + e) {
+      cause = 1;
+    }
+  }
   haveStatus_ = true;
   last_ = s;
-  return rebooted;
+  lastMs_ = nowMs;
+  return cause;
 }
 
 bool RebootDetector::onValveData(const ValveData& d) {
@@ -306,11 +325,21 @@ bool RebootDetector::onValveData(const ValveData& d) {
   return true;
 }
 
-bool RebootDetector::onLinkState(LinkState prev, LinkState cur) {
-  return prev == LinkState::Down && cur == LinkState::Up;
+RebootDetector::Recovery RebootDetector::onLinkState(LinkState prev, LinkState cur, uint8_t proto) {
+  if (prev != LinkState::Down || cur != LinkState::Up) return Recovery::None;
+  if (proto <= 1) return Recovery::Reboot;
+  checkArmed_ = true;
+  return Recovery::CheckStatus;
+}
+
+bool RebootDetector::onStatusFailed() {
+  const bool armed = checkArmed_;
+  checkArmed_ = false;
+  return armed;
 }
 
 void RebootDetector::reset() {
+  checkArmed_ = false;
   haveStatus_ = false;
   last_ = StmStatus{};
   for (bool& c : calibrated_) c = false;
