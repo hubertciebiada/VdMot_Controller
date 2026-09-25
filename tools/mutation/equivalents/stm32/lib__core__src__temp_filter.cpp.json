@@ -1,0 +1,4 @@
+[
+  {"line": 8, "col": 12, "original": ">=", "replacement": ">", "text": "return x >= 0 ? (x + 32) / 64 : -((32 - x) / 64);", "reason": "x == 0 is the only value that changes branch, and both branches give 0 for it"},
+  {"line": 8, "col": 15, "original": "0", "replacement": "1", "text": "return x >= 0 ? (x + 32) / 64 : -((32 - x) / 64);", "reason": "x == 0 is the only value that changes branch, and both branches give 0 for it"}
+]
