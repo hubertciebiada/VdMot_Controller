@@ -2187,8 +2187,18 @@ TEST_CASE("codec: every numeric field accepts its minimum") {
   CHECK(r.valveData.temp1 == 0);
   REQUIRE(parse("gvlvx 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", r) == ParseStatus::Ok);
   CHECK(r.valveEx.lastMove.stop == StopReason::None);
+  REQUIRE(parse("gvlvy 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", r) == ParseStatus::Ok);
+  CHECK(r.valveEx.flags == 0);
+  CHECK(r.valveEx.fault == 0);
+  CHECK(r.valveEx.retryS == 0);
   REQUIRE(parse("gstat 0 0 0 0 0 0", r) == ParseStatus::Ok);
   CHECK(r.status.uptimeS == 0);
+  REQUIRE(parse("gstax 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", r) == ParseStatus::Ok);
+  CHECK(r.status.leaseRemainS == 0);
+  CHECK(r.status.leaseTimeoutMin == 0);
+  CHECK(r.status.eepWrites == 0);
+  CHECK(r.status.tempAgeS == 0);
+  CHECK(r.status.owScanAgeS == 0);
   REQUIRE(parse("gmotc 0 0 0 0 0", r) == ParseStatus::Ok);
   CHECK(r.motorChars.lowFactor == 0);
   CHECK(r.motorChars.minCounts == 0);
