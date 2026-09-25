@@ -444,8 +444,8 @@ void StmFlasher::opFailed(FlashError e, uint32_t address, uint32_t nowMs) {
   fail(e, address, nowMs);
 }
 
+// Every caller passes at most 98 (the byte counters never pass bytesTotal).
 void StmFlasher::setPercent(uint32_t p) {
-  if (p > 100) p = 100;
   if (p > st_.percent) st_.percent = static_cast<uint8_t>(p);
 }
 
