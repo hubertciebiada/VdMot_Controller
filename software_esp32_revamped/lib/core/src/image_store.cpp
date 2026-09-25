@@ -30,7 +30,8 @@ bool normalizeImageName(const char* in, size_t len, char* out, size_t cap) {
 
 bool imagePath(const char* name, bool part, char* out, size_t cap) {
   const int n = snprintf(out, cap, "/stm/%s.bin%s", name, part ? ".part" : "");
-  return n > 0 && static_cast<size_t>(n) < cap;
+  // An encoding error (n < 0) converts to a huge size and fails the same check.
+  return static_cast<size_t>(n) < cap;
 }
 
 }  // namespace vdm
