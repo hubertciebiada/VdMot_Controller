@@ -1,0 +1,16 @@
+[
+  {"line": 157, "col": 42, "original": "8", "replacement": "7", "text": "memset (tempsensors[i].address,0x0,8);", "reason": "a stored address with 7 zero bytes differs from every real ROM (family code first) as much as an all-zero one, and setDeviceAddress() clears every unused index"},
+  {"line": 177, "col": 27, "original": "0", "replacement": "1", "text": "static int substate = 0;", "reason": "dead initial value: T_IDLE sets substate = 0 before it enters T_SEARCH"},
+  {"line": 178, "col": 25, "original": "0", "replacement": "1", "text": "static int devcnt = 0;", "reason": "dead initial value: T_WAIT sets devcnt = 0 before it enters T_OUTPUT"},
+  {"line": 179, "col": 31, "original": "0", "replacement": "1", "text": "static int devDS2438Cnt = 0;", "reason": "dead initial value: T_OUTPUT sets devDS2438Cnt = 0 before it enters T_READVAD"},
+  {"line": 180, "col": 33, "original": "0", "replacement": "1", "text": "static unsigned int timer = 0;", "reason": "dead initial value: T_INIT and T_REQUEST set timer before T_WAIT reads it"},
+  {"line": 182, "col": 15, "original": "0", "replacement": "1", "text": "float v = 0;", "reason": "dead initial value: v is assigned by readVAD() before it is read"},
+  {"line": 191, "col": 38, "original": "/", "replacement": "*", "text": "timer = CONV_INTERVALL / 10;", "reason": "dead store: T_INIT leads to T_IDLE and T_REQUEST, which sets timer again before T_WAIT reads it"},
+  {"line": 191, "col": 40, "original": "10", "replacement": "11", "text": "timer = CONV_INTERVALL / 10;", "reason": "dead store: T_INIT leads to T_IDLE and T_REQUEST, which sets timer again before T_WAIT reads it"},
+  {"line": 191, "col": 40, "original": "10", "replacement": "9", "text": "timer = CONV_INTERVALL / 10;", "reason": "dead store: T_INIT leads to T_IDLE and T_REQUEST, which sets timer again before T_WAIT reads it"},
+  {"line": 231, "col": 53, "original": "<", "replacement": "<=", "text": "if(devcnt < noOfDS18Devices && devcnt < MAXONEWIRECNT) {", "reason": "noOfDS18Devices is at most MAXONEWIRECNT, so devcnt == MAXONEWIRECNT already fails the first condition"},
+  {"line": 261, "col": 65, "original": "<", "replacement": "<=", "text": "if (devDS2438Cnt<noOfDS2438Devices && devDS2438Cnt<MAXDS2438CNT) {", "reason": "noOfDS2438Devices is at most MAXDS2438CNT, so devDS2438Cnt == MAXDS2438CNT already fails the first condition"},
+  {"line": 301, "col": 24, "original": "0", "replacement": "1", "text": "devcnt=0;", "reason": "dead store: T_WAIT sets devcnt = 0 before T_OUTPUT reads it"},
+  {"line": 327, "col": 37, "original": "<", "replacement": "<=", "text": "const int count = noOfDS18Devices < MAXONEWIRECNT ? noOfDS18Devices : MAXONEWIRECNT;", "reason": "at noOfDS18Devices == MAXONEWIRECNT both branches give the same count"},
+  {"line": 353, "col": 12, "original": "1", "replacement": "2", "text": "lock = 1;", "reason": "lock is only compared with 0"}
+]
