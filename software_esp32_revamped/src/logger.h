@@ -12,17 +12,19 @@
 
 namespace logger {
 
+// The RAM ring is also the buffer of the file sink (vdm::LogFlushPolicy).
 constexpr size_t kEventCapacity = 512;
 // File rotation (binding): /log/events.log up to 64 KB, then renamed to
 // /log/events.1.log (replacing it) -> at most 2 x 64 KB on flash.
 constexpr const char* kLogFile = "/log/events.log";
 constexpr const char* kLogFileOld = "/log/events.1.log";
 constexpr size_t kLogFileMax = 64 * 1024;
-// A batch may carry the file this far past kLogFileMax before it rotates.
+// Growth past kLogFileMax while a reader blocks the rotation.
 constexpr size_t kLogFileSlack = 8192;
-// File/syslog sinks follow the RAM log with a cursor; service() writes at
-// most kPendingLines events per call. Events overwritten in the RAM ring
-// before service() reached them are skipped (visible as a seq gap).
+// Syslog follows the RAM log with its own cursor, at most kPendingLines
+// events per service() call. The file cursor moves per line, only after the
+// line was written; events overwritten in the RAM ring before they reached
+// the file become one gap line ("#<from>-<to> gap: ...", stats().lost).
 constexpr size_t kPendingLines = 32;
 
 void begin();
@@ -52,11 +54,13 @@ size_t readSince(uint32_t sinceSeq, vdm::Event* out, size_t maxOut, uint32_t& ne
 void configure(uint8_t syslogLevel, uint32_t syslogServer, uint16_t syslogPort, bool persist,
                const char* hostname);
 
-// App task: drains pending lines to the file (rotation) and syslog (when the
-// network is up). Bounded work per call.
+// App task, every pass: syslog (when the network is up) and the file
+// backlog when vdm::LogFlushPolicy says so (every 5 min, 10 s after a
+// Warning+, at once for 256 events or a request). Debug events never go to
+// the file.
 void service(bool netUp);
 
-// App task, restart path: writes the pending lines to the file now.
+// App task, restart path: writes the whole file backlog now.
 void flush();
 // Any task: the next service() writes the whole backlog (GET /api/log).
 void requestFlush();

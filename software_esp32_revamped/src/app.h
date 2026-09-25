@@ -29,7 +29,7 @@ struct TaskSpec {
 };
 // Binding task table (DESIGN.md). AsyncTCP's own task runs on core 0.
 constexpr TaskSpec kStmTask{"stm", 6144, 5, 1};
-constexpr TaskSpec kAppTask{"app", 6144, 3, 1};
+constexpr TaskSpec kAppTask{"app", 8192, 3, 1};
 constexpr TaskSpec kMqttTask{"mqtt", 8192, 2, 1};
 // Task watchdog: every task above subscribes and must feed it at least this
 // often; the ESP panics (and reboots, reason TASK_WDT) otherwise.

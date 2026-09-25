@@ -1,4 +1,5 @@
-// Smoke tests of src/app.cpp: boot sequence, tasks, command queue, snapshot plumbing, app task.
+// Tests of src/app.cpp: boot sequence, factory reset pin, tasks, command queue, snapshot plumbing,
+// app task, resources and /api/health data.
 #include <Arduino.h>
 
 #include <vdm/version.h>
@@ -16,11 +17,13 @@ TaskFunction_t appTaskFn() {
   return nullptr;
 }
 
-// Runs the app task for `passes` loop passes (100 ms each).
+// Runs the app task (a fresh start) for `passes` loop passes (100 ms each).
 void runAppTask(long passes) {
   fakes::rtos().stopAfterYields(passes);
   CHECK_THROWS_AS(appTaskFn()(nullptr), fakes::YieldLimit);
 }
+
+TaskHandle_t handle(uintptr_t v) { return reinterpret_cast<TaskHandle_t>(v); }
 
 }  // namespace
 
@@ -30,8 +33,9 @@ TEST_CASE("app setup: the boot sequence") {
   const std::vector<std::string> order = {
       "serial0.begin 115200 0x800001c -1 -1", "stm_link.begin", "logger.begin",
       "pinMode 2=INPUT_PULLUP", "delay 2", "storage.beginFs", "storage.loadConfig",
-      "storage.setActiveConfig", "logger.configure", "stm_service.begin", "net.begin", "ota.begin",
-      "mqtt.begin", "esp_task_wdt_init 30 1", "task stm", "task app", "task mqtt"};
+      "storage.setActiveConfig", "logger.log boot", "logger.configure", "stm_service.begin",
+      "net.begin", "ota.begin", "mqtt.begin", "esp_task_wdt_init 30 1", "task stm", "task app",
+      "task mqtt"};
   int at = -1;
   for (const std::string& step : order) {
     const int i = fakes::find(step, at + 1);
@@ -39,6 +43,8 @@ TEST_CASE("app setup: the boot sequence") {
     CHECK(i > at);
     at = i;
   }
+  CHECK(sib::storage().factoryLatchSets.empty());
+  CHECK(sib::storage().factoryResets == 0);
 }
 
 TEST_CASE("app setup: tasks of the binding table") {
@@ -51,8 +57,9 @@ TEST_CASE("app setup: tasks of the binding table") {
   CHECK(t[0].priority == 5);
   CHECK(t[0].core == 1);
   CHECK(t[1].name == "app");
-  CHECK(t[1].stackBytes == 6144);
+  CHECK(t[1].stackBytes == 8192);
   CHECK(t[1].priority == 3);
+  CHECK(t[1].core == 1);
   CHECK(t[2].name == "mqtt");
   CHECK(t[2].stackBytes == 8192);
   CHECK(t[2].priority == 2);
@@ -78,23 +85,83 @@ TEST_CASE("app setup: a panic reset makes the boot event a warning") {
   CHECK(sib::logger().withCode(vdm::EventCode::Boot).at(0).severity == vdm::Severity::Warning);
 }
 
-TEST_CASE("app setup: GPIO2 held low for a second resets the configuration") {
+TEST_CASE("app setup: GPIO2 held low for 5 s resets the configuration and sets the latch") {
   glue::begin();
   fakes::gpio().in[2] = LOW;
   app::setup();
   CHECK(sib::storage().factoryResets == 1);
-  CHECK(fakes::find("delay 1000") > fakes::find("delay 2"));
+  CHECK(sib::storage().factoryLatchSets == std::vector<bool>{true});
+  CHECK(fakes::nowMs() >= 5002);
+  CHECK(fakes::nowMs() < 5100);
+  CHECK(fakes::find("delay 50") > fakes::find("delay 2"));
+  CHECK(fakes::find("storage.beginFs") < fakes::find("storage.loadConfig"));
   const vdm::Event e = sib::logger().withCode(vdm::EventCode::ConfigSaved).at(0);
   CHECK(std::string(e.text) == "factory");
   CHECK(e.arg2 == 0);
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::FactoryResetSkipped));
 }
 
-TEST_CASE("app setup: GPIO2 released within the second does not reset") {
+TEST_CASE("app setup: a failed factory reset is logged with -1, the latch is set anyway") {
   glue::begin();
-  fakes::gpio().input = [](int pin, uint64_t now) { return pin == 2 && now < 500 ? LOW : -1; };
+  fakes::gpio().in[2] = LOW;
+  sib::storage().factoryResetResult = false;
+  app::setup();
+  CHECK(sib::logger().withCode(vdm::EventCode::ConfigSaved).at(0).arg2 == -1);
+  CHECK(sib::storage().factoryLatchSets == std::vector<bool>{true});
+}
+
+TEST_CASE("app setup: GPIO2 still set after a pin reset -> settings kept, no wait") {
+  glue::begin();
+  fakes::gpio().in[2] = LOW;
+  sib::storage().factoryLatched = true;
   app::setup();
   CHECK(sib::storage().factoryResets == 0);
+  CHECK(sib::storage().factoryLatchSets.empty());
+  CHECK(fakes::nowMs() < 100);
+  CHECK(sib::logger().has(vdm::EventCode::FactoryResetSkipped));
+  CHECK(sib::logger().withCode(vdm::EventCode::FactoryResetSkipped).at(0).severity ==
+        vdm::Severity::Warning);
   CHECK_FALSE(sib::logger().has(vdm::EventCode::ConfigSaved));
+}
+
+TEST_CASE("app setup: GPIO2 released at boot clears the latch") {
+  glue::begin();
+  sib::storage().factoryLatched = true;
+  app::setup();
+  CHECK(sib::storage().factoryLatchSets == std::vector<bool>{false});
+  CHECK(sib::storage().factoryResets == 0);
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::FactoryResetSkipped));
+}
+
+TEST_CASE("app setup: GPIO2 low for 3 s then high does not reset") {
+  glue::begin();
+  fakes::gpio().input = [](int pin, uint64_t now) { return pin == 2 && now < 3000 ? LOW : -1; };
+  app::setup();
+  CHECK(sib::storage().factoryResets == 0);
+  CHECK(sib::storage().factoryLatchSets.empty());
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::ConfigSaved));
+  CHECK(fakes::nowMs() >= 3000);
+  CHECK(fakes::nowMs() < 3100);
+}
+
+TEST_CASE("app task: the latch is cleared once when the pin goes high at run time") {
+  glue::begin();
+  fakes::gpio().input = [](int pin, uint64_t now) { return pin == 2 && now < 30000 ? LOW : -1; };
+  sib::storage().factoryLatched = true;
+  app::setup();
+  runAppTask(250);  // 25 s: pin still low
+  CHECK(sib::storage().factoryLatchSets.empty());
+  runAppTask(100);  // past 30 s
+  CHECK(sib::storage().factoryLatchSets == std::vector<bool>{false});
+  runAppTask(30);
+  CHECK(sib::storage().factoryLatchSets == std::vector<bool>{false});
+}
+
+TEST_CASE("app task: without a latch the pin is not watched at run time") {
+  glue::begin();
+  app::setup();
+  runAppTask(30);
+  CHECK(sib::storage().factoryLatchSets.empty());
 }
 
 TEST_CASE("app setup: a formatted and a failed file system are logged") {
@@ -106,6 +173,13 @@ TEST_CASE("app setup: a formatted and a failed file system are logged") {
   REQUIRE(ev.size() == 2);
   CHECK(ev[0].arg1 == 0);
   CHECK(ev[1].arg1 == -1);
+}
+
+TEST_CASE("app setup: net::begin may change the configuration (a reverted network trial)") {
+  glue::begin();
+  sib::net().onBegin = [](vdm::Config& c) { c.net.ip = 0x0A00000A; };
+  app::setup();
+  CHECK(sib::net().begunWith.net.ip == 0x0A00000A);
 }
 
 TEST_CASE("app submit: the queue takes 16 commands, receive hands them out in order") {
@@ -169,12 +243,17 @@ TEST_CASE("app: save state, calibration info and flash mark") {
   CHECK(app::stmFlashActive());
 }
 
-TEST_CASE("app readHealth: version, uptime and heap") {
+TEST_CASE("app readHealth: version, uptime, heap, net, ota and log") {
   glue::begin();
   fakes::advanceMs(12345);
   fakes::esp().freeHeap = 1000;
   fakes::esp().minFreeHeap = 900;
   fakes::esp().maxAllocHeap = 800;
+  sib::net().health.reachable = true;
+  sib::net().health.ifaceRestarts = 3;
+  sib::ota().health.pending = true;
+  sib::ota().health.remainingS = 77;
+  sib::logger().stats.flushes = 12;
   vdm::HealthSnapshot h;
   app::readHealth(h);
   CHECK(std::string(h.version) == vdm::firmwareVersion());
@@ -182,7 +261,53 @@ TEST_CASE("app readHealth: version, uptime and heap") {
   CHECK(h.freeHeap == 1000);
   CHECK(h.minFreeHeap == 900);
   CHECK(h.largestFreeBlock == 800);
+  CHECK(h.minLargestFreeBlock == 0);  // no sample yet
+  CHECK(h.taskCount == 0);            // no task started yet
+  CHECK(h.net.reachable);
+  CHECK(h.net.ifaceRestarts == 3);
+  CHECK(h.ota.pending);
+  CHECK(h.ota.remainingS == 77);
+  CHECK(h.log.flushes == 12);
   CHECK(app::nowMs() == 12345);
+}
+
+TEST_CASE("app readHealth: our tasks at once, library tasks once found by a resource sample") {
+  glue::begin();
+  app::setup();
+  fakes::Rtos& r = fakes::rtos();
+  r.stackHighWater["stm"] = 2100;
+  r.stackHighWater["app"] = 3200;
+  r.stackHighWater["mqtt"] = 4100;
+  r.stackHighWater["async_tcp"] = 9000;
+  r.stackHighWater["arduino_events"] = 2500;
+  static vdm::HealthSnapshot h;
+  app::readHealth(h);
+  REQUIRE(h.taskCount == 3);
+  CHECK(std::string(h.tasks[0].name) == "stm");
+  CHECK(h.tasks[0].stackBytes == 6144);
+  CHECK(h.tasks[0].minFreeBytes == 2100);
+  CHECK(std::string(h.tasks[1].name) == "app");
+  CHECK(h.tasks[1].stackBytes == 8192);
+  CHECK(h.tasks[1].minFreeBytes == 3200);
+  CHECK(std::string(h.tasks[2].name) == "mqtt");
+  CHECK(h.tasks[2].minFreeBytes == 4100);
+  r.extraHandles["arduino_events"] = handle(0x9020);
+  runAppTask(101);  // one sample after 10 s
+  app::readHealth(h);
+  REQUIRE(h.taskCount == 4);
+  CHECK(std::string(h.tasks[3].name) == "arduino_events");
+  CHECK(h.tasks[3].stackBytes == 4096);
+  CHECK(h.tasks[3].minFreeBytes == 2500);
+  CHECK(h.minLargestFreeBlock == 110000);
+  r.extraHandles["async_tcp"] = handle(0x9010);
+  runAppTask(101);
+  app::readHealth(h);
+  REQUIRE(h.taskCount == 5);
+  CHECK(std::string(h.tasks[3].name) == "async_tcp");
+  CHECK(h.tasks[3].stackBytes == 16384);
+  CHECK(h.tasks[3].minFreeBytes == 9000);
+  CHECK(std::string(h.tasks[4].name) == "arduino_events");
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::StackLow));
 }
 
 TEST_CASE("app task: once a second the network, the web server, OTA and the schedule") {
@@ -190,6 +315,7 @@ TEST_CASE("app task: once a second the network, the web server, OTA and the sche
   app::setup();
   sib::net().up = true;
   sib::net().otaNetOk = true;
+  sib::app().link = vdm::LinkState::Up;  // not used: app.cpp is the real one
   sib::mqtt().status.state = vdm::MqttState::Connected;
   const uint32_t t0 = static_cast<uint32_t>(fakes::nowMs());  // setup waited 2 ms for GPIO2
   runAppTask(11);  // 1.1 s
@@ -198,14 +324,38 @@ TEST_CASE("app task: once a second the network, the web server, OTA and the sche
   CHECK(sib::net().services[0].mqttConnected);
   CHECK(sib::web().begins == 1);
   REQUIRE(sib::ota().services.size() == 1);
+  CHECK(sib::ota().services[0].nowMs == t0 + 1000);
   CHECK(sib::ota().services[0].netOk);
+  CHECK_FALSE(sib::ota().services[0].linkUp);
   CHECK(sib::ota().services[0].webStarted);
   CHECK(sib::stmService().services == std::vector<uint32_t>{t0 + 1000});
   CHECK(sib::logger().services.size() == 11);
+  CHECK(sib::logger().services[0]);
   CHECK(sib::storage().services == 11);
-  CHECK(sib::ota().serviceRestarts.size() == 11);
+  REQUIRE(sib::ota().serviceRestarts.size() == 11);
+  CHECK(sib::ota().serviceRestarts[0].netUp);
+  CHECK_FALSE(sib::ota().serviceRestarts[0].linkUp);
   CHECK(fakes::rtos().delays.back() == 100);
   CHECK(fakes::esp().wdtAdds == 1);
+  CHECK(fakes::esp().wdtResets >= 11);
+  const int net = fakes::find("net.service " + std::to_string(t0 + 1000));
+  const int ota = fakes::find("ota.service " + std::to_string(t0 + 1000));
+  CHECK(net < ota);
+}
+
+TEST_CASE("app task: the link state goes to OTA, the web server starts only with the network") {
+  glue::begin();
+  app::setup();
+  static app::StmSnapshot s;
+  s.link = vdm::LinkState::Up;
+  app::publishStmSnapshot(s);
+  runAppTask(11);
+  CHECK(sib::web().begins == 0);
+  REQUIRE(sib::ota().services.size() == 1);
+  CHECK(sib::ota().services[0].linkUp);
+  CHECK_FALSE(sib::ota().services[0].webStarted);
+  CHECK(sib::ota().serviceRestarts[0].linkUp);
+  CHECK_FALSE(sib::net().services[0].mqttConnected);
 }
 
 TEST_CASE("app task: a new config revision reconfigures the logger and the network") {
@@ -219,24 +369,48 @@ TEST_CASE("app task: a new config revision reconfigures the logger and the netwo
   REQUIRE(sib::net().reconfigures.size() == 1);
   CHECK(std::string(sib::net().reconfigures[0].station) == "Boiler");
   CHECK(sib::logger().configures.back().hostname == "Boiler");
+  runAppTask(1);
+  CHECK(sib::net().reconfigures.size() == 1);
 }
 
-TEST_CASE("app task: low heap is reported below 30 KiB, again after an hour") {
+TEST_CASE("app task: resources are sampled every 10 s, not before") {
   glue::begin();
   app::setup();
-  fakes::esp().freeHeap = 30 * 1024;
-  runAppTask(11);
-  CHECK_FALSE(sib::logger().has(vdm::EventCode::LowHeap));
-  fakes::esp().freeHeap = 30 * 1024 - 1;
+  fakes::esp().freeHeap = 29000;
   fakes::esp().minFreeHeap = 20000;
-  runAppTask(10);
-  const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::LowHeap);
-  REQUIRE(ev.size() == 1);
-  CHECK(ev[0].arg1 == 30 * 1024 - 1);
-  CHECK(ev[0].arg2 == 20000);
-  fakes::advanceMs(3600000 - 2000);
-  runAppTask(10);
+  fakes::esp().maxAllocHeap = 4000;
+  runAppTask(100);  // 9.9 s
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::LowHeap));
+  runAppTask(101);
+  const std::vector<vdm::Event> low = sib::logger().withCode(vdm::EventCode::LowHeap);
+  REQUIRE(low.size() == 1);
+  CHECK(low[0].arg1 == 29000);
+  CHECK(low[0].arg2 == 20000);
+  const std::vector<vdm::Event> frag = sib::logger().withCode(vdm::EventCode::HeapFragmented);
+  REQUIRE(frag.size() == 1);
+  CHECK(frag[0].arg1 == 4000);
+  CHECK(frag[0].arg2 == 29000);
+  runAppTask(201);  // two more samples: repeated only after an hour
   CHECK(sib::logger().withCode(vdm::EventCode::LowHeap).size() == 1);
-  runAppTask(10);
-  CHECK(sib::logger().withCode(vdm::EventCode::LowHeap).size() == 2);
+}
+
+TEST_CASE("app task: a low stack high-water mark is reported once per task") {
+  glue::begin();
+  app::setup();
+  fakes::Rtos& r = fakes::rtos();
+  r.stackHighWater["stm"] = 767;
+  r.stackHighWater["app"] = 5000;
+  r.stackHighWater["mqtt"] = 5000;
+  r.stackHighWater["async_tcp"] = 2047;
+  r.extraHandles["async_tcp"] = handle(0x9010);
+  runAppTask(101);
+  runAppTask(101);
+  const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::StackLow);
+  REQUIRE(ev.size() == 2);
+  CHECK(std::string(ev[0].text) == "stm");
+  CHECK(ev[0].arg1 == 767);
+  CHECK(ev[0].arg2 == 6144);
+  CHECK(std::string(ev[1].text) == "async_tcp");
+  CHECK(ev[1].arg1 == 2047);
+  CHECK(ev[1].arg2 == 16384);
 }
