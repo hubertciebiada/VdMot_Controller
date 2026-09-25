@@ -32,20 +32,26 @@
 	#define _EEPROM_H
 
 #include <Arduino.h>
+#include "vdm/config_store.h"
 
 int16_t eepromsetup();
 int16_t eepromloop();
 void eeprom_fill (void);
 int16_t eeprom_write_layout (struct eeprom_layout* lay);
 int16_t eeprom_read_layout (struct eeprom_layout* lay);
-// fields of the layout, for eeprom_changed(): a layout that could not be read is merged with them
-#define EEP_CHANGED_SENSORS			0x01	// owsensors1/2 (sensor assignment)
-#define EEP_CHANGED_MOVEMENTS		0x02	// numberOfMovements
-#define EEP_CHANGED_MOTOR			0x04	// factors, startOnPower, noOfMinCounts, maxCalibRetries
-#define EEP_CHANGED_ESCALATION		0x08	// escalation
-#define EEP_CHANGED_ALL				0x0F
+// fields of the configuration, for eeprom_changed() (= vdm::kChanged*): they select the EEPROM
+// blocks to write, and a configuration that could not be read is merged with them
+#define EEP_CHANGED_SENSORS			vdm::kChangedSensors		// owsensors1/2 (sensor assignment)
+#define EEP_CHANGED_MOVEMENTS		vdm::kChangedMovements		// numberOfMovements
+#define EEP_CHANGED_MOTOR			vdm::kChangedMotor			// factors, startOnPower, noOfMinCounts, maxCalibRetries
+#define EEP_CHANGED_ESCALATION		vdm::kChangedEscalation		// escalation
+#define EEP_CHANGED_LEARNTIME		vdm::kChangedLearnTime		// learnTimeS
+#define EEP_CHANGED_LEASE			vdm::kChangedLease			// leaseTimeoutMin
+#define EEP_CHANGED_FAILSAFE		vdm::kChangedFailsafe		// failsafePct
+#define EEP_CHANGED_CALIB			vdm::kChangedCalib			// calib
+#define EEP_CHANGED_ALL				vdm::kChangedAll
 
-void eeprom_changed(uint8_t fields);
+void eeprom_changed(uint16_t fields);
 bool eeprom_free();
 uint8_t eeprom_state();		// gstat eepState: vdm::kEepStateOk/Pending/WriteFailed/ReadFailed
 

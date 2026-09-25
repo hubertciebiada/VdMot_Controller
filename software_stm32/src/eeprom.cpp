@@ -75,7 +75,7 @@ static bool eep_read_error = false;
 // failed block transfers of the current read
 static uint8_t eep_read_failures = 0;
 // fields changed in RAM (EEP_CHANGED_*) and not written yet
-static uint8_t eep_changed_fields = 0;
+static uint16_t eep_changed_fields = 0;
 // eepromloop() runs once per second, so the ticks are seconds
 static vdm::RetryBackoff eep_retry(EEP_RETRY_FIRST_S, EEP_RETRY_MAX_S);
 
@@ -391,13 +391,15 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 	buf[x++] =  lay->maxCalibRetries;
 	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
-	// extension block, behind the 1.x fields: escalation and the CRC of the 1.x layout as written
-	// above (learn time and lease timeout are not kept yet: their defaults)
+	// extension block, behind the 1.x fields: escalation, learn time, lease timeout (written back as
+	// read) and the CRC of the 1.x layout as written above
 	static uint8_t image[vdm::kLegacyImageSize];		// static: keeps it off the main loop stack
 	vdm::StoredExtension ext;
 	uint8_t extbuf[vdm::kExtensionBlockSize];
 	vdm::encodeLegacyLayout(*lay, image);
 	ext.escalation = lay->escalation;
+	ext.learnTimeS = lay->learnTimeS;
+	ext.leaseTimeoutMin = lay->leaseTimeoutMin;
 	ext.layoutCrc = vdm::crc16Ccitt(image, sizeof(image));
 	x = (uint16_t) vdm::encodeExtension(ext, extbuf);
 	if (eeprom.writeBlock(vdm::kExtensionAddress, extbuf, x) != 0) return eeprom_write_failed();
@@ -443,7 +445,7 @@ int16_t eeprom_read_layout (struct eeprom_layout* lay) {
 
 
 // copies the fields changed in RAM (EEP_CHANGED_*) from ram into stored
-static void eeprom_merge_changes (struct eeprom_layout &stored, const struct eeprom_layout &ram, uint8_t fields) {
+static void eeprom_merge_changes (struct eeprom_layout &stored, const struct eeprom_layout &ram, uint16_t fields) {
 	if (fields & EEP_CHANGED_SENSORS) {
 		memcpy(stored.owsensors1, ram.owsensors1, sizeof(stored.owsensors1));
 		memcpy(stored.owsensors2, ram.owsensors2, sizeof(stored.owsensors2));
@@ -588,12 +590,15 @@ static bool eeprom_read_image (struct eeprom_layout* lay) {
 	lay->maxCalibRetries = buf[0];
 	address++;
 
-	// extension block (escalation); a 1.x image or a damaged block loads the defaults
+	// extension block; a 1.x image or a damaged block loads the defaults. Learn time and lease
+	// timeout are not used yet, they are only written back.
 	uint8_t extbuf[vdm::kExtensionBlockSize];
 	vdm::StoredExtension ext;
 	eeprom_read_block(vdm::kExtensionAddress, extbuf, sizeof(extbuf));
 	const vdm::ExtensionState extstate = vdm::decodeExtension(extbuf, ext);
 	lay->escalation = ext.escalation;
+	lay->learnTimeS = ext.learnTimeS;
+	lay->leaseTimeoutMin = ext.leaseTimeoutMin;
 	if (extstate == vdm::ExtensionState::Legacy) EEPROM_DEBUG("layout 1.x, defaults for new fields...");
 	else if (extstate == vdm::ExtensionState::Corrupt) EEPROM_DEBUG("extension damaged, defaults for new fields...");
 
@@ -603,7 +608,7 @@ static bool eeprom_read_image (struct eeprom_layout* lay) {
 }
 
 // call everytime some eeprom content was changed
-void eeprom_changed (uint8_t fields) {
+void eeprom_changed (uint16_t fields) {
 
 	eep_changed_fields |= fields;
 	eep_content.status = EEP_CHANGED;

@@ -172,8 +172,7 @@
 // #error "EEPROM: adress for EE_SENSORDATA_ADR collides with EE_GENERALDATA_ADR"
 // #endif
 
-#include "vdm/calibration.h"
-#include "vdm/legacy_layout.h"
+#include "vdm/config_store.h"
 
 enum EEP_STATE { EEP_INIT, EEP_VALID, EEP_CHANGED };
 
@@ -183,11 +182,10 @@ using vdm::ds1820_eeprom_layout;
 static_assert(ACTUATOR_COUNT == vdm::kValveCount, "one valve count in the glue and in lib/core");
 static_assert(ADDITIONAL_SENSOR_COUNT == vdm::kExtraSensorSlots, "one count of additional sensor slots");
 
-// RAM mirror of the EEPROM: the fields of the 1.x layout (vdm::LegacyLayout, same names)
-struct eeprom_layout : vdm::LegacyLayout {
+// RAM mirror of the EEPROM: the fields of the 1.x layout (same names as in 1.x) and of the blocks
+// A (escalation, learnTimeS, leaseTimeoutMin), B (failsafePct) and C (calib), see vdm/config_store.h
+struct eeprom_layout : vdm::ConfigImage {
   enum EEP_STATE status;          // status of eeprom content
-  // layout version 2 extension block (see vdm/eeprom_layout.h)
-  vdm::EscalationConfig escalation;     // breakaway escalation of calibration repetitions
 };
 
 
