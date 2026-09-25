@@ -47,13 +47,14 @@ enum class Rule : uint8_t {
   TopicSegment,  // Printable without ' ', '+', '#'; '/' only between two non-empty parts
 };
 
+// Member order without padding holes: 20 bytes per table entry on the ESP32.
 struct Field {
   const char* name;
-  Kind kind;
-  uint16_t offset;  // inside the group struct
-  uint8_t cap;      // Str/Secret: array size incl. NUL
   int32_t min;      // numbers: value range; strings: length range
   int32_t max;
+  uint16_t offset;  // inside the group struct
+  Kind kind;
+  uint8_t cap;      // Str/Secret: array size incl. NUL
   Rule rule;
   bool nonZero;     // Float: 0 is not allowed
   uint8_t ext;      // 0: `cfg` blob; else the `cfgx` record tag (never reused)
