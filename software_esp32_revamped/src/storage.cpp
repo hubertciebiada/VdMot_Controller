@@ -10,9 +10,13 @@
 #include <string.h>
 
 #include <vdm/event_log.h>
+#include <vdm/file_manager.h>
+#include <vdm/image_store.h>
+#include <vdm/json_writer.h>
 
 #include "boot_alloc.h"
 #include "logger.h"
+#include "net.h"
 
 namespace storage {
 
@@ -33,6 +37,15 @@ volatile uint32_t gRevision = 0;
 uint32_t gBootCount = 0;
 using Blob = ObjArray<uint8_t, vdm::kConfigBlobMax>;
 Blob& gBlob = bootAlloc<Blob>();  // encode/decode scratch, guarded by gCfgMutex
+using ExtBlob = ObjArray<uint8_t, vdm::kConfigExtBlobMax>;
+ExtBlob& gExt = bootAlloc<ExtBlob>();  // the same for cfgx
+// Unknown cfgx records (a newer firmware's keys) read at boot and written back
+// by every save. Guarded by gCfgMutex.
+using Keep = ObjArray<uint8_t, vdm::kConfigExtKeepMax>;
+Keep& gKeep = bootAlloc<Keep>();
+size_t gKeepLen = 0;
+// The blobs in NVS differ from the backup files (app task writes them).
+volatile bool gBackupPending = false;
 
 // Image index, upload and last_good copy state (guarded by gFsMutex; file
 // I/O happens outside the lock except for the short open/rename steps).
@@ -159,9 +172,16 @@ struct FsLock : Lock {
   FsLock() : Lock(gFsMutex) {}
 };
 
+// cfgx first: a cfg without its cfgx loads with the new keys at their
+// defaults, a cfgx without its cfg is never read.
 bool saveBlobLocked(const vdm::Config& c) {
+  const size_t x = vdm::encodeConfigExt(c, gExt.data(), sizeof gExt.items, gKeep.data(), gKeepLen);
   const size_t n = vdm::encodeConfig(c, gBlob.data(), sizeof gBlob.items);
-  return n > 0 && openPrefs() && gPrefs.putBytes(kKeyConfig, gBlob.data(), n) == n;
+  const bool ok = x > 0 && n > 0 && openPrefs() &&
+                  gPrefs.putBytes(kKeyConfigExt, gExt.data(), x) == x &&
+                  gPrefs.putBytes(kKeyConfig, gBlob.data(), n) == n;
+  if (ok) gBackupPending = true;
+  return ok;
 }
 
 // A stored blob of at most `cap` bytes; 0 when it is absent or larger.
@@ -189,11 +209,6 @@ void setFlagLocked(const char* key, bool on) {
 }
 
 // ---------------------------------------------------------------- images
-
-bool validNameChar(char c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
-         c == '_' || c == '-';
-}
 
 bool endsWith(const char* s, size_t len, const char* suffix) {
   const size_t n = strlen(suffix);
@@ -373,6 +388,75 @@ void serviceScan() {
   vdm::copyString(gImages[i].hwTag, sizeof gImages[i].hwTag, info.hwTag);
 }
 
+// ---------------------------------------------------------------- config files
+
+constexpr const char* kBackupBaseTmp = "/sys/cfg.bak.tmp";
+constexpr const char* kBackupExtTmp = "/sys/cfgx.bak.tmp";
+
+uint32_t kibOf(uint32_t bytes) { return (bytes + 1023u) / 1024u; }
+
+// A file of at most `cap` bytes; 0 when it is missing, empty, larger or
+// unreadable.
+size_t readFile(const char* path, uint8_t* out, size_t cap) {
+  if (!LittleFS.exists(path)) return 0;
+  fs::File f = LittleFS.open(path, FILE_READ);
+  if (!f) return 0;
+  const size_t len = f.size();
+  const bool ok = len <= cap && f.read(out, len) == len;
+  f.close();
+  return ok ? len : 0;
+}
+
+bool writeFile(const char* path, const uint8_t* data, size_t len) {
+  fs::File f = LittleFS.open(path, FILE_WRITE);
+  if (!f) return false;
+  const bool ok = f.write(data, len) == len;
+  f.close();
+  return ok;
+}
+
+// The file holds exactly these bytes.
+bool sameFile(const char* path, const uint8_t* data, size_t len) {
+  if (!LittleFS.exists(path)) return false;
+  fs::File f = LittleFS.open(path, FILE_READ);
+  if (!f) return false;
+  bool same = f.size() == len;
+  uint8_t chunk[64];
+  for (size_t pos = 0; same && pos < len;) {
+    const size_t n = len - pos < sizeof chunk ? len - pos : sizeof chunk;
+    same = f.read(chunk, n) == n && memcmp(chunk, data + pos, n) == 0;
+    pos += n;
+  }
+  f.close();
+  return same;
+}
+
+// The blobs of `c` (with the kept unknown records) into gBlob/gExt; false
+// when they do not fit. Caller holds gCfgMutex.
+bool encodeLocked(const vdm::Config& c, size_t& n, size_t& x) {
+  x = vdm::encodeConfigExt(c, gExt.data(), sizeof gExt.items, gKeep.data(), gKeepLen);
+  n = vdm::encodeConfig(c, gBlob.data(), sizeof gBlob.items);
+  return n > 0 && x > 0;
+}
+
+// /sys/cfg.bak and /sys/cfgx.bak from the active config: both written to
+// .tmp files first, then renamed over the old ones, so a power cut leaves
+// the previous backup.
+void writeBackup() {
+  CfgLock lock;
+  gBackupPending = false;
+  size_t n = 0;
+  size_t x = 0;
+  const bool ok = encodeLocked(gActive, n, x) && writeFile(kBackupExtTmp, gExt.data(), x) &&
+                  writeFile(kBackupBaseTmp, gBlob.data(), n) &&
+                  LittleFS.rename(kBackupExtTmp, kBackupExt) &&
+                  LittleFS.rename(kBackupBaseTmp, kBackupBase);
+  if (!ok) {
+    LittleFS.remove(kBackupExtTmp);
+    LittleFS.remove(kBackupBaseTmp);
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- FS / config
@@ -388,6 +472,7 @@ bool beginFs(bool& formatted) {
   if (gFsReady) {
     if (!LittleFS.exists("/stm")) LittleFS.mkdir("/stm");
     if (!LittleFS.exists("/log")) LittleFS.mkdir("/log");
+    if (!LittleFS.exists("/sys")) LittleFS.mkdir("/sys");
     indexImages();
   }
   return gFsReady;
@@ -397,28 +482,70 @@ bool fsReady() { return gFsReady; }
 
 namespace {
 
-LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode) {
+// The backup files as the config; on success NVS gets their bytes back.
+// Caller holds gCfgMutex.
+bool loadBackupLocked(vdm::Config& out, vdm::LoadInfo& info) {
+  if (!gFsReady) return false;
+  const size_t n = readFile(kBackupBase, gBlob.data(), sizeof gBlob.items);
+  const size_t x = readFile(kBackupExt, gExt.data(), sizeof gExt.items);
+  vdm::StoredBlobs b;
+  b.base = gBlob.data();
+  b.baseLen = n;
+  b.ext = gExt.data();
+  b.extLen = x;
+  if (!vdm::loadConfigBlobs(b, out, info, gKeep.data(), sizeof gKeep.items)) return false;
+  gKeepLen = info.extInfo.keepLen;
+  if (x > 0) {
+    gPrefs.putBytes(kKeyConfigExt, gExt.data(), x);
+  } else {
+    gPrefs.remove(kKeyConfigExt);
+  }
+  gPrefs.putBytes(kKeyConfig, gBlob.data(), n);
+  return true;
+}
+
+// The load order of DESIGN.md "Persistence": NVS, the backup files, the
+// legacy import, the defaults.
+LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, LoadDetails& details) {
   CfgLock lock;
-  errorCode = 0;
   vdm::setDefaults(out);
+  gKeepLen = 0;
   if (!openPrefs()) {
-    errorCode = 100;
+    details.errorCode = 100;
     return LoadSource::DefaultsAfterError;
   }
 
   const size_t len = gPrefs.getBytesLength(kKeyConfig);
   if (len > 0) {
-    if (len > sizeof gBlob.items || gPrefs.getBytes(kKeyConfig, gBlob.data(), len) != len) {
-      errorCode = 101;
-      return LoadSource::DefaultsAfterError;
+    details.errorCode = 101;
+    if (len <= sizeof gBlob.items && gPrefs.getBytes(kKeyConfig, gBlob.data(), len) == len) {
+      vdm::StoredBlobs b;
+      b.base = gBlob.data();
+      b.baseLen = len;
+      b.ext = gExt.data();
+      b.extLen = loadBytesLocked(kKeyConfigExt, gExt.data(), sizeof gExt.items);
+      if (vdm::loadConfigBlobs(b, out, details.info, gKeep.data(), sizeof gKeep.items)) {
+        details.errorCode = 0;
+        gKeepLen = details.info.extInfo.keepLen;
+        // First boot after the upgrade (or a lost file): the backup follows.
+        size_t n = 0;
+        size_t x = 0;
+        gBackupPending = encodeLocked(out, n, x) && gFsReady &&
+                         !(sameFile(kBackupBase, gBlob.data(), n) &&
+                           sameFile(kBackupExt, gExt.data(), x));
+        return LoadSource::Stored;
+      }
+      details.errorCode = static_cast<uint8_t>(details.info.base);
     }
-    const vdm::DecodeResult r = vdm::decodeConfig(gBlob.data(), len, out);
-    if (r == vdm::DecodeResult::Ok) return LoadSource::Stored;
+    // Never overwritten automatically without a usable backup: the next
+    // explicit save replaces it.
+    if (loadBackupLocked(out, details.info)) return LoadSource::Backup;
     vdm::setDefaults(out);
-    errorCode = static_cast<uint8_t>(r);
     return LoadSource::DefaultsAfterError;
   }
   if (gPrefs.getUChar(kKeyImported, 0) == 1) return LoadSource::Defaults;
+  if (loadBackupLocked(out, details.info)) return LoadSource::Backup;  // NVS was erased
+  vdm::setDefaults(out);
 
   NvsLegacyReader reader;
   report = vdm::importLegacyConfig(reader, out);
@@ -429,15 +556,70 @@ LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, uint8_t& erro
   return report.anyLegacy ? LoadSource::Imported : LoadSource::Defaults;
 }
 
+// /sys/import.json from the report and the imported config. Caller holds
+// gCfgMutex (gBlob is the text buffer).
+bool writeReportLocked(const vdm::ImportReport& report, const vdm::Config& c) {
+  if (!gFsReady) return false;
+  char* buf = reinterpret_cast<char*>(gBlob.data());
+  vdm::JsonWriter jw(buf, sizeof gBlob.items);
+  return vdm::writeImportReportJson(jw, report, c) &&
+         writeFile(kImportReportFile, gBlob.data(), jw.length());
+}
+
+void logStored(const LoadDetails& d) {
+  const vdm::Repairs& a = d.info.decode.repairs;
+  const vdm::Repairs& b = d.info.repairs;
+  if ((a.mask | b.mask) != 0) {
+    logger::log(vdm::EventCode::ConfigRepaired, vdm::kNoValve, static_cast<int32_t>(a.mask | b.mask),
+                a.count + b.count, a.first[0] != '\0' ? a.first : b.first);
+  }
+  if (d.info.decode.newerSchema || d.info.extInfo.unknown > 0) {
+    logger::log(vdm::EventCode::ConfigNewerSchema, vdm::kNoValve, d.info.decode.schema,
+                d.info.extInfo.unknown);
+  }
+}
+
+void logImported(const vdm::ImportReport& report, const vdm::Config& c) {
+  logger::log(vdm::EventCode::ConfigImported, vdm::kNoValve, report.imported, report.rejected,
+              report.firstRejected);
+  if (report.dropped != 0 || report.piValves != 0) {
+    char text[24];
+    snprintf(text, sizeof text, "ignored %u keys", static_cast<unsigned>(report.ignored));
+    logger::log(vdm::EventCode::ImportDropped, vdm::kNoValve, report.piValves, report.dropped,
+                text);
+  }
+  {
+    CfgLock lock;
+    writeReportLocked(report, c);
+  }
+  uint32_t kib = 0;
+  const uint32_t files = removeLegacyImages(kib);
+  if (files > 0) {
+    logger::log(vdm::EventCode::FilesRemoved, vdm::kNoValve, static_cast<int32_t>(files),
+                static_cast<int32_t>(kib), "legacy images");
+  }
+}
+
 }  // namespace
 
 LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, LoadDetails& details) {
-  const LoadSource src = loadStored(out, report, details.errorCode);
-  if (src == LoadSource::Imported) {
-    logger::log(vdm::EventCode::ConfigImported, vdm::kNoValve, report.imported, report.rejected,
-                report.firstRejected);
-  } else if (src == LoadSource::DefaultsAfterError) {
-    logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, details.errorCode);
+  details = LoadDetails{};
+  const LoadSource src = loadStored(out, report, details);
+  switch (src) {
+    case LoadSource::Stored:
+      logStored(details);
+      break;
+    case LoadSource::Backup:
+      logger::log(vdm::EventCode::ConfigRestored, vdm::kNoValve, details.errorCode);
+      break;
+    case LoadSource::Imported:
+      logImported(report, out);
+      break;
+    case LoadSource::DefaultsAfterError:
+      logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, details.errorCode);
+      break;
+    case LoadSource::Defaults:
+      break;
   }
   gBootSource = src;
   gBootDetails = details;
@@ -466,7 +648,7 @@ uint32_t configRevision() { return gRevision; }
 bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {
   if (!vdm::validateConfig(c, path, pathCap)) return false;
   CfgLock lock;
-  const bool ok = saveBlobLocked(c);
+  const bool ok = saveBlobLocked(c);  // sets gBackupPending
   if (ok) {
     gActive = c;
     gRevision = gRevision + 1;
@@ -479,6 +661,11 @@ bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {
 
 bool factoryReset() {
   CfgLock lock;
+  if (gFsReady) {
+    for (const char* f : {kBackupBase, kBackupExt, kImportReportFile}) LittleFS.remove(f);
+  }
+  gBackupPending = false;
+  gKeepLen = 0;
   if (!openPrefs()) return false;
   // The latch must survive: the pin is still set and must not reset again.
   const bool latched = flagLocked(kKeyFactoryLatch);
@@ -586,24 +773,95 @@ void setHaLayout(uint8_t layout) {
 
 // ---------------------------------------------------------------- files
 
-// The import report and the file list are not kept yet: nothing to show,
-// nothing to delete.
-bool writeImportReport(const vdm::ImportReport&) { return false; }
-
-bool hasImportReport() { return false; }
-
-bool dismissImportReport() { return false; }
-
-size_t listFiles(vdm::FileEntry*, size_t, bool& truncated) {
-  truncated = false;
-  return 0;
+bool writeImportReport(const vdm::ImportReport& report) {
+  CfgLock lock;
+  return writeReportLocked(report, gActive);
 }
 
-FileResult deleteFile(const char*) { return FileResult::NotFound; }
+bool hasImportReport() { return gFsReady && LittleFS.exists(kImportReportFile); }
+
+bool dismissImportReport() { return gFsReady && LittleFS.remove(kImportReportFile); }
+
+namespace {
+
+// One listed file; false when the list is full (truncated).
+bool addFile(fs::File& f, vdm::FileEntry* out, size_t max, size_t& n) {
+  if (n == max) return false;
+  if (vdm::copyString(out[n].path, sizeof out[n].path, f.path())) {
+    out[n].size = static_cast<uint32_t>(f.size());
+    ++n;
+  }
+  return true;
+}
+
+}  // namespace
+
+size_t listFiles(vdm::FileEntry* out, size_t max, bool& truncated) {
+  truncated = false;
+  size_t n = 0;
+  if (!gFsReady) return 0;
+  fs::File root = LittleFS.open("/");
+  for (fs::File f = root.openNextFile(); f && !truncated; f = root.openNextFile()) {
+    if (!f.isDirectory()) {
+      truncated = !addFile(f, out, max, n);
+      continue;
+    }
+    // One level below the root.
+    for (fs::File g = f.openNextFile(); g && !truncated; g = f.openNextFile()) {
+      if (!g.isDirectory()) truncated = !addFile(g, out, max, n);
+    }
+  }
+  return n;
+}
+
+FileResult deleteFile(const char* path) {
+  const size_t len = path != nullptr ? strlen(path) : 0;
+  if (!vdm::fsPathValid(path, len)) return FileResult::BadPath;
+  if (!vdm::fileDeletable(vdm::classifyFsPath(path, len))) return FileResult::Protected;
+  if (!gFsReady) return FileResult::Io;
+  if (!LittleFS.exists(path)) return FileResult::NotFound;
+  fs::File f = LittleFS.open(path, FILE_READ);
+  if (!f) return FileResult::Io;
+  const bool dir = f.isDirectory();
+  const uint32_t size = static_cast<uint32_t>(f.size());
+  f.close();
+  if (dir) return FileResult::BadPath;
+  if (!LittleFS.remove(path)) return FileResult::Io;
+  logger::log(vdm::EventCode::FilesRemoved, vdm::kNoValve, 1, static_cast<int32_t>(kibOf(size)),
+              path);
+  return FileResult::Ok;
+}
 
 uint32_t removeLegacyImages(uint32_t& kib) {
   kib = 0;
-  return 0;
+  if (!gFsReady) return 0;
+  constexpr size_t kBatch = 8;  // collected first: no removal while the root is listed
+  uint32_t files = 0;
+  uint32_t bytes = 0;
+  for (bool more = true; more;) {
+    char paths[kBatch][vdm::kFsPathMax + 1];
+    uint32_t sizes[kBatch];
+    size_t n = 0;
+    fs::File root = LittleFS.open("/");
+    for (fs::File f = root.openNextFile(); f && n < kBatch; f = root.openNextFile()) {
+      const char* p = f.path();
+      if (f.isDirectory() || !vdm::isLegacyImageFile(p, strlen(p))) continue;
+      vdm::copyString(paths[n], sizeof paths[n], p);  // root-level: always fits
+      sizes[n++] = static_cast<uint32_t>(f.size());
+    }
+    root.close();
+    more = n == kBatch;
+    for (size_t i = 0; i < n; ++i) {
+      if (LittleFS.remove(paths[i])) {
+        ++files;
+        bytes += sizes[i];
+      } else {
+        more = false;  // it would be found again
+      }
+    }
+  }
+  kib = kibOf(bytes);
+  return files;
 }
 
 uint32_t fsTotal() { return gFsReady ? static_cast<uint32_t>(LittleFS.totalBytes()) : 0; }
@@ -613,21 +871,11 @@ uint32_t fsUsed() { return gFsReady ? static_cast<uint32_t>(LittleFS.usedBytes()
 // ---------------------------------------------------------------- images
 
 bool normalizeImageName(const char* in, size_t len, char* out, size_t cap) {
-  if (cap > 0) out[0] = '\0';
-  if (in == nullptr || out == nullptr) return false;
-  if (endsWith(in, len, ".bin")) len -= 4;
-  if (len == 0 || len > kImageNameMax || len >= cap || in[0] == '.') return false;
-  for (size_t i = 0; i < len; ++i) {
-    if (!validNameChar(in[i])) return false;
-  }
-  memcpy(out, in, len);
-  out[len] = '\0';
-  return true;
+  return vdm::normalizeImageName(in, len, out, cap);
 }
 
 bool imagePath(const char* name, bool part, char* out, size_t cap) {
-  const int n = snprintf(out, cap, "/stm/%s.bin%s", name, part ? ".part" : "");
-  return n > 0 && static_cast<size_t>(n) < cap;
+  return vdm::imagePath(name, part, out, cap);
 }
 
 size_t listImages(ImageEntry* out, size_t maxOut) {
@@ -765,6 +1013,9 @@ void requestLastGoodCopy(const char* name) {
 
 void service() {
   if (!gFsReady) return;
+  // Not while a network trial runs: a revert must not find the trial
+  // settings in the backup.
+  if (gBackupPending && !net::trialInfo().active) writeBackup();
   if (gCopy.running || gCopy.pending) {
     serviceCopy();
     return;

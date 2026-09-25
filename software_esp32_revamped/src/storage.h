@@ -40,20 +40,25 @@ constexpr const char* kImportReportFile = "/sys/import.json";
 
 // Mounts LittleFS on the "spiffs" partition. Formats only when mounting
 // fails (then `formatted` is true and an FsFormatted event is logged by the
-// caller). Creates /stm and /log, removes upload leftovers (*.part) and
+// caller). Creates /stm, /log and /sys, removes upload leftovers (*.part) and
 // indexes the STM images. Returns false when even the format failed (the
 // firmware then runs without files: no STM images, no log files).
 bool beginFs(bool& formatted);
 bool fsReady();
 
-// Opens NVS. Loads the config: valid blob -> use it; missing blob and
-// !imported -> legacy import (vdm::importLegacyConfig) then save; unreadable
-// blob -> defaults (never overwrites the bad blob automatically; the next
-// explicit save replaces it). `report` is filled when an import ran.
-// For DefaultsAfterError `details.errorCode` receives the reason: the
-// vdm::DecodeResult value, 100 = NVS not usable, 101 = blob unreadable.
-// Logs the result (ConfigImported, ConfigDefaults). Backup: the config came
-// from the backup files.
+// Opens NVS. Loads the config (vdm::loadConfigBlobs: cfg + cfgx, repaired):
+// usable blobs -> Stored (unknown cfgx records are kept for the next save;
+// the backup files are rewritten when they differ); unusable cfg -> the
+// backup files (Backup, NVS rewritten from them), else defaults
+// (DefaultsAfterError; the bad blob is never overwritten automatically, the
+// next explicit save replaces it); missing cfg: imported set -> Defaults,
+// else the backup files, else the legacy import (vdm::importLegacyConfig)
+// then save, the import report file and the removal of the legacy images.
+// `report` is filled when an import ran. `details.errorCode` receives the
+// reason for DefaultsAfterError and Backup: the vdm::DecodeResult value,
+// 100 = NVS not usable, 101 = blob unreadable, 0 = no cfg in NVS.
+// Logs the result (ConfigRepaired, ConfigNewerSchema, ConfigRestored,
+// ConfigImported, ImportDropped, FilesRemoved, ConfigDefaults).
 enum class LoadSource : uint8_t { Stored, Imported, Defaults, DefaultsAfterError, Backup };
 struct LoadDetails {
   uint8_t errorCode = 0;
@@ -70,12 +75,14 @@ bool configSavedSinceBoot();
 void setActiveConfig(const vdm::Config& c);
 void getConfig(vdm::Config& out);   // ~2 KB: callers use static storage
 uint32_t configRevision();          // +1 on every successful apply
-// Validates, persists (NVS blob) and publishes a new config. On failure
-// nothing changes and `path` names the offending key ("nvs" when the write
-// failed).
+// Validates, persists (NVS cfgx, then cfg) and publishes a new config. On
+// failure nothing changes and `path` names the offending key ("nvs" when a
+// write failed). service() then copies the blobs to the backup files, not
+// while a network trial runs.
 bool applyConfig(const vdm::Config& c, char* path, size_t pathCap);
-// Factory reset: erases "vdmrev" (legacy namespaces are left untouched but
-// "imported" is set so they are not imported again).
+// Factory reset: erases "vdmrev" except frLatch and removes the backup and
+// import report files (legacy namespaces are left untouched but "imported"
+// is set so they are not imported again).
 bool factoryReset();
 
 // Small persistent runtime values (written rarely; NVS wear is not a concern
@@ -186,8 +193,9 @@ ImageResult deleteImage(const char* name);
 // incrementally by service()).
 void requestLastGoodCopy(const char* name);
 
-// App task: validates one unscanned image per call and advances the
-// last_good copy by a bounded number of bytes.
+// App task: writes the pending config backup (not during a network trial),
+// validates one unscanned image per call and advances the last_good copy by
+// a bounded number of bytes.
 void service();
 
 // LittleFS-backed image for the flasher and the validator.
