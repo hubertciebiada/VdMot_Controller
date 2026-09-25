@@ -118,21 +118,29 @@ int d(char *p, const char* q, int a, int b) {
 }
 	#endif
 CPP
-# rvalue references and template brackets are not mutated; the logical and after an enum value
-# and a comparison after a cast are
+# rvalue references and template brackets are not mutated; the logical and after an enum value,
+# a variable template or an unknown template, and a comparison after a cast are
 cat >"$T/decl/proj/src/r.cpp" <<'CPP'
 #include <array>
 #include <cstdint>
+#include <type_traits>
 enum class State { Idle, Busy };
 struct Foo { int v; };
-int r1(int&& i, uint8_t&& u, const Foo&& f, Foo const&& g, std::array<int, 2>&& v) {
+int r1(int&& i, uint8_t&& u, const Foo&& f, Foo const&& g, std::array<int, 2>&& v,
+       const std::array<int, 2>&& w) {
   auto&& t = i;
-  return t + u + f.v + g.v + v[0];
+  std::array<int, 2>&& z = static_cast<std::array<int, 2>&&>(v);
+  return t + u + f.v + g.v + v[0] + w[0] + z[0];
 }
 int r2(State s, bool x, int a, int b) {
   if (s == State::Idle && x) return 1;
   if (static_cast<int>(a) < b) return 2;
   return 0;
+}
+template <typename T> constexpr bool kWide = sizeof(T) > 2;
+template <typename T> bool r3(T v, bool x) {
+  if (std::is_signed_v<T> && x) return true;
+  return kWide<T> && v > 0;
 }
 CPP
 config decl '{}'
@@ -141,11 +149,14 @@ mutate decl --list
 grep -qE '^src/d\.cpp:(1|2|3|4|5|14):' "$T/out" && fail "a directive line was mutated"
 [ "$(grep -c "'\*' -> '/'" "$T/out")" -eq 1 ] || fail "pointer declarators were mutated"
 grep -q "^src/d.cpp:11:.* '\*' -> '/'" "$T/out" || fail "the product a * b was not mutated"
-[ "$(grep -c "^src/r.cpp:.* '&&' -> '||'" "$T/out")" -eq 1 ] || fail "rvalue references were mutated"
-grep -q "^src/r.cpp:10:24 log '&&' -> '||'" "$T/out" || fail "the '&&' after State::Idle was not mutated"
-grep -q "^src/r.cpp:5:.* rel " "$T/out" && fail "the brackets of std::array<int, 2> were mutated"
-[ "$(grep -c "^src/r.cpp:11:.* rel " "$T/out")" -eq 2 ] || fail "the brackets of static_cast<int> were mutated"
-grep -q "^src/r.cpp:11:27 rel '<' -> '<='" "$T/out" && grep -q "^src/r.cpp:11:27 rel '<' -> '>='" "$T/out" ||
+grep -qE "^src/r\.cpp:(6|7|8|9):.* '&&' -> '\|\|'" "$T/out" && fail "rvalue references were mutated"
+grep -q "^src/r.cpp:13:24 log '&&' -> '||'" "$T/out" || fail "the '&&' after State::Idle was not mutated"
+grep -q "^src/r.cpp:19:27 log '&&' -> '||'" "$T/out" || fail "the '&&' after std::is_signed_v<T> was not mutated"
+grep -q "^src/r.cpp:20:19 log '&&' -> '||'" "$T/out" || fail "the '&&' after kWide<T> was not mutated"
+[ "$(grep -c "^src/r.cpp:.* '&&' -> '||'" "$T/out")" -eq 3 ] || fail "unexpected '&&' mutants in r.cpp"
+grep -qE "^src/r\.cpp:(6|7|9):.* rel " "$T/out" && fail "the brackets of std::array<int, 2> were mutated"
+[ "$(grep -c "^src/r.cpp:14:.* rel " "$T/out")" -eq 2 ] || fail "the brackets of static_cast<int> were mutated"
+grep -q "^src/r.cpp:14:27 rel '<' -> '<='" "$T/out" && grep -q "^src/r.cpp:14:27 rel '<' -> '>='" "$T/out" ||
   fail "the comparison after static_cast<int>(a) was not mutated"
 mutate decl --list --files src/d.cpp --lines 11-11
 grep -vq '^src/d.cpp:11:\|mutants$' "$T/out" && fail "--lines kept other lines"
