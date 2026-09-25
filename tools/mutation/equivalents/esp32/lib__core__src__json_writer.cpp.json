@@ -1,0 +1,10 @@
+[
+  {"line": 82, "col": 12, "original": "6", "replacement": "7", "text": "char tmp[6];", "reason": "escapeChar() writes at most 6 bytes (\\u00XX) and no NUL; a larger scratch buffer changes nothing"},
+  {"line": 191, "col": 14, "original": "24", "replacement": "23", "text": "char tmp[24];", "reason": "the longest int64 (INT64_MIN) is 20 chars plus the NUL, which fits 23 and 25 bytes alike"},
+  {"line": 191, "col": 14, "original": "24", "replacement": "25", "text": "char tmp[24];", "reason": "the longest int64 (INT64_MIN) is 20 chars plus the NUL, which fits 23 and 25 bytes alike"},
+  {"line": 208, "col": 14, "original": "32", "replacement": "31", "text": "char tmp[32];", "reason": "the longest fixed() text (-2147483648 with up to 6 decimals, 13 chars) fits 31 and 33 bytes alike"},
+  {"line": 208, "col": 14, "original": "32", "replacement": "33", "text": "char tmp[32];", "reason": "the longest fixed() text (-2147483648 with up to 6 decimals, 13 chars) fits 31 and 33 bytes alike"},
+  {"line": 229, "col": 14, "original": "40", "replacement": "39", "text": "char tmp[40];", "reason": "|v| <= 1e15 with up to 6 decimals is at most 24 chars, which fits 39 and 41 bytes alike"},
+  {"line": 229, "col": 14, "original": "40", "replacement": "41", "text": "char tmp[40];", "reason": "|v| <= 1e15 with up to 6 decimals is at most 24 chars, which fits 39 and 41 bytes alike"},
+  {"line": 247, "col": 14, "original": "6", "replacement": "7", "text": "char tmp[6];", "reason": "escapeChar() writes at most 6 bytes (\\u00XX) and no NUL; a larger scratch buffer changes nothing"}
+]
