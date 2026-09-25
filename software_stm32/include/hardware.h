@@ -137,11 +137,28 @@
   #define MUX_ON()     digitalWrite(CTRL_MUX, HIGH)
   #define MUX_OFF()    digitalWrite(CTRL_MUX, LOW)
   #define WAIT_MUX     2*50
+  #define HARDWARE_REVISION_TAG   "C1"
 #elif HARDWARE_REVISION_C2
   // MUX pin definition for C2-sample
   #define MUX_ON()     digitalWrite(CTRL_MUX, LOW)
   #define MUX_OFF()    digitalWrite(CTRL_MUX, HIGH)
   #define WAIT_MUX     2*50
+  #define HARDWARE_REVISION_TAG   "C2"
+#else
+  #error "no hardware revision defined"
+#endif
+
+// board revision marker in the image, "VDM-HW:" HARDWARE_REVISION_TAG (src/communication.cpp): the
+// ESP flasher finds it in a firmware file, gvers reports the tag
+#define HARDWARE_MARKER_PREFIX  "VDM-HW:"
+
+// the revision name of the platformio.ini env (gvers of 2.0.0) must be the revision the MUX wiring
+// was built for
+constexpr bool vdm_same_text (const char *a, const char *b) {
+  return *a == *b && (*a == '\0' || vdm_same_text(a + 1, b + 1));
+}
+#ifdef HARDWARE_VERSION
+static_assert(vdm_same_text(HARDWARE_VERSION, HARDWARE_REVISION_TAG), "HARDWARE_VERSION does not name the HARDWARE_REVISION_* of the build");
 #endif
 
 #define PSU_ON()     digitalWrite(POWER_ENA, LOW);   // enable PSU for valves   

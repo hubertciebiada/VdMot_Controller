@@ -51,7 +51,6 @@ bool terminal_manual_active (void);
 //extern HardwareSerial Serial3;
 //extern HardwareSerial Serial6;
 
-extern int testmode;
 
 #endif //_TERMINAL_H
 
