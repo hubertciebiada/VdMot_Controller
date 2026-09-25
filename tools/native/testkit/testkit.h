@@ -37,7 +37,8 @@ Reset lastReset();
 // Ends this boot: saves the stores (Hooks::save) to the hand-off file and exits with 75; the
 // runner starts the case again with boot() + 1 and lastReset() == kind, loads the stores
 // (Hooks::load) and, for kind == PowerOn, calls Hooks::powerOn. A boot that already has a failed
-// assertion does not reboot: the case ends as failed.
+// assertion or a broken invariant (Hooks::checkInvariants) does not reboot: the case ends as
+// failed.
 [[noreturn]] void reboot(Reset kind);
 
 struct Hooks {
@@ -47,7 +48,8 @@ struct Hooks {
   // Persistent stores and warm RAM to / from the hand-off file; false fails the case.
   bool (*save)(const char* path);
   bool (*load)(const char* path);
-  // After every case; a message (not nullptr) fails the case even without a failed assertion.
+  // After every case and before every reboot(); a message (not nullptr) fails the case even
+  // without a failed assertion.
   const char* (*checkInvariants)();
 };
 

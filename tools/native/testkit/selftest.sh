@@ -97,4 +97,12 @@ run failreboot -ts=failreboot
 [ "$(lines "$T/failreboot/failreboot")" -eq 1 ] || fail "failed assertion before reboot: the case rebooted"
 grep -q "reboot requested after a failed assertion at boot 0" "$T/out" || fail "failed assertion before reboot: verdict"
 
+# The invariants of a boot that ends in reboot() are checked before the stores are saved.
+run invreboot -ts=invreboot
+[ "$RC" -eq 1 ] || fail "invariant before reboot: exit $RC, expected 1"
+[ "$(lines "$T/invreboot/invreboot")" -eq 1 ] || fail "invariant before reboot: the case rebooted"
+grep -q 'invariant violated in "a broken invariant stops the reboot" at boot 0: 2 unanswered HTTP exchanges' "$T/out" ||
+  fail "invariant before reboot: message"
+grep -q ": invariant violated at boot 0" "$T/out" || fail "invariant before reboot: verdict"
+
 echo "testkit selftest OK"

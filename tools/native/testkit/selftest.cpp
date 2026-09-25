@@ -180,3 +180,11 @@ TEST_SUITE("failreboot") {
     testkit::reboot(Reset::Pin);
   }
 }
+
+TEST_SUITE("invreboot") {
+  TEST_CASE("a broken invariant stops the reboot") {
+    marker("invreboot");
+    g_violation = "2 unanswered HTTP exchanges";
+    testkit::reboot(Reset::Pin);
+  }
+}

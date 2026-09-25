@@ -46,6 +46,7 @@ Reset g_lastReset = Reset::PowerOn;
 bool g_caseProcess = false;  // this process runs one case for the fork runner
 std::string g_storesPath;
 std::string g_resetPath;
+const char* g_caseName = "";
 const char* g_invariantMessage = nullptr;
 unsigned g_invariantFailures = 0;
 
@@ -122,19 +123,23 @@ struct CaseReporter : public doctest::ConsoleReporter {
   void test_run_end(const doctest::TestRunStats&) override {}
 };
 
+// Hooks::checkInvariants at the end of a boot (the case ends or reboots); false after a violation.
+bool invariantsHold() {
+  if (g_hooks.checkInvariants == nullptr) return true;
+  const char* message = g_hooks.checkInvariants();
+  if (message == nullptr) return true;
+  g_invariantMessage = message;
+  ++g_invariantFailures;
+  std::cout << "[testkit] invariant violated in \"" << g_caseName << "\" at boot " << g_boot << ": "
+            << message << std::endl;
+  return false;
+}
+
 // Checks Hooks::checkInvariants after every executed case (fork and no-fork mode).
 struct InvariantListener : public doctest::IReporter {
   explicit InvariantListener(const doctest::ContextOptions&) {}
-  void test_case_start(const doctest::TestCaseData& tc) override { name_ = tc.m_name; }
-  void test_case_end(const doctest::CurrentTestCaseStats&) override {
-    if (g_hooks.checkInvariants == nullptr) return;
-    const char* message = g_hooks.checkInvariants();
-    if (message == nullptr) return;
-    g_invariantMessage = message;
-    ++g_invariantFailures;
-    std::cout << "[testkit] invariant violated in \"" << name_ << "\" at boot " << g_boot << ": "
-              << message << std::endl;
-  }
+  void test_case_start(const doctest::TestCaseData& tc) override { g_caseName = tc.m_name; }
+  void test_case_end(const doctest::CurrentTestCaseStats&) override { invariantsHold(); }
   void report_query(const doctest::QueryData&) override {}
   void test_run_start() override {}
   void test_run_end(const doctest::TestRunStats&) override {}
@@ -145,9 +150,6 @@ struct InvariantListener : public doctest::IReporter {
   void log_assert(const doctest::AssertData&) override {}
   void log_message(const doctest::MessageData&) override {}
   void test_case_skipped(const doctest::TestCaseData&) override {}
-
- private:
-  const char* name_ = "";
 };
 
 // Arguments that only query doctest (help, version, listings): no case is run.
@@ -346,6 +348,8 @@ void reboot(Reset kind) {
               << " reboot" << std::endl;
     exitCase(kExitNoReboot);
   }
+  // the case does not end in this process, so the listener would never see this boot
+  if (!invariantsHold()) exitCase(kExitInvariant);
   if (g_hooks.save != nullptr && !g_hooks.save(g_storesPath.c_str())) {
     std::cout << "[testkit] saving the stores at boot " << g_boot << " failed" << std::endl;
     exitCase(kExitHooks);
