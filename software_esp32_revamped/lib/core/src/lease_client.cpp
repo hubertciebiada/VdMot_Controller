@@ -93,9 +93,7 @@ void LeaseClient::reread() {
   synced_ = false;
   cfgStep_ = Kind::Read;
   cfgDueNow_ = true;
-  pushTimeout_ = false;
-  pushAll_ = false;
-  pushMask_ = 0;
+  // The push flags are read in the Push step only; onConfigReply() sets them before it.
   // A config request in flight belongs to the old round: its result is dropped.
   if (inFlight_ != Kind::Heartbeat) inFlight_ = Kind::None;
 }
@@ -129,9 +127,9 @@ void LeaseClient::setRegulator(RegulatorCause c, uint32_t commandSeq, uint32_t n
     backPending_ = true;
     backSeconds_ = elapsedMs(nowMs, lostSinceMs_) / 1000;
   }
+  // lostReported_ may stay set: the next loss (effAlive_) clears it before tick() reads it
   effAlive_ = true;
   cause_ = RegulatorCause::Alive;
-  lostReported_ = false;
 }
 
 void LeaseClient::onStatus(const StmStatus& s, uint32_t nowMs) {
@@ -265,9 +263,6 @@ void LeaseClient::failAttempt(uint8_t reason, uint32_t nowMs) {
     failReason_ = reason;
   }
   cfgStep_ = Kind::Read;
-  pushTimeout_ = false;
-  pushAll_ = false;
-  pushMask_ = 0;
   cfgDueNow_ = false;
   cfgWaitFromMs_ = nowMs;
   cfgWaitMs_ = exhausted ? kConfigCheckMs : kConfigRetryMs;
