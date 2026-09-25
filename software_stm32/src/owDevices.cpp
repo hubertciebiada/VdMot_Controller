@@ -236,7 +236,10 @@ void temperature_loop() {
                   tempstate = T_READVAD;
                   devDS2438Cnt = 0;
                 }
-                else tempstate = T_IDLE;
+                else {
+                  tempstate = T_IDLE;
+                  app_temp_cycle_done();
+                }
               }
               devcnt++;
               break;
@@ -259,6 +262,7 @@ void temperature_loop() {
               }
               else {
                 tempstate = T_IDLE;
+                app_temp_cycle_done();
               }
               break;
 

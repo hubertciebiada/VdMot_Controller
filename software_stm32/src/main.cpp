@@ -161,6 +161,7 @@ void setup_system() {
   // valve app setup
   app_setup();
   valve_setup();
+  app_restore();          // valve state kept across a warm reset, before the valve timer runs
 
   #ifdef useCan
     // can
@@ -197,6 +198,8 @@ void loop_system() {
   static uint8_t buttontest = 0;
   static uint8_t ledTimer = 0;
   static uint32_t lastValveTicks = 0;
+  static uint32_t last1sTick = 0;       // uptime (s) of the last app_1s_tick()
+  static uint32_t last10sLoop = 0;      // uptime (s) of the last app_10s_loop()
 
   sysstat_loop();
 
@@ -205,9 +208,15 @@ void loop_system() {
   if ((millis()-loop_1000ms) > (uint32_t) 1000 ) {  
     loop_1000ms = millis();
 
+    // the branches run a little later than their period: the countdowns get the real elapsed seconds
+    const uint32_t uptime = sysstat_uptime_s();
+    app_1s_tick(uptime - last1sTick);
+    last1sTick = uptime;
+
     if(time10s>=10) {
       time10s = 0;
-      app_10s_loop();
+      app_10s_loop(uptime - last10sLoop);
+      last10sLoop = uptime;
       // todo sync with comm COMM_SER.println("STMalive ");   // send alive to ESP32
     }
     else time10s++;
@@ -253,7 +262,9 @@ void loop_system() {
     }
     
     app_loop();  
+    app_warm_save();
     communication_loop();
     temperature_loop();
+    terminal_supervise();
   }
 }

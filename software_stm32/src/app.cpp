@@ -34,6 +34,7 @@
 #include "motor.h"
 #include "owDevices.h"
 #include "eeprom.h"
+#include "terminal.h"
 #include "vdm/failsafe.h"
 #include "vdm/lease.h"
 #include "vdm/settings.h"
@@ -202,6 +203,9 @@ int16_t app_loop (void) {
 
   reset_check();
 
+  // a motor output switched on from the debug terminal: no command for the valve state machine
+  if (terminal_manual_active()) return 0;
+
     // if valve machine is idle search for new tasks; no valve moves until the next command,
     // so the status and position of every valve may be changed here
     if(valve_idle()) 
@@ -319,8 +323,10 @@ return 0;
 
 
 
-byte app_10s_loop () {
+// elapsedS is not used yet: the countdowns still take 10 s per call
+byte app_10s_loop (uint32_t elapsedS) {
 
+  (void) elapsedS;
   unsigned int x = 0;
 
   for (x=0; x< ACTUATOR_COUNT; x++) {
