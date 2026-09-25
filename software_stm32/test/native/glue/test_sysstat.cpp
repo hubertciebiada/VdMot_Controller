@@ -1,6 +1,5 @@
-// Smoke tests of src/sysstat.cpp (glue_sysstat): boot reason from RCC->CSR, reset counter in
-// .noinit across boots, uptime across the millis() wrap, the safe-mode functions (not implemented
-// yet).
+// Tests of src/sysstat.cpp (glue_sysstat): boot reason from RCC->CSR, reset counter in .noinit
+// across boots, uptime across the millis() wrap, safe mode after a watchdog reset loop (S9).
 #include "glue_test.h"
 #include "sysstat.h"
 
@@ -124,13 +123,62 @@ TEST_CASE("sysstat: the uptime counts seconds across the wrap of millis()") {
   CHECK(sysstat_uptime_s() == 4294968);
 }
 
-TEST_CASE("sysstat: safe mode is not implemented yet: never active, ssafe 0 changes nothing") {
+TEST_CASE("sysstat S9: three watchdog resets within 10 min enter safe mode, 30 min of uptime leave it") {
   glue::begin();
+  const unsigned boot = testkit::boot();
+  REQUIRE(boot < 4);
   sysstat_capture_reset();
+  CHECK(sysstat_wdg_resets() == boot);
+  CHECK(sysstat_safe_mode() == (boot == 3));
+  sysstat_loop();
+  fake::advanceMs(100000);
+  sysstat_loop();
+  if (boot < 3) testkit::reboot(testkit::Reset::Watchdog);
+  CHECK(sysstat_safe_mode());
+  fake::advanceMs(1699000);
+  sysstat_loop();
+  CHECK(sysstat_uptime_s() == 1799);
+  CHECK(sysstat_safe_mode());
+  fake::advanceMs(1000);
+  sysstat_loop();
   CHECK_FALSE(sysstat_safe_mode());
   CHECK(sysstat_wdg_resets() == 0);
-  sysstat_leave_safe_mode();
+}
+
+TEST_CASE("sysstat S9: ssafe 0 leaves safe mode and clears the window; a power-on clears it too") {
+  glue::begin();
+  const unsigned boot = testkit::boot();
+  REQUIRE(boot < 6);
+  sysstat_capture_reset();
+  if (boot < 3) testkit::reboot(testkit::Reset::Watchdog);
+  if (boot == 3) {
+    CHECK(sysstat_safe_mode());
+    sysstat_leave_safe_mode();
+    CHECK_FALSE(sysstat_safe_mode());
+    CHECK(sysstat_wdg_resets() == 0);
+    testkit::reboot(testkit::Reset::Watchdog);
+  }
+  if (boot == 4) {
+    // a new window: one reset counted
+    CHECK_FALSE(sysstat_safe_mode());
+    CHECK(sysstat_wdg_resets() == 1);
+    testkit::reboot(testkit::Reset::PowerOn);
+  }
   CHECK_FALSE(sysstat_safe_mode());
-  CHECK(sysstat_resets() == 0);
+  CHECK(sysstat_wdg_resets() == 0);
   CHECK(sysstat_boot_reason() == BootReason::PowerOn);
+}
+
+TEST_CASE("sysstat S9: watchdog resets 400 s apart never enter safe mode") {
+  glue::begin();
+  const unsigned boot = testkit::boot();
+  REQUIRE(boot < 5);
+  sysstat_capture_reset();
+  static const uint8_t kCount[] = {0, 1, 2, 1, 2};
+  CHECK(sysstat_wdg_resets() == kCount[boot]);
+  CHECK_FALSE(sysstat_safe_mode());
+  sysstat_loop();
+  fake::advanceMs(400000);
+  sysstat_loop();
+  if (boot < 4) testkit::reboot(testkit::Reset::Watchdog);
 }

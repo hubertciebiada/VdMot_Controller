@@ -752,7 +752,8 @@ void valve_loop () {
                           COMM_DBG.print("A: begin move by ");
                           COMM_DBG.println(pos_change);
                         #endif
-                        myvalvemots[valveindex].status = open ? VLV_STATE_OPENING : VLV_STATE_CLOSING;
+                        // a failed or blocked valve keeps its status also while it moves
+                        if ((move_flags & MOVE_KEEP_STATUS) == 0) myvalvemots[valveindex].status = open ? VLV_STATE_OPENING : VLV_STATE_CLOSING;
                         valvestate = open ? A_OPEN2 : A_CLOSE2;
                         isr_counter=0;
                       }
