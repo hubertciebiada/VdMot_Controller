@@ -179,7 +179,9 @@ mutate dead --jobs 2
 ok "not_compiled detection, not counted as run"
 
 # --- a mutant that only warns (-Wparentheses) is built and counted; a compile error in the file
-# and an undefined symbol are stillborn
+# and an undefined symbol are stillborn, and so is an error in a header that GCC locates in the
+# file through its context: a template instantiated there ("required from"), a macro expanded
+# there ("in expansion of macro") or the include chain ("In file included from")
 project warn
 cat >"$T/warn/proj/src/w.cpp" <<'CPP'
 static_assert(sizeof(int) == 4, "int");
@@ -195,8 +197,17 @@ int pick() {
   else
     return missing();  // NOMUTATE: the discarded branch, only the mutant of the condition runs it
 }
+int fixed() { return Fixed<1>{}.v[0]; }
+CHECKED(1);
+constexpr int kSize = 4;
+#include "wsize.h"
 CPP
-printf '#include "src/w.cpp"\nint main() { return w(true, true, true) && !w(false, true, true) && !w(true, false, true) && !w(true, true, false) && pick() == 7 ? 0 : 1; }\n' \
+cat >"$T/warn/proj/src/wh.h" <<'CPP'
+template <int N> struct Fixed { static_assert(N > 0, "N"); int v[N > 0 ? N : 1]; };
+#define CHECKED(n) static_assert((n) > 0, "positive")
+CPP
+printf 'static_assert(kSize == 4, "size");\n' >"$T/warn/proj/src/wsize.h"
+printf '#include "src/wh.h"\n#include "src/w.cpp"\nint main() { return w(true, true, true) && !w(false, true, true) && !w(true, false, true) && !w(true, true, false) && pick() == 7 ? 0 : 1; }\n' \
   >"$T/warn/proj/test_w.cpp"
 config warn '{"threshold": 0}'
 mutate warn --jobs 2
@@ -209,30 +220,50 @@ printf 'bool w(bool a, bool b, bool c) { if (a || b && c) return true; return fa
   fail "the static_assert mutants are not stillborn"
 report warn "[m['detail'] for m in M if m['line'] == 9 and m['replacement'] == 'false'][0]" | grep -q "undefined reference" ||
   fail "the undefined symbol is not stillborn: $(report warn "[(m['status'], m['detail']) for m in M if m['line'] == 9]")"
+# the error lines of these mutants are in a header, only a context line names w.cpp
+for check in "14:src/wh.h:required from" "15:src/wh.h:in expansion of macro" "16:src/wsize.h:In file included from"; do
+  IFS=: read -r line header context <<<"$check"
+  [ "$(report warn "sorted({(m['status'], m['detail'].split(':')[0]) for m in M if m['line'] == $line and m['op'] == 'const' and m['replacement'] == '0'})")" = "[('stillborn', '$header')]" ] ||
+    fail "an error located in the file by '$context' is not stillborn: $(report warn "[(m['status'], m['detail']) for m in M if m['line'] == $line]")"
+done
 [ "$(report warn "r['totals']['counted'] == r['totals']['killed'] + r['totals']['survived'] + r['totals']['timeout']")" = "True" ] ||
   fail "stillborn mutants were counted"
-ok "-Wparentheses mutant built and counted; compile error and undefined symbol stillborn, excluded"
+ok "-Wparentheses mutant built and counted; compile errors located in the file and undefined symbols stillborn, excluded"
 
-# --- a build that fails without an error in the mutated file (full disk, linker I/O) is an
-# error: never stillborn, never cached
+# --- a build that fails without an error in the mutated file (full disk, a killed linker, linker
+# I/O, an error in another file) is an error: never stillborn, never cached, also when the mutant
+# warns in the mutated file (return a -> return 0: unused parameter 'a')
 project infra
 printf 'int i1(int a) {\n  return a;\n}\n' >"$T/infra/proj/src/i.cpp"
 printf '#include "src/i.cpp"\nint main() { return i1(4) == 4 ? 0 : 1; }\n' >"$T/infra/proj/test_i.cpp"
 cat >"$T/infra/proj/build.sh" <<'SH'
-if [ -n "${INFRA_MSG:-}" ] && ! grep -q "return a;" src/i.cpp; then echo "$INFRA_MSG"; exit 1; fi
+if [ -n "${INFRA_MSG:-}" ] && ! grep -q "return a;" src/i.cpp; then
+  g++ -std=c++17 -Wall -Wextra -fsyntax-only -I. "test_$2.cpp" 2>&1
+  echo "$INFRA_MSG"
+  exit 1
+fi
 exec g++ -std=c++17 -O0 -I. "test_$2.cpp" -o "$1/t_$2"
 SH
 config infra '{"threshold": 0}'
-INFRA_MSG="cc1plus: fatal error: error writing to /tmp/ccq.s: No space left on device" mutate infra --jobs 1
-[ "$RC" -eq 2 ] || fail "full disk: exit $RC, expected 2"
-[ "$(report infra "[m['status'] for m in M]")" = "['error']" ] || fail "full disk: $(report infra "[m['status'] for m in M]")"
-INFRA_MSG="ld: error: cannot open output file build/t_i: Input/output fault" mutate infra --jobs 1
-[ "$RC" -eq 2 ] || fail "linker I/O: exit $RC, expected 2"
-[ "$(report infra "[m['status'] for m in M]")" = "['error']" ] || fail "linker I/O: $(report infra "[m['status'] for m in M]")"
-report infra "M[0]['detail']" | grep -q "without a compiler error in src/i.cpp" || fail "linker I/O: detail"
+printf 'int i1(int a) {\n  return 0;\n}\n' | g++ -Wall -Wextra -fsyntax-only -x c++ - 2>&1 | grep -q "Wunused-parameter" ||
+  fail "g++ does not warn about the mutant"
+infra_case() {
+  INFRA_MSG="$2" mutate infra --jobs 1
+  [ "$RC" -eq 2 ] || fail "$1: exit $RC, expected 2"
+  [ "$(report infra "[(m['status'], m['detail']) for m in M]")" = "[('error', '$3')]" ] ||
+    fail "$1: $(report infra "[(m['status'], m['detail']) for m in M]")"
+}
+infra_case "full disk" "cc1plus: fatal error: error writing to /tmp/ccq.s: No space left on device" \
+  "build failed: No space left on device"
+infra_case "killed linker" "collect2: fatal error: ld terminated with signal 9 [Killed]" "build failed: terminated with signal"
+infra_case "linker I/O" "ld: error: cannot open output file build/t_i: Input/output fault" \
+  "build failed (exit 1) without a compiler error in src/i.cpp"
+infra_case "an error in another file" "src/other.cpp:1:1: error: 'x' does not name a type" \
+  "build failed (exit 1) without a compiler error in src/i.cpp"
 mutate infra --jobs 1
 [ "$RC" -eq 0 ] && grep -q "0 from the cache" "$T/out" || fail "an error result was cached"
-ok "build failures of the environment are errors, not stillborn, not cached"
+[ "$(report infra "[m['status'] for m in M]")" = "['killed']" ] || fail "the rerun: $(report infra "[m['status'] for m in M]")"
+ok "build failures of the environment are errors, also for a mutant that warns; not stillborn, not cached"
 
 # --- exit codes of the glue runner: 124 (a case timed out) is a timeout that a solo re-run
 # confirms, 125 (the runner failed) an error; neither is a kill by itself

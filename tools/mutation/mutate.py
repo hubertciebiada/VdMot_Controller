@@ -47,11 +47,13 @@ Source markers: "// NOMUTATE: <reason>" on a line suppresses its mutants; NOMUTA
 reason is a configuration error. Preprocessor directive lines are never mutated.
 
 Statuses: killed; survived; timeout (confirmed by a solo re-run, counts as killed; a mutant
-that fails its tests in the solo re-run is killed); stillborn (a compiler error on a line of the
-mutated file, or an undefined symbol); not_compiled; equivalent; error (a timeout that passes
-its tests alone, a build that failed for another reason, e.g. a compiler crash, a full disk or a
-build timeout, a test run that did not start or whose runner failed (exit 125-127); never
-cached, the run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
+that fails its tests in the solo re-run is killed); stillborn (a compiler error located in the
+mutated file: on the error line, in its include chain, as the origin of a template instantiation
+or in a macro expansion; or an undefined symbol; a warning never counts); not_compiled;
+equivalent; error (a timeout that passes its tests alone, a build that failed for another reason,
+e.g. a compiler or linker crash, a full disk or a build timeout, also when the mutant warns in
+the file, a test run that did not start or whose runner failed (exit 125-127); never cached,
+the run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
 <config>.cache.json (key: file, source hash, config hash, hash of every file the workers copy
 (tests, headers, build files, sources), position, operator, replacement), so an interrupted run
 resumes and a change of the tests invalidates their kills; survivors always run again. The
@@ -136,11 +138,23 @@ RUNNER_TIMEOUT = 124
 NOT_RUN = (125, 126, 127)
 CACHEABLE = ("killed", "timeout", "stillborn", "not_compiled")
 STATUSES = ("killed", "survived", "timeout", "stillborn", "not_compiled", "equivalent", "error")
+# Toolchain and environment failures; "terminated with signal" is collect2's message for a killed
+# ld or cc1plus ("ld terminated with signal 9 [Killed]").
 BUILD_CRASHES = ("internal compiler error", "Killed signal terminated program",
-                 "virtual memory exhausted", "out of memory", "interrupted by user",
-                 "No space left on device", "ninja: error", "Cannot allocate memory",
-                 "Input/output error")
+                 "terminated with signal", "virtual memory exhausted", "out of memory",
+                 "interrupted by user", "No space left on device", "ninja: error",
+                 "Cannot allocate memory", "Input/output error")
 LINK_ERRORS = ("undefined reference to", "undefined symbol")
+# GCC diagnostics: "<file>:<line>[:<col>]: <kind>: <message>". The context of a diagnostic comes
+# before it: the include chain ("In file included from <file>:<line>," continued by "from" lines),
+# the enclosing function or template ("<file>: In instantiation of ...:") and the chain of
+# instantiations or constant evaluations ("<file>:<line>:<col>:   required from here").
+DIAGNOSTIC = re.compile(r"(?P<file>[^\s:][^:]*):\d+(?::\d+)?: "
+                        r"(?P<kind>fatal error|error|warning|note): (?P<text>.*)")
+DIAGNOSTIC_CONTEXT = re.compile(r"(?:In file included|\s+) from (?P<include>[^:]+):\d+(?::\d+)?[,:]"
+                                r"|(?P<scope>[^\s:][^:]*): (?:In|At) .*:"
+                                r"|(?P<chain>[^\s:][^:]*):\d+(?::\d+)?:   \S.*")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 class ConfigError(Exception):
@@ -631,10 +645,38 @@ def tail(text: str, n: int = 3000) -> str:
     return text[-n:]
 
 
+def compiler_errors(out: str) -> list[tuple[str, list[str]]]:
+    """(error line, files it is located in) of each compiler error of a build output. The files are
+    those of the error line, of the context lines before it and of its 'in expansion of macro'
+    notes. Warnings and their context are skipped: a mutant that only warns compiles."""
+    errors: list[tuple[str, list[str]]] = []
+    context: list[str] = []
+    in_error = False
+    for raw in out.splitlines():
+        line = ANSI_ESCAPE.sub("", raw).rstrip()
+        d = DIAGNOSTIC.fullmatch(line)
+        if d is None:
+            c = DIAGNOSTIC_CONTEXT.fullmatch(line)
+            if c is not None:
+                context.append(next(f for f in c.groups() if f))
+            continue
+        if d.group("kind") == "note":
+            if in_error and d.group("text").startswith("in expansion of macro"):
+                errors[-1][1].append(d.group("file"))
+        else:
+            in_error = d.group("kind") != "warning"
+            if in_error:
+                errors.append((line, context + [d.group("file")]))
+        context = []
+    return errors
+
+
 def classify_build_failure(rc: int, out: str, rel: str) -> tuple[str, str]:
-    """A failed mutant build is stillborn when the compiler reports an error and names a line of
-    the mutated file (directly or as the origin of a template or macro error), or when the linker
-    misses a symbol; any other failure is an error of the build environment."""
+    """A failed mutant build is stillborn when the compiler reports an error located in the mutated
+    file (on the error line, in its include chain, as the origin of a template instantiation or
+    in a macro expansion), or when the linker misses a symbol. A warning in the mutated file does
+    not count, and a toolchain crash is never stillborn: any other failure is an error of the
+    build environment."""
     if rc == TIMEOUT_RC:
         return "error", "build timeout"
     for pattern in BUILD_CRASHES:
@@ -642,14 +684,19 @@ def classify_build_failure(rc: int, out: str, rel: str) -> tuple[str, str]:
             return "error", f"build failed: {pattern}"
     if rc < 0:
         return "error", f"build killed by signal {-rc}"
+    target = os.path.normpath(rel).replace(os.sep, "/")
+
+    def mutated(path: str) -> bool:
+        p = os.path.normpath(path).replace(os.sep, "/")
+        return p == target or p.endswith("/" + target)
+
+    located = [line for line, files in compiler_errors(out) if any(mutated(f) for f in files)]
+    if located:
+        return "stillborn", located[0][:200]
     lines = [line.strip() for line in out.splitlines()]
-    errors = [line for line in lines if "error:" in line]
-    at_file = re.compile(r"(?:^|[\s/\\])" + re.escape(os.path.basename(rel)) + r":\d+:")
-    in_file = [line for line in lines if at_file.search(line)]
     missing = [line for line in lines if any(p in line for p in LINK_ERRORS)]
-    if errors and (in_file or missing):
-        detail = next((e for e in errors if at_file.search(e)), (missing or errors)[0])
-        return "stillborn", detail[:200]
+    if missing and any("error:" in line for line in lines):
+        return "stillborn", missing[0][:200]
     return "error", f"build failed (exit {rc}) without a compiler error in {rel}"
 
 
