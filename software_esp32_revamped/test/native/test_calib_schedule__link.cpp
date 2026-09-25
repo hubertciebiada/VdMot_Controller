@@ -298,3 +298,29 @@ TEST_CASE("learn time: completions of other requests are ignored") {
   CHECK_FALSE(s.ls.haveStmValue());
   CHECK(s.next(20) == "-");
 }
+
+TEST_CASE("calib E1: the slot epoch takes the UTC offset of the reference time") {
+  const int64_t midnight = 1790121600;  // 2026-09-23 00:00 UTC
+  LocalTime utc = wed(3, 5);
+  utc.second = 30;
+  utc.epoch = midnight + 3 * 3600 + 5 * 60 + 30;
+  CHECK(calibSlotEpoch(20260930, 3, 0, utc) == midnight + 7 * 86400 + 3 * 3600);
+  CHECK(calibSlotEpoch(20260923, 23, 59, utc) == midnight + 23 * 3600 + 59 * 60);
+  CHECK(calibSlotEpoch(20261001, 0, 1, utc) == midnight + 8 * 86400 + 60);
+  LocalTime cest = wed(5, 5);  // UTC+2: 05:05 local is 03:05 UTC
+  cest.epoch = midnight + 3 * 3600 + 5 * 60;
+  CHECK(calibSlotEpoch(20260930, 3, 0, cest) == midnight + 7 * 86400 + 3600);
+  LocalTime west = wed(22, 5, 22);  // UTC-5: Tuesday 22:05 local is Wednesday 03:05 UTC
+  west.wday = 2;
+  west.epoch = midnight + 3 * 3600 + 5 * 60;
+  CHECK(calibSlotEpoch(20260923, 3, 0, west) == midnight + 8 * 3600);
+}
+
+TEST_CASE("calib E1: no slot epoch without a slot or a valid reference time") {
+  LocalTime ref = wed(3, 5);
+  ref.epoch = 1790121600 + 3 * 3600 + 5 * 60;
+  CHECK(calibSlotEpoch(0, 3, 0, ref) == 0);
+  CHECK(calibSlotEpoch(20260923, 3, 5, ref) == ref.epoch);
+  ref.valid = false;
+  CHECK(calibSlotEpoch(20260930, 3, 0, ref) == 0);
+}

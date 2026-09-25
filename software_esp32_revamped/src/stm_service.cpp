@@ -71,24 +71,29 @@ bool takeResult(CalibResult& out) {
   return got;
 }
 
-// Local mktime of the next slot at calib.hour:calib.minute, 0 = none.
-int64_t slotEpoch(uint32_t slot) {
-  if (slot == 0) return 0;
-  struct tm t = {};
-  t.tm_year = static_cast<int>(slot / 10000u) - 1900;
-  t.tm_mon = static_cast<int>((slot / 100u) % 100u) - 1;
-  t.tm_mday = static_cast<int>(slot % 100u);
-  t.tm_hour = gCfg.calib.hour;
-  t.tm_min = gCfg.calib.minute;
-  t.tm_isdst = -1;
-  return static_cast<int64_t>(mktime(&t));
+// Epoch of the next slot at calib.hour:calib.minute local time, 0 = none. The
+// second pass takes the UTC offset in force at the slot (a DST change before it).
+int64_t slotEpoch(uint32_t slot, const vdm::LocalTime& now) {
+  const time_t first =
+      static_cast<time_t>(vdm::calibSlotEpoch(slot, gCfg.calib.hour, gCfg.calib.minute, now));
+  struct tm tm;
+  localtime_r(&first, &tm);
+  vdm::LocalTime at;
+  at.valid = true;
+  at.year = static_cast<uint16_t>(tm.tm_year + 1900);
+  at.month = static_cast<uint8_t>(tm.tm_mon + 1);
+  at.mday = static_cast<uint8_t>(tm.tm_mday);
+  at.hour = static_cast<uint8_t>(tm.tm_hour);
+  at.minute = static_cast<uint8_t>(tm.tm_min);
+  at.epoch = first;
+  return vdm::calibSlotEpoch(slot, gCfg.calib.hour, gCfg.calib.minute, at);
 }
 
-void setCalibInfo(int64_t lastEpoch, uint32_t nextSlot) {
+void setCalibInfo(int64_t lastEpoch, uint32_t nextSlot, const vdm::LocalTime& now) {
   app::CalibInfo ci;
   ci.lastScheduledEpoch = lastEpoch;
   ci.nextSlot = nextSlot;
-  ci.nextEpoch = slotEpoch(nextSlot);
+  ci.nextEpoch = slotEpoch(nextSlot, now);
   app::setCalibInfo(ci);
 }
 
@@ -119,7 +124,7 @@ void calibrationTick(uint32_t now) {
     logger::log(vdm::EventCode::ScheduledCalibrationMissed, vdm::kNoValve,
                 static_cast<int32_t>(gCalib.attemptSlot()), gCalib.attempts());
   }
-  setCalibInfo(app::calibInfo().lastScheduledEpoch, gCalib.nextSlot(gCfg.calib, lt));
+  setCalibInfo(app::calibInfo().lastScheduledEpoch, gCalib.nextSlot(gCfg.calib, lt), lt);
 }
 
 // The STM confirmed (or not) the staln of the current attempt.
@@ -138,7 +143,7 @@ void calibrationResult(uint32_t now) {
   storage::saveLastCalib(lt.epoch);
   logger::log(vdm::EventCode::ScheduledCalibration, vdm::kNoValve,
               static_cast<int32_t>(gCalib.lastSlot()), gCalib.lateMinutes());
-  setCalibInfo(lt.epoch, gCalib.nextSlot(gCfg.calib, lt));
+  setCalibInfo(lt.epoch, gCalib.nextSlot(gCfg.calib, lt), lt);
 }
 
 void saveTargets(uint32_t now) {
@@ -155,13 +160,15 @@ void targetsTick(uint32_t now) {
 
 void begin() {
   gCalib.restoreLastSlot(storage::loadCalibSlot());
-  setCalibInfo(storage::loadLastCalib(), 0);
+  setCalibInfo(storage::loadLastCalib(), 0, vdm::LocalTime{});
   uint8_t nvs[vdm::kPersistedTargetsSize];
   const size_t n = storage::loadTargets(nvs, sizeof nvs);
   gBootSource = vdm::chooseTargets(gRtcTargets, sizeof gRtcTargets, nvs, n, gBootTargets);
   vdm::PersistedTargets stored;
   vdm::decodeTargets(nvs, n, stored);
   gSaver.primeStored(stored);
+  // Targets newer than NVS (restart without a flush): NVS catches up.
+  if (gBootSource == vdm::RestoreSource::Rtc) gSaver.update(gBootTargets, app::nowMs());
   gBootLeaseValid = vdm::decodeLeaseRecord(gRtcLease, sizeof gRtcLease, gBootLease);
 }
 

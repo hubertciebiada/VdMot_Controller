@@ -88,6 +88,13 @@ uint32_t calibSlotKey(const LocalTime& t) {
 CalibScheduler::CalibScheduler(uint16_t graceMinutes, uint32_t noTimeReportMs)
     : graceMinutes_(graceMinutes == 0 ? 1 : graceMinutes), noTimeReportMs_(noTimeReportMs) {}
 
+int64_t calibSlotEpoch(uint32_t slotKey, uint8_t hour, uint8_t minute, const LocalTime& ref) {
+  if (slotKey == 0 || !ref.valid) return 0;
+  const int32_t days = daysFromKey(slotKey) - daysFromCivil(ref.year, ref.month, ref.mday);
+  const int32_t secs = (hour - ref.hour) * 3600 + (minute - ref.minute) * 60 - ref.second;
+  return ref.epoch + static_cast<int64_t>(days) * 86400 + secs;
+}
+
 void CalibScheduler::restoreLastSlot(uint32_t slotKey) {
   lastSlot_ = keyValid(slotKey) ? slotKey : 0;
 }

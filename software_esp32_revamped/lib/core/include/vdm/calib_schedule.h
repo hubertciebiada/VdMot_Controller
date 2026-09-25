@@ -18,6 +18,12 @@ namespace vdm {
 // (Feb 30), hour/minute/second out of range, or wday not matching the date.
 uint32_t calibSlotKey(const LocalTime& t);
 
+// UTC epoch of local date `slotKey` (a valid yyyymmdd, e.g. from nextSlot())
+// at hour:minute, taking the UTC offset of `ref` (its local fields against its
+// epoch). 0 when slotKey is 0 or `ref` is not valid. Glue calls it again with
+// the local time at the first result so a DST change before the slot counts.
+int64_t calibSlotEpoch(uint32_t slotKey, uint8_t hour, uint8_t minute, const LocalTime& ref);
+
 enum class CalibDecision : uint8_t {
   None,           // nothing to do
   Fire,           // send "staln 255" now; the slot is booked only by onResult(true)

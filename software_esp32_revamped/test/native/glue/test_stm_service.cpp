@@ -1,6 +1,8 @@
 // Tests of src/stm_service.cpp: the scheduled calibration confirmed by the STM, the NVS copy of
 // the desired targets, the RTC records across software restarts and the boot choice.
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <vdm/target_store.h>
 
@@ -102,6 +104,31 @@ TEST_CASE("stm_service: the STM's confirmation books the slot and logs it") {
   CHECK(sib::storage().savedCalibSlots.size() == 1);
 }
 
+TEST_CASE("stm_service: the next slot after a DST change takes the offset in force then") {
+  setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+  tzset();
+  glue::begin();
+  scheduleWednesdayAt(3);
+  vdm::LocalTime t = wednesday(3, 5);  // 2026-10-21 03:05 CEST = 01:05 UTC
+  t.month = 10;
+  t.mday = 21;
+  t.epoch = 1792544700;
+  sib::net().localTime = t;
+  stm_service::begin();
+  stm_service::service(10000);
+  REQUIRE(sib::app().submitted.size() == 1);
+  stm_service::postScheduledCalibResult(sib::app().submitted[0].attempt, true,
+                                        vdm::CalibFailure::None);
+  t.minute = 6;
+  t.epoch += 60;
+  sib::net().localTime = t;
+  stm_service::service(11000);
+  CHECK(sib::app().calib.nextSlot == 20261028);
+  CHECK(sib::app().calib.nextEpoch == 1793152800);  // 2026-10-28 03:00 CET = 02:00 UTC
+  unsetenv("TZ");
+  tzset();
+}
+
 TEST_CASE("stm_service: a result of another attempt is ignored") {
   glue::begin();
   const uint16_t attempt = fire();
@@ -155,6 +182,11 @@ TEST_CASE("stm_service: a full command queue is a failed attempt (not sent)") {
   CHECK(e.arg2 == 2);
   CHECK(sib::storage().savedCalibSlots.empty());
   CHECK_FALSE(sib::logger().has(vdm::EventCode::ScheduledCalibration));
+  CHECK(sib::app().calib.nextSlot == 20260923);  // not booked: fires again 10 min later
+  sib::app().submitResult = true;
+  sib::net().localTime = wednesday(3, 11);
+  stm_service::service(610000);
+  CHECK(sib::app().submitted.size() == 1);
 }
 
 TEST_CASE("stm_service: a window that closes without a confirmation is reported as missed") {
@@ -185,7 +217,8 @@ TEST_CASE("stm_service: missing time is reported once") {
   glue::begin();
   scheduleWednesdayAt(3);
   stm_service::service(3600001);
-  CHECK(sib::logger().withCode(vdm::EventCode::CalibTimeMissing).size() == 1);
+  REQUIRE(sib::logger().withCode(vdm::EventCode::CalibTimeMissing).size() == 1);
+  CHECK(sib::logger().withCode(vdm::EventCode::CalibTimeMissing).at(0).arg1 == 0);
 }
 
 // ================================================================ desired targets (NVS)
@@ -289,6 +322,28 @@ TEST_CASE("stm_service: the RTC copies survive a software restart and win over N
   CHECK(lease.active);
   CHECK(lease.mask == 0x005);
   CHECK(lease.lostElapsedMs == 123456u);
+}
+
+TEST_CASE("stm_service: RTC targets newer than NVS are written to NVS, equal ones are not") {
+  if (testkit::boot() == 0) {
+    glue::begin();
+    stm_service::storeDesiredTargets(targets(0, 33, vdm::TargetSource::Mqtt));
+    testkit::reboot(testkit::Reset::Software);
+  }
+  if (testkit::boot() == 1) {
+    glue::begin();
+    sib::storage().targets = encoded(targets(0, 20, vdm::TargetSource::Web));
+    stm_service::begin();
+    stm_service::flushForRestart();
+    CHECK(sib::storage().targets == encoded(targets(0, 33, vdm::TargetSource::Mqtt)));
+    testkit::reboot(testkit::Reset::Software);
+  }
+  glue::begin();
+  sib::storage().targets = encoded(targets(0, 33, vdm::TargetSource::Mqtt));
+  stm_service::begin();
+  sib::storage().targets.clear();
+  stm_service::flushForRestart();
+  CHECK(sib::storage().targets.empty());
 }
 
 TEST_CASE("stm_service: a power-on forgets the RTC copies") {

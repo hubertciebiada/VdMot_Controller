@@ -1,0 +1,8 @@
+[
+  {"line": 41, "col": 24, "original": "false", "replacement": "true", "text": "bool gBootLeaseValid = false;", "reason": "begin() assigns it before anything reads it (bootLease() is only called after stm_service::begin())"},
+  {"line": 49, "col": 22, "original": "0", "replacement": "1", "text": "uint16_t attempt = 0;", "reason": "gHandResult is only taken after postScheduledCalibResult() assigned every field; the local in calibrationResult() is read only when takeResult() copied into it"},
+  {"line": 50, "col": 13, "original": "false", "replacement": "true", "text": "bool ok = false;", "reason": "gHandResult is only taken after postScheduledCalibResult() assigned every field; the local in calibrationResult() is read only when takeResult() copied into it"},
+  {"line": 54, "col": 23, "original": "false", "replacement": "true", "text": "bool gHandResultNew = false;", "reason": "a result taken before any Fire finds no pending attempt (attemptPending() false) and is dropped"},
+  {"line": 60, "col": 21, "original": "false", "replacement": "true", "text": "gHandTargetsNew = false;", "reason": "taking the same targets again hands TargetSaver::update() its current value, which it ignores"},
+  {"line": 69, "col": 20, "original": "false", "replacement": "true", "text": "gHandResultNew = false;", "reason": "the attempt of a result taken again is no longer pending after its onResult() (and a later Fire has a new attempt id), so the repeat is dropped"}
+]
