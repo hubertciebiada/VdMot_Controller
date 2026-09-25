@@ -4,37 +4,27 @@
 
 namespace vdm {
 
-namespace {
+ReplyLine::ReplyLine(BufWriter& out, const char* cmd) : out_(out), start_(out.length()), ok_(out.append(cmd)) {}
 
-// Appends " v" for every value; restores the writer on failure.
-class Line {
- public:
-  Line(BufWriter& out, const char* cmd) : out_(out), start_(out.length()), ok_(out.append(cmd)) {}
+ReplyLine& ReplyLine::u(uint32_t v) {
+  ok_ = ok_ && out_.append(' ') && out_.appendUnsigned(v);
+  return *this;
+}
 
-  Line& u(uint32_t v) {
-    ok_ = ok_ && out_.append(' ') && out_.appendUnsigned(v);
-    return *this;
-  }
-  Line& s(int32_t v) {
-    ok_ = ok_ && out_.append(' ') && out_.appendSigned(v);
-    return *this;
-  }
-  Line& text(const char* t) {
-    ok_ = ok_ && out_.append(' ') && out_.append(t);
-    return *this;
-  }
-  bool done() {
-    if (!ok_) out_.truncate(start_);
-    return ok_;
-  }
+ReplyLine& ReplyLine::s(int32_t v) {
+  ok_ = ok_ && out_.append(' ') && out_.appendSigned(v);
+  return *this;
+}
 
- private:
-  BufWriter& out_;
-  size_t start_;
-  bool ok_;
-};
+ReplyLine& ReplyLine::text(const char* t) {
+  ok_ = ok_ && out_.append(' ') && out_.append(t);
+  return *this;
+}
 
-}  // namespace
+bool ReplyLine::done() {
+  if (!ok_) out_.truncate(start_);
+  return ok_;
+}
 
 uint8_t composeCalState(bool running, bool requested, bool earlyWarn, bool lastFailed) {
   uint8_t v = running ? kCalStateRunning : (requested ? kCalStateRequested : kCalStateIdle);
@@ -47,9 +37,10 @@ uint8_t encodeValveStatus(uint8_t status, bool calibration) {
   return calibration ? static_cast<uint8_t>(status | kStatusCalibrationBit) : status;
 }
 
-bool formatValveExt(BufWriter& out, const ValveExtReply& r) {
-  return Line(out, "gvlvx")
-      .u(r.index)
+uint8_t eepstSaved(uint8_t eepState) { return eepState == kEepStateOk ? 1 : 0; }
+
+ReplyLine& appendValveExtFields(ReplyLine& line, const ValveExtReply& r) {
+  return line.u(r.index)
       .u(r.status)
       .u(r.position)
       .u(r.target)
@@ -67,13 +58,17 @@ bool formatValveExt(BufWriter& out, const ValveExtReply& r) {
       .u(r.last.countedCounts)
       .u(r.last.stopReason)
       .u(r.last.peakCurrent)
-      .u(r.last.durationMs)
-      .done();
+      .u(r.last.durationMs);
+}
+
+bool formatValveExt(BufWriter& out, const ValveExtReply& r) {
+  ReplyLine line(out, "gvlvx");
+  return appendValveExtFields(line, r).done();
 }
 
 bool formatProfile(BufWriter& out, uint8_t index, const ProfileRecorder& profile) {
   const size_t start = out.length();
-  bool ok = Line(out, "gprof").u(index).u(profile.size()).done();
+  bool ok = ReplyLine(out, "gprof").u(index).u(profile.size()).done();
   for (uint8_t i = 0; ok && i < profile.size(); ++i) {
     const ProfileSample p = profile.at(i);
     ok = out.append(' ') && out.appendUnsigned(p.count) && out.append(':') && out.appendUnsigned(p.current);
@@ -82,23 +77,21 @@ bool formatProfile(BufWriter& out, uint8_t index, const ProfileRecorder& profile
   return ok;
 }
 
+ReplyLine& appendStatFields(ReplyLine& line, const StatReply& r) {
+  return line.u(r.uptimeSeconds).u(r.resets).u(r.bootReason).u(r.rxOverflow).u(r.parseErrors).u(r.eepromState);
+}
+
 bool formatStat(BufWriter& out, const StatReply& r) {
-  return Line(out, "gstat")
-      .u(r.uptimeSeconds)
-      .u(r.resets)
-      .u(r.bootReason)
-      .u(r.rxOverflow)
-      .u(r.parseErrors)
-      .u(r.eepromState)
-      .done();
+  ReplyLine line(out, "gstat");
+  return appendStatFields(line, r).done();
 }
 
 bool formatEscalation(BufWriter& out, const EscalationConfig& c) {
-  return Line(out, "gcalx").u(c.enable).u(c.stepPct).u(c.maxmA).done();
+  return ReplyLine(out, "gcalx").u(c.enable).u(c.stepPct).u(c.maxmA).done();
 }
 
 bool formatMotorLimits(BufWriter& out) {
-  return Line(out, "gmotx")
+  return ReplyLine(out, "gmotx")
       .u(kLowFacRange.min)
       .u(kLowFacRange.max)
       .u(kHighFacRange.min)
@@ -112,14 +105,14 @@ bool formatMotorLimits(BufWriter& out) {
       .done();
 }
 
-bool formatProtocolVersion(BufWriter& out) { return Line(out, "gproto").u(kProtocolVersion).done(); }
+bool formatProtocolVersion(BufWriter& out) { return ReplyLine(out, "gproto").u(kProtocolVersion).done(); }
 
 bool formatResult(BufWriter& out, const char* cmd, bool ok) {
-  return Line(out, cmd).text(ok ? "ok" : "err").done();
+  return ReplyLine(out, cmd).text(ok ? "ok" : "err").done();
 }
 
 bool formatIndexedResult(BufWriter& out, const char* cmd, int32_t index, uint8_t errorCode) {
-  Line line(out, cmd);
+  ReplyLine line(out, cmd);
   line.s(index);
   if (errorCode == 0) return line.text("ok").done();
   return line.text("err").u(errorCode).done();

@@ -39,6 +39,8 @@ extern void setDeviceAddress();
 extern void temperature_loop();
 extern void print_sensordata (Print &out);
 extern void temp_command(int command);
+bool temp_locked(void);             // the temperature state machine is locked (TEMP_CMD_LOCK)
+uint32_t ow_scan_age_s(void);       // seconds since the last 1-Wire enumeration
 
 void printAddress(DeviceAddress deviceAddress);
 

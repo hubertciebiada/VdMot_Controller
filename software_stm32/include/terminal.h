@@ -42,6 +42,11 @@
 // public
 extern int16_t Terminal_Init (void);
 extern int16_t Terminal_Serve (void);
+// main loop, 10 ms branch: switches off a motor output enabled from the terminal when its time
+// or current limit is reached
+void terminal_supervise (void);
+// true while a motor output is enabled from the terminal: app_loop hands no command meanwhile
+bool terminal_manual_active (void);
 
 //extern HardwareSerial Serial3;
 //extern HardwareSerial Serial6;

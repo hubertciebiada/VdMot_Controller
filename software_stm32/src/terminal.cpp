@@ -462,6 +462,16 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 }
 
 
+// the terminal's motor outputs are not supervised yet
+void terminal_supervise (void) {
+}
+
+
+bool terminal_manual_active (void) {
+	return false;
+}
+
+
 /**
   * @brief  Write EEPROM Baselayout
   * @param  None

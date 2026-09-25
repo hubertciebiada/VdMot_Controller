@@ -18,4 +18,9 @@ uint32_t sysstat_uptime_s (void);
 uint32_t sysstat_resets (void);
 vdm::BootReason sysstat_boot_reason (void);
 
+// safe mode after a loop of watchdog resets: no valve moves until it is left
+bool sysstat_safe_mode (void);
+uint8_t sysstat_wdg_resets (void);			// watchdog resets in the current window
+void sysstat_leave_safe_mode (void);		// ssafe 0
+
 #endif //_SYSSTAT_H

@@ -15,6 +15,22 @@ namespace vdm {
 
 constexpr uint8_t kProtocolVersion = 2;
 
+// One reply line: the command, then " value" per call. done() returns false and
+// removes the whole line when anything did not fit.
+class ReplyLine {
+ public:
+  ReplyLine(BufWriter& out, const char* cmd);
+  ReplyLine& u(uint32_t v);
+  ReplyLine& s(int32_t v);
+  ReplyLine& text(const char* t);
+  bool done();
+
+ private:
+  BufWriter& out_;
+  size_t start_;
+  bool ok_;
+};
+
 // gvlvx calState bits
 constexpr uint8_t kCalStateMask = 0x03;       // 0 idle, 1 requested, 2 running
 constexpr uint8_t kCalStateIdle = 0;
@@ -54,6 +70,8 @@ struct ValveExtReply {
 // "gvlvx" + 20 numbers of up to 11 characters, separated by spaces.
 constexpr size_t kValveExtReplyMaxLen = 5 + 20 * 12;
 bool formatValveExt(BufWriter& out, const ValveExtReply& r);
+// the values of gvlvx, also the first ones of gvlvy
+ReplyLine& appendValveExtFields(ReplyLine& line, const ValveExtReply& r);
 
 // "gprof idx n c1:m1 ... cn:mn": up to 32 pairs of 5-digit numbers.
 constexpr size_t kProfileReplyMaxLen = 5 + 4 + 3 + kProfileSamples * 12;
@@ -78,10 +96,12 @@ constexpr uint8_t kEepStateReadFailed = 3;
 // pending, and while writing fails or is disabled after a failed read, it is 0:
 // the legacy ESP then does not take the configuration as saved (it waits up to
 // 60 s and restarts, which resets the STM), a v2 ESP reads the cause from gstat.
-constexpr uint8_t eepstSaved(uint8_t eepState) { return eepState == kEepStateOk ? 1 : 0; }
+uint8_t eepstSaved(uint8_t eepState);
 
 constexpr size_t kStatReplyMaxLen = 5 + 6 * 12;
 bool formatStat(BufWriter& out, const StatReply& r);
+// the values of gstat, also the first ones of gstax
+ReplyLine& appendStatFields(ReplyLine& line, const StatReply& r);
 
 // "gcalx enable stepPct maxmA"
 bool formatEscalation(BufWriter& out, const EscalationConfig& c);

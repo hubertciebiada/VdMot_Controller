@@ -40,7 +40,8 @@
 #include "eeprom.h"
 #include "otasupport.h"
 #include "sysstat.h"
-#include "STM32TimerInterrupt.h"      
+#include "i2c_bus.h"
+#include "STM32TimerInterrupt.h"
 #include <IWatchdog.h>
 #ifdef useCan
   #include "mycan.h"
@@ -70,8 +71,6 @@ STM32Timer ITimer1(TIM2);
 // setup_system() feeds the watchdog between these steps.
 #define WATCHDOG_TIMEOUT_US   8000000UL
 
-#define I2C_RECOVERY_HALF_CLOCK_US  5     // 100 kHz
-
 void setup_system();
 void loop_system();
 
@@ -94,36 +93,6 @@ void loop() {
       loop_system();
     }
   }
-}
-
-
-// A slave that was reset in the middle of a transfer (e.g. the EEPROM during a read when the STM
-// was reset) may hold SDA low forever. Clock SCL until it releases SDA, then send a STOP.
-static void i2c_bus_recover() {
-  pinMode(I2C_SDA_PIN, INPUT);
-  digitalWrite(I2C_SCL_PIN, HIGH);
-  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
-  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
-
-  for (uint8_t i = 0; i < 9 && digitalRead(I2C_SDA_PIN) == LOW; i++) {
-    digitalWrite(I2C_SCL_PIN, LOW);
-    delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
-    digitalWrite(I2C_SCL_PIN, HIGH);
-    delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
-  }
-
-  // STOP: SDA rises while SCL is high
-  digitalWrite(I2C_SCL_PIN, LOW);
-  digitalWrite(I2C_SDA_PIN, LOW);
-  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
-  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
-  digitalWrite(I2C_SCL_PIN, HIGH);
-  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
-  digitalWrite(I2C_SDA_PIN, HIGH);
-  delayMicroseconds(I2C_RECOVERY_HALF_CLOCK_US);
-
-  pinMode(I2C_SDA_PIN, INPUT);
-  pinMode(I2C_SCL_PIN, INPUT);
 }
 
 
@@ -192,6 +161,7 @@ void setup_system() {
   // valve app setup
   app_setup();
   valve_setup();
+  app_restore();          // valve state kept across a warm reset, before the valve timer runs
 
   #ifdef useCan
     // can
@@ -228,9 +198,9 @@ void loop_system() {
   static uint8_t buttontest = 0;
   static uint8_t ledTimer = 0;
   static uint32_t lastValveTicks = 0;
+  static uint32_t last1sTick = 0;       // uptime (s) of the last app_1s_tick()
+  static uint32_t last10sLoop = 0;      // uptime (s) of the last app_10s_loop()
 
-  int16_t recvcmd;
-  
   sysstat_loop();
 
 
@@ -238,9 +208,15 @@ void loop_system() {
   if ((millis()-loop_1000ms) > (uint32_t) 1000 ) {  
     loop_1000ms = millis();
 
+    // the branches run a little later than their period: the countdowns get the real elapsed seconds
+    const uint32_t uptime = sysstat_uptime_s();
+    app_1s_tick(uptime - last1sTick);
+    last1sTick = uptime;
+
     if(time10s>=10) {
       time10s = 0;
-      app_10s_loop();
+      app_10s_loop(uptime - last10sLoop);
+      last10sLoop = uptime;
       // todo sync with comm COMM_SER.println("STMalive ");   // send alive to ESP32
     }
     else time10s++;
@@ -262,7 +238,7 @@ void loop_system() {
       digitalWrite(LED,HIGH);
       ledTimer=0;  
     }
-    recvcmd = Terminal_Serve();
+    Terminal_Serve();
     
     // button test
     if (digitalRead(BUTTON) > 0 && buttontest == 0) 
@@ -286,7 +262,9 @@ void loop_system() {
     }
     
     app_loop();  
+    app_warm_save();
     communication_loop();
     temperature_loop();
+    terminal_supervise();
   }
 }

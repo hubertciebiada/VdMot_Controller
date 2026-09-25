@@ -11,18 +11,10 @@ class StallDetector {
 
   // Call once per state machine tick with the current state. Being idle or
   // entering a different state counts as progress and restarts the count.
-  void tick(uint8_t state, bool idle) {
-    if (idle || !busy_ || state != state_) {
-      busy_ = !idle;
-      state_ = state;
-      age_ = 0;
-    } else if (age_ < limit_) {
-      ++age_;
-    }
-  }
+  void tick(uint8_t state, bool idle);
 
   // True once the same busy state was seen on `limitTicks` further ticks.
-  bool stalled() const { return busy_ && age_ >= limit_; }
+  bool stalled() const;
 
  private:
   uint32_t limit_;

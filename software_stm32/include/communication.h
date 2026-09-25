@@ -41,7 +41,7 @@
 extern void communication_setup (void);
 extern int16_t communication_loop (void);
 
-// helpers shared with the debug terminal
+// functions shared with the debug terminal
 // valve: 0..ACTUATOR_COUNT-1; return 0 on success, -1 on invalid arguments
 extern int16_t comm_set_valve_sensors (uint16_t valve, const char *first, const char *second);
 extern int16_t comm_set_valve_sensor_index (uint16_t valve, uint8_t slot, uint16_t sensor);
@@ -86,6 +86,17 @@ extern void comm_print_valve_sensor_ids (Print &out, uint16_t valve, char delimi
 #define APP_PRE_GETCALESC           "gcalx"     // get breakaway escalation
 #define APP_PRE_GETSTATUS           "gstat"     // health
 #define APP_PRE_GETMOTLIMITS        "gmotx"     // ranges of the smotc values
+
+// protocol 3 (see PROTOCOL_V2.md)
+#define APP_PRE_LEASEHEARTBEAT      "slhbt"     // lease heartbeat
+#define APP_PRE_SETLEASE            "slcfg"     // set the lease timeout
+#define APP_PRE_SETFAILSAFE         "sfspo"     // set failsafe positions
+#define APP_PRE_GETLEASE            "glcfg"     // lease timeout and failsafe positions
+#define APP_PRE_GETVLVEXT3          "gvlvy"     // gvlvx plus flags, fault, failsafe, drive target, retry
+#define APP_PRE_GETSTATUS3          "gstax"     // gstat plus lease, safe mode, UART, EEPROM and temperatures
+#define APP_PRE_STOP                "sstop"     // stop the move or calibration of a valve
+#define APP_PRE_GETLEARNTIME        "gtlnt"     // stored learn time
+#define APP_PRE_SAFEMODE            "ssafe"     // leave safe mode
 
 #define APP_PRE_GETACTUALPOS       	"gactp"     // not implemented
 #define APP_PRE_GETMEANCURR        	"gmenc"     // not implemented

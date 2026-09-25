@@ -31,7 +31,6 @@
 #include <Arduino.h>
 #include "hardware.h"
 #include <Wire.h>
-#include "../lib/OneWire/OneWire.cpp"
 #include <DallasTemperature.h>
 #include "owDevices.h"
 #include "DS2438.h"
@@ -139,7 +138,6 @@ void setDeviceAddress() {
 }
 
 void temperature_setup() {
-  uint8_t thisSensorAddress [8];
 
     #ifdef tempDebug
       COMM_DBG.println("starting 1-wire setup"); 
@@ -171,7 +169,6 @@ void temperature_loop() {
     static int devDS2438Cnt = 0;
     static unsigned int timer = 0;
 
-    DeviceAddress currAddress;
     float temp = 0;
     float v = 0;
 
@@ -239,7 +236,10 @@ void temperature_loop() {
                   tempstate = T_READVAD;
                   devDS2438Cnt = 0;
                 }
-                else tempstate = T_IDLE;
+                else {
+                  tempstate = T_IDLE;
+                  app_temp_cycle_done();
+                }
               }
               devcnt++;
               break;
@@ -262,6 +262,7 @@ void temperature_loop() {
               }
               else {
                 tempstate = T_IDLE;
+                app_temp_cycle_done();
               }
               break;
 
@@ -343,4 +344,13 @@ void temp_command(int command) {
   }
   else if (temp_cmd == TEMP_CMD_NONE) temp_cmd = command;
 
+}
+
+bool temp_locked(void) {
+  return lock != 0;
+}
+
+// the time of the enumeration is not kept yet
+uint32_t ow_scan_age_s(void) {
+  return 0;
 }
