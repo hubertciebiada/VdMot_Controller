@@ -28,6 +28,12 @@ void resetApp() {
     myvalves[v].svcHold = 0;
     myvalves[v].retestRequest = 0;
     myvalves[v].openRequest = 0;
+    myvalves[v].assemblyHold = 0;
+    myvalves[v].retryLearn = 0;
+    myvalves[v].earlyLearn = 0;
+    myvalves[v].calibRestored = 0;
+    myvalves[v].storedSeq = 0;
+    myvalves[v].touched = 0;
   }
   learning_movements = LEARN_AFTER_MOVEMENTS_DEFAULT;
 }
@@ -107,6 +113,8 @@ void app_1s_tick(uint32_t elapsedS) { log("app_1s_tick(%u)", static_cast<unsigne
 void app_restore(void) { log("app_restore()"); }
 
 void app_warm_save(void) { log("app_warm_save()"); }
+
+void app_warm_moving(unsigned int valve) { log("app_warm_moving(%u)", valve); }
 
 void app_lease_poll(void) { log("app_lease_poll()"); }
 

@@ -1,6 +1,6 @@
-// Smoke tests of src/app.cpp (glue_app): start values, configuration load, the valve walk of
-// app_loop, the 10 s countdowns, the setters, the soft reset and the protocol-3 functions that keep
-// today's behaviour until they are implemented.
+// Tests of src/app.cpp (glue_app): start values, configuration load, the valve walk of app_loop,
+// the 10 s countdowns, the setters and the soft reset. Protocol 3 (lease, failsafe, retries, warm
+// restore, stop, protection guard) in test_app_v3.cpp.
 #include "glue_test.h"
 #include "stub_eeprom.h"
 #include "stub_motor.h"
@@ -36,7 +36,8 @@ TEST_CASE("app_setup: start values of all 12 valves, the stored configuration lo
   }
   CHECK(learning_movements == 0);
   // an all-zero EEPROM mirror: the factors are out of range and load their defaults
-  CHECK(stub::calls == stub::Calls{"motor_set_params(17, 17, 0, 0, 0)", "motor_set_escalation(0, 25, 50)"});
+  CHECK(stub::calls == stub::Calls{"motor_set_params(17, 17, 0, 0, 0)", "motor_set_escalation(0, 25, 50)",
+                                   "eeprom_lease_source()"});
   CHECK(fake::takeTx(Serial6) == "Read 1-wire sensor addresses from eeprom\r\nlearning_movements: 0\r\n");
 }
 
@@ -81,7 +82,10 @@ TEST_CASE("app_loop: nothing while the valve machine is busy or the terminal dri
 
 TEST_CASE("app_loop: a known valve away from its target moves by the difference") {
   begin();
-  for (unsigned v = 0; v < ACTUATOR_COUNT; v++) myvalvemots[v].status = VLV_STATE_IDLE;
+  for (unsigned v = 0; v < ACTUATOR_COUNT; v++) {
+    myvalvemots[v].status = VLV_STATE_IDLE;
+    myvalvemots[v].calibrated = 1;
+  }
   myvalvemots[0].target_position = 70;
   myvalvemots[1].target_position = 100;
   myvalvemots[2].target_position = 20;
@@ -142,41 +146,4 @@ TEST_CASE("reset_check: the soft reset waits for the EEPROM, then resets the con
   CHECK_THROWS_AS(app_loop(), fake::SystemReset);
   CHECK(fake::takeTx(Serial6) ==
         "prepare for soft reset\r\nApp: valve 0 unknown, try to find out...\r\nsoft reset now\r\n");
-}
-
-TEST_CASE("protocol 3 not implemented yet: no lease, failsafe hold, stop accepted for valves and 255") {
-  begin();
-  app_1s_tick(1);
-  app_restore();
-  app_warm_save();
-  app_lease_poll();
-  app_lease_command();
-  app_lease_heartbeat(true);
-  app_lease_configure(5);
-  app_temp_cycle_done();
-  app_set_failsafe(0, 40);
-  CHECK(app_lease_state() == 0);
-  CHECK(app_lease_remaining_s() == 0);
-  CHECK_FALSE(app_lease_client());
-  CHECK(app_lease_timeout() == 0);
-  CHECK(app_failsafe_mask() == 0);
-  CHECK(app_failsafe_pct(0) == 255);
-  CHECK(app_stop(11) == 0);
-  CHECK(app_stop(255) == 0);
-  CHECK(app_stop(12) == -1);
-  CHECK(app_get_learntime() == LEARN_AFTER_TIME_DEFAULT);
-  CHECK(app_temp_age_s() == 0);
-  CHECK_FALSE(app_protect_suspended());
-  valve_v3_info info = {1, 1, 1, 1, 1, 1};
-  myvalvemots[3].target_position = 42;
-  app_get_valve_v3(3, info);
-  CHECK(info.flags == 0);
-  CHECK(info.fault == 0);
-  CHECK(info.fsPct == 255);
-  CHECK(info.drive == 42);
-  CHECK(info.retryS == 0);
-  CHECK(info.retries == 0);
-  app_get_valve_v3(12, info);
-  CHECK(info.drive == 0);
-  CHECK(stub::calls.empty());
 }

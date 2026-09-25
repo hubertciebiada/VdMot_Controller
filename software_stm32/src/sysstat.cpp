@@ -4,9 +4,13 @@
 ***************************************************************************/
 
 #include "sysstat.h"
+#include "vdm/reset_guard.h"
 
 // not cleared by the start-up code, so it survives every reset except a power loss
 static vdm::ResetCounterCell reset_cell __attribute__((noinit));
+// watchdog resets in a row: safe mode (no valve moves) after a reset loop
+static vdm::ResetGuardCell guard_cell __attribute__((noinit));
+static bool safe_mode = false;
 
 static vdm::UptimeCounter uptime;
 static vdm::BootReason boot_reason = vdm::BootReason::Unknown;
@@ -31,11 +35,15 @@ void sysstat_capture_reset (void) {
 
 	boot_reason = vdm::classifyReset(flags);
 	reset_count = vdm::countReset(reset_cell, boot_reason);
+	safe_mode = vdm::resetGuardOnBoot(guard_cell, boot_reason);
 }
 
 
 void sysstat_loop (void) {
+	const uint32_t last = uptime.seconds();
 	uptime.update(millis());
+	// once per second: the uptime of this boot for the reset window, the end of the safe mode
+	if (uptime.seconds() != last) safe_mode = vdm::resetGuardAlive(guard_cell, uptime.seconds());
 }
 
 
@@ -54,16 +62,17 @@ vdm::BootReason sysstat_boot_reason (void) {
 }
 
 
-// safe mode is not implemented yet: never active, no reset window
 bool sysstat_safe_mode (void) {
-	return false;
+	return safe_mode;
 }
 
 
 uint8_t sysstat_wdg_resets (void) {
-	return 0;
+	return guard_cell.count;
 }
 
 
 void sysstat_leave_safe_mode (void) {
+	vdm::resetGuardClear(guard_cell);
+	safe_mode = false;
 }

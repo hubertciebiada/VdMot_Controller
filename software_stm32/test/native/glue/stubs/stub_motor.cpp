@@ -4,6 +4,9 @@ volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 volatile enum ASTATE valvestate;
 volatile uint32_t valve_loop_ticks = 0;
 volatile bool valve_loop_stalled = false;
+volatile bool temp_refresh_request = false;
+volatile bool protect_suspended = false;
+volatile bool protect_enforce = vdm::kProtectEnforce;
 uint8_t currentbound_low_fac = 17;
 uint8_t currentbound_high_fac = 17;
 uint8_t startOnPower = 50;
@@ -33,7 +36,19 @@ void resetMotor() {
     myvalvemots[v].connected = 0;
     myvalvemots[v].calibRetries = 0;
     myvalvemots[v].calibActive = 0;
+    myvalvemots[v].calibrated = 0;
+    myvalvemots[v].recal = 0;
+    myvalvemots[v].needsReference = 0;
+    myvalvemots[v].calibSeq = 0;
+    myvalvemots[v].calibFailed = 0;
+    myvalvemots[v].earlyLearnDue = 0;
+    myvalvemots[v].faultReason = 0;
+    myvalvemots[v].moveSeq = 0;
+    myvalvemots[v].tripSeq = 0;
   }
+  temp_refresh_request = false;
+  protect_suspended = false;
+  protect_enforce = vdm::kProtectEnforce;
   valvestate = A_INIT;
   valve_loop_ticks = 0;
   valve_loop_stalled = false;
@@ -72,9 +87,20 @@ bool valve_idle() {
   return motor.idle;
 }
 
-int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force) {
-  log("appsetaction(%c, %u, %u, %d)", cmd, valveindex, pos, force ? 1 : 0);
+int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force, uint8_t flags) {
+  if (flags != 0) log("appsetaction(%c, %u, %u, %d, 0x%02x)", cmd, valveindex, pos, force ? 1 : 0, flags);
+  else log("appsetaction(%c, %u, %u, %d)", cmd, valveindex, pos, force ? 1 : 0);
   return motor.action;
+}
+
+int16_t appstop(unsigned int valve) {
+  log("appstop(%u)", valve);
+  return motor.stop;
+}
+
+int valve_busy_index() {
+  log("valve_busy_index()");
+  return motor.busy;
 }
 
 int16_t appsetservice(unsigned int valveindex, uint8_t dir, uint16_t counts, uint8_t maxmA) {

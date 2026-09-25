@@ -46,6 +46,8 @@
 #define VALVE_NO_TARGET                   255     // rejectedTarget: no target known
 #define SVMOV_HOLD_10S                    30      // app_10s_loop calls (~11 s) a service moved valve is left alone
 #define CALIB_START_TICKS                 2       // app_10s_loop calls a handed over calibration may take to start
+#define RETEST_TEST                       1       // retestRequest: presence test (automatic retry after a short)
+#define RETEST_DETECT                     2       // retestRequest: stdet, a valve found present calibrates fully
 
 
 int16_t app_setup (void);
@@ -58,7 +60,7 @@ int16_t app_set_valvelearning(uint16_t valve);
 void app_scan_valves();
 int16_t app_set_valveopen(uint16_t valve);
 void app_target_changed(uint16_t valve);
-bool app_learn_pending(uint16_t valve, byte status, bool calibration);
+bool app_learn_pending(uint16_t valve, byte status, bool calibration);   // calState "requested"
 int16_t app_service_move(uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA);
 int16_t app_match_sensors();
 void reset_check();
@@ -86,6 +88,7 @@ uint32_t app_temp_age_s(void);                       // seconds since the last c
 bool app_protect_suspended(void);                    // short and inrush limits suspended until the next start
 struct valve_v3_info { uint16_t flags; uint8_t fault; uint8_t fsPct; uint8_t drive; uint32_t retryS; uint8_t retries; };
 void app_get_valve_v3(uint16_t valve, struct valve_v3_info &out);   // gvlvy values 20..25
+void app_warm_moving(unsigned int valve);            // appsetaction/appsetservice (interrupts disabled): the kept position is not valid
 
 // struct valvemotor {
 // //typedef struct valves {
@@ -119,8 +122,14 @@ struct valve {
   uint8_t forcedLearn;        // staln: learn without waiting for a target change
   uint8_t timedLearn;         // time trigger: learn at the next target change (after firstchange)
   uint8_t svcHold;            // after svmov the position is left alone (app_10s_loop calls); set by appsetservice, cleared if the start is refused
-  uint8_t retestRequest;      // stdet: test the valve again (applied by app_loop while no valve moves)
+  uint8_t retestRequest;      // RETEST_*: test the valve again (applied by app_loop while no valve moves)
   uint8_t openRequest;        // staop: open fully (applied by app_loop while no valve moves)
+  uint8_t assemblyHold;       // staop: the lease failsafe does not apply until the next stgtp
+  uint8_t retryLearn;         // automatic retry of a failed or blocked valve: calibrate without waiting for a target change
+  uint8_t earlyLearn;         // second early partial stop in a row: calibrate
+  uint8_t calibRestored;      // counts restored from the EEPROM, no calibration since start-up
+  uint8_t storedSeq;          // myvalvemots[].calibSeq of the calibration record last handed to the EEPROM
+  uint8_t touched;            // stgtp since the last reference move or calibration
   //struct valvemotor valvemot;
 };
 

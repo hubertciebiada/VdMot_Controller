@@ -78,6 +78,16 @@ struct valvemotor {
   uint8_t connected;
   uint8_t calibRetries;
   uint8_t calibActive;             // a calibration of this valve is running (valve state machine)
+  // written by the valve state machine, read and cleared by the main loop where noted
+  uint8_t calibrated;              // counts of a successful calibration (learned or restored from the EEPROM)
+  uint8_t recal;                   // a full calibration is required (contact lost, stdet, stored calibration ended blocked)
+  uint8_t needsReference;          // the position is not referenced: the next move goes to an end stop first
+  uint8_t calibSeq;                // counts the calibrations that ended accepted or blocked (EEPROM record)
+  uint8_t calibFailed;             // the last calibration ended blocked
+  uint8_t earlyLearnDue;           // second early partial stop in a row (main loop clears it)
+  uint8_t faultReason;             // vdm::ValveFault (gvlvy fault)
+  uint8_t moveSeq;                 // counts the normal moves that ended (end-stop latch of the scheduler)
+  uint8_t tripSeq;                 // counts short verdicts and inrush trips (protection guard)
 };
 
 // shared between the valve state machine (TIM2 interrupt) and the main loop
@@ -86,11 +96,14 @@ extern volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 enum ASTATE {
 A_INIT, A_IDLE, A_CLOSE, A_OPEN1, A_OPEN2, A_LEARN1, 
 A_LEARN2, A_LEARN3, A_LEARN4, A_SET, A_SET1, A_SET2, A_CLOSE1, A_CLOSE2, A_TEST,
-A_SVC1, A_SVC2 };
+A_SVC1, A_SVC2, A_GAP };
 
 extern volatile enum ASTATE valvestate;
 extern volatile uint32_t valve_loop_ticks;     // incremented on every valve_loop run (watchdog heartbeat)
 extern volatile bool valve_loop_stalled;       // valve state machine stuck in one busy state (watchdog must starve)
+extern volatile bool temp_refresh_request;     // main loop: a temperature cycle is due (pause between calibration strokes)
+extern volatile bool protect_suspended;        // main loop: the short and inrush limits are off until the next start
+extern volatile bool protect_enforce;          // short and inrush limits stop the motor (vdm::kProtectEnforce)
 
 
 
@@ -103,7 +116,15 @@ void valve_pins_safe ();
 
 enum ASTATE valve_getstate ();
 bool valve_idle ();             // idle and no command pending (see motor.cpp)
-int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force=false);
+// flags of a move command (open/close, also to the end stop)
+#define MOVE_KEEP_STATUS  0x01    // the valve keeps its status after the move (blocked valve to its failsafe position)
+#define MOVE_REFERENCE    0x02    // reference move: the start position is not known
+int16_t appsetaction(char cmd, unsigned int valveindex, byte pos, bool force=false, uint8_t flags=0);
+// sstop: drops a command not yet taken and stops the move, calibration or service move of the
+// valve (255: of any valve). Returns the valve whose command or move was stopped, -1 if none.
+int16_t appstop(unsigned int valve);
+// valve the valve state machine works on or got a command for, -1 while idle
+int valve_busy_index ();
 // service move: dir vdm::kDirOpen/kDirClose, counts 1..10000, end-stop threshold maxmA 5..60
 int16_t appsetservice(unsigned int valveindex, uint8_t dir, uint16_t counts, uint8_t maxmA);
 
@@ -118,6 +139,8 @@ struct valve_diag {
   uint16_t earlyStops;          // early end stops of normal moves since start-up
   bool earlyWarn;               // early end stop since the last successful calibration
   bool lastCalFailed;           // the last calibration did not succeed
+  bool lastEarly;               // the last move stopped early (vdm::classifyMove)
+  vdm::EarlyStopRun earlyRun;   // early partial stops in a row
 };
 
 // the fields gvlvx reports, copied together: the valve state machine changes several of

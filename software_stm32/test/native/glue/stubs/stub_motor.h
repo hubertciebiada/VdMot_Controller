@@ -4,6 +4,7 @@
 #pragma once
 
 #include "motor.h"
+#include "vdm/protection_guard.h"
 #include "stub_log.h"
 
 namespace stub {
@@ -14,6 +15,8 @@ struct Motor {
   bool idle = true;
   int16_t action = 0;
   int16_t service = 0;
+  int16_t stop = -1;            // appstop()
+  int busy = -1;                // valve_busy_index()
   valve_snapshot snapshot[ACTUATOR_COUNT] = {};  // valve_get_snapshot() of valve v
   vdm::ProfileRecorder profile;                 // valve_get_profile() of every valve
   vdm::MotorParams params = {17, 17, 50, NO_OF_MIN_COUNTS, 0};

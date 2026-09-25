@@ -67,7 +67,7 @@ function(vdm_glue_test stem)
   endif()
 endfunction()
 
-vdm_glue_test(app           STUBS motor eeprom owDevices terminal)
+vdm_glue_test(app           STUBS motor eeprom owDevices sysstat terminal)
 vdm_glue_test(communication STUBS app motor eeprom owDevices sysstat terminal)
 vdm_glue_test(eeprom        STUBS app i2c_bus terminal)
 vdm_glue_test(i2c_bus       STUBS terminal)

@@ -49,7 +49,7 @@ void eeprom_changed(uint16_t fields) { log("eeprom_changed(0x%04x)", fields); }
 void eeprom_changed_slot(uint8_t slot) { log("eeprom_changed_slot(%u)", slot); }
 
 void eeprom_store_calib(uint8_t valve, const vdm::CalibRecord& rec) {
-  (void)rec;
+  eeprom.lastCalib = rec;
   log("eeprom_store_calib(%u)", valve);
 }
 

@@ -19,6 +19,7 @@ struct Eeprom {
   uint32_t writes = 0;
   uint8_t leaseSource = vdm::kLeaseSourceDefault;
   bool free = true;
+  vdm::CalibRecord lastCalib = {};  // record of the last eeprom_store_calib()
   uint8_t state = vdm::kEepStateOk;
 };
 extern Eeprom eeprom;

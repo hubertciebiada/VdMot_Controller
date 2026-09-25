@@ -29,17 +29,24 @@
 *END************************************************************************/
 
 #include <Arduino.h>
+#include <string.h>
 #include "app.h"
 #include "hardware.h"
 #include "motor.h"
 #include "owDevices.h"
 #include "eeprom.h"
+#include "sysstat.h"
 #include "terminal.h"
 #include "vdm/failsafe.h"
+#include "vdm/fault_retry.h"
 #include "vdm/lease.h"
+#include "vdm/protection_guard.h"
 #include "vdm/settings.h"
 #include "vdm/target_rejection.h"
+#include "vdm/temp_refresh.h"
 #include "vdm/valve_codes.h"
+#include "vdm/valve_scheduler.h"
+#include "vdm/warm_state.h"
 
 static_assert(VALVE_NO_TARGET == vdm::kNoRejectedTarget, "one marker for no rejected target");
 static_assert(LEARN_AFTER_MOVEMENTS_DEFAULT == vdm::kLearnMovementsDefault, "one learn movements default");
@@ -54,11 +61,37 @@ static_assert(VLV_STATE_IDLE == vdm::kStIdle && VLV_STATE_OPENING == vdm::kStOpe
 volatile struct valve myvalves[ACTUATOR_COUNT];
 
 //unsigned char target_position_mirror[ACTUATOR_COUNT];
-unsigned int learning_time = LEARN_AFTER_TIME_DEFAULT;
+unsigned int learning_time = LEARN_AFTER_TIME_DEFAULT;       // stored learn time (stlnt, gtlnt)
 unsigned int learning_movements = LEARN_AFTER_MOVEMENTS_DEFAULT;
+static uint32_t learning_time_active = LEARN_AFTER_TIME_DEFAULT;   // the countdowns run with it (vdm::effectiveLearnTime)
 
 
 unsigned int reset_request = 0;
+
+// objects with member functions: only the main loop uses them (not members of the volatile structs)
+static vdm::Lease app_lease;
+static vdm::FaultRetry app_retry[ACTUATOR_COUNT];
+static vdm::ValveScheduler app_sched;
+static vdm::TempRefresh app_temp;
+static vdm::ProtectionGuard app_guard;
+static uint8_t app_failsafe[ACTUATOR_COUNT];      // active failsafe positions (sfspo, EEPROM block B)
+static uint8_t move_seen[ACTUATOR_COUNT];         // myvalvemots[].moveSeq handed to the scheduler
+static uint8_t trip_seen[ACTUATOR_COUNT];         // myvalvemots[].tripSeq handed to the protection guard
+
+// valve positions, lease and retry schedule across a warm reset: not cleared by the start-up code
+static vdm::WarmState warm_state __attribute__((noinit));
+
+
+static bool app_faulted (unsigned int valve) {
+  const byte status = myvalvemots[valve].status;
+  return status == VLV_STATE_FAILED || status == VLV_STATE_BLOCKS;
+}
+
+
+static vdm::Drive app_drive (unsigned int valve) {
+  return vdm::driveTarget(myvalvemots[valve].target_position, app_failsafe[valve], myvalvemots[valve].status,
+                          app_lease.state() == vdm::LeaseState::Expired, myvalves[valve].assemblyHold != 0);
+}
 
 
 // hands a calibration to the valve state machine
@@ -68,21 +101,18 @@ static void app_start_learn (unsigned int valve) {
   myvalvemots[valve].calibTime = CALIB_START_TICKS;
   myvalves[valve].forcedLearn = 0;
   myvalves[valve].timedLearn = 0;
+  myvalves[valve].retryLearn = 0;
+  myvalves[valve].earlyLearn = 0;
   myvalves[valve].svcHold = 0;
+  myvalves[valve].touched = 0;
   // the target the calibration positions to; a later different one is new (S04)
   myvalves[valve].rejectedTarget = myvalvemots[valve].target_position;
 }
 
 
-static bool app_faulted (unsigned int valve) {
-  const byte status = myvalvemots[valve].status;
-  return status == VLV_STATE_FAILED || status == VLV_STATE_BLOCKS;
-}
-
-
-// a failed or blocked valve is not driven: its position stays as it is and each new target is
-// reported as rejected (S04); a calibration (time trigger, staln) clears the fault.
-// Returns true for a target change that was counted.
+// a failed or blocked valve is not driven to its target: its position stays (a blocked valve goes to
+// its failsafe position) and each new target is reported as rejected (S04); a calibration (staln, the
+// automatic retry) clears the fault. Returns true for a target change that was counted.
 static bool app_reject_target (unsigned int valve) {
   uint8_t rejected = myvalves[valve].rejectedTarget;
   uint16_t count = myvalves[valve].cmdRejected;
@@ -94,18 +124,25 @@ static bool app_reject_target (unsigned int valve) {
 }
 
 
-// a calibration of the valve is requested and has not ended yet (staln, time or movement
-// trigger, a found valve after the start); status and calibration as read by the caller
+// a calibration of the valve is requested and has not ended yet (staln, time or movement trigger,
+// automatic retry, early stops, a found valve, a valve without valid counts); status and calibration
+// as read by the caller
 bool app_learn_pending (uint16_t valve, byte status, bool calibration) {
   if (valve >= ACTUATOR_COUNT) return false;
-  return calibration || myvalves[valve].forcedLearn || myvalves[valve].timedLearn
-    || status == VLV_STATE_PRESENT;
+  const bool pendingCal = !myvalvemots[valve].calibrated || myvalvemots[valve].recal;
+  return calibration || myvalves[valve].forcedLearn || myvalves[valve].timedLearn || myvalves[valve].retryLearn
+    || myvalves[valve].earlyLearn || status == VLV_STATE_PRESENT
+    || ((status == VLV_STATE_IDLE || status == VLV_STATE_FULLOPEN) && pendingCal);
 }
 
 
-// a target request (stgtp) ends the hold of a service move, also when the target did not change
+// a target request (stgtp) ends the hold of a service move and the assembly hold, also when the
+// target did not change, and makes a valve without a referenced position or calibration due
 void app_target_changed (uint16_t valve) {
-  if (valve < ACTUATOR_COUNT) myvalves[valve].svcHold = 0;
+  if (valve >= ACTUATOR_COUNT) return;
+  myvalves[valve].svcHold = 0;
+  myvalves[valve].assemblyHold = 0;
+  myvalves[valve].touched = 1;
 }
 
 
@@ -118,10 +155,10 @@ int16_t app_service_move (uint16_t valve, uint8_t dir, uint16_t counts, uint8_t 
   return appsetservice(valve, dir, counts, maxmA);
 }
 
-int16_t app_setup (void) { 
+int16_t app_setup (void) {
 
   // init valve data
-  for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {    
+  for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {
       myvalvemots[x].target_position = 50;
       myvalvemots[x].actual_position = 50;
       myvalvemots[x].status = VLV_STATE_UNKNOWN;
@@ -138,8 +175,14 @@ int16_t app_setup (void) {
       myvalves[x].svcHold = 0;
       myvalves[x].retestRequest = 0;
       myvalves[x].openRequest = 0;
+      myvalves[x].assemblyHold = 0;
+      myvalves[x].retryLearn = 0;
+      myvalves[x].earlyLearn = 0;
+      myvalves[x].calibRestored = 0;
+      myvalves[x].storedSeq = 0;
+      myvalves[x].touched = 0;
       // distribute learn timing equaly over valve slots
-      myvalves[x].learn_time = (unsigned int) (((long)LEARN_AFTER_TIME_DEFAULT * ((long)x+1)) / (long)ACTUATOR_COUNT);  
+      myvalves[x].learn_time = (unsigned int) (((long)LEARN_AFTER_TIME_DEFAULT * ((long)x+1)) / (long)ACTUATOR_COUNT);
   }
 
   app_load_config();
@@ -148,8 +191,9 @@ int16_t app_setup (void) {
 
 
 // takes the configuration from the EEPROM mirror (at start-up, and after the EEPROM could be read
-// again, see eeprom.cpp): sensor assignment, learn movements, motor parameters and escalation.
-// A stored value out of range loads its default, and the mirror is corrected.
+// again, see eeprom.cpp): sensor assignment, learn movements and time, motor parameters, escalation,
+// lease timeout and failsafe positions. A stored value out of range loads its default, and the
+// mirror is corrected.
 void app_load_config (void) {
   // match sensor address from eeprom with found sensors and set index/slot to valve struct
   app_match_sensors();
@@ -159,7 +203,7 @@ void app_load_config (void) {
   eep_content.numberOfMovements = movements;
   if (movements != learning_movements) app_set_learnmovements(movements);
   #ifdef appDebug
-    COMM_DBG.print("learning_movements: "); 
+    COMM_DBG.print("learning_movements: ");
     COMM_DBG.println(learning_movements, DEC);
   #endif
 
@@ -173,14 +217,43 @@ void app_load_config (void) {
   stored.maxRetries = eep_content.maxCalibRetries;
   motor_set_params(vdm::sanitizeMotorParams(stored));
   motor_set_escalation(vdm::sanitizeEscalation(eep_content.escalation));
+
+  // learn time (stlnt): the countdowns start again only when it changed
+  if (eep_content.learnTimeS != learning_time) app_set_learntime(eep_content.learnTimeS);
+
+  // lease timeout: block A or its copy in block B, else the default (app_restore takes the copy of
+  // a warm reset instead)
+  const uint16_t lease = eeprom_lease_source() == vdm::kLeaseSourceDefault
+    ? vdm::kLeaseTimeoutDefaultMin : vdm::sanitizeLeaseTimeout(eep_content.leaseTimeoutMin);
+  eep_content.leaseTimeoutMin = lease;
+  app_lease.setTimeout(lease);
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    app_failsafe[x] = vdm::sanitizeFailsafePct(eep_content.failsafePct[x]);
+    eep_content.failsafePct[x] = app_failsafe[x];
+  }
 }
 
 
-// requests of sdetvlv and staop change the status (and position) of a valve; they are applied here,
-// while no valve moves, because the end of a move writes status and position of its valve
+// requests of stdet, staop and the automatic retry change the status (and position) of a valve;
+// they are applied here, while no valve moves, because the end of a move writes status and position
+// of its valve
 static void app_apply_requests (void) {
   for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    // a valve with a short is not calibrated: each calibration request tests it again (W10)
+    if (myvalvemots[x].status == VLV_STATE_FAILED && myvalvemots[x].faultReason == (uint8_t) vdm::ValveFault::Short
+        && (myvalves[x].forcedLearn || myvalves[x].timedLearn || myvalves[x].retryLearn || myvalves[x].earlyLearn
+            || myvalvemots[x].calibration)) {
+      myvalves[x].forcedLearn = 0;
+      myvalves[x].timedLearn = 0;
+      myvalves[x].retryLearn = 0;
+      myvalves[x].earlyLearn = 0;
+      myvalvemots[x].calibration = false;
+      myvalvemots[x].calibState = calibIdle;
+      myvalves[x].retestRequest = RETEST_TEST;
+    }
     if (myvalves[x].retestRequest) {
+      // stdet: a replaced valve head must not use the old counts (W2)
+      if (myvalves[x].retestRequest == RETEST_DETECT) myvalvemots[x].recal = 1;
       myvalves[x].retestRequest = 0;
       myvalves[x].rejectedTarget = VALVE_NO_TARGET;
       myvalvemots[x].actual_position = 0;      // fake some position deviation
@@ -190,143 +263,162 @@ static void app_apply_requests (void) {
       myvalves[x].openRequest = 0;
       // a failed or blocked valve is not moved until a calibration clears the fault;
       // its new target 100 is counted as rejected (S04)
-      if (myvalvemots[x].status != VLV_STATE_FAILED && myvalvemots[x].status != VLV_STATE_BLOCKS)
-        myvalvemots[x].status = VLV_STATE_FULLOPEN;
+      if (!app_faulted(x)) myvalvemots[x].status = VLV_STATE_FULLOPEN;
     }
   }
 }
 
-int16_t app_loop (void) {
-  static byte firstchange = 0;
-  static unsigned int lastvalve = 0;
-  static unsigned int testvlvindex = 0;
 
+// results of the valve state machine: the end of a move for the end-stop latch, the calibration
+// record for the EEPROM, the early-stop request, the trips for the protection guard
+static void app_track_valves (void) {
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    volatile valvemotor &mot = myvalvemots[x];
+    if (mot.moveSeq != move_seen[x]) {
+      move_seen[x] = mot.moveSeq;
+      struct valve_snapshot snap;
+      valve_get_snapshot(x, snap);
+      app_sched.moveEnded(x, (vdm::StopReason) snap.diag.last.stopReason, snap.diag.lastEarly, snap.status);
+    }
+    if (mot.calibSeq != myvalves[x].storedSeq) {
+      myvalves[x].storedSeq = mot.calibSeq;
+      vdm::CalibRecord rec;
+      rec.openingCount = (uint16_t) mot.opening_count;
+      rec.closingCount = (uint16_t) mot.closing_count;
+      rec.meanCurrent = (uint16_t) mot.meancurrent;
+      rec.flags = (uint8_t) ((mot.calibrated ? vdm::kCalibValid : 0) | (mot.calibFailed ? vdm::kCalibFailed : 0));
+      eeprom_store_calib(x, rec);
+      myvalves[x].calibRestored = 0;
+      if (!mot.calibFailed) app_sched.clearLatch(x);
+    }
+    if (mot.earlyLearnDue) {
+      mot.earlyLearnDue = 0;
+      if (!app_faulted(x)) myvalves[x].earlyLearn = 1;
+    }
+    if (mot.tripSeq != trip_seen[x]) {
+      trip_seen[x] = mot.tripSeq;
+      app_guard.onTrip(x, sysstat_uptime_s());
+    }
+  }
+
+  // short or inrush trips on several valves: the limits are off until the next start, the valves
+  // they failed are tested again
+  if (app_guard.suspended() && !protect_suspended) {
+    protect_suspended = true;
+    for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+      const uint8_t fault = myvalvemots[x].faultReason;
+      if (myvalvemots[x].status == VLV_STATE_FAILED
+          && (fault == (uint8_t) vdm::ValveFault::Short || fault == (uint8_t) vdm::ValveFault::InrushTrip)) {
+        myvalvemots[x].status = VLV_STATE_UNKNOWN;
+        myvalves[x].rejectedTarget = VALVE_NO_TARGET;
+      }
+    }
+  }
+}
+
+
+static vdm::ValveView app_view (unsigned int x) {
+  vdm::ValveView v;
+  const vdm::Drive drive = app_drive(x);
+  v.status = myvalvemots[x].status;
+  v.actual = myvalvemots[x].actual_position;
+  v.target = myvalvemots[x].target_position;
+  v.drive = drive.position;
+  v.blockedFailsafe = drive.source == vdm::DriveSource::BlockedFailsafe;
+  v.leaseForced = drive.source == vdm::DriveSource::LeaseFailsafe;
+  v.calibFlag = myvalvemots[x].calibration && myvalvemots[x].calibState == calibStarted;
+  v.forcedLearn = myvalves[x].forcedLearn != 0;
+  v.timedLearn = myvalves[x].timedLearn != 0;
+  v.retryLearn = myvalves[x].retryLearn != 0;
+  v.earlyLearn = myvalves[x].earlyLearn != 0;
+  v.calibrated = myvalvemots[x].calibrated != 0;
+  v.recal = myvalvemots[x].recal != 0;
+  v.needsReference = myvalvemots[x].needsReference != 0;
+  v.svcHold = myvalves[x].svcHold != 0;
+  v.touched = myvalves[x].touched != 0;
+  return v;
+}
+
+
+// hands the decision of the scheduler to the valve state machine
+static void app_apply (const vdm::Decision &d) {
+  const unsigned int x = d.valve;
+  char cmd = CMD_A_OPEN;
+  switch (d.kind) {
+    case vdm::ActionKind::Test:
+      #ifdef appDebug
+        COMM_DBG.print("App: valve "); COMM_DBG.print(x, 10);
+        COMM_DBG.println(" unknown, try to find out...");
+      #endif
+      if (appsetaction(CMD_A_TEST, x, 0) == 0) myvalves[x].rejectedTarget = myvalvemots[x].target_position;
+      return;
+    case vdm::ActionKind::Learn:
+      #ifdef appDebug
+        COMM_DBG.print("App: learning started for valve ");
+        COMM_DBG.println(x, 10);
+      #endif
+      app_start_learn(x);
+      return;
+    case vdm::ActionKind::MarkPresent:
+      // a learn request (staln, time or movement trigger, retry, early stops) marks its valve PRESENT
+      // here, while no valve moves; the next pass starts the calibration
+      myvalvemots[x].status = VLV_STATE_PRESENT;
+      return;
+    case vdm::ActionKind::OpenEnd:
+      cmd = CMD_A_OPEN_END;
+      break;
+    case vdm::ActionKind::CloseEnd:
+      cmd = CMD_A_CLOSE_END;
+      break;
+    case vdm::ActionKind::Close:
+      cmd = CMD_A_CLOSE;
+      break;
+    case vdm::ActionKind::Open:
+      break;
+    default:
+      return;
+  }
+  const uint8_t flags = (uint8_t) ((d.keepStatus ? MOVE_KEEP_STATUS : 0) | (d.reference ? MOVE_REFERENCE : 0));
+  if (appsetaction(cmd, x, d.delta, false, flags) != 0) return;
+  // the target of this move (a failed or blocked end counts later changes, S04)
+  myvalves[x].rejectedTarget = myvalvemots[x].target_position;
+  myvalves[x].touched = 0;
+}
+
+
+int16_t app_loop (void) {
   reset_check();
 
   // a motor output switched on from the debug terminal: no command for the valve state machine
   if (terminal_manual_active()) return 0;
 
-    // if valve machine is idle search for new tasks; no valve moves until the next command,
-    // so the status and position of every valve may be changed here
-    if(valve_idle()) 
-    {
-        app_apply_requests();
+  // a due temperature cycle pauses a calibration series between two strokes (S1)
+  temp_refresh_request = app_temp.due(millis());
 
-        // find unknown states and try to find out whats on with the valve        
-        if(myvalvemots[testvlvindex].status == VLV_STATE_UNKNOWN) 
-        {
-          #ifdef appDebug
-            COMM_DBG.print("App: valve "); COMM_DBG.print(testvlvindex, 10);
-            COMM_DBG.println(" unknown, try to find out...");
-          #endif
-          if (appsetaction(CMD_A_TEST,testvlvindex,0) == 0)
-            myvalves[testvlvindex].rejectedTarget = myvalvemots[testvlvindex].target_position;
-        }
-        
-        else
-        {        
-          // fully open valves if needed
-          if(myvalvemots[lastvalve].status == VLV_STATE_FULLOPEN) {
-            if (appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0) == 0) myvalves[lastvalve].rejectedTarget = myvalvemots[lastvalve].target_position;
-          }
+  // if valve machine is idle search for new tasks; no valve moves until the next command,
+  // so the status and position of every valve may be changed here
+  if (!valve_idle()) return 0;
 
-          // learn all present valves if any target change happened before
-          // this keeps controller calm right after startup, otherwise controller would be busy for up to 12 valve learning times (10 min ?!)
-          // an explicit learn request (staln) does not wait for a target change (S08), nor does the movement
-          // trigger: it is due after a number of moves, not only once the next target arrives
-          else if((firstchange > 0 || myvalves[lastvalve].forcedLearn
-                   || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
-                  && myvalvemots[lastvalve].status == VLV_STATE_PRESENT)  {
-            #ifdef appDebug
-              COMM_DBG.print("App 1: learning started for valve "); 
-              COMM_DBG.println(lastvalve, 10);
-            #endif
-            app_start_learn(lastvalve);
-          }
+  app_track_valves();
+  app_apply_requests();
 
-          // a learn request (staln, time or movement trigger) marks its valve PRESENT here, while no
-          // valve moves; this also renews a request whose PRESENT a move of the valve overwrote (the
-          // move ended with its own status). Without it the time trigger would wait another
-          // learning_time and a movement trigger would never start (its calibration flag stays set)
-          else if ((myvalves[lastvalve].forcedLearn || myvalves[lastvalve].timedLearn
-                    || (myvalvemots[lastvalve].calibration && myvalvemots[lastvalve].calibState == calibStarted))
-                   && myvalvemots[lastvalve].status != VLV_STATE_UNKNOWN
-                   && myvalvemots[lastvalve].status != VLV_STATE_PRESENT) {
-            myvalvemots[lastvalve].status = VLV_STATE_PRESENT;
-          }
+  vdm::ValveView views[ACTUATOR_COUNT];
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    // a counted rejected target is a target change for the calibrations of the found valves
+    if (app_faulted(x) && app_reject_target(x)) app_sched.noteChange();
+    views[x] = app_view(x);
+  }
 
-          // handle first found difference then break
-          // (a valve moved by svmov is left where it is until the next target request or the hold time is over)
-          else if (myvalves[lastvalve].svcHold == 0 && myvalvemots[lastvalve].actual_position != myvalvemots[lastvalve].target_position)
-          {
-              #ifdef appDebug
-                COMM_DBG.print("App: target pos changed for valve "); 
-                COMM_DBG.print(lastvalve, 10);
-                COMM_DBG.print(" target = ");
-                COMM_DBG.println(myvalvemots[lastvalve].target_position, 10);
-              #endif
-
-              const bool faulted = app_faulted(lastvalve);
-
-              // a target change; not the target a failed or blocked valve kept from its fault (S04)
-              if (!faulted) firstchange = 1;
-                    
-              // check if valve was learned before              
-              if(myvalvemots[lastvalve].status == VLV_STATE_PRESENT)             
-              {
-                #ifdef appDebug
-                  COMM_DBG.print("App 2: learning started for valve "); 
-                  COMM_DBG.println(lastvalve, 10);
-                #endif
-                app_start_learn(lastvalve);
-              }
-              else if (!faulted)
-              {
-                // the target of this move (a failed or blocked end counts later changes, S04)
-                myvalves[lastvalve].rejectedTarget = myvalvemots[lastvalve].target_position;
-                // should valve be opened
-                if(myvalvemots[lastvalve].target_position > myvalvemots[lastvalve].actual_position) {                  
-                  if(myvalvemots[lastvalve].target_position == 100) appsetaction(CMD_A_OPEN_END,lastvalve,(byte)0);
-                  else appsetaction(CMD_A_OPEN,lastvalve,myvalvemots[lastvalve].target_position-myvalvemots[lastvalve].actual_position);
-                }
-                // valve should be closed
-                else {
-                  if(myvalvemots[lastvalve].target_position == 0) appsetaction(CMD_A_CLOSE_END,lastvalve,(byte)0);
-                  else appsetaction(CMD_A_CLOSE,lastvalve,myvalvemots[lastvalve].actual_position-myvalvemots[lastvalve].target_position);
-                }
-              }
-              else if (app_reject_target(lastvalve)) firstchange = 1;
-          }
-
-          // a failed or blocked valve at its target: nothing is rejected, and a later different
-          // target counts even if it is the one the fault left behind (S04)
-          else if (app_faulted(lastvalve) && myvalvemots[lastvalve].actual_position == myvalvemots[lastvalve].target_position) {
-            app_reject_target(lastvalve);
-          }
-
-          lastvalve++;
-          if (lastvalve>=ACTUATOR_COUNT) lastvalve = 0;
-        }
-
-        testvlvindex += 2;
-        // vary startindexes to always get the even and the odd valves in one flow
-        // helps reducing relay rattle (only C1 revision)
-        if (testvlvindex == ACTUATOR_COUNT) testvlvindex = 1;
-        else if (testvlvindex >= ACTUATOR_COUNT + 1) testvlvindex = 0;
-
-    }
-
-return 0;
+  vdm::SchedulerInputs in;
+  in.safeMode = sysstat_safe_mode();
+  in.holdForTemperature = app_temp.holdCommands(millis());
+  app_apply(app_sched.next(views, in));
+  return 0;
 }
 
 
-
-
-
-// elapsedS is not used yet: the countdowns still take 10 s per call
 byte app_10s_loop (uint32_t elapsedS) {
 
-  (void) elapsedS;
   unsigned int x = 0;
 
   for (x=0; x< ACTUATOR_COUNT; x++) {
@@ -348,47 +440,45 @@ byte app_10s_loop (uint32_t elapsedS) {
     }
   }
 
-  // walk through valves and evaluate learning values
-
-  // learning times
-  if (learning_time > 0) {
-    for (x=0; x< ACTUATOR_COUNT; x++) { 
-      if(myvalves[x].learn_time <= 10) {
-        myvalves[x].learn_time = learning_time;
-        // a calibration of the valve that runs now (or was just handed over) satisfies the trigger
-        if (myvalvemots[x].calibActive || myvalvemots[x].calibState == calibInProgress) continue;
-        // app_loop marks the valve PRESENT while no valve moves, the next target change starts the calibration
-        myvalves[x].timedLearn = 1;
-        #ifdef appDebug
-          COMM_DBG.print("App: Valve "); 
-          COMM_DBG.print(x, 10); 
-          COMM_DBG.println(" will be learned soon");
-        #endif
-      }
-      else myvalves[x].learn_time -= 10;    
+  // learning times, counted in real elapsed seconds (S3)
+  if (learning_time_active > 0) {
+    for (x=0; x< ACTUATOR_COUNT; x++) {
+      uint32_t rest = myvalves[x].learn_time;
+      const bool due = vdm::countdown(rest, elapsedS);
+      myvalves[x].learn_time = due ? learning_time_active : rest;
+      if (!due) continue;
+      // a calibration of the valve that runs now (or was just handed over) satisfies the trigger;
+      // a failed or blocked valve is calibrated by staln and its automatic retry only
+      if (myvalvemots[x].calibActive || myvalvemots[x].calibState == calibInProgress || app_faulted(x)) continue;
+      // app_loop marks the valve PRESENT while no valve moves, the next target change starts the calibration
+      myvalves[x].timedLearn = 1;
+      #ifdef appDebug
+        COMM_DBG.print("App: Valve ");
+        COMM_DBG.print(x, 10);
+        COMM_DBG.println(" will be learned soon");
+      #endif
     }
   }
 
   // learning movements
-  if (learning_movements > 0) { 
+  if (learning_movements > 0) {
     for (x=0; x< ACTUATOR_COUNT; x++) {
-      if (myvalvemots[x].connected) {
+      if (myvalvemots[x].connected && !app_faulted(x)) {
         if((myvalves[x].learn_movements == 0) && (myvalvemots[x].calibState == calibIdle)) {
           myvalvemots[x].calibration=true;
           myvalvemots[x].calibTime=10;
           myvalvemots[x].calibState = calibStarted;
-          //myvalvemots[x].actual_position=0;
           myvalves[x].movements = 0;
           myvalves[x].learn_movements = learning_movements;
           // app_loop marks the valve PRESENT while no valve moves and starts the calibration
           #ifdef appDebug
-            COMM_DBG.print("App: Valve "); 
-            COMM_DBG.print(x, 10); 
+            COMM_DBG.print("App: Valve ");
+            COMM_DBG.print(x, 10);
             COMM_DBG.println(" will be learned soon");
           #endif
-        }   
+        }
       }
-    } 
+    }
   }
 
 return 0;
@@ -401,9 +491,9 @@ int16_t app_set_learnmovements(uint16_t movements) {
 
   // update reload value
   learning_movements = movements;
-    
-  // update all valve memories 
-  for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {          
+
+  // update all valve memories
+  for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {
     myvalves[x].learn_movements = learning_movements;
     myvalves[x].movements = 0;
   }
@@ -413,32 +503,32 @@ int16_t app_set_learnmovements(uint16_t movements) {
 }
 
 
-// sets learning time
-// after time seconds a learning cycle will be executed
-int16_t app_set_learntime(uint32_t time) {
- 
-  // update reload value
-  learning_time = time;
-    
-  // update all valve memories 
-  for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {          
-    // distribute learn timing equaly over valve slots
-    // 64 bit product, learning_time * (x+1) can exceed 32 bit
-    myvalves[x].learn_time = (unsigned int) (((uint64_t)learning_time * (x+1)) / ACTUATOR_COUNT);
+// the countdowns start again with the learn time, spread equally over the valve slots
+static void app_learn_reload (uint32_t time) {
+  learning_time_active = time;
+  for (unsigned int x = 0;x<ACTUATOR_COUNT;x++) {
+    // 64 bit product, time * (x+1) can exceed 32 bit
+    myvalves[x].learn_time = (unsigned int) (((uint64_t)time * (x+1)) / ACTUATOR_COUNT);
   }
-
-  return 0;
-
 }
 
 
-// sets learning of valve 
+// sets learning time (stlnt, EEPROM)
+// after time seconds a learning cycle will be executed; 0 is the ESP's own schedule, honoured while
+// a lease client is present (vdm::effectiveLearnTime)
+int16_t app_set_learntime(uint32_t time) {
+  learning_time = time;
+  app_learn_reload(vdm::effectiveLearnTime(time, app_lease.clientSeenWithin(vdm::kLearnTimeClientWindowS)));
+  return 0;
+}
+
+
+// sets learning of valve
 // a learning cycle for valve will be executed
 // if valve = 255, all valves will be learned
 int16_t app_set_valvelearning(uint16_t valve) {
 
   if(valve < ACTUATOR_COUNT) {
-   // myvalvemots[valve].actual_position = 0;     // fake some position deviation
     // app_loop marks the valve PRESENT while no valve moves and starts the calibration
     myvalves[valve].forcedLearn = 1;
     myvalves[valve].svcHold = 0;
@@ -453,7 +543,6 @@ int16_t app_set_valvelearning(uint16_t valve) {
     // update all valves
     for(uint8_t xx=0;xx<ACTUATOR_COUNT;xx++){
       if (myvalvemots[xx].connected) {
-        //myvalvemots[xx].actual_position = 0;      // fake some position deviation
         myvalves[xx].forcedLearn = 1;
         myvalves[xx].svcHold = 0;
         myvalvemots[xx].calibration = true;
@@ -470,13 +559,12 @@ int16_t app_set_valvelearning(uint16_t valve) {
 }
 
 
-// scan valves 
-// a learning cycle for valve will be executed
-void app_scan_valves() 
+// scan valves (stdet 255)
+// every valve is tested again; a valve found present calibrates fully (app_apply_requests)
+void app_scan_valves()
 {
-    // scan all valves; app_loop resets status and position while no valve moves
     for(unsigned int xx=0;xx<ACTUATOR_COUNT;xx++){
-      myvalves[xx].retestRequest = 1;
+      myvalves[xx].retestRequest = RETEST_DETECT;
       myvalves[xx].svcHold = 0;
     }
 }
@@ -484,7 +572,8 @@ void app_scan_valves()
 
 // sets valve full open
 // valve will be opened fully (app_loop sets FULLOPEN while no valve moves; a failed or blocked
-// valve only gets the target and stays where it is until a calibration)
+// valve only gets the target and stays where it is until a calibration); the assembly hold keeps
+// the lease failsafe away from the valve until its next stgtp
 // if valve = 255, all valves will be opened fully
 int16_t app_set_valveopen(uint16_t valve) {
 
@@ -492,6 +581,7 @@ int16_t app_set_valveopen(uint16_t valve) {
     myvalvemots[valve].target_position = 100;
     myvalves[valve].openRequest = 1;
     myvalves[valve].svcHold = 0;
+    myvalves[valve].assemblyHold = 1;
     return 0;
   }
   else if (valve == 255) {
@@ -500,6 +590,7 @@ int16_t app_set_valveopen(uint16_t valve) {
       myvalvemots[xx].target_position = 100;
       myvalves[xx].openRequest = 1;
       myvalves[xx].svcHold = 0;
+      myvalves[xx].assemblyHold = 1;
     }
     return 0;
   }
@@ -528,11 +619,11 @@ int16_t app_match_sensors() {
        myvalves[i].sensorindex1 = VALVE_SENSOR_UNKNOWN;
        myvalves[i].sensorindex2 = VALVE_SENSOR_UNKNOWN;
   }
- 
+
   #ifdef appDebug
     COMM_DBG.println("Read 1-wire sensor addresses from eeprom");
   #endif
-    
+
   for (unsigned int owsensorindex=0; owsensorindex<count; owsensorindex++)
   {
       const uint8_t *currAddress = tempsensors[owsensorindex].address;
@@ -553,7 +644,7 @@ int16_t app_match_sensors() {
         }
         // second sensor of valve
         if (app_sensor_matches(eep_content.owsensors2[valveindex], currAddress)) {
-            #ifdef appDebug     
+            #ifdef appDebug
               COMM_DBG.print(" found as 2nd sensor at valve: ");
               COMM_DBG.println(valveindex, DEC);
             #endif
@@ -561,7 +652,7 @@ int16_t app_match_sensors() {
             found = true;
         }
       }
-    
+
       if(!found) {
         #ifdef appDebug
           COMM_DBG.println(" not found");
@@ -596,79 +687,214 @@ void reset_check () {
 }
 
 
-// protocol 3: not implemented yet. The functions keep today's behaviour: no lease (the targets
-// never expire), no failsafe position (hold), nothing kept across a reset, nothing to stop.
-
+// every second: the lease, the learn time without a lease client (C-7), the automatic retries (K2)
 void app_1s_tick (uint32_t elapsedS) {
-  (void) elapsedS;
+  app_lease.advance(elapsedS);
+
+  const uint32_t active = vdm::effectiveLearnTime(learning_time, app_lease.clientSeenWithin(vdm::kLearnTimeClientWindowS));
+  if (active != learning_time_active) app_learn_reload(active);
+
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    // a calibration or presence test of the valve is requested or runs: no retry is counted down
+    const bool busy = myvalves[x].retestRequest || myvalves[x].forcedLearn || myvalves[x].retryLearn
+      || myvalvemots[x].calibration || myvalvemots[x].calibActive || myvalvemots[x].calibState == calibInProgress
+      || myvalvemots[x].status == VLV_STATE_UNKNOWN || myvalvemots[x].status == VLV_STATE_PRESENT;
+    if (app_retry[x].update(app_faulted(x), busy, elapsedS)) {
+      // a short is tested again, anything else calibrates (without waiting for a target change)
+      if (myvalvemots[x].faultReason == (uint8_t) vdm::ValveFault::Short) myvalves[x].retestRequest = RETEST_TEST;
+      else myvalves[x].retryLearn = 1;
+    }
+  }
 }
 
 
+// start-up, after valve_setup() and before the valve timer runs: the calibration records of the
+// EEPROM, and after a warm reset the positions, the lease and the retry schedule (W2)
 void app_restore (void) {
+  vdm::WarmState kept;
+  memcpy(&kept, (const void *) &warm_state, sizeof kept);
+  const bool warm = vdm::isWarmBoot(sysstat_boot_reason()) && vdm::warmStateValid(kept);
+
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    const vdm::CalibRecord &rec = eep_content.calib[x];
+    if (rec.flags & vdm::kCalibValid) {
+      myvalvemots[x].opening_count = rec.openingCount;
+      myvalvemots[x].closing_count = rec.closingCount;
+      myvalvemots[x].deadzone_count = (int) rec.closingCount - (int) rec.openingCount;
+      myvalvemots[x].scaler = rec.openingCount / 100;
+      myvalvemots[x].meancurrent = rec.meanCurrent;
+      myvalvemots[x].calibrated = 1;
+      myvalves[x].calibRestored = 1;
+    }
+    // the last calibration ended blocked: the counts are not trusted, a full calibration follows
+    if (rec.flags & vdm::kCalibFailed) myvalvemots[x].recal = 1;
+    myvalves[x].storedSeq = myvalvemots[x].calibSeq;
+
+    if (!warm) continue;
+    const vdm::WarmValve &w = kept.valves[x];
+    const vdm::RestoredValve r = vdm::restoreValve(w, myvalvemots[x].calibrated != 0);
+    // a record that does not pass its checks: this valve starts cold (presence test)
+    if (!r.valid) continue;
+    myvalvemots[x].status = r.status;
+    myvalvemots[x].actual_position = r.actual;
+    myvalvemots[x].target_position = r.target;
+    myvalvemots[x].needsReference = r.needsReference;
+    if (r.recal) myvalvemots[x].recal = 1;
+    myvalvemots[x].connected = r.status != VLV_STATE_UNKNOWN && r.status != VLV_STATE_OPENCIR;
+    myvalves[x].assemblyHold = r.assemblyHold;
+    myvalves[x].rejectedTarget = r.target;
+    vdm::FaultRetry::Snapshot retry;
+    retry.attempts = w.retryAttempts;
+    retry.scheduled = w.retryScheduled != 0;
+    retry.remainingS = w.retryRemainingS;
+    app_retry[x].restore(retry);
+  }
+
+  if (!warm) return;
+  // lease timeout and failsafe positions the EEPROM could not supply: the copies of the last run
+  if (eeprom_lease_source() == vdm::kLeaseSourceDefault)
+    app_lease.setTimeout(vdm::sanitizeLeaseTimeout(kept.leaseTimeoutMin));
+  if (eeprom_cfg_flags() & (vdm::kCfgSafetyCorrupt | vdm::kCfgReadFailed)) {
+    for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) app_failsafe[x] = vdm::sanitizeFailsafePct(kept.failsafePct[x]);
+  }
+  vdm::Lease::Snapshot lease;
+  lease.sinceRenewalS = kept.leaseSinceRenewalS;
+  lease.sinceClientS = kept.leaseSinceClientS;
+  lease.client = kept.leaseClient != 0;
+  app_lease.restore(lease);
 }
 
 
+// main loop, 10 ms branch: the record app_restore() reads after a warm reset, written in every pass
 void app_warm_save (void) {
+  vdm::WarmState ws;
+  memset(&ws, 0, sizeof ws);
+  // a move or calibration in work: the position of its valve is not valid
+  const int busy = valve_busy_index();
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    vdm::WarmValve &w = ws.valves[x];
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    w.actual = myvalvemots[x].actual_position;
+    w.target = myvalvemots[x].target_position;
+    w.status = myvalvemots[x].status;
+    w.flags = (uint8_t) ((busy == (int) x ? 0 : vdm::kWarmPosValid)
+      | (myvalves[x].assemblyHold ? vdm::kWarmAssemblyHold : 0)
+      | (myvalvemots[x].needsReference ? vdm::kWarmNeedsReference : 0)
+      | (myvalvemots[x].recal ? vdm::kWarmRecal : 0));
+    __set_PRIMASK(primask);
+    const vdm::FaultRetry::Snapshot retry = app_retry[x].snapshot();
+    w.retryAttempts = retry.attempts;
+    w.retryScheduled = retry.scheduled ? 1 : 0;
+    w.retryRemainingS = retry.remainingS;
+    ws.failsafePct[x] = app_failsafe[x];
+  }
+  const vdm::Lease::Snapshot lease = app_lease.snapshot();
+  ws.leaseSinceRenewalS = lease.sinceRenewalS;
+  ws.leaseSinceClientS = lease.sinceClientS;
+  ws.leaseClient = lease.client ? 1 : 0;
+  ws.leaseTimeoutMin = app_lease.timeout();
+  vdm::warmStateSeal(ws);
+  memcpy((void *) &warm_state, &ws, sizeof ws);
+}
+
+
+// called by appsetaction()/appsetservice() with interrupts disabled, in the step that hands the
+// command over: a reset from here on must not trust the kept position of the valve
+void app_warm_moving (unsigned int valve) {
+  if (valve >= ACTUATOR_COUNT || !vdm::warmStateValid(warm_state)) return;
+  warm_state.valves[valve].flags &= (uint8_t) ~vdm::kWarmPosValid;
+  vdm::warmStateSeal(warm_state);
 }
 
 
 void app_lease_poll (void) {
+  app_lease.valvePoll();
 }
 
 
 void app_lease_command (void) {
+  app_lease.leaseCommand();
 }
 
 
 void app_lease_heartbeat (bool alive) {
-  (void) alive;
+  app_lease.heartbeat(alive);
 }
 
 
 void app_lease_configure (uint16_t minutes) {
-  (void) minutes;
+  app_lease.setTimeout(minutes);
 }
 
 
 uint8_t app_lease_state (void) {
-  return (uint8_t) vdm::LeaseState::Off;
+  return (uint8_t) app_lease.state();
 }
 
 
 uint32_t app_lease_remaining_s (void) {
-  return 0;
+  return app_lease.remainingS();
 }
 
 
 bool app_lease_client (void) {
-  return false;
+  return app_lease.clientPresent();
 }
 
 
 uint16_t app_lease_timeout (void) {
-  return vdm::kLeaseTimeoutOff;
+  return app_lease.timeout();
 }
 
 
 uint16_t app_failsafe_mask (void) {
-  return 0;
+  uint16_t mask = 0;
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    if (app_drive(x).source == vdm::DriveSource::LeaseFailsafe) mask = (uint16_t) (mask | (1u << x));
+  }
+  return mask;
 }
 
 
 void app_set_failsafe (uint16_t valve, uint8_t pct) {
-  (void) valve;
-  (void) pct;
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    if (valve == 255 || valve == x) app_failsafe[x] = pct;
+  }
 }
 
 
 uint8_t app_failsafe_pct (uint16_t valve) {
-  (void) valve;
-  return vdm::kFailsafeHold;
+  return valve < ACTUATOR_COUNT ? app_failsafe[valve] : vdm::kFailsafeHold;
 }
 
 
+// sstop: stops what runs for the valve (255: whatever runs), cancels the requested calibrations and
+// leaves the stopped valve where it is (service hold)
 int16_t app_stop (uint16_t valve) {
-  return (valve < ACTUATOR_COUNT || valve == 255) ? 0 : -1;
+  if (valve >= ACTUATOR_COUNT && valve != 255) return -1;
+  const int16_t stopped = appstop(valve);
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
+    if (valve != 255 && valve != x) continue;
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    myvalves[x].forcedLearn = 0;
+    myvalves[x].timedLearn = 0;
+    myvalves[x].retryLearn = 0;
+    myvalves[x].earlyLearn = 0;
+    // a running calibration ends through the stop (learn_abort)
+    if (!myvalvemots[x].calibActive) {
+      myvalvemots[x].calibration = false;
+      myvalvemots[x].calibState = calibIdle;
+    }
+    // PRESENT from such a request; a valve that needs its first calibration stays pending
+    if (myvalvemots[x].status == VLV_STATE_PRESENT && myvalvemots[x].calibrated && !myvalvemots[x].recal)
+      myvalvemots[x].status = VLV_STATE_IDLE;
+    __set_PRIMASK(primask);
+  }
+  if (valve != 255) myvalves[valve].svcHold = SVMOV_HOLD_10S;
+  else if (stopped >= 0) myvalves[stopped].svcHold = SVMOV_HOLD_10S;
+  return 0;
 }
 
 
@@ -678,24 +904,44 @@ uint32_t app_get_learntime (void) {
 
 
 void app_temp_cycle_done (void) {
+  app_temp.cycleDone(millis());
 }
 
 
 uint32_t app_temp_age_s (void) {
-  return 0;
+  return app_temp.ageS(millis());
 }
 
 
 bool app_protect_suspended (void) {
-  return false;
+  return app_guard.suspended();
 }
 
 
 void app_get_valve_v3 (uint16_t valve, struct valve_v3_info &out) {
-  out.flags = 0;
-  out.fault = (uint8_t) vdm::ValveFault::None;
-  out.fsPct = vdm::kFailsafeHold;
-  out.drive = valve < ACTUATOR_COUNT ? myvalvemots[valve].target_position : 0;
-  out.retryS = 0;
-  out.retries = 0;
+  if (valve >= ACTUATOR_COUNT) {
+    out = valve_v3_info();
+    out.fsPct = vdm::kFailsafeHold;
+    return;
+  }
+  struct valve_snapshot snap;
+  valve_get_snapshot(valve, snap);
+  const vdm::Drive drive = app_drive(valve);
+  uint16_t flags = 0;
+  if (drive.source == vdm::DriveSource::LeaseFailsafe) flags |= vdm::kVlvFlagFsLease;
+  if (drive.source == vdm::DriveSource::BlockedFailsafe) flags |= vdm::kVlvFlagFsBlocked;
+  if (!myvalvemots[valve].calibrated) flags |= vdm::kVlvFlagUncalibrated;
+  if (myvalvemots[valve].needsReference) flags |= vdm::kVlvFlagNeedsRef;
+  if (myvalvemots[valve].recal) flags |= vdm::kVlvFlagRecal;
+  if (myvalves[valve].calibRestored) flags |= vdm::kVlvFlagCalRestored;
+  if (app_retry[valve].scheduled()) flags |= vdm::kVlvFlagRetry;
+  if (snap.diag.earlyRun.count() == 1) flags |= vdm::kVlvFlagEarlyPending;
+  if (myvalves[valve].assemblyHold) flags |= vdm::kVlvFlagAssembly;
+  if (myvalves[valve].svcHold) flags |= vdm::kVlvFlagSvcHold;
+  out.flags = flags;
+  out.fault = myvalvemots[valve].faultReason;
+  out.fsPct = app_failsafe[valve];
+  out.drive = drive.position;
+  out.retryS = app_retry[valve].remainingS();
+  out.retries = app_retry[valve].attempts();
 }
