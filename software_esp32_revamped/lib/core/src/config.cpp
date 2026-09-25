@@ -1,5 +1,6 @@
 #include "vdm/config.h"
 
+#include <algorithm>
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -235,12 +236,13 @@ constexpr Field kRootTail[] = {
     boolField("persistLog", offsetof(Config, persistLog)),
 };
 
-// String fields: max < cap (room for the NUL), cap within setField's scratch
-// buffer, and shorter than what the patch reader keeps (so a cut string is
-// still too long). Checked at compile time for every table.
+// String fields: max < cap (room for the NUL), cap within the scratch buffers
+// (sized like the largest field, web.allowedHosts), and shorter than what the
+// patch reader keeps (so a cut string is still too long). Checked at compile
+// time for every table.
 constexpr bool fits(const Field& f) {  // NOMUTATE: compile-time check
   return (f.kind != Kind::Str && f.kind != Kind::Secret) ||  // NOMUTATE: compile-time check
-         (f.max < f.cap && f.cap <= kAllowedHostsMax + 1 &&   // NOMUTATE: compile-time check
+         (f.max < f.cap && f.cap <= sizeof(WebConfig::allowedHosts) &&  // NOMUTATE: compile-time check
           static_cast<size_t>(f.max) < kPatchStrMax);           // NOMUTATE: compile-time check
 }
 template <size_t N>
@@ -363,7 +365,7 @@ bool hostListValid(const char* s, size_t len) {
     size_t b = pos, e = end;
     while (s[b] == ' ') ++b;  // s[end] is ',' or the NUL
     while (e > b && s[e - 1] == ' ') --e;
-    char host[kAllowedHostsMax + 1];  // NOMUTATE: a larger buffer is equivalent
+    char host[sizeof(WebConfig::allowedHosts)];
     memcpy(host, s + b, e - b);
     host[e - b] = '\0';
     if (++entries > 4 || !isHostName(host, kHostMax)) return false;
@@ -379,13 +381,10 @@ bool isIdChar(char c) {
          c == '-';
 }
 
-// '/' only between two non-empty parts.
+// '/' only between two non-empty parts (`s` ends with a NUL after len).
 bool slashesInside(const char* s, size_t len) {
   if (len > 0 && (s[0] == '/' || s[len - 1] == '/')) return false;
-  for (size_t i = 1; i < len; ++i) {
-    if (s[i] == '/' && s[i - 1] == '/') return false;
-  }
-  return true;
+  return strstr(s, "//") == nullptr;
 }
 
 // `s` holds exactly `len` chars, none of them NUL, followed by a NUL.
@@ -481,6 +480,7 @@ bool fieldValid(const Field& f, const uint8_t* p) {
 // Writes "<group>[.<n>].<field>" (n 1-based) into a caller buffer.
 class PathOut {
  public:
+  PathOut() : out_(nullptr), cap_(0) {}  // no path wanted
   PathOut(char* out, size_t cap) : out_(out), cap_(out ? cap : 0) {
     if (cap_) out_[0] = '\0';
   }
@@ -540,38 +540,43 @@ bool failAt(PathOut& po, const Group& g, const char* field) {
 }
 
 // An item that clashes with an earlier one: its topic override, else its name.
-bool failItem(PathOut& po, const Group& g, int i, const char* topic) {
-  return failAt(po, g, static_cast<uint8_t>(i), topic[0] != '\0' ? "topic" : "name");
+bool failItem(PathOut& po, const Group& g, uint8_t i, const char* topic) {
+  return failAt(po, g, i, topic[0] != '\0' ? "topic" : "name");
 }
 
-// MQTT segment (or with `haId` its buildHaId()) of item i into `out`
-// (kItemNameMax + 1 bytes); false for a temp or volt slot that is not
-// active (validateConfig has already made sure active slots have an id).
-bool itemKey(const Config& c, ItemKind kind, uint8_t i, bool haId, char* out) {
+// An item's MQTT segment or HA id (never longer than the segment).
+using ItemKey = char[sizeof(ValveConfig::name)];
+
+// MQTT segment (or with `haId` its buildHaId()) of item i; false for a temp
+// or volt slot that is not active (validateConfig has already made sure
+// active slots have an id).
+bool itemKey(const Config& c, ItemKind kind, uint8_t i, bool haId, ItemKey& out) {
   if (kind == ItemKind::Temp && !c.temps[i].active) return false;
   if (kind == ItemKind::Volt && !c.volts[i].active) return false;
-  char seg[kItemNameMax + 1];
-  const size_t n = itemSegment(c, kind, i, seg, sizeof seg);
-  if (haId) {
-    buildHaId(seg, n, out, kItemNameMax + 1);
-  } else {
-    memcpy(out, seg, n + 1);
+  if (!haId) {
+    itemSegment(c, kind, i, out, sizeof out);
+    return true;
   }
+  ItemKey seg;
+  buildHaId(seg, itemSegment(c, kind, i, seg, sizeof seg), out, sizeof out);
   return true;
 }
 
-// Index of the first item whose key equals the key of an earlier one, -1
-// when there is none.
-int duplicateItem(const Config& c, ItemKind kind, uint8_t count, bool haId) {
-  char a[kItemNameMax + 1];
-  char b[kItemNameMax + 1];
-  for (uint8_t i = 1; i < count; ++i) {
+// The first item whose key equals the key of an earlier one: true and its
+// index in `later`.
+bool duplicateItem(const Config& c, ItemKind kind, uint8_t count, bool haId, uint8_t& later) {
+  ItemKey a;
+  ItemKey b;
+  for (uint8_t i = 1; i < count; ++i) {  // NOMUTATE: i = 0 has no earlier item to compare
     if (!itemKey(c, kind, i, haId, a)) continue;
     for (uint8_t j = 0; j < i; ++j) {
-      if (itemKey(c, kind, j, haId, b) && strcmp(a, b) == 0) return i;
+      if (itemKey(c, kind, j, haId, b) && strcmp(a, b) == 0) {
+        later = i;
+        return true;
+      }
     }
   }
-  return -1;
+  return false;
 }
 
 }  // namespace
@@ -662,13 +667,17 @@ bool newRulesOk(const Config& c, PathOut& po) {
   const MqttConfig& m = c.mqtt;
   if (m.mode == MqttMode::MqttHa && m.germanDecimal) return failAt(po, kMqtt, "germanDecimal");
   // V2: one MQTT segment per valve; V3: one HA id per valve, per active slot.
-  int dup = duplicateItem(c, ItemKind::Valve, kValveCount, false);
-  if (dup < 0) dup = duplicateItem(c, ItemKind::Valve, kValveCount, true);
-  if (dup >= 0) return failItem(po, kValves, dup, c.valves[dup].topic);
-  dup = duplicateItem(c, ItemKind::Temp, kTempSlotCount, true);
-  if (dup >= 0) return failItem(po, kTemps, dup, c.temps[dup].topic);
-  dup = duplicateItem(c, ItemKind::Volt, kVoltSlotCount, true);
-  if (dup >= 0) return failItem(po, kVolts, dup, c.volts[dup].topic);
+  uint8_t i{};
+  if (duplicateItem(c, ItemKind::Valve, kValveCount, false, i) ||
+      duplicateItem(c, ItemKind::Valve, kValveCount, true, i)) {
+    return failItem(po, kValves, i, c.valves[i].topic);
+  }
+  if (duplicateItem(c, ItemKind::Temp, kTempSlotCount, true, i)) {
+    return failItem(po, kTemps, i, c.temps[i].topic);
+  }
+  if (duplicateItem(c, ItemKind::Volt, kVoltSlotCount, true, i)) {
+    return failItem(po, kVolts, i, c.volts[i].topic);
+  }
   return true;
 }
 
@@ -698,7 +707,7 @@ size_t itemSegment(const Config& c, ItemKind kind, uint8_t idx0, char* out, size
   } else {
     return 0;
   }
-  char seg[kItemNameMax + 1];
+  char seg[kItemNameMax];  // no NUL: `out` gets it
   const char* src = topic[0] != '\0' ? topic : name;
   size_t n = boundedLength(src, kItemNameMax);
   if (n == 0) {
@@ -732,8 +741,8 @@ bool netTrialRequired(const NetConfig& before, const NetConfig& after) {
 
 uint8_t configRestartReasons(const Config& before, const Config& after) {
   uint8_t r = netTrialRequired(before.net, after.net) ? kRestartNetwork : 0;
-  char a[kStationNameMax + 1];
-  char b[kStationNameMax + 1];
+  char a[sizeof(Config::station)];
+  char b[sizeof(Config::station)];
   buildHostname(before.station, a, sizeof a);
   buildHostname(after.station, b, sizeof b);
   if (strcmp(a, b) != 0) r |= kRestartHostname;
@@ -742,16 +751,15 @@ uint8_t configRestartReasons(const Config& before, const Config& after) {
 
 namespace {
 
-// Equal stored values of one field (strings compared up to their NUL).
+// The `cfg` blob encoding of one field into `out` (codec below); its length.
+size_t encodeOneField(const Field& f, const uint8_t* p, uint8_t* out, size_t cap);
+
+// Equal stored values of one field: equal encodings (a string ends at its NUL).
 bool sameField(const Field& f, const uint8_t* a, const uint8_t* b) {
-  if (f.kind == Kind::Str || f.kind == Kind::Secret) {
-    return strncmp(reinterpret_cast<const char*>(a), reinterpret_cast<const char*>(b), f.cap) == 0;
-  }
-  size_t size = 1;  // Bool, U8, PctHold
-  if (f.kind == Kind::U16 || f.kind == Kind::Tenths || f.kind == Kind::OffOrRange) size = 2;
-  if (f.kind == Kind::Ip || f.kind == Kind::Mask || f.kind == Kind::Float) size = 4;
-  if (f.kind == Kind::Id) size = sizeof(OneWireId::b);
-  return memcmp(a, b, size) == 0;
+  uint8_t ea[sizeof(WebConfig::allowedHosts)];  // the longest encoding: length byte + 80 chars
+  uint8_t eb[sizeof ea];
+  const size_t n = encodeOneField(f, a, ea, sizeof ea);
+  return n == encodeOneField(f, b, eb, sizeof eb) && memcmp(ea, eb, n) == 0;
 }
 
 // The fields of a valve or sensor slot that shape its MQTT topics.
@@ -964,7 +972,7 @@ SetResult setField(Config& c, const Group& g, uint8_t element, const Field& f,
       if (v.len > static_cast<size_t>(f.max) || memchr(v.s, '\0', v.len) != nullptr) {
         return SetResult::OutOfRange;
       }
-      char tmp[kAllowedHostsMax + 1];  // the largest field (80 chars) incl. NUL
+      char tmp[sizeof(WebConfig::allowedHosts)];  // the largest field incl. NUL
       memcpy(tmp, v.s, v.len);
       tmp[v.len] = '\0';
       if (!stringRuleOk(f, tmp, v.len)) return SetResult::OutOfRange;
@@ -1670,6 +1678,12 @@ void encodeField(ByteOut& out, const Field& f, const uint8_t* p) {
   }
 }
 
+size_t encodeOneField(const Field& f, const uint8_t* p, uint8_t* out, size_t cap) {
+  ByteOut bo(out, cap);
+  encodeField(bo, f, p);
+  return bo.length();
+}
+
 // Structural decoding only; value ranges are checked by validateConfig().
 void decodeField(ByteIn& in, const Field& f, uint8_t* p) {
   switch (f.kind) {
@@ -1734,7 +1748,7 @@ bool findExt(uint8_t tag, const Group*& group, const Field*& field) {
 bool applyExt(Config& c, const Group& g, const Field& f, uint8_t element, const uint8_t* v,
               uint8_t n) {
   if (element >= elementCount(g)) return false;
-  uint8_t tmp[kAllowedHostsMax + 1] = {0};
+  uint8_t tmp[sizeof(WebConfig::allowedHosts)] = {0};  // the largest field incl. NUL
   size_t size = n;
   if (f.kind == Kind::Str) {
     if (n > f.max || memchr(v, '\0', n) != nullptr) return false;
@@ -1759,7 +1773,7 @@ size_t encodeConfig(const Config& c, uint8_t* out, size_t cap) {
   ByteOut bo(out, cap);
   bo.bytes(kMagic, sizeof kMagic);
   bo.u16(kConfigBaseSchema);
-  bo.u16(0);  // payload length, patched below
+  bo.u16(0);  // NOMUTATE: payload length placeholder, patched below
   for (size_t gi = 0; gi < kGroupCount; ++gi) {
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g); ++e) {
@@ -1813,7 +1827,7 @@ DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out, DecodeIn
     }
   }
   // The rules added after 2.0.0 never drop a stored config.
-  PathOut none(nullptr, 0);
+  PathOut none;
   if (!in.ok() || !in.atEnd() || !storedRulesOk(out, none)) {
     setDefaults(out);
     return DecodeResult::Invalid;
@@ -1826,9 +1840,8 @@ size_t encodeConfigExt(const Config& c, uint8_t* out, size_t cap, const uint8_t*
   ByteOut bo(out, cap);
   bo.bytes(kExtMagic, sizeof kExtMagic);
   bo.u8(kExtVersion);
-  bo.u16(0);  // payload length, patched below
-  for (size_t gi = 0; gi < kGroupCount; ++gi) {
-    const Group& g = kGroups[gi];
+  bo.u16(0);  // NOMUTATE: payload length placeholder, patched below
+  for (const Group& g : kGroups) {
     for (uint8_t e = 0; e < elementCount(g); ++e) {
       for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
         const Field& f = g.fields[fi];
@@ -1861,7 +1874,7 @@ ExtResult decodeConfigExt(const uint8_t* data, size_t len, Config& inout, ExtInf
   const size_t end = kExtHeaderSize + static_cast<size_t>(data[5] | (data[6] << 8));
   if (len < end + kCrcSize) return ExtResult::TooShort;
   if (crc32(data, end) != loadLe32(data + end)) return ExtResult::BadCrc;
-  const size_t keepMax = keepCap < kConfigExtKeepMax ? keepCap : kConfigExtKeepMax;
+  const size_t keepMax = std::min(keepCap, kConfigExtKeepMax);
   for (size_t pos = kExtHeaderSize; pos < end;) {
     // A record cut by the payload end (only a broken writer does that).
     if (end - pos < kExtRecordHead || end - pos - kExtRecordHead < data[pos + 2]) {
