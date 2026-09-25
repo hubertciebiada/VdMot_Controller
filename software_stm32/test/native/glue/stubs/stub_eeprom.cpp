@@ -32,8 +32,6 @@ int16_t eepromloop() {
   return eeprom.loop;
 }
 
-void eeprom_fill(void) { log("eeprom_fill()"); }
-
 int16_t eeprom_write_layout(struct eeprom_layout* lay) {
   log("eeprom_write_layout(%s)", lay == &eep_content ? "&eep_content" : "other");
   return eeprom.writeLayout;

@@ -28,264 +28,70 @@
   Copyright (C) 2021 Lenti84  https://github.com/Lenti84/VdMot_Controller
 *END************************************************************************/
 
+
 #include "eeprom.h"
 #include "hardware.h"
 #include "I2C_eeprom.h"		// freat library from https://github.com/RobTillaart/I2C_EEPROM
-#include "motor.h"
+#include "i2c_bus.h"
 #include "app.h"
+#include "vdm/config_store.h"
 #include "vdm/eeprom_layout.h"
 #include "vdm/replies_v2.h"
-#include "vdm/retry_backoff.h"
+#include "vdm/store_scheduler.h"
 
 //#define EEPROM_DEBUG(...)
 //#define EEPROM_DEBUG 	Serial3.print
 #define EEPROM_DEBUG 	Serial6.print
 
 
-byte buffer[256];
-//long address;
-
 #define EE24LC64MAXBYTES 		64*1024/8
 #define DEVICEADDRESS 			0x50		// A0, A1, A2 = GND
 
 I2C_eeprom eeprom(DEVICEADDRESS, EE24LC64MAXBYTES);
 
-// SPIEEPROM eep(EEPROM_TYPE_16BIT, EEP_CS_PIN); // parameter is type
-//                     // type=0: 16-bits address
-//                     // type=1: 24-bits address
-//                     // type>1: defaults to type 0
-
 struct eeprom_layout eep_content;
 
-// failed block transfers allowed in one read of the layout (~40 blocks), whichever blocks they hit:
+// failed block transfers allowed in one read of the configuration, whichever blocks they hit:
 // each failure blocks for up to ~0.2 s, so a read on a marginal bus ends in well under a second
 #define EEP_READ_FAILURES_MAX	3
-#define EEP_WRITE_ATTEMPTS		3		// per change, one attempt per eepromloop() run
 #define EEP_RETRY_FIRST_S		30		// a failed read or write is retried after 30 s, 60 s, ... up to 1 h
 #define EEP_RETRY_MAX_S			3600
+#define EEP_ALL_SLOTS			0x00FFFFFFu		// owsensors1[0..11], owsensors2[0..11]
+#define EEP_ALL_CALIB			0x0FFFu			// calibration records of the 12 valves
 
-// the layout could not be read completely: RAM holds 0xFF fallbacks for the missing fields, and
-// writing the layout back would destroy the configuration still stored in the EEPROM. The read is
-// retried; once it succeeds the fields changed meanwhile are merged in and writing is enabled again.
-static bool eep_read_failed = false;
-// the last change could not be written (all attempts failed); retried, cleared by a successful write
-static bool eep_write_failed = false;
+// when the configuration is written and read again (eepromloop() runs once per second)
+static vdm::StoreScheduler eep_store(EEP_RETRY_FIRST_S, EEP_RETRY_MAX_S);
+// the sensor slots and calibration records changed in RAM and not written yet (a re-read after a
+// failed read keeps them, see vdm::mergeChanges)
+static uint32_t eep_changed_slots = 0;
+static uint16_t eep_changed_calib = 0;
 // set once the current read has used up its failures (EEP_READ_FAILURES_MAX)
 static bool eep_read_error = false;
 // failed block transfers of the current read
 static uint8_t eep_read_failures = 0;
-// fields changed in RAM (EEP_CHANGED_*) and not written yet
-static uint16_t eep_changed_fields = 0;
-// eepromloop() runs once per second, so the ticks are seconds
-static vdm::RetryBackoff eep_retry(EEP_RETRY_FIRST_S, EEP_RETRY_MAX_S);
+static uint8_t eep_cfg_flags = 0;			// vdm::kCfg* of the last load
+static uint32_t eep_cfg_events = 0;			// loads that repaired or defaulted a block
+static uint32_t eep_write_steps = 0;		// successful write steps
+static uint8_t eep_lease_source = vdm::kLeaseSourceDefault;
 
-static bool eeprom_read_image (struct eeprom_layout* lay);
-static void eeprom_reread ();
+// static: the blocks and the resolved configuration are kept off the main loop stack
+static vdm::RawImages eep_raw;
+static vdm::LoadResult eep_loaded;
 
-// size of the 1.x layout from EE_GENERALDATA_ADR: base block, sensor slots, tail
-static_assert(EE_GENERALDATA_ADR + 33 + (2 * ACTUATOR_COUNT + ADDITIONAL_SENSOR_COUNT) * 8 + 4 == vdm::kExtensionAddress,
-	"the extension block must follow the 1.x layout");
 static_assert(EE_GENERALDATA_ADR == vdm::kLegacyLayoutAddress, "one address of the 1.x layout");
-
-
-
-void fill_buffer()
-{
-  for (int i=0;i<256;i++)
-  {
-    buffer[i]=i;
-  }
-}
 
 
 // call from setup function in main
 int16_t eepromsetup () {
-
-    // SPI.setMOSI(EEP_MOSI_PIN);
-    // SPI.setMISO(EEP_MISO_PIN);
-    // SPI.setSCLK(EEP_CLK_PIN);
-    // eep.setup(); // setup eeprom
-
-
-    // // test
-    // fill_buffer();
-	// address = 0;
-	
-	// EEPROM_DEBUG("Starting to write on EEPROM:");
-	// EEPROM_DEBUG(millis());
-	// EEPROM_DEBUG("\r\n");
-	
-	// //eep.write(address, buffer, (sizeof(buffer)/sizeof(byte)));
-	// eeprom.writeBlock(address, buffer, (sizeof(buffer)/sizeof(byte)));
-	
-	// EEPROM_DEBUG("Finish to write:");
-	// EEPROM_DEBUG(millis());
-	// EEPROM_DEBUG("\r\n");
-
 	eep_content.status = EEP_INIT;
-	
-  return 0;
+	return 0;
 }
 
 
-int16_t eepromloop() {
-	static int writedelaycnt = 0;
-	static int writeattempts = 0;
-
-    #define E_INIT      0
-    #define E_IDLE      1
-    #define E_READCFG   2
-	#define E_WRITECFG  3
-
-    static int eepromstate = E_INIT;
-
-    //int x;
-
-    switch (eepromstate) {
-        case E_INIT:
-                    // address = 0;
-                    // EEPROM_DEBUG("Test read eeprom\r\n");
-                    // for (x=0;x<30;x++) {
-                    //     EEPROM_DEBUG("Address:|");
-                    //     EEPROM_DEBUG(address);
-                    //     EEPROM_DEBUG("| - Value:|");
-                    //     //EEPROM_DEBUG(eep.readByte(address), DEC);
-					// 	EEPROM_DEBUG(eeprom.readByte(address), DEC);
-                    //     EEPROM_DEBUG("|\r\n");
-                    //     address++;
-                    //     delay(10);
-                    // }
-                    // if (address == 256)
-                    //    address = 0;    
-					
-					writedelaycnt = 0;
-					eep_content.status = EEP_INIT;
-                    eepromstate = E_IDLE;
-                    break;
-
-        case E_IDLE:                  
-                    if (eep_content.status == EEP_CHANGED) {
-						writedelaycnt++;						
-					}
-					// retry of a failed read or write
-					else if (eep_retry.tick()) {
-						if (eep_read_failed) eeprom_reread();
-						else if (eep_write_failed) eepromstate = E_WRITECFG;
-						else eep_retry.succeeded();
-					}
-
-					if (writedelaycnt > 2) {		// write to eeprom not earlier than after 5 s 
-						writedelaycnt=0;
-						eepromstate = E_WRITECFG;
-					}
-					
-                    break;
-
-
-        case E_READCFG:
-
-
-                    break;
-
-
-		case E_WRITECFG:
-					
-					if (eep_read_failed) {
-						// changes stay in RAM (eep_changed_fields) until a read of the EEPROM succeeds
-						EEPROM_DEBUG("eeprom not written, layout was not read\r\n");
-						eep_content.status = EEP_VALID;
-					}
-					else if (eeprom_write_layout (&eep_content) == 0) {
-						writeattempts = 0;
-						eep_write_failed = false;
-						eep_changed_fields = 0;
-						eep_retry.succeeded();
-						eep_content.status = EEP_VALID;
-					}
-					else if (eep_write_failed || ++writeattempts >= EEP_WRITE_ATTEMPTS) {
-						// give up for now, a pending write must not block a reset for ever;
-						// retried with backoff (a retry that fails gives up at once)
-						writeattempts = 0;
-						eep_write_failed = true;
-						eep_retry.failed();
-						eep_content.status = EEP_VALID;
-					}
-					// otherwise EEP_CHANGED remains and the write is retried after the write delay
-					eepromstate = E_IDLE;
-
-                    break;
-
-
-        default:    eepromstate = E_IDLE;
-                    break;
-    }
-
-        
-
-
-  return 0;
+// the RAM mirror follows the storage state: EEP_CHANGED while a write waits
+static void eeprom_sync_status () {
+	eep_content.status = eep_store.eepState() == vdm::kEepStatePending ? EEP_CHANGED : EEP_VALID;
 }
-
-
-
-
-
-//----------------------------------------------------------------------------
-//
-// places inital eeprom layout
-void eeprom_fill (void) {
-	//u16 a;
-	unsigned char eef_buffer[4];
-
-	// mark eeprom as written (0x1F2F3F4F, little endian)
-	eef_buffer[0] = 0x4F;
-	eef_buffer[1] = 0x3F;
-	eef_buffer[2] = 0x2F;
-	eef_buffer[3] = 0x1F;
-  	//eep.write(EEPROM_MARK_ADD, eef_buffer, 4);
-	eeprom.writeBlock(EEPROM_MARK_ADD, eef_buffer, 4);
-
-	// version (11, 32 bit little endian)
-	eef_buffer[0] = 11;
-	eef_buffer[1] = 0;
-	eef_buffer[2] = 0;
-	eef_buffer[3] = 0;
-  	//eep.write(EEPROM_VERS1_ADD, eef_buffer, 1);
-	eeprom.writeBlock(EEPROM_VERS1_ADD, eef_buffer, 4);
-
-	// clear reserved area
-	/*((*((u32*)&eef_buffer[0]))) = 0x00000000;
-	for(a=EEPROM_VERS+1;a<EEPROM_IP;a++) {
-    eep.write(EEPROM_VERS1_ADD+1, eef_buffer, 1);
-	} */
-
-}
-
-
-//----------------------------------------------------------------------------
-//
-// checks if the eeprom is marked
-//
-//	returns 0 if mark was found
-uint8_t eeprom_mark (void) {
-	
-	unsigned long eef_buffer;	   
-  	//eep.readByteArray(EEPROM_MARK_ADD, (uint8_t *) (&eef_buffer), 4);
-	eeprom.readBlock(EEPROM_MARK_ADD, (uint8_t *) (&eef_buffer), 4);
-
-	EEPROM_DEBUG("read mark:");
-  	EEPROM_DEBUG((unsigned int) eef_buffer, HEX);
-  	EEPROM_DEBUG("\r\n");
-
-	if ( eef_buffer == 0x1F2F3F4F) {
-		EEPROM_DEBUG("found mark in eeprom...\r\n");
-		return 0;
-	}
-	EEPROM_DEBUG("no mark found in eeprom...\r\n");
-	return 1;
-}
-
-
 
 
 // every I2C transfer on a disturbed bus costs up to ~0.2 s: stop at the first error
@@ -297,115 +103,57 @@ static int16_t eeprom_write_failed () {
 
 //----------------------------------------------------------------------------
 //
-// writes eeprom layout to eeprom
+// writes the blocks holding `fields` (EEP_CHANGED_*), in the order C(v) (valves in `calib`), B,
+// 1.x layout, A: a write cut off by a reset leaves every block either old or new and block A (the
+// layout CRC) last, see vdm::resolveConfig
 //
-//	returns 0 on success, -1 if an I2C write failed (the layout may be partly written)
-int16_t eeprom_write_layout (struct eeprom_layout* lay) {
-
-	uint8_t buf[100];
-	uint16_t x, y;
-	uint16_t scnt;
-	uint16_t address;
+//	returns 0 on success, -1 if an I2C write failed (the blocks may be partly written)
+static int16_t eeprom_write_blocks (const struct eeprom_layout &lay, uint16_t fields, uint16_t calib) {
+	static uint8_t image[vdm::kLegacyImageSize];		// static: keeps it off the main loop stack
+	uint8_t block[vdm::kSafetyBlockSize];
+	const uint8_t blocks = vdm::blocksFor(fields);
 
 	EEPROM_DEBUG("write eeprom layout to eeprom...\r\n");
 
-	x=0;
-	address = EE_GENERALDATA_ADR;
-
-	// first write base layout
-	buf[x++] = lay->b_slave;
-	for(y=0;y<sizeof(lay->descr);y++) {
-		buf[x] = (uint8_t) (lay->descr[y]);
-		x++;
-	}
-	for(y=0;y<sizeof(lay->OneWireCfg);y++) {
-		buf[x] = (uint8_t) (lay->OneWireCfg[y]);
-		x++;
+	if (blocks & vdm::kBlockCalib) {
+		for (uint8_t v = 0; v < ACTUATOR_COUNT; v++) {
+			if (!(calib & (1u << v))) continue;
+			uint8_t record[vdm::kCalibBlockSize];
+			const size_t n = vdm::encodeCalib(lay.calib[v], v, record);
+			if (eeprom.writeBlock(vdm::kCalibBlockAddress + v * vdm::kCalibBlockSize, record, n) != 0) return eeprom_write_failed();
+		}
 	}
 
-	// current bounds
-	buf[x++] =  lay->currentbound_low_fac;
-	buf[x++] =  lay->currentbound_high_fac;
-	buf[x++] = (uint8_t) lay->numberOfMovements;			// little endian
-	buf[x++] = (uint8_t) (lay->numberOfMovements >> 8);
-
-  	//eep.write(address, buf, x);
-	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
-
-	// then write sensor data
-	address = EE_GENERALDATA_ADR + x;
-	
-	// first sensors
-	for(scnt=0;scnt<ACTUATOR_COUNT;scnt++) {
-		x = 0;
-		buf[x++] = lay->owsensors1[scnt].familycode;
-		buf[x++] = lay->owsensors1[scnt].romcode[5];
-		buf[x++] = lay->owsensors1[scnt].romcode[4];
-		buf[x++] = lay->owsensors1[scnt].romcode[3];
-		buf[x++] = lay->owsensors1[scnt].romcode[2];
-		buf[x++] = lay->owsensors1[scnt].romcode[1];
-		buf[x++] = lay->owsensors1[scnt].romcode[0];
-		buf[x++] = lay->owsensors1[scnt].crc;
-
-		if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
-
-		address += x;
+	if (blocks & vdm::kBlockSafety) {
+		vdm::SafetyBlock safety;
+		memcpy(safety.failsafePct, lay.failsafePct, sizeof(safety.failsafePct));
+		safety.shadow.lowFac = lay.currentbound_low_fac;
+		safety.shadow.highFac = lay.currentbound_high_fac;
+		safety.shadow.movements = lay.numberOfMovements;
+		safety.shadow.startOnPower = lay.startOnPower;
+		safety.shadow.minCounts = lay.noOfMinCounts;
+		safety.shadow.maxRetries = lay.maxCalibRetries;
+		safety.leaseTimeoutMin = lay.leaseTimeoutMin;
+		safety.leaseValid = true;
+		const size_t n = vdm::encodeSafety(safety, block);
+		if (eeprom.writeBlock(vdm::kSafetyBlockAddress, block, n) != 0) return eeprom_write_failed();
 	}
 
-	// second sensors
-	for(scnt=0;scnt<ACTUATOR_COUNT;scnt++) {
-		x = 0;
-		buf[x++] = lay->owsensors2[scnt].familycode;
-		buf[x++] = lay->owsensors2[scnt].romcode[5];
-		buf[x++] = lay->owsensors2[scnt].romcode[4];
-		buf[x++] = lay->owsensors2[scnt].romcode[3];
-		buf[x++] = lay->owsensors2[scnt].romcode[2];
-		buf[x++] = lay->owsensors2[scnt].romcode[1];
-		buf[x++] = lay->owsensors2[scnt].romcode[0];
-		buf[x++] = lay->owsensors2[scnt].crc;
-
-		if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
-
-		address += x;
+	vdm::encodeLegacyLayout(lay, image);
+	if (blocks & vdm::kBlockLayout) {
+		if (eeprom.writeBlock(vdm::kLegacyLayoutAddress, image, sizeof(image)) != 0) return eeprom_write_failed();
 	}
 
-	// rest of sensors
-	for(scnt=0;scnt<ADDITIONAL_SENSOR_COUNT;scnt++) {
-		x = 0;
-		buf[x++] = lay->owsensors[scnt].familycode;
-		buf[x++] = lay->owsensors[scnt].romcode[5];
-		buf[x++] = lay->owsensors[scnt].romcode[4];
-		buf[x++] = lay->owsensors[scnt].romcode[3];
-		buf[x++] = lay->owsensors[scnt].romcode[2];
-		buf[x++] = lay->owsensors[scnt].romcode[1];
-		buf[x++] = lay->owsensors[scnt].romcode[0];
-		buf[x++] = lay->owsensors[scnt].crc;
-
-		if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
-
-		address += x;
+	if (blocks & vdm::kBlockSettings) {
+		vdm::StoredExtension ext;
+		uint8_t extbuf[vdm::kExtensionBlockSize];
+		ext.escalation = lay.escalation;
+		ext.learnTimeS = lay.learnTimeS;
+		ext.leaseTimeoutMin = lay.leaseTimeoutMin;
+		ext.layoutCrc = vdm::crc16Ccitt(image, sizeof(image));
+		const size_t n = vdm::encodeExtension(ext, extbuf);
+		if (eeprom.writeBlock(vdm::kExtensionAddress, extbuf, n) != 0) return eeprom_write_failed();
 	}
-
-// current bounds
-	x=0;
-	buf[x++] =  lay->startOnPower;
-	buf[x++] = (uint8_t) lay->noOfMinCounts;				// little endian
-	buf[x++] = (uint8_t) (lay->noOfMinCounts >> 8);
-	buf[x++] =  lay->maxCalibRetries;
-	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
-
-	// extension block, behind the 1.x fields: escalation, learn time, lease timeout (written back as
-	// read) and the CRC of the 1.x layout as written above
-	static uint8_t image[vdm::kLegacyImageSize];		// static: keeps it off the main loop stack
-	vdm::StoredExtension ext;
-	uint8_t extbuf[vdm::kExtensionBlockSize];
-	vdm::encodeLegacyLayout(*lay, image);
-	ext.escalation = lay->escalation;
-	ext.learnTimeS = lay->learnTimeS;
-	ext.leaseTimeoutMin = lay->leaseTimeoutMin;
-	ext.layoutCrc = vdm::crc16Ccitt(image, sizeof(image));
-	x = (uint16_t) vdm::encodeExtension(ext, extbuf);
-	if (eeprom.writeBlock(vdm::kExtensionAddress, extbuf, x) != 0) return eeprom_write_failed();
 
 	EEPROM_DEBUG("finished\r\n");
 
@@ -413,8 +161,31 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 }
 
 
+//----------------------------------------------------------------------------
+//
+// writes the 1.x layout with blocks B and A (not the calibration records)
+//
+//	returns 0 on success, -1 if an I2C write failed (the layout may be partly written)
+int16_t eeprom_write_layout (struct eeprom_layout* lay) {
+	return eeprom_write_blocks(*lay, EEP_CHANGED_ALL, 0);
+}
+
+
+// one write step of eepromloop(): the fields changed since the last successful write
+static void eeprom_write_step () {
+	const bool ok = eeprom_write_blocks(eep_content, eep_store.dirty(), eep_changed_calib) == 0;
+
+	eep_store.writeResult(ok);
+	if (ok) {
+		eep_changed_slots = 0;
+		eep_changed_calib = 0;
+		eep_write_steps++;
+	}
+}
+
+
 // reads a block, retried while the read has failures left; if it cannot be read the buffer is
-// filled with 0xFF like an erased EEPROM, so the range checks fall back to the defaults instead of
+// filled with 0xFF like an erased EEPROM, so the load falls back to the defaults instead of
 // using stack garbage. The failures are counted over the whole read, not per block: after
 // EEP_READ_FAILURES_MAX of them the bus is not used again in this read, so an intermittent bus
 // (each failed transfer blocks for up to ~0.2 s) cannot stretch the read past the watchdog.
@@ -430,240 +201,133 @@ static void eeprom_read_block (uint16_t address, uint8_t *buf, uint16_t length) 
 }
 
 
-//----------------------------------------------------------------------------
-//
-// reads eeprom layout from eeprom at startup; if a block cannot be read, writing is disabled
-// and the read is retried by eepromloop()
-//
-//	returns 0 on success, -1 if a block could not be read
-int16_t eeprom_read_layout (struct eeprom_layout* lay) {
-	const bool ok = eeprom_read_image(lay);
+// reads the 1.x layout and the blocks A, B, C0..C11 and resolves them into eep_loaded
+static void eeprom_load () {
+	EEPROM_DEBUG("Read eeprom layout from eeprom...");
 
-	eep_read_failed = !ok;
-	if (ok) eep_retry.succeeded();
-	else eep_retry.failed();
-	lay->status = EEP_VALID;
-	return ok ? 0 : -1;
+	eep_read_error = false;
+	eep_read_failures = 0;
+	eeprom_read_block(vdm::kLegacyLayoutAddress, eep_raw.layout, sizeof(eep_raw.layout));
+	eeprom_read_block(vdm::kExtensionAddress, eep_raw.settings, sizeof(eep_raw.settings));
+	eeprom_read_block(vdm::kSafetyBlockAddress, eep_raw.safety, sizeof(eep_raw.safety));
+	eeprom_read_block(vdm::kCalibBlockAddress, &eep_raw.calib[0][0], sizeof(eep_raw.calib));
+	eep_raw.readFailed = eep_read_error;
+
+	vdm::resolveConfig(eep_raw, eep_loaded);
+	eep_cfg_flags = eep_loaded.cfgFlags;
+	if (vdm::repairsConfig(eep_loaded.cfgFlags)) eep_cfg_events++;
+	eep_store.readResult(!eep_raw.readFailed);
+
+	EEPROM_DEBUG("finished, cfgFlags ");
+	EEPROM_DEBUG(eep_loaded.cfgFlags, HEX);
+	EEPROM_DEBUG("\r\n");
 }
 
 
-// copies the fields changed in RAM (EEP_CHANGED_*) from ram into stored
-static void eeprom_merge_changes (struct eeprom_layout &stored, const struct eeprom_layout &ram, uint16_t fields) {
-	if (fields & EEP_CHANGED_SENSORS) {
-		memcpy(stored.owsensors1, ram.owsensors1, sizeof(stored.owsensors1));
-		memcpy(stored.owsensors2, ram.owsensors2, sizeof(stored.owsensors2));
-		memcpy(stored.owsensors, ram.owsensors, sizeof(stored.owsensors));
-	}
-	if (fields & EEP_CHANGED_MOVEMENTS) stored.numberOfMovements = ram.numberOfMovements;
-	if (fields & EEP_CHANGED_MOTOR) {
-		stored.currentbound_low_fac = ram.currentbound_low_fac;
-		stored.currentbound_high_fac = ram.currentbound_high_fac;
-		stored.startOnPower = ram.startOnPower;
-		stored.noOfMinCounts = ram.noOfMinCounts;
-		stored.maxCalibRetries = ram.maxCalibRetries;
-	}
-	if (fields & EEP_CHANGED_ESCALATION) stored.escalation = ram.escalation;
+//----------------------------------------------------------------------------
+//
+// reads the configuration at start-up; damaged or missing blocks are repaired (written back by
+// eepromloop()). If a block cannot be read, writing is disabled and the read is retried by
+// eepromloop().
+//
+//	returns 0 on success, -1 if a block could not be read
+int16_t eeprom_read_layout (struct eeprom_layout* lay) {
+	eeprom_load();
+	*static_cast<vdm::ConfigImage *>(lay) = eep_loaded.image;
+	eep_lease_source = eep_loaded.leaseSource;
+	if (eep_loaded.rewrite != 0) eeprom_changed(eep_loaded.rewrite);
+	lay->status = eep_loaded.rewrite != 0 ? EEP_CHANGED : EEP_VALID;
+	return eep_raw.readFailed ? -1 : 0;
 }
 
 
 // retry of a failed read: the stored configuration is taken over, except the fields changed
 // since (they are newer and get written), and writing is enabled again
 static void eeprom_reread () {
-	static struct eeprom_layout stored;		// static: keeps the layout off the main loop stack
+	eeprom_load();
+	if (eep_raw.readFailed) return;
 
-	if (!eeprom_read_image(&stored)) {
-		eep_retry.failed();
-		return;
-	}
 	EEPROM_DEBUG("eeprom read after failure\r\n");
-	eeprom_merge_changes(stored, eep_content, eep_changed_fields);
-	stored.status = eep_changed_fields ? EEP_CHANGED : EEP_VALID;
-	eep_content = stored;
-	eep_read_failed = false;
-	eep_retry.succeeded();
+	const vdm::ChangeSet changes = {eep_store.dirty(), eep_changed_slots, eep_changed_calib};
+	vdm::mergeChanges(eep_loaded.image, eep_content, changes);
+	*static_cast<vdm::ConfigImage *>(&eep_content) = eep_loaded.image;
+	if (eep_loaded.rewrite != 0) eeprom_changed(eep_loaded.rewrite);
 	app_load_config();
 }
 
 
-//----------------------------------------------------------------------------
-//
-// reads the eeprom layout into lay (lay->status is not changed)
-//
-//	returns true if every block could be read
-static bool eeprom_read_image (struct eeprom_layout* lay) {
+int16_t eepromloop() {
+	const vdm::StoreScheduler::Step step = eep_store.tick();
 
-	uint8_t buf[100];
-	uint16_t x, y;
-	uint16_t scnt;
-	uint16_t address;
-
-	EEPROM_DEBUG("Read eeprom layout from eeprom...");
-
-	eep_read_error = false;
-	eep_read_failures = 0;
-	address = EE_GENERALDATA_ADR;
-
-	// first read base layout
-	x = 1 + sizeof(lay->descr) + sizeof(lay->OneWireCfg) + sizeof(lay->currentbound_low_fac) + sizeof(lay->currentbound_high_fac)+ sizeof(lay->numberOfMovements);
-	//eep.readByteArray(address, buf, x);
-	eeprom_read_block(address, buf, x);
-
-	x = 0;
-	lay->b_slave = buf[x++];
-	for(y=0;y<sizeof(lay->descr);y++) {
-		lay->descr[y] = (char) (buf[x]);
-		x++;
+	if (step != vdm::StoreScheduler::Step::None) {
+		// a retry may find the bus stuck the way the failed transfer left it
+		if (eep_store.retrying()) i2c_bus_restart();
+		if (step == vdm::StoreScheduler::Step::Reread) eeprom_reread();
+		else eeprom_write_step();
 	}
-	for(y=0;y<sizeof(lay->OneWireCfg);y++) {
-		lay->OneWireCfg[y] = buf[x];
-		x++;
-	}
-		// current bounds
-	lay->currentbound_low_fac =  buf[x++];
-	lay->currentbound_high_fac = buf[x++];
-	lay->numberOfMovements = (uint16_t) (buf[x] | (buf[x + 1] << 8));		// little endian
-	x+=2;
-	address = EE_GENERALDATA_ADR + x;
-	
-
-	// first sensors
-	for(scnt=0;scnt<ACTUATOR_COUNT;scnt++) {
-		x = 8;
-
-		eeprom_read_block(address, buf, x);
-
-		lay->owsensors1[scnt].familycode = buf[0];
-		lay->owsensors1[scnt].romcode[5] = buf[1];
-		lay->owsensors1[scnt].romcode[4] = buf[2];
-		lay->owsensors1[scnt].romcode[3] = buf[3];
-		lay->owsensors1[scnt].romcode[2] = buf[4];
-		lay->owsensors1[scnt].romcode[1] = buf[5];
-		lay->owsensors1[scnt].romcode[0] = buf[6];
-		lay->owsensors1[scnt].crc = buf[7];
-
-		address += x;
-	}
-
-	// second sensors
-	for(scnt=0;scnt<ACTUATOR_COUNT;scnt++) {
-		x = 8;
-
-		eeprom_read_block(address, buf, x);
-
-		lay->owsensors2[scnt].familycode = buf[0];
-		lay->owsensors2[scnt].romcode[5] = buf[1];
-		lay->owsensors2[scnt].romcode[4] = buf[2];
-		lay->owsensors2[scnt].romcode[3] = buf[3];
-		lay->owsensors2[scnt].romcode[2] = buf[4];
-		lay->owsensors2[scnt].romcode[1] = buf[5];
-		lay->owsensors2[scnt].romcode[0] = buf[6];
-		lay->owsensors2[scnt].crc = buf[7];
-
-		address += x;
-	}
-
-	// rest of sensors
-	for(scnt=0;scnt<ADDITIONAL_SENSOR_COUNT;scnt++) {
-		x = 8;
-
-		eeprom_read_block(address, buf, x);
-
-		lay->owsensors[scnt].familycode = buf[0];
-		lay->owsensors[scnt].romcode[5] = buf[1];
-		lay->owsensors[scnt].romcode[4] = buf[2];
-		lay->owsensors[scnt].romcode[3] = buf[3];
-		lay->owsensors[scnt].romcode[2] = buf[4];
-		lay->owsensors[scnt].romcode[1] = buf[5];
-		lay->owsensors[scnt].romcode[0] = buf[6];
-		lay->owsensors[scnt].crc = buf[7];
-
-		address += x;
-	}
-
-	eeprom_read_block(address, buf, 1);
-	lay->startOnPower = buf[0];
-	address++;
-	eeprom_read_block(address, buf, 2);
-	lay->noOfMinCounts = (uint16_t) (buf[0] | (buf[1] << 8));		// little endian
-	address+=2;
-	eeprom_read_block(address, buf, 1);
-	lay->maxCalibRetries = buf[0];
-	address++;
-
-	// extension block; a 1.x image or a damaged block loads the defaults. Learn time and lease
-	// timeout are not used yet, they are only written back.
-	uint8_t extbuf[vdm::kExtensionBlockSize];
-	vdm::StoredExtension ext;
-	eeprom_read_block(vdm::kExtensionAddress, extbuf, sizeof(extbuf));
-	const vdm::ExtensionState extstate = vdm::decodeExtension(extbuf, ext);
-	lay->escalation = ext.escalation;
-	lay->learnTimeS = ext.learnTimeS;
-	lay->leaseTimeoutMin = ext.leaseTimeoutMin;
-	if (extstate == vdm::ExtensionState::Legacy) EEPROM_DEBUG("layout 1.x, defaults for new fields...");
-	else if (extstate == vdm::ExtensionState::Corrupt) EEPROM_DEBUG("extension damaged, defaults for new fields...");
-
-	EEPROM_DEBUG("finished\r\n");
-
-	return !eep_read_error;
+	eeprom_sync_status();
+	return 0;
 }
+
 
 // call everytime some eeprom content was changed
 void eeprom_changed (uint16_t fields) {
-
-	eep_changed_fields |= fields;
-	eep_content.status = EEP_CHANGED;
-
+	if (fields & EEP_CHANGED_SENSORS) eep_changed_slots = EEP_ALL_SLOTS;
+	if (fields & EEP_CHANGED_CALIB) eep_changed_calib = EEP_ALL_CALIB;
+	eep_store.changed(fields);
+	eeprom_sync_status();
 }
 
 
-// a changed sensor slot marks the whole sensor assignment (slots are not tracked one by one yet)
+// one sensor slot changed: only this slot is taken over at a re-read after a failed read
 void eeprom_changed_slot (uint8_t slot) {
-	(void) slot;
-	eeprom_changed(EEP_CHANGED_SENSORS);
+	eep_changed_slots |= 1ul << slot;
+	eep_store.changed(EEP_CHANGED_SENSORS);
+	eeprom_sync_status();
 }
 
 
-// calibration records (blocks C) are not stored yet
+// calibration record of a valve: stored and written only when it differs
 void eeprom_store_calib (uint8_t valve, const vdm::CalibRecord &rec) {
-	(void) valve;
-	(void) rec;
+	if (valve >= ACTUATOR_COUNT) return;
+	vdm::CalibRecord &stored = eep_content.calib[valve];
+
+	if (stored.openingCount == rec.openingCount && stored.closingCount == rec.closingCount
+		&& stored.meanCurrent == rec.meanCurrent && stored.flags == rec.flags) return;
+	stored = rec;
+	eep_changed_calib |= (uint16_t) (1u << valve);
+	eep_store.changed(EEP_CHANGED_CALIB);
+	eeprom_sync_status();
 }
 
 
-// blocks A, B and C are not checked at the load yet: no findings, no repairs
 uint8_t eeprom_cfg_flags () {
-	return 0;
+	return eep_cfg_flags;
 }
 
 
 uint32_t eeprom_cfg_events () {
-	return 0;
+	return eep_cfg_events;
 }
 
 
-// write steps are not counted yet
 uint32_t eeprom_writes () {
-	return 0;
+	return eep_write_steps;
 }
 
 
-// the lease timeout is not taken from the EEPROM yet
 uint8_t eeprom_lease_source () {
-	return vdm::kLeaseSourceDefault;
+	return eep_lease_source;
 }
 
 
 // health of the configuration storage for gstat
 uint8_t eeprom_state () {
-	if (eep_read_failed) return vdm::kEepStateReadFailed;
-	if (eep_content.status == EEP_CHANGED) return vdm::kEepStatePending;
-	if (eep_write_failed) return vdm::kEepStateWriteFailed;
-	return vdm::kEepStateOk;
+	return eep_store.eepState();
 }
 
 
-// return 1 if eeprom is not in change
+// true if no write is waiting: a reset may happen now
 bool eeprom_free () {
-	return ((eep_content.status == EEP_VALID) || (eep_content.status == EEP_INIT));
-	
+	return eep_store.free();
 }

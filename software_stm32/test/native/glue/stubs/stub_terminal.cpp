@@ -1,7 +1,6 @@
 #include "stub_terminal.h"
 
 HardwareSerial Serial6(USART6);
-int testmode = 0;
 
 namespace stub {
 
@@ -11,7 +10,6 @@ namespace {
 
 void resetTerminal() {
   terminal = Terminal();
-  testmode = 0;
 }
 
 Registrar g_registrar(resetTerminal);

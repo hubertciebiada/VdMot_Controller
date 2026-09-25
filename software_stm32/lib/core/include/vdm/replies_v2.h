@@ -13,7 +13,7 @@
 
 namespace vdm {
 
-constexpr uint8_t kProtocolVersion = 2;
+constexpr uint8_t kProtocolVersion = 3;
 
 // One reply line: the command, then " value" per call. done() returns false and
 // removes the whole line when anything did not fit.
@@ -110,7 +110,7 @@ bool formatEscalation(BufWriter& out, const EscalationConfig& c);
 constexpr size_t kMotorLimitsReplyMaxLen = 5 + 10 * 6;
 bool formatMotorLimits(BufWriter& out);
 
-// "gproto 2"
+// "gproto 3"
 bool formatProtocolVersion(BufWriter& out);
 
 // "<cmd> ok" / "<cmd> err" and "<cmd> <index> ok" / "<cmd> <index> err <code>"

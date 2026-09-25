@@ -46,6 +46,8 @@ extern int16_t communication_loop (void);
 extern int16_t comm_set_valve_sensors (uint16_t valve, const char *first, const char *second);
 extern int16_t comm_set_valve_sensor_index (uint16_t valve, uint8_t slot, uint16_t sensor);
 extern void comm_print_valve_sensor_ids (Print &out, uint16_t valve, char delimiter);
+// stlnt: app_set_learntime() and the learn time stored in the EEPROM (marked only when it changes)
+extern int16_t comm_set_learntime (uint32_t seconds);
 
 #define APP_PRE_SETTARGETPOS        "stgtp"			// doc
 #define APP_PRE_GETONEWIRECNT       "gonec"			// doc

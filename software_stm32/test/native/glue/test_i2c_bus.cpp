@@ -1,5 +1,5 @@
-// Smoke tests of src/i2c_bus.cpp (glue_i2c_bus): the bus recovery clocks SCL while a slave holds
-// SDA low (at most 9 clocks), then sends a STOP; i2c_bus_restart() does nothing yet.
+// Tests of src/i2c_bus.cpp (glue_i2c_bus): the bus recovery clocks SCL while a slave holds SDA low
+// (at most 9 clocks), then sends a STOP; i2c_bus_restart() stops Wire, recovers and starts it again.
 #include "glue_test.h"
 #include "hardware.h"
 #include "i2c_bus.h"
@@ -78,9 +78,24 @@ TEST_CASE("i2c_bus_recover: a free bus gets no clock, a stuck one at most 9") {
   }
 }
 
-TEST_CASE("i2c_bus_restart: does nothing yet") {
+TEST_CASE("i2c_bus_restart: Wire stopped, the bus recovered, Wire started again on the EEPROM pins") {
   glue::begin();
+  Wire.setSDA(1);
+  Wire.setSCL(2);
+  Wire.begin();
+  fake::board.events.clear();
+  holdSdaFor(1);
   i2c_bus_restart();
-  CHECK(fake::board.events.empty());
-  CHECK(Wire.begins == 0);
+  const std::vector<fake::Event> events = fake::board.events;
+  REQUIRE(events.size() == 20);
+  CHECK(events.front() == ev(Ev::WireEnd, 1, 2));
+  CHECK(events[1] == ev(Ev::Mode, I2C_SDA_PIN, INPUT));
+  CHECK(sclClocks() == 1);
+  CHECK(events[events.size() - 2] == ev(Ev::Mode, I2C_SCL_PIN, INPUT));
+  CHECK(events.back() == ev(Ev::WireBegin, I2C_SDA_PIN, I2C_SCL_PIN));
+  CHECK(Wire.sda == I2C_SDA_PIN);
+  CHECK(Wire.scl == I2C_SCL_PIN);
+  CHECK(Wire.ends == 1);
+  CHECK(Wire.begins == 2);
+  CHECK(Wire.running);
 }

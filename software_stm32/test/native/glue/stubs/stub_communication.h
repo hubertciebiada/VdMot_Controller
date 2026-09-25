@@ -13,6 +13,7 @@ struct Communication {
   int16_t loop = -1;
   int16_t setSensors = 0;
   int16_t setSensorIndex = 0;
+  int16_t setLearnTime = 0;
   // what comm_print_valve_sensor_ids() prints (the delimiter goes between the two addresses)
   std::string firstSensor = "00-00-00-00-00-00-00-00";
   std::string secondSensor = "00-00-00-00-00-00-00-00";

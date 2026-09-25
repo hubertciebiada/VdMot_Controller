@@ -12,6 +12,7 @@ uint8_t currentbound_high_fac = 17;
 uint8_t startOnPower = 50;
 uint16_t noOfMinCounts = NO_OF_MIN_COUNTS;
 uint8_t maxCalibRetries = 0;
+volatile int analog_current = 0;
 
 namespace stub {
 
@@ -57,6 +58,7 @@ void resetMotor() {
   startOnPower = 50;
   noOfMinCounts = NO_OF_MIN_COUNTS;
   maxCalibRetries = 0;
+  analog_current = 0;
 }
 
 Registrar g_registrar(resetMotor);

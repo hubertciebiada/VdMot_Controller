@@ -35,6 +35,7 @@
 #include "owDevices.h"
 #include "DS2438.h"
 #include "app.h"
+#include "vdm/temp_filter.h"
 
 
 tempsensor  tempsensors[MAXONEWIRECNT];
@@ -58,6 +59,12 @@ volatile int lock = 0;
 #define DS2438_FAMILY         0x26
 #define MAX_ONEWIRE_SEARCH    64          // upper bound of search passes per enumeration
 #define TEMP_UNKNOWN          -500        // temperature (1/10 degC) of a sensor that was not read yet
+#define OW_RESCAN_S           86400       // the bus is enumerated again after 24 h
+
+// failed reads and the last good value of each sensor (vdm::filterTemperature)
+static vdm::TempTrack temptrack[MAXONEWIRECNT];
+static uint32_t scanAgeS = 0;             // seconds since the last enumeration
+static uint32_t scanSecondMs = 0;         // millis() of the last second counted in scanAgeS
 
 
 void printAddress(DeviceAddress deviceAddress)
@@ -104,6 +111,7 @@ void setDeviceAddress() {
             if (memcmp(tempsensors[ds18].address, addr, sizeof(DeviceAddress)) != 0) {
               memcpy(tempsensors[ds18].address, addr, sizeof(DeviceAddress));
               tempsensors[ds18].temperature = TEMP_UNKNOWN;
+              temptrack[ds18] = vdm::TempTrack();
             }
             #ifdef tempDebug
               printAddress(tempsensors[ds18].address);       
@@ -127,6 +135,8 @@ void setDeviceAddress() {
     noOfDevices = devices;
     noOfDS18Devices = ds18;
     noOfDS2438Devices = ds2438;
+    scanAgeS = 0;
+    scanSecondMs = millis();
 
     #ifdef tempDebug
       COMM_DBG.print("Found "); 
@@ -169,7 +179,6 @@ void temperature_loop() {
     static int devDS2438Cnt = 0;
     static unsigned int timer = 0;
 
-    float temp = 0;
     float v = 0;
 
   switch (tempstate) {
@@ -185,6 +194,8 @@ void temperature_loop() {
 
     case T_IDLE:    
 
+              // new sensors appear without a stons, only while no motor runs (lock)
+              if (temp_cmd == TEMP_CMD_NONE && lock == 0 && ow_scan_age_s() >= OW_RESCAN_S) temp_cmd = TEMP_CMD_NEWSEARCH;
               if(temp_cmd == TEMP_CMD_NEWSEARCH) {
                 substate = 0;
                 tempstate = T_SEARCH;
@@ -218,9 +229,11 @@ void temperature_loop() {
               
     case T_OUTPUT:  
               if(devcnt < noOfDS18Devices && devcnt < MAXONEWIRECNT) {
-                // read by ROM address: bus indexes also count DS2438 devices
-                temp = sensors.getTempC(tempsensors[devcnt].address);
-                tempsensors[devcnt].temperature = round(temp*10);
+                // read by ROM address: bus indexes also count DS2438 devices; a failed read is
+                // repeated once, a failure after it keeps the last good value for 2 cycles
+                int16_t raw = sensors.getTemp(tempsensors[devcnt].address);
+                if (raw == DEVICE_DISCONNECTED_RAW) raw = sensors.getTemp(tempsensors[devcnt].address);
+                tempsensors[devcnt].temperature = vdm::filterTemperature(temptrack[devcnt], raw);
                 #ifdef tempDebug
                   COMM_DBG.print("Sensor temp ");
                   COMM_DBG.print(devcnt);
@@ -350,7 +363,10 @@ bool temp_locked(void) {
   return lock != 0;
 }
 
-// the time of the enumeration is not kept yet
 uint32_t ow_scan_age_s(void) {
-  return 0;
+  const uint32_t seconds = (millis() - scanSecondMs) / 1000;
+
+  scanSecondMs += seconds * 1000;
+  scanAgeS += seconds;
+  return scanAgeS;
 }

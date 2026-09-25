@@ -36,14 +36,19 @@
 #include "communication.h"
 #include "eeprom.h"
 #include "app.h"
+#include "sysstat.h"
 #include "vdm/line_assembler.h"
+#include "vdm/manual_enable.h"
+#include "vdm/motor_params.h"
+#include "vdm/replies_v2.h"
 #include "vdm/tokenizer.h"
 
 
 //extern HardwareSerial Serial3;
 extern void callback_app(char cmd, byte valveindex, byte pos);
+extern volatile int analog_current;			// motor.cpp: filtered motor current in 0.1 mA
 
-void WriteEEPROMBaselayout(void);
+static void WriteEEPROMBaselayout(void);
 
 //HardwareSerial Serial3(USART3);
 HardwareSerial Serial6(USART6);
@@ -52,15 +57,16 @@ HardwareSerial Serial6(USART6);
 //#define COMM_DBG				Serial3		// serial port for debugging
 //#define COMM_DBG				Serial6		// serial port for debugging
 
-
-int testmode = 0;							// flag for testmode
-
-//#define COMM_DBG				Serial3		// serial port for debugging
-//#define COMM_DBG				Serial6		// serial port for debugging
-
 #define TERM_ARG_CNT			 3			// number of allowed command arguments
 #define TERM_LINE_SIZE			128			// max length of one terminal line
 #define TERM_MAX_READ			256			// bytes taken from the terminal per call
+#define TERM_ENA_CHANNELS		6			// motor outputs ENA0..ENA5 (sena)
+
+// motor output switched on by sena: switched off by terminal_supervise() after the time or at the
+// current limit (vdm::manualEnableExpired), the valve machine gets no command meanwhile
+static bool manualActive = false;
+static uint8_t manualChannel = 0;
+static uint32_t manualStartMs = 0;
 
 static int16_t Terminal_Execute (const vdm::Tokenizer &req);
 
@@ -73,20 +79,33 @@ int16_t Terminal_Init (void) {
 	while(!COMM_DBG);
 	COMM_DBG.print("VdMot Controller "); 
 	COMM_DBG.print(FIRMWARE_VERSION);
-
-	#ifdef HARDWARE_REVISION_C1
-		COMM_DBG.println("_C1");
-	#elif HARDWARE_REVISION_C2
-		COMM_DBG.println("_C2");
-	#else
-		error "no hardware revision defined"
-	#endif
+	COMM_DBG.print("_");
+	COMM_DBG.println(HARDWARE_REVISION_TAG);
 
 	COMM_DBG.flush();
 
-	testmode = 0;
-
 	return 0;
+}
+
+
+// motor output ch (ENA0..ENA5) on or off
+static void setEnable (uint8_t ch, bool on) {
+	switch (ch) {
+		case 0: if (on) ENA0_ON(); else ENA0_OFF(); break;
+		case 1: if (on) ENA1_ON(); else ENA1_OFF(); break;
+		case 2: if (on) ENA2_ON(); else ENA2_OFF(); break;
+		case 3: if (on) ENA3_ON(); else ENA3_OFF(); break;
+		case 4: if (on) ENA4_ON(); else ENA4_OFF(); break;
+		default: if (on) ENA5_ON(); else ENA5_OFF(); break;
+	}
+}
+
+
+// ends a sena: output and valve PSU off
+static void manualOff (void) {
+	setEnable(manualChannel, false);
+	PSU_OFF();
+	manualActive = false;
 }
 
 
@@ -186,61 +205,45 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 	}
 
 
-	// set muxer
+	// set muxer (not while the valve machine works)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is("smux")) {
 		if(req.argc() == 1 && hasX) {
-			if(x==0) MUX_OFF();
+			if (!valve_idle()) COMM_DBG.println("valve machine busy");
+			else if(x==0) MUX_OFF();
 			else MUX_ON();
 		}
 	}
 
-	// set direction
+	// set direction (not while the valve machine works)
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is("sdir")) {
 		if(req.argc() == 1 && hasX) {
-			if(x==0) DIR_OFF();
+			if (!valve_idle()) COMM_DBG.println("valve machine busy");
+			else if(x==0) DIR_OFF();
 			else DIR_ON();
 		}
 	}
 
-	// set enable
+	// set enable: sena ch 1 switches the valve PSU and output ch on for at most 2 s (less when the
+	// current exceeds 60 mA), only while the valve machine is idle and not in safe mode; sena ch 0
+	// switches the output off
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is("sena")) {
-		if(req.argc() == 2 && hasX && hasY) {
-			if(x==0) {
-				if(y==0) ENA0_OFF();
-				else ENA0_ON();
+		if(req.argc() == 2 && hasX && hasY && x < TERM_ENA_CHANNELS) {
+			if (y == 0) {
+				if (manualActive && manualChannel == x) manualOff();
+				else setEnable((uint8_t) x, false);
 			}
-			else if (x==1) {
-				if(y==0) ENA1_OFF();
-				else ENA1_ON();
+			else if (!valve_idle() || sysstat_safe_mode()) COMM_DBG.println("valve machine busy");
+			else {
+				if (manualActive) manualOff();
+				manualChannel = (uint8_t) x;
+				manualStartMs = millis();
+				manualActive = true;
+				PSU_ON();
+				setEnable(manualChannel, true);
 			}
-			else if (x==2) {
-				if(y==0) ENA2_OFF();
-				else ENA2_ON();
-			}
-			else if (x==3) {
-				if(y==0) ENA3_OFF();
-				else ENA3_ON();
-			}
-			else if (x==4) {
-				if(y==0) ENA4_OFF();
-				else ENA4_ON();
-			}
-			else if (x==5) {
-				if(y==0) ENA5_OFF();
-				else ENA5_ON();
-			}
-		}
-	}
-
-	// set test mode
-	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-	else if(req.is("stm")) {
-		if(req.argc() == 1 && hasX) {
-			if(x==0) { testmode = 0; COMM_DBG.println("testmode off"); }
-			else {testmode = 1; COMM_DBG.println("testmode on"); }
 		}
 	}
 
@@ -253,8 +256,12 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 	// set eeprom layout
 	// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	else if(req.is("seteep")) {
-		WriteEEPROMBaselayout();
-		COMM_DBG.println("set eeprom layout");
+		// RAM holds fallbacks while the EEPROM could not be read: a write would destroy the stored layout
+		if (eeprom_state() == vdm::kEepStateReadFailed) COMM_DBG.println("eeprom not readable, write blocked");
+		else {
+			WriteEEPROMBaselayout();
+			COMM_DBG.println("set eeprom layout");
+		}
 	}
 
 	// save eeprom layout
@@ -349,7 +356,7 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 		COMM_DBG.print("set valve learning time to ");
 
 		if(req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32)) {
-			if( app_set_learntime(xu32) == 0) COMM_DBG.println(xu32, DEC);
+			if( comm_set_learntime(xu32) == 0) COMM_DBG.println(xu32, DEC);
 			else COMM_DBG.println("- error");
 		}
 		else {
@@ -395,12 +402,15 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 		COMM_DBG.print("got set motor characteristics request ");
 
 		if(req.argc() == 2 && hasX && hasY) {
-			vdm::MotorParams params = motor_get_params();
+			const vdm::MotorParams current = motor_get_params();
+			vdm::MotorParams params = current;
 			const uint32_t values[5] = {x, y, params.startOnPower, 0, 0};
 
 			if (vdm::applyMotorParamsRequest(params, 3, values) == vdm::ParamsRequest::Applied) {
-				motor_set_params(params);
-				eeprom_changed(EEP_CHANGED_MOTOR);
+				if (!vdm::sameMotorParams(params, current)) {
+					motor_set_params(params);
+					eeprom_changed(EEP_CHANGED_MOTOR);
+				}
 				COMM_DBG.println("- valid");
 			}
 			else COMM_DBG.println("- values out of bounds");
@@ -442,9 +452,9 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 			// 	COMM_DBG.println(x, DEC);
 			// }
 			else COMM_DBG.println(" - error");
-			
-			COMM_SER.print(APP_PRE_SETDETECTVLV);
-			COMM_SER.println(" ");
+
+			COMM_DBG.print(APP_PRE_SETDETECTVLV);
+			COMM_DBG.println(" ");
 		}
 		else COMM_DBG.println(" - error");		
 	} 
@@ -462,26 +472,27 @@ static int16_t Terminal_Execute (const vdm::Tokenizer &req) {
 }
 
 
-// the terminal's motor outputs are not supervised yet
 void terminal_supervise (void) {
+	if (manualActive && vdm::manualEnableExpired(manualStartMs, millis(), analog_current)) {
+		manualOff();
+		COMM_DBG.println("sena: output off");
+	}
 }
 
 
 bool terminal_manual_active (void) {
-	return false;
+	return manualActive;
 }
 
 
 /**
-  * @brief  Write EEPROM Baselayout
+  * @brief  Write EEPROM Baselayout: the base fields get their defaults, written by eepromloop()
   * @param  None
   * @retval None
   */
-void WriteEEPROMBaselayout(void) {
+static void WriteEEPROMBaselayout(void) {
 
 	COMM_DBG.println("write EEPROM layout...");
-
-	eeprom_fill ();		// write eeprom mark
 
 	eep_content.b_slave = 0;
 	strncpy(eep_content.descr, SYSTEM_NAME, sizeof(eep_content.descr));
@@ -502,5 +513,5 @@ void WriteEEPROMBaselayout(void) {
 //	strcpy(eep.sensors[0].descr, "Sensor 1");
 //	eep.sensors[0].modbusreg = 0x1111;
 
-	eeprom_write_layout (&eep_content);
+	eeprom_changed(EEP_CHANGED_ALL);
 }
