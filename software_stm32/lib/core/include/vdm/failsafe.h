@@ -17,4 +17,16 @@ bool failsafePctValid(uint32_t v);
 // loads kFailsafeDefaultPct.
 uint8_t sanitizeFailsafePct(uint8_t v);
 
+// gvlvy field 23 and gstax failsafeMask: where a valve is driven to and why
+enum class DriveSource : uint8_t { Target = 0, LeaseFailsafe = 1, BlockedFailsafe = 2 };
+struct Drive {
+  uint8_t position;
+  DriveSource source;
+};
+
+// Hold (255) -> target; blocked (9) -> failsafe; failed (4) or open circuit (6)
+// -> target (not driven); lease expired and no assembly hold -> failsafe;
+// otherwise the target.
+Drive driveTarget(uint8_t target, uint8_t failsafePct, uint8_t status, bool leaseExpired, bool assemblyHold);
+
 }  // namespace vdm

@@ -15,4 +15,14 @@ uint16_t sanitizeLearnMovements(uint16_t stored) {
              : kLearnMovementsDefault;
 }
 
+uint32_t effectiveLearnTime(uint32_t storedS, bool clientSeen) {
+  return (storedS == 0 && !clientSeen) ? kLearnTimeDefaultS : storedS;
+}
+
+bool countdown(uint32_t& remaining, uint32_t elapsedS) {
+  if (remaining <= elapsedS) return true;
+  remaining -= elapsedS;
+  return false;
+}
+
 }  // namespace vdm

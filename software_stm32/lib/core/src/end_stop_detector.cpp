@@ -11,12 +11,15 @@ constexpr int32_t kRawLimit = 100000;
 
 }  // namespace
 
-void EndStopDetector::arm(int32_t low, int32_t high) {
+void EndStopDetector::arm(int32_t low, int32_t high, InrushMode inrush) {
   low_ = low;
   high_ = high;
   peak_ = 0;
   tripCurrent_ = 0;
   trip_ = Trip::None;
+  inrush_ = inrush;
+  inrushSeen_ = false;
+  inrushTrip_ = false;
 }
 
 EndStopDetector::Trip EndStopDetector::sample(int32_t raw) {
@@ -38,7 +41,29 @@ EndStopDetector::Trip EndStopDetector::sample(int32_t raw) {
     overCount_ = 0;
   }
 
+  // inrush limit on the raw samples (the filter is still held at 0)
+  bool inrushOver = false;
+  if (!settled && inrush_ != InrushMode::Off) {
+    if (absolute(raw) > kInrushLimit) {
+      if (inrushOver_ < 255) inrushOver_++;
+    } else {
+      inrushOver_ = 0;
+    }
+    inrushOver = inrushOver_ > kInrushConsecutive;
+    if (inrushOver) inrushSeen_ = true;
+  }
+
   Trip t = Trip::None;
+  if (inrushOver && inrush_ == InrushMode::Enforce) {
+    t = Trip::Hard;
+    if (absolute(raw) > peak_) peak_ = absolute(raw);
+    if (trip_ == Trip::None) {
+      trip_ = t;
+      tripCurrent_ = raw;
+      inrushTrip_ = true;
+    }
+    return t;
+  }
   if (magnitude > kHardLimit) {
     t = Trip::Hard;
   } else if (overCount_ > kSafetyConsecutive) {
@@ -58,6 +83,7 @@ void EndStopDetector::idle() {
   current_ = 0;
   debounce_ = 0;
   overCount_ = 0;
+  inrushOver_ = 0;
 }
 
 }  // namespace vdm

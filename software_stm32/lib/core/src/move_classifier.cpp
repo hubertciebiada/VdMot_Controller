@@ -5,7 +5,11 @@ namespace vdm {
 namespace {
 
 bool endedEarly(const MoveRequest& req, uint32_t counted) {
-  if (req.requestedCounts != kRunToEndStop || req.learnedTravel == 0) return false;
+  if (req.requestedCounts != kRunToEndStop) {
+    return req.partialEarlyCheck &&
+           static_cast<uint64_t>(counted) * 100 < static_cast<uint64_t>(req.requestedCounts) * kPartialEarlyPct;
+  }
+  if (req.learnedTravel == 0) return false;
   if (req.expectedTravelPct < kEarlyCheckMinTravelPct) return false;
   const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;
   const uint64_t expected = static_cast<uint64_t>(req.learnedTravel) * pct / 100;
@@ -55,6 +59,26 @@ MoveResult makeMoveResult(const MoveRequest& req, StopReason reason, uint32_t co
   r.peakCurrent = peak <= 0 ? 0 : saturate16(static_cast<uint64_t>(peak));
   r.durationMs = durationMs;
   return r;
+}
+
+uint8_t positionAfterEndStop(uint8_t start, uint8_t dir, uint16_t requestedCounts, uint32_t counted,
+                             uint32_t scaler) {
+  if (requestedCounts == kRunToEndStop) return dir == kDirClose ? 0 : 100;
+  const uint32_t pct = scaler == 0 ? 0 : counted / scaler;
+  const uint32_t delta = pct > 100 ? 100 : pct;
+  if (dir == kDirClose) return delta >= start ? 0 : static_cast<uint8_t>(start - delta);
+  const uint32_t sum = start + delta;
+  return sum > 100 ? 100 : static_cast<uint8_t>(sum);
+}
+
+bool EarlyStopRun::onMove(bool partialEarly) {
+  if (!partialEarly) {
+    run_ = 0;
+    return false;
+  }
+  if (++run_ < 2) return false;
+  run_ = 0;
+  return true;
 }
 
 }  // namespace vdm

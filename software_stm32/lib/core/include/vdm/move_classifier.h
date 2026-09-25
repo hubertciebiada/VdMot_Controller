@@ -50,7 +50,15 @@ struct MoveRequest {
   uint8_t expectedTravelPct;
   // Full stroke learned by the last successful calibration, 0 = unknown.
   uint32_t learnedTravel;
+  // A partial move (requestedCounts != kRunToEndStop) is checked for an
+  // early end stop: true only for normal partial moves (not for service moves,
+  // calibration strokes and the moves of a failed or blocked valve).
+  bool partialEarlyCheck = false;
 };
+
+// A partial move that ends at an end stop before this share of the requested
+// pulses stopped early.
+constexpr uint8_t kPartialEarlyPct = 80;
 
 struct MoveResult {
   uint8_t dir;
@@ -68,11 +76,32 @@ struct MoveClassification {
 
 // Early: a move to an end stop with expectedTravelPct >= kEarlyCheckMinTravelPct
 // that ended at an end stop (threshold or safety limit) after less than 50 % of
-// learnedTravel * expectedTravelPct / 100.
-// A safety stop keeps reason SafetyOvercurrent but may still be early.
+// learnedTravel * expectedTravelPct / 100; a partial move with
+// partialEarlyCheck that ended at an end stop before kPartialEarlyPct % of the
+// requested pulses. A safety stop keeps reason SafetyOvercurrent but may still
+// be early.
 MoveClassification classifyMove(const MoveRequest& req, MotorStop stop, uint32_t counted);
 
 MoveResult makeMoveResult(const MoveRequest& req, StopReason reason, uint32_t counted,
                           int32_t peak, uint32_t durationMs);
+
+// Position after a move that ended at an end stop: 100 / 0 for a move to the
+// end stop (kRunToEndStop); for a partial move the start moved by the counted
+// pulses (counted / scaler %, the start when the scaler is 0), clamped to 0..100.
+uint8_t positionAfterEndStop(uint8_t start, uint8_t dir, uint16_t requestedCounts, uint32_t counted,
+                             uint32_t scaler);
+
+// Early partial stops in a row of one valve: the second one requests a calibration.
+class EarlyStopRun {
+ public:
+  // partialEarly: this move stopped early; true when it is the second in a row
+  // (the run starts again); any other move ends the run
+  bool onMove(bool partialEarly);
+  void reset() { run_ = 0; }
+  uint8_t count() const { return run_; }
+
+ private:
+  uint8_t run_ = 0;
+};
 
 }  // namespace vdm

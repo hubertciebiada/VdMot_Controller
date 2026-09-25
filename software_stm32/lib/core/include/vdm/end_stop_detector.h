@@ -20,6 +20,15 @@ class EndStopDetector {
   static constexpr uint8_t kSafetyConsecutive = 10;
   // Hard limit: the first filtered sample above it trips.
   static constexpr int32_t kHardLimit = 1000;
+  // Inrush limit (hardware tuning values): during the inrush time more than
+  // kInrushConsecutive consecutive raw samples above kInrushLimit are a short
+  // or a hard stall at the start (|raw| saturates near 2824).
+  static constexpr int32_t kInrushLimit = 2500;
+  static constexpr uint8_t kInrushConsecutive = 20;
+
+  // What the inrush limit does (vdm::kProtectEnforce, protection guard):
+  // Off, Report (only inrushSeen()), Enforce (trips Hard, inrushTrip()).
+  enum class InrushMode : uint8_t { Off, Report, Enforce };
 
   enum class Trip : uint8_t {
     None = 0,
@@ -28,9 +37,10 @@ class EndStopDetector {
     Hard,    // hard limit exceeded
   };
 
-  // Sets the end-stop bounds for the next move and clears the per-move
-  // statistics (peak, trip). Call before the motor is switched on.
-  void arm(int32_t low, int32_t high);
+  // Sets the end-stop bounds and the inrush mode for the next move and clears
+  // the per-move statistics (peak, trip, inrush). Call before the motor is
+  // switched on.
+  void arm(int32_t low, int32_t high, InrushMode inrush = InrushMode::Off);
 
   // One sample while the motor runs. Returns the trip condition of this
   // sample (Hard before Safety before Bound); the first trip of a move is
@@ -49,6 +59,10 @@ class EndStopDetector {
   // Filtered current at the first trip since arm().
   int32_t tripCurrent() const { return tripCurrent_; }
   uint8_t overCount() const { return overCount_; }
+  // the inrush limit was exceeded since arm() (Report and Enforce)
+  bool inrushSeen() const { return inrushSeen_; }
+  // the first trip since arm() was the inrush limit (Enforce)
+  bool inrushTrip() const { return inrushTrip_; }
 
  private:
   int32_t low_ = 0;
@@ -58,6 +72,10 @@ class EndStopDetector {
   int32_t tripCurrent_ = 0;
   uint16_t debounce_ = 0;
   uint8_t overCount_ = 0;
+  uint8_t inrushOver_ = 0;
+  InrushMode inrush_ = InrushMode::Off;
+  bool inrushSeen_ = false;
+  bool inrushTrip_ = false;
   Trip trip_ = Trip::None;
 };
 
