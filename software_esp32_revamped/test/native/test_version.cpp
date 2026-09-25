@@ -234,7 +234,7 @@ TEST_CASE("version: build constants") {
   CHECK(compareVersion(ver("2.0.0-revamped_C2"), min) >= 0);
 }
 
-TEST_CASE("version: stmSupport against the 1.4.0 minimum (W13.1)") {
+TEST_CASE("version: stmSupport against the 1.4.0 minimum") {
   CHECK(stmSupport(ver("1.3.7_C2")) == StmSupport::TooOld);
   CHECK(stmSupport(ver("1.3.99")) == StmSupport::TooOld);
   CHECK(stmSupport(ver("0.9.9")) == StmSupport::TooOld);

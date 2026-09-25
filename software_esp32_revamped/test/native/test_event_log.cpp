@@ -832,7 +832,7 @@ TEST_CASE("event JSON") {
   CHECK_FALSE(writeEventJson(small, e));
 }
 
-TEST_CASE("MQTT event JSON: single and aggregate (W14-3)") {
+TEST_CASE("MQTT event JSON: single and aggregate") {
   Event e = ev(EventCode::ValveStale, 2, 60, 0, "", Severity::Warning);
   e.seq = 7;
   e.uptimeS = 12;
@@ -902,7 +902,7 @@ TEST_CASE("formatEventMessageMulti") {
   CHECK(formatEventMessageMulti(e, 0x0003, cut, 0) == 0);
 }
 
-TEST_CASE("formatUtcTimestamp (E29-2)") {
+TEST_CASE("formatUtcTimestamp") {
   char buf[40];
   CHECK(formatUtcTimestamp(0, buf, sizeof buf) == 25);
   CHECK(std::string(buf) == "1970-01-01T00:00:00+00:00");

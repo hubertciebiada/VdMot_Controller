@@ -255,7 +255,7 @@ TEST_CASE("flasher: phase names, legacy status codes and error names") {
 
 // ================================================================ board check
 
-TEST_CASE("flasher: board check table and tag rule (W8.2)") {
+TEST_CASE("flasher: board check table and tag rule") {
   CHECK(checkBoard("", "C2") == BoardCheck::Untagged);
   CHECK(checkBoard("", "") == BoardCheck::Untagged);
   CHECK(checkBoard(nullptr, "C2") == BoardCheck::Untagged);

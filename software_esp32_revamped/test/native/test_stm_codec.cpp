@@ -1403,7 +1403,7 @@ std::string gstaxLine(std::initializer_list<std::pair<size_t, const char*>> repl
 
 }  // namespace
 
-TEST_CASE("codec: gvlvy golden (K2.1)") {
+TEST_CASE("codec: gvlvy golden") {
   Reply r;
   dirty(r);
   REQUIRE(parse(kGvlvyGolden, r) == ParseStatus::Ok);
@@ -1504,7 +1504,7 @@ TEST_CASE("codec: gvlvx stays at exactly 19 fields without v3 values") {
   CHECK(parse(std::string(kGvlvyGolden).replace(0, 5, "gvlvx"), r) == ParseStatus::BadArgCount);
 }
 
-TEST_CASE("codec: gstax golden (K2.2)") {
+TEST_CASE("codec: gstax golden with 23 values") {
   Reply r;
   dirty(r);
   REQUIRE(parse(kGstaxGolden, r) == ParseStatus::Ok);
@@ -1716,7 +1716,7 @@ TEST_CASE("codec: sfspo and sstop indexed results") {
   }
 }
 
-TEST_CASE("codec: svmov signed index (E11.1)") {
+TEST_CASE("codec: svmov signed index") {
   Reply r;
   REQUIRE(parse("svmov -1 err 1", r) == ParseStatus::Ok);
   CHECK(r.cmd == Cmd::Svmov);
@@ -1894,7 +1894,7 @@ TEST_CASE("codec: replyMatches for sensor count/list/data") {
   CHECK(replyMatches(vdata, parsed(std::string("gowvd ") + kId3 + " 12")));
 }
 
-TEST_CASE("codec: replyMatches with an expected sensor id (E9.1)") {
+TEST_CASE("codec: replyMatches with an expected sensor id") {
   RequestLine data, vdata;
   REQUIRE(buildTempData(4, data));
   REQUIRE(buildVoltData(4, vdata));

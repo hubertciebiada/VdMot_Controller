@@ -1,4 +1,4 @@
-// failsafe: constants, ranges, the regulator rule (K1.1) and every name.
+// failsafe: constants, ranges, the regulator rule and every name.
 #include <string>
 
 #include "doctest.h"

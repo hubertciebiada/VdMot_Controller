@@ -1,4 +1,4 @@
-// Failsafe lease (K1): shared constants, the regulator-alive rule and the
+// Failsafe lease: shared constants, the regulator-alive rule and the
 // lease status the STM task publishes. Hardware-free.
 //
 // The STM drives every valve to its failsafe position when nobody renewed

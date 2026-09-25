@@ -513,7 +513,7 @@ std::string haId(const char* in) {
 
 }  // namespace
 
-TEST_CASE("common: buildHaId (E20-1)") {
+TEST_CASE("common: buildHaId maps names to HA ids") {
   CHECK(haId("VdMot") == "VdMot");
   CHECK(haId("Dom 1") == "Dom_1");
   CHECK(haId("\xC5\x81" "azienka") == "Lazienka");      // Łazienka
