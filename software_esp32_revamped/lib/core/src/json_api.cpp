@@ -37,7 +37,8 @@ const char* resetReasonName(uint8_t r) {
 // HealthFlag bit order.
 const char* const kHealthNames[] = {"blocked",     "failed",      "noValve",
                                     "calibRetries", "earlyStop",   "cmdRejected",
-                                    "stale",       "targetUnconfirmed", "tempFailed"};
+                                    "stale",       "targetUnconfirmed", "tempFailed",
+                                    "failsafe",    "strokeShort"};
 constexpr uint8_t kHealthCount = sizeof kHealthNames / sizeof kHealthNames[0];
 
 void ipValue(JsonWriter& jw, const char* k, uint32_t ip) {
@@ -586,6 +587,16 @@ const RouteDef kRoutes[] = {
     {"mqtt/reconnect", HttpMethod::Post, ApiRoute::MqttReconnect},
     {"mqtt/discovery", HttpMethod::Post, ApiRoute::MqttDiscovery},
     {"log", HttpMethod::Get, ApiRoute::LogDownload},
+    {"health", HttpMethod::Get, ApiRoute::Health},
+    {"valves/#/stop", HttpMethod::Post, ApiRoute::ValveStop},
+    {"valves/stop", HttpMethod::Post, ApiRoute::StopAll},
+    {"stm/safe-mode/leave", HttpMethod::Post, ApiRoute::StmSafeModeLeave},
+    {"system/network/confirm", HttpMethod::Post, ApiRoute::NetConfirm},
+    {"system/network/revert", HttpMethod::Post, ApiRoute::NetRevert},
+    {"files", HttpMethod::Get, ApiRoute::Files},
+    {"files", HttpMethod::Delete, ApiRoute::FileDelete},
+    {"import-report", HttpMethod::Get, ApiRoute::ImportReport},
+    {"import-report", HttpMethod::Delete, ApiRoute::ImportReportDismiss},
 };
 
 constexpr size_t kNameMax = sizeof(RouteMatch::name) - 1;
@@ -599,6 +610,7 @@ bool isReadRoute(ApiRoute r) {
     case ApiRoute::Events:
     case ApiRoute::Motor:
     case ApiRoute::StmFlashStatus:
+    case ApiRoute::ImportReport:
       return true;
     default:
       return false;
@@ -672,7 +684,7 @@ RouteMatch matchApiRoute(HttpMethod method, const char* path, size_t len, bool p
     pathKnown = true;
     if (r.method != method) continue;
     m.route = r.route;
-    m.needsAuth = !(isReadRoute(r.route) && !protectRead);
+    m.needsAuth = r.route != ApiRoute::Health && !(isReadRoute(r.route) && !protectRead);
     return m;
   }
   if (pathKnown) result.route = ApiRoute::MethodNotAllowed;

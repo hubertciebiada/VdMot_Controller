@@ -12,9 +12,10 @@ namespace {
 const char* const kCmdNames[kCmdCount] = {
     "",      "stgtp", "gtgtp", "gvlvd", "gvlst", "gonec", "goned", "gvlon",  "gowvc", "gowvd", "stons",
     "stvls", "masns", "staop", "staln", "stdet", "stlnm", "gtlnm", "smotc",  "gmotc", "gvers", "ghwin",
-    "eepst", "reset", "gproto", "gvlvx", "gprof", "svmov", "scalx", "gcalx", "gstat",
+    "eepst", "reset", "gproto", "gvlvx", "gprof", "svmov", "scalx", "gcalx", "gstat", "gvlvy",
+    "gstax", "slhbt", "slcfg", "sfspo", "glcfg", "sstop", "gtlnt", "ssafe", "stlnt",
 };
-static_assert(static_cast<uint8_t>(Cmd::Gstat) + 1 == kCmdCount, "kCmdNames out of sync with Cmd");
+static_assert(static_cast<uint8_t>(Cmd::Stlnt) + 1 == kCmdCount, "kCmdNames out of sync with Cmd");
 
 // Copy source for resetting a Reply without a 1.3 KB temporary on the stack.
 const Reply kEmptyReply{};
@@ -345,10 +346,21 @@ ParseStatus parseVersionReply(const Token* a, size_t argc, Reply& r) {
   return argc == 2 ? readU(a[1], 0, kU32, r.build) : ParseStatus::Ok;
 }
 
-constexpr size_t kValveExFields = 19;
+// Fields a later STM appends to a v3 reply: strict decimal, ignored.
+ParseStatus readExtras(const Token* a, size_t from, size_t argc) {
+  for (size_t i = from; i < argc; ++i) {
+    uint32_t v{};
+    const ParseStatus st = readU(a[i], 0, kU32, v);
+    if (st != ParseStatus::Ok) return st;
+  }
+  return ParseStatus::Ok;
+}
 
-ParseStatus parseValveEx(const Token* a, size_t argc, ValveEx& x) {
-  if (argc != kValveExFields) return ParseStatus::BadArgCount;
+constexpr size_t kValveExFields = 19;
+constexpr size_t kValveExV3Fields = 25;
+
+// The 19 gvlvx fields, also the first 19 of gvlvy.
+ParseStatus readValveEx(const Token* a, ValveEx& x) {
   uint32_t raw{};
   uint32_t cal{};
   uint32_t dir{};
@@ -387,6 +399,34 @@ ParseStatus parseValveEx(const Token* a, size_t argc, ValveEx& x) {
   return ParseStatus::Ok;
 }
 
+ParseStatus parseValveEx(const Token* a, size_t argc, ValveEx& x) {
+  if (argc != kValveExFields) return ParseStatus::BadArgCount;
+  return readValveEx(a, x);
+}
+
+ParseStatus parseValveExV3(const Token* a, size_t argc, ValveEx& x) {
+  if (argc < kValveExV3Fields) return ParseStatus::BadArgCount;
+  ParseStatus st = readValveEx(a, x);
+  if (st != ParseStatus::Ok) return st;
+  uint32_t fsPct{};
+  const Field f[] = {
+      {FieldType::U16, &x.flags, 0, kU16},
+      {FieldType::U8, &x.fault, 0, kU8},
+      {FieldType::U32, &fsPct, 0, kU8},
+      {FieldType::U8, &x.drive, 0, 100},
+      {FieldType::U32, &x.retryS, 0, kU32},
+      {FieldType::U8, &x.retries, 0, kU8},
+  };
+  static_assert(kValveExFields + sizeof f / sizeof *f == kValveExV3Fields,
+                "one table row per gvlvy field");
+  st = readFields(a + kValveExFields, f, kValveExV3Fields - kValveExFields);
+  if (st != ParseStatus::Ok) return st;
+  if (!failsafePctValid(fsPct)) return ParseStatus::OutOfRange;
+  x.fsPct = static_cast<uint8_t>(fsPct);
+  x.v3 = true;
+  return readExtras(a, kValveExV3Fields, argc);
+}
+
 ParseStatus parseProfile(const Token* a, size_t argc, Profile& p) {
   if (argc < 2) return ParseStatus::BadArgCount;
   uint32_t v{};
@@ -415,21 +455,26 @@ ParseStatus parseProfile(const Token* a, size_t argc, Profile& p) {
   return ParseStatus::Ok;
 }
 
-ParseStatus parseServiceMove(const Token* a, size_t argc, ServiceMoveReply& s) {
+// "<cmd> <idx> ok" / "<cmd> <idx> err <code>". idx -1..11, or also 255
+// (all valves) when allowAll; -1 (the STM could not read the index) only
+// with an error.
+ParseStatus parseIndexed(const Token* a, size_t argc, bool allowAll, IndexedResult& res) {
   if (argc != 2 && argc != 3) return ParseStatus::BadArgCount;
-  uint32_t v{};
-  ParseStatus st = readU(a[0], 0, kValveMax, v);
+  int32_t v{};
+  const int32_t max = allowAll ? static_cast<int32_t>(kAllValves) : static_cast<int32_t>(kValveMax);
+  ParseStatus st = readI(a[0], -1, max, v);
   if (st != ParseStatus::Ok) return st;
-  s.valve = static_cast<uint8_t>(v);
+  if (v > static_cast<int32_t>(kValveMax) && v != kAllValves) return ParseStatus::OutOfRange;
+  res.index = static_cast<int16_t>(v);
   if (argc == 2) {
-    if (!tokenIs(a[1], "ok")) return ParseStatus::BadFormat;
-    s.ok = true;
+    if (!tokenIs(a[1], "ok") || v < 0) return ParseStatus::BadFormat;
+    res.ok = true;
     return ParseStatus::Ok;
   }
   if (!tokenIs(a[1], "err")) return ParseStatus::BadFormat;
   uint32_t code{};
   st = readU(a[2], 0, kU16, code);
-  s.errorCode = static_cast<uint16_t>(code);
+  res.errorCode = static_cast<uint16_t>(code);
   return st;
 }
 
@@ -443,14 +488,95 @@ ParseStatus parseBreakaway(const Token* a, size_t argc, Breakaway& b) {
   return readFields(a, f, 3);
 }
 
-ParseStatus parseStatus(const Token* a, size_t argc, StmStatus& s) {
-  if (argc != 6) return ParseStatus::BadArgCount;
+constexpr size_t kStatusFields = 6;
+constexpr size_t kStatusV3Fields = 23;
+
+// The 6 gstat fields, also the first 6 of gstax.
+ParseStatus readStatus(const Token* a, StmStatus& s) {
   const Field f[] = {
       {FieldType::U32, &s.uptimeS, 0, kU32},    {FieldType::U32, &s.resets, 0, kU32},
       {FieldType::U32, &s.bootReason, 0, kU32}, {FieldType::U32, &s.rxOverflow, 0, kU32},
       {FieldType::U32, &s.parseErrors, 0, kU32}, {FieldType::U8, &s.eepState, 0, kU8},
   };
-  return readFields(a, f, 6);
+  static_assert(sizeof f / sizeof *f == kStatusFields, "one table row per gstat field");
+  return readFields(a, f, kStatusFields);
+}
+
+ParseStatus parseStatus(const Token* a, size_t argc, StmStatus& s) {
+  if (argc != kStatusFields) return ParseStatus::BadArgCount;
+  return readStatus(a, s);
+}
+
+ParseStatus parseStatusV3(const Token* a, size_t argc, StmStatus& s) {
+  if (argc < kStatusV3Fields) return ParseStatus::BadArgCount;
+  ParseStatus st = readStatus(a, s);
+  if (st != ParseStatus::Ok) return st;
+  uint32_t lease{};
+  const Field f[] = {
+      {FieldType::U32, &lease, 0, static_cast<uint32_t>(LeaseState::Expired)},
+      {FieldType::U32, &s.leaseRemainS, 0, kU32},
+      {FieldType::Bool, &s.leaseClient, 0, 1},
+      {FieldType::U16, &s.leaseTimeoutMin, 0, kFailsafeTimeoutMaxMin},
+      {FieldType::U16, &s.failsafeMask, 0, (1u << kValveCount) - 1u},
+      {FieldType::Bool, &s.safeMode, 0, 1},
+      {FieldType::U8, &s.wdgResets, 0, kU8},
+      {FieldType::U32, &s.uartOre, 0, kU32},
+      {FieldType::U32, &s.uartFe, 0, kU32},
+      {FieldType::U32, &s.uartNe, 0, kU32},
+      {FieldType::U32, &s.rxDropped, 0, kU32},
+      {FieldType::U8, &s.cfgFlags, 0, kU8},
+      {FieldType::U32, &s.cfgEvents, 0, kU32},
+      {FieldType::U32, &s.eepWrites, 0, kU32},
+      {FieldType::U32, &s.tempAgeS, 0, kU32},
+      {FieldType::U32, &s.owScanAgeS, 0, kU32},
+      {FieldType::U8, &s.sysFlags, 0, kU8},
+  };
+  static_assert(kStatusFields + sizeof f / sizeof *f == kStatusV3Fields,
+                "one table row per gstax field");
+  st = readFields(a + kStatusFields, f, kStatusV3Fields - kStatusFields);
+  if (st != ParseStatus::Ok) return st;
+  s.lease = static_cast<LeaseState>(lease);
+  s.v3 = true;
+  return readExtras(a, kStatusV3Fields, argc);
+}
+
+constexpr size_t kLeaseConfigFields = 1 + kValveCount;
+
+ParseStatus parseLeaseConfig(const Token* a, size_t argc, LeaseConfigReply& c) {
+  if (argc < kLeaseConfigFields) return ParseStatus::BadArgCount;
+  uint32_t v{};
+  ParseStatus st = readU(a[0], 0, kFailsafeTimeoutMaxMin, v);
+  if (st != ParseStatus::Ok) return st;
+  c.timeoutMin = static_cast<uint16_t>(v);
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    st = readU(a[1 + i], 0, kU8, v);
+    if (st != ParseStatus::Ok) return st;
+    if (!failsafePctValid(v)) return ParseStatus::OutOfRange;
+    c.failsafePct[i] = static_cast<uint8_t>(v);
+  }
+  return readExtras(a, kLeaseConfigFields, argc);
+}
+
+constexpr size_t kHeartbeatFields = 2;
+
+// "slhbt <lease> <remainS>" or the error form "slhbt err".
+ParseStatus parseHeartbeat(const Token* a, size_t argc, Reply& r) {
+  if (argc == 1) {
+    if (!tokenIs(a[0], "err")) return ParseStatus::BadFormat;
+    r.ack.error = true;
+    return ParseStatus::Ok;
+  }
+  if (argc < kHeartbeatFields) return ParseStatus::BadArgCount;
+  uint32_t lease{};
+  const Field f[] = {
+      {FieldType::U32, &lease, 0, static_cast<uint32_t>(LeaseState::Expired)},
+      {FieldType::U32, &r.heartbeat.remainS, 0, kU32},
+  };
+  static_assert(sizeof f / sizeof *f == kHeartbeatFields, "one table row per slhbt field");
+  const ParseStatus st = readFields(a, f, kHeartbeatFields);
+  if (st != ParseStatus::Ok) return st;
+  r.heartbeat.lease = static_cast<LeaseState>(lease);
+  return readExtras(a, kHeartbeatFields, argc);
 }
 
 // "<cmd>" or "<cmd> err" (smotc) / "<cmd> ok|err" (scalx).
@@ -483,10 +609,13 @@ ParseStatus parsePayload(Cmd cmd, const Token* a, size_t argc, Reply& r) {
     case Cmd::Stdet:
     case Cmd::Stlnm:
     case Cmd::Reset:
+    case Cmd::Stlnt:
       return parseAck(argc);
     case Cmd::Smotc:
       return parseOkErr(a, argc, true, r.ack);
     case Cmd::Scalx:
+    case Cmd::Slcfg:
+    case Cmd::Ssafe:
       return parseOkErr(a, argc, false, r.ack);
     case Cmd::Stvls:
       return parseSingle(a, argc, 0, kValveMax, r.ack.valve);
@@ -529,14 +658,36 @@ ParseStatus parsePayload(Cmd cmd, const Token* a, size_t argc, Reply& r) {
     case Cmd::Gprof:
       return parseProfile(a, argc, r.profile);
     case Cmd::Svmov:
-      return parseServiceMove(a, argc, r.serviceMove);
+      return parseIndexed(a, argc, false, r.serviceMove);
     case Cmd::Gcalx:
       return parseBreakaway(a, argc, r.breakaway);
     case Cmd::Gstat:
       return parseStatus(a, argc, r.status);
+    case Cmd::Gvlvy:
+      return parseValveExV3(a, argc, r.valveEx);
+    case Cmd::Gstax:
+      return parseStatusV3(a, argc, r.status);
+    case Cmd::Slhbt:
+      return parseHeartbeat(a, argc, r);
+    case Cmd::Sfspo:
+      return parseIndexed(a, argc, true, r.failsafe);
+    case Cmd::Glcfg:
+      return parseLeaseConfig(a, argc, r.leaseConfig);
+    case Cmd::Sstop:
+      return parseIndexed(a, argc, true, r.stop);
+    case Cmd::Gtlnt:
+      return parseSingle(a, argc, 0, kU32, r.learnTime);
     default:
       return ParseStatus::UnknownCommand;
   }
+}
+
+bool indexMatches(const IndexedResult& r, uint8_t valve) { return r.index < 0 || r.index == valve; }
+
+// A valid sensor reading answers the request only with the expected id
+// (unless the id at that bus index is unknown).
+bool sensorMatches(bool valid, const OneWireId& id, const OneWireId& expect) {
+  return !valid || isZero(expect) || id == expect;
 }
 
 }  // namespace
@@ -558,10 +709,16 @@ Cmd cmdFromName(const char* s, size_t len) {
   return Cmd::None;
 }
 
-bool cmdIsV2(Cmd c) {
+uint8_t cmdMinProtocol(Cmd c) {
   const uint8_t i = static_cast<uint8_t>(c);
-  return i >= static_cast<uint8_t>(Cmd::Gproto) && i < kCmdCount;
+  if (i == 0 || i >= kCmdCount) return 0;
+  if (c == Cmd::Stlnt) return 1;
+  if (i >= static_cast<uint8_t>(Cmd::Gvlvy)) return 3;
+  if (i >= static_cast<uint8_t>(Cmd::Gproto)) return 2;
+  return 1;
 }
+
+bool cmdIsV2(Cmd c) { return cmdMinProtocol(c) >= 2; }
 
 bool cmdIsIdempotent(Cmd c) {
   switch (c) {
@@ -588,6 +745,16 @@ bool cmdIsIdempotent(Cmd c) {
     case Cmd::Scalx:
     case Cmd::Gcalx:
     case Cmd::Gstat:
+    case Cmd::Gvlvy:
+    case Cmd::Gstax:
+    case Cmd::Slhbt:
+    case Cmd::Slcfg:
+    case Cmd::Sfspo:
+    case Cmd::Glcfg:
+    case Cmd::Sstop:
+    case Cmd::Gtlnt:
+    case Cmd::Ssafe:
+    case Cmd::Stlnt:
       return true;
     default:
       return false;
@@ -675,7 +842,14 @@ bool buildGetVersion(RequestLine& out) { return buildBare(Cmd::Gvers, out); }
 bool buildGetHwId(RequestLine& out) { return buildBare(Cmd::Ghwin, out); }
 bool buildEepromState(RequestLine& out) { return buildBare(Cmd::Eepst, out); }
 bool buildSoftReset(RequestLine& out) { return buildBare(Cmd::Reset, out); }
-bool buildGetProto(RequestLine& out) { return buildBare(Cmd::Gproto, out); }
+
+// A v1 STM never answers gproto: the request is a probe.
+bool buildGetProto(RequestLine& out) {
+  const bool ok = buildBare(Cmd::Gproto, out);
+  out.probe = ok;
+  return ok;
+}
+
 bool buildValveEx(uint8_t valve, RequestLine& out) { return buildValveArg(Cmd::Gvlvx, valve, out); }
 bool buildProfile(uint8_t valve, RequestLine& out) { return buildValveArg(Cmd::Gprof, valve, out); }
 
@@ -697,6 +871,42 @@ bool buildSetBreakaway(const Breakaway& b, RequestLine& out) {
 
 bool buildGetBreakaway(RequestLine& out) { return buildBare(Cmd::Gcalx, out); }
 bool buildGetStatus(RequestLine& out) { return buildBare(Cmd::Gstat, out); }
+
+bool buildValveExV3(uint8_t valve, RequestLine& out) { return buildValveArg(Cmd::Gvlvy, valve, out); }
+bool buildGetStatusV3(RequestLine& out) { return buildBare(Cmd::Gstax, out); }
+
+bool buildHeartbeat(bool alive, RequestLine& out) {
+  const uint32_t v = alive ? 1u : 0u;
+  return buildNumeric(Cmd::Slhbt, kNoValve, static_cast<uint16_t>(v), &v, 1, out);
+}
+
+bool buildSetLeaseTimeout(uint32_t minutes, RequestLine& out) {
+  if (!leaseTimeoutValid(minutes)) return fail(out);
+  return buildNumeric(Cmd::Slcfg, kNoValve, static_cast<uint16_t>(minutes), &minutes, 1, out);
+}
+
+bool buildSetFailsafe(uint8_t valveOrAll, uint8_t pct, RequestLine& out) {
+  if ((valveOrAll >= kValveCount && valveOrAll != kAllValves) || !failsafePctValid(pct)) {
+    return fail(out);
+  }
+  const uint32_t n[] = {valveOrAll, pct};
+  return buildNumeric(Cmd::Sfspo, valveOrAll, pct, n, 2, out);
+}
+
+bool buildGetLeaseConfig(RequestLine& out) { return buildBare(Cmd::Glcfg, out); }
+bool buildStop(uint8_t valveOrAll, RequestLine& out) {
+  return buildValveOrAll(Cmd::Sstop, valveOrAll, out);
+}
+bool buildGetLearnTime(RequestLine& out) { return buildBare(Cmd::Gtlnt, out); }
+
+bool buildLeaveSafeMode(RequestLine& out) {
+  const uint32_t v = 0;
+  return buildNumeric(Cmd::Ssafe, kNoValve, 0, &v, 1, out);
+}
+
+bool buildSetLearnTime(uint32_t seconds, RequestLine& out) {
+  return buildNumeric(Cmd::Stlnt, kNoValve, 0, &seconds, 1, out);
+}
 
 // ---------------------------------------------------------------- replies
 
@@ -727,6 +937,26 @@ const char* stopReasonName(StopReason r) {
     case StopReason::Aborted: return "aborted";
   }
   return "unknown";
+}
+
+const char* stmFlagName(uint8_t bit) {
+  static const char* const kNames[] = {"fsLease",     "fsBlocked", "uncalibrated", "needsRef",
+                                       "recal",       "calRestored", "retry",      "earlyPending",
+                                       "assembly",    "svcHold"};
+  return bit < sizeof kNames / sizeof *kNames ? kNames[bit] : "";
+}
+
+const char* valveFaultName(uint8_t fault) {
+  static const char* const kNames[] = {"none",  "move_timeout",      "stroke_timeout",
+                                       "short", "strokes_too_short", "inrush_trip"};
+  return fault < sizeof kNames / sizeof *kNames ? kNames[fault] : "unknown";
+}
+
+const char* stmCfgFlagName(uint8_t bit) {
+  static const char* const kNames[] = {"layoutCrc",    "shadowMissing", "settingsCorrupt",
+                                       "safetyCorrupt", "sensorSlot",   "calib",
+                                       "unverified",   "readFailed"};
+  return bit < sizeof kNames / sizeof *kNames ? kNames[bit] : "";
 }
 
 ParseStatus parseReply(const char* line, size_t len, Reply& out) {
@@ -777,13 +1007,22 @@ bool replyMatches(const RequestLine& req, const Reply& rep) {
     case Cmd::Gvlvd:
       return rep.valveData.valve == req.valve;
     case Cmd::Gvlvx:
+    case Cmd::Gvlvy:
       return rep.valveEx.valve == req.valve;
     case Cmd::Gtgtp:
       return rep.target.valve == req.valve;
     case Cmd::Gprof:
       return rep.profile.valve == req.valve;
     case Cmd::Svmov:
-      return rep.serviceMove.valve == req.valve;
+      return indexMatches(rep.serviceMove, req.valve);
+    case Cmd::Sfspo:
+      return indexMatches(rep.failsafe, req.valve);
+    case Cmd::Sstop:
+      return indexMatches(rep.stop, req.valve);
+    case Cmd::Goned:
+      return sensorMatches(rep.tempData.valid, rep.tempData.id, req.expect);
+    case Cmd::Gowvd:
+      return sensorMatches(rep.voltData.valid, rep.voltData.id, req.expect);
     case Cmd::Stvls:
       return rep.ack.valve == req.valve;
     case Cmd::Gvlon:

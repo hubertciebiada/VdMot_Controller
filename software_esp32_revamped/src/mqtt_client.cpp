@@ -9,10 +9,11 @@
 #include <string.h>
 
 #include <vdm/config.h>
+#include <vdm/event_limiter.h>
 #include <vdm/ha_discovery.h>
-#include <vdm/health_monitor.h>
 #include <vdm/json_writer.h>
 #include <vdm/mqtt_topics.h>
+#include <vdm/mqtt_values.h>
 
 #include "app.h"
 #include "boot_alloc.h"
@@ -1006,6 +1007,12 @@ Status status() {
   portEXIT_CRITICAL(&gMux);
   return s;
 }
+
+// No regulator watch yet: mode Off reads as a live regulator, so no
+// failsafe starts because of it.
+vdm::RegulatorInput regulatorState() { return vdm::RegulatorInput{}; }
+
+bool calibrationEnd(uint8_t, vdm::LocalTime&) { return false; }
 
 void requestReconnect() { gReconnectRequested = true; }
 

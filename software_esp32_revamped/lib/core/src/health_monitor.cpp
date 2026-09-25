@@ -9,7 +9,6 @@ constexpr uint8_t kStatusFailed = static_cast<uint8_t>(ValveStatus::Failed);
 constexpr uint8_t kStatusNoValve = static_cast<uint8_t>(ValveStatus::NoValve);
 constexpr uint8_t kStatusBlocked = static_cast<uint8_t>(ValveStatus::Blocked);
 constexpr uint32_t kCounterEventIntervalMs = 600000;
-constexpr uint32_t kHourMs = 3600000;
 constexpr uint16_t kRecoverableFlags = kHealthStale | kHealthTargetUnconfirmed;
 
 // Bounded event sink for one call.
@@ -121,21 +120,6 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
 
 }  // namespace
 
-uint8_t systemState(LinkState link, const ValveState* valves, uint8_t count, uint16_t activeMask) {
-  bool info = link != LinkState::Up;
-  if (link == LinkState::Down) return 2;
-  if (valves != nullptr) {
-    const uint8_t n = count < kValveCount ? count : kValveCount;
-    for (uint8_t i = 0; i < n; ++i) {
-      if (((activeMask >> i) & 1u) == 0) continue;
-      const uint16_t h = valves[i].health;
-      if (h & (kHealthBlocked | kHealthFailed)) return 2;
-      if (h != 0) info = true;
-    }
-  }
-  return info ? 1 : 0;
-}
-
 // ---------------------------------------------------------------- HealthMonitor
 
 size_t HealthMonitor::onValve(uint8_t valve, const ValveState& before, const ValveState& after,
@@ -219,135 +203,6 @@ size_t HealthMonitor::onTempSensor(uint8_t slot, bool wasKnown, bool wasValid, b
     sink.add(EventCode::TempSensorFailed, kNoValve, slot, raw);
   }
   return sink.count();
-}
-
-// ---------------------------------------------------------------- EventRateLimiter
-
-EventRateLimiter::EventRateLimiter(uint32_t perKeyMs, uint16_t maxPerHour)
-    : perKeyMs_(perKeyMs),
-      maxPerHour_(maxPerHour),
-      tokensMilli_(static_cast<uint32_t>(maxPerHour) * 1000u),
-      lastRefillMs_(0),
-      keys_() {}
-
-void EventRateLimiter::refill(uint32_t nowMs) {
-  // The bucket starts full, so the first call only moves lastRefillMs_.
-  const uint32_t capacity = static_cast<uint32_t>(maxPerHour_) * 1000u;
-  const uint64_t num = static_cast<uint64_t>(elapsedMs(nowMs, lastRefillMs_)) * maxPerHour_ * 1000u +
-                       refillRemainder_;
-  lastRefillMs_ = nowMs;
-  const uint64_t add = num / kHourMs;
-  refillRemainder_ = static_cast<uint32_t>(num % kHourMs);
-  if (tokensMilli_ + add >= capacity) {
-    tokensMilli_ = capacity;
-    refillRemainder_ = 0;
-  } else {
-    tokensMilli_ += static_cast<uint32_t>(add);
-  }
-}
-
-bool EventRateLimiter::allow(const Event& e, uint32_t nowMs) {
-  refill(nowMs);
-  for (Key& k : keys_) {
-    if (k.used && elapsedMs(nowMs, k.lastMs) >= perKeyMs_) k.used = false;
-  }
-  if (e.severity < Severity::Warning && !eventIsCalibrationOutcome(e.code)) return false;
-
-  const uint16_t code = static_cast<uint16_t>(e.code);
-  Key* slot = nullptr;
-  for (Key& k : keys_) {
-    if (k.used && k.code == code && k.valve == e.valve) {
-      // Still within perKeyMs (older entries were freed above).
-      ++suppressed_;
-      return false;
-    }
-  }
-  if (tokensMilli_ < 1000u) {
-    ++suppressed_;
-    return false;
-  }
-  for (Key& k : keys_) {
-    if (!k.used) {
-      slot = &k;
-      break;
-    }
-    if (slot == nullptr || elapsedMs(nowMs, k.lastMs) > elapsedMs(nowMs, slot->lastMs)) slot = &k;
-  }
-  tokensMilli_ -= 1000u;
-  slot->code = code;
-  slot->valve = e.valve;
-  slot->used = true;
-  slot->lastMs = nowMs;
-  return true;
-}
-
-// ---------------------------------------------------------------- OtaValidator
-
-OtaValidator::OtaValidator(uint32_t confirmMs, uint32_t networkOnlyMs, uint32_t giveUpMs)
-    : confirmMs_(confirmMs), networkOnlyMs_(networkOnlyMs), giveUpMs_(giveUpMs) {}
-
-void OtaValidator::begin(bool pendingVerify, uint32_t nowMs) {
-  pending_ = pendingVerify;
-  startMs_ = nowMs;
-  healthy_ = false;
-  healthySinceMs_ = nowMs;
-}
-
-OtaValidator::Decision OtaValidator::update(bool netUp, bool linkUp, uint32_t nowMs) {
-  if (!pending_) return Decision::NotPending;
-  const bool healthy = netUp && linkUp;
-  if (healthy && !healthy_) healthySinceMs_ = nowMs;
-  healthy_ = healthy;
-  const uint32_t uptime = elapsedMs(nowMs, startMs_);
-  if ((healthy_ && elapsedMs(nowMs, healthySinceMs_) >= confirmMs_) ||
-      (netUp && uptime >= networkOnlyMs_)) {
-    pending_ = false;
-    return Decision::MarkValid;
-  }
-  if (uptime >= giveUpMs_) {
-    pending_ = false;
-    return Decision::Rollback;
-  }
-  return Decision::Wait;
-}
-
-bool OtaValidator::confirmBeforeRestart(bool userRequested, bool netUp) {
-  if (!pending_ || !userRequested || !netUp) return false;
-  pending_ = false;
-  return true;
-}
-
-// ---------------------------------------------------------------- NetWatchdog
-
-void NetWatchdog::configure(uint8_t minutes) {
-  minutes_ = minutes;
-  fired_ = false;
-}
-
-uint32_t NetWatchdog::waitMs() const {
-  uint32_t min = minutes_;
-  for (uint8_t i = 0; i < restarts_ && min < kMaxWaitMin; ++i) min *= kGrowth;
-  return (min < kMaxWaitMin ? min : kMaxWaitMin) * 60000u;
-}
-
-bool NetWatchdog::update(bool netUp, uint32_t nowMs) {
-  if (netUp) {
-    down_ = false;
-    fired_ = false;
-    restarts_ = 0;
-    return false;
-  }
-  if (!started_ || !down_) {
-    // Boot (the first call) or the moment the network was lost.
-    started_ = true;
-    down_ = true;
-    downSinceMs_ = nowMs;
-  }
-  if (minutes_ == 0 || fired_) return false;
-  if (elapsedMs(nowMs, downSinceMs_) < waitMs()) return false;
-  fired_ = true;
-  if (restarts_ < UINT8_MAX) ++restarts_;
-  return true;
 }
 
 }  // namespace vdm

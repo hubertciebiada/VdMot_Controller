@@ -10,9 +10,9 @@
 #include <freertos/task.h>
 #include <string.h>
 
-#include <vdm/calib_schedule.h>
 #include <vdm/config.h>
 #include <vdm/event_log.h>
+#include <vdm/json_api.h>
 
 #include "board.h"
 #include "boot_alloc.h"
@@ -21,6 +21,7 @@
 #include "net.h"
 #include "ota.h"
 #include "stm_link.h"
+#include "stm_service.h"
 #include "storage.h"
 #include "web_server.h"
 
@@ -39,6 +40,8 @@ volatile vdm::LinkState gLinkState = vdm::LinkState::Unknown;
 volatile bool gFlashActive = false;
 volatile uint8_t gProto = 0;
 volatile uint32_t gSnapRevision = 0;
+volatile vdm::StmSupport gSupport = vdm::StmSupport::Unknown;
+volatile vdm::StmSaveState gSaveState = vdm::StmSaveState::Idle;
 
 portMUX_TYPE gCalibMux = portMUX_INITIALIZER_UNLOCKED;
 CalibInfo gCalibInfo;
@@ -46,7 +49,6 @@ CalibInfo gCalibInfo;
 // App task working copies (static: too large for the task stack).
 vdm::Config& gCfg = bootAlloc<vdm::Config>();
 uint32_t gCfgRevision = 0;
-vdm::CalibScheduler gCalib;
 
 constexpr uint32_t kLowHeapBytes = 30 * 1024;
 constexpr uint32_t kLowHeapRepeatMs = 3600000;
@@ -84,41 +86,6 @@ bool abnormalReset(esp_reset_reason_t r) {
   }
 }
 
-void setCalibInfo(int64_t lastEpoch, uint32_t nextSlot) {
-  portENTER_CRITICAL(&gCalibMux);
-  gCalibInfo.lastScheduledEpoch = lastEpoch;
-  gCalibInfo.nextSlot = nextSlot;
-  portEXIT_CRITICAL(&gCalibMux);
-}
-
-void calibrationTick(uint32_t now) {
-  const vdm::LocalTime lt = net::localTime();
-  int64_t lastEpoch = calibInfo().lastScheduledEpoch;
-  const vdm::CalibDecision d = gCalib.evaluate(gCfg.calib, lt, now);
-  if (d == vdm::CalibDecision::Fire) {
-    Command c;
-    c.type = CommandType::Calibrate;
-    c.valve = vdm::kAllValves;
-    c.source = vdm::TargetSource::None;
-    c.scheduled = true;
-    if (submit(c)) {
-      storage::saveCalibSlot(gCalib.lastSlot());
-      storage::saveLastCalib(lt.epoch);
-      lastEpoch = lt.epoch;
-      logger::log(vdm::EventCode::ScheduledCalibration, vdm::kNoValve,
-                  static_cast<int32_t>(gCalib.lastSlot()), gCalib.lateMinutes());
-    } else {
-      // The slot stays booked in RAM (no retry storm); the miss is reported
-      // and the next slot fires normally.
-      logger::log(vdm::EventCode::StmQueueFull, vdm::kNoValve,
-                  static_cast<int32_t>(vdm::Cmd::Staln));
-    }
-  } else if (d == vdm::CalibDecision::SkippedNoTime) {
-    logger::log(vdm::EventCode::CalibTimeMissing, vdm::kNoValve, 0);
-  }
-  setCalibInfo(lastEpoch, gCalib.nextSlot(gCfg.calib, lt));
-}
-
 // Live effects of a config change (DESIGN.md "Config schema", apply
 // semantics). The stm and mqtt tasks follow configRevision() themselves.
 void applyConfigChange() {
@@ -144,27 +111,24 @@ void checkHeap(uint32_t now) {
 void appTask(void*) {
   esp_task_wdt_add(nullptr);
   uint32_t lastSecond = 0;
-  uint32_t lastCalib = 0;
   for (;;) {
     esp_task_wdt_reset();
     const uint32_t now = nowMs();
 
     if (storage::configRevision() != gCfgRevision) applyConfigChange();
 
+    const bool linkUp = stmLinkState() == vdm::LinkState::Up;
     if (vdm::elapsedMs(now, lastSecond) >= 1000) {
       lastSecond = now;
-      net::service(now);
+      net::service(now, mqtt::status().state == vdm::MqttState::Connected);
       if (net::isUp() && !web::started()) web::begin();
-      ota::service(now, net::isUp(), stmLinkState() == vdm::LinkState::Up);
+      ota::service(now, net::otaNetOk(), linkUp, web::started());
       checkHeap(now);
-    }
-    if (vdm::elapsedMs(now, lastCalib) >= 10000) {
-      lastCalib = now;
-      calibrationTick(now);
+      stm_service::service(now);
     }
     logger::service(net::isUp());
     storage::service();
-    ota::serviceRestart(now, net::isUp());
+    ota::serviceRestart(now, net::isUp(), linkUp);
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -201,6 +165,8 @@ void markStmFlashActive() { gFlashActive = true; }
 
 uint8_t stmProtocol() { return gProto; }
 
+vdm::StmSupport stmSupport() { return gSupport; }
+
 uint32_t stmSnapshotRevision() { return gSnapRevision; }
 
 void publishStmSnapshot(const StmSnapshot& in) {
@@ -213,14 +179,36 @@ void publishStmSnapshot(const StmSnapshot& in) {
                  in.flash.phase != vdm::FlashPhase::Done &&
                  in.flash.phase != vdm::FlashPhase::Failed;
   gProto = in.proto;
+  gSupport = in.support;
   gSnapRevision = in.revision;
 }
+
+void requestStmSave() { gSaveState = vdm::StmSaveState::Waiting; }
+
+vdm::StmSaveState stmSaveState() { return gSaveState; }
+
+void setStmSaveState(vdm::StmSaveState s) { gSaveState = s; }
 
 CalibInfo calibInfo() {
   portENTER_CRITICAL(&gCalibMux);
   const CalibInfo c = gCalibInfo;
   portEXIT_CRITICAL(&gCalibMux);
   return c;
+}
+
+void setCalibInfo(const CalibInfo& c) {
+  portENTER_CRITICAL(&gCalibMux);
+  gCalibInfo = c;
+  portEXIT_CRITICAL(&gCalibMux);
+}
+
+void readHealth(vdm::HealthSnapshot& out) {
+  out = vdm::HealthSnapshot{};
+  out.version = vdm::firmwareVersion();
+  out.uptimeS = uptimeS();
+  out.freeHeap = ESP.getFreeHeap();
+  out.minFreeHeap = ESP.getMinFreeHeap();
+  out.largestFreeBlock = ESP.getMaxAllocHeap();
 }
 
 void setup() {
@@ -239,8 +227,8 @@ void setup() {
 
   const bool resetOk = factoryReset && storage::factoryReset();
   vdm::ImportReport report;
-  uint8_t loadError = 0;
-  const storage::LoadSource src = storage::loadConfig(gCfg, report, loadError);
+  storage::LoadDetails loadDetails;
+  storage::loadConfig(gCfg, report, loadDetails);
   storage::setActiveConfig(gCfg);
   gCfgRevision = storage::configRevision();
 
@@ -256,17 +244,10 @@ void setup() {
     logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve, static_cast<int32_t>(gCfgRevision),
                 resetOk ? 0 : -1, "factory");
   }
-  if (src == storage::LoadSource::Imported) {
-    logger::log(vdm::EventCode::ConfigImported, vdm::kNoValve, report.imported, report.rejected,
-                report.firstRejected);
-  } else if (src == storage::LoadSource::DefaultsAfterError) {
-    logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, loadError);
-  }
   logger::configure(gCfg.syslog.level, gCfg.syslog.server, gCfg.syslog.port, gCfg.persistLog,
                     gCfg.station);
 
-  gCalib.restoreLastSlot(storage::loadCalibSlot());
-  setCalibInfo(storage::loadLastCalib(), 0);
+  stm_service::begin();
 
   net::begin(gCfg);
   ota::begin();

@@ -12,16 +12,31 @@
 #include <vdm/legacy_import.h>
 #include <vdm/stm_flasher.h>
 
+namespace vdm {
+struct FileEntry;  // vdm/file_manager.h
+}  // namespace vdm
+
 namespace storage {
 
 // NVS namespace and keys (binding, DESIGN.md "Persistence").
 constexpr const char* kNamespace = "vdmrev";
 constexpr const char* kKeyConfig = "cfg";        // blob, vdm::encodeConfig()
+constexpr const char* kKeyConfigExt = "cfgx";    // blob, vdm::encodeConfigExt()
 constexpr const char* kKeyImported = "imported"; // u8 1 = legacy import done (or not needed)
 constexpr const char* kKeyBootCount = "boots";   // u32
 constexpr const char* kKeyCalibSlot = "calSlot"; // u32 yyyymmdd of the last scheduled calibration
 constexpr const char* kKeyLastCalib = "lastCal"; // i64 epoch of the last calibration command
 constexpr const char* kKeyHaCleanup = "haDrop";  // u8 1 = legacy DROP entities deleted
+constexpr const char* kKeyTargets = "targets";   // blob, the desired targets (stm_service)
+constexpr const char* kKeyNetTrial = "netTrial"; // blob, the network trial record (net)
+constexpr const char* kKeyFactoryLatch = "frLatch";  // u8 1 = factory reset done, pin still set
+constexpr const char* kKeyOtaStm = "otaStm";     // u8 1 = STM link up at the ESP OTA upload
+constexpr const char* kKeyHaLayout = "haLayout"; // u8 2 = the 2.1 discovery layout was published
+
+// LittleFS files of the config backup and the legacy import report.
+constexpr const char* kBackupBase = "/sys/cfg.bak";
+constexpr const char* kBackupExt = "/sys/cfgx.bak";
+constexpr const char* kImportReportFile = "/sys/import.json";
 
 // Mounts LittleFS on the "spiffs" partition. Formats only when mounting
 // fails (then `formatted` is true and an FsFormatted event is logged by the
@@ -35,10 +50,21 @@ bool fsReady();
 // !imported -> legacy import (vdm::importLegacyConfig) then save; unreadable
 // blob -> defaults (never overwrites the bad blob automatically; the next
 // explicit save replaces it). `report` is filled when an import ran.
-// For DefaultsAfterError `errorCode` receives the reason: the
+// For DefaultsAfterError `details.errorCode` receives the reason: the
 // vdm::DecodeResult value, 100 = NVS not usable, 101 = blob unreadable.
-enum class LoadSource : uint8_t { Stored, Imported, Defaults, DefaultsAfterError };
-LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode);
+// Logs the result (ConfigImported, ConfigDefaults). Backup: the config came
+// from the backup files.
+enum class LoadSource : uint8_t { Stored, Imported, Defaults, DefaultsAfterError, Backup };
+struct LoadDetails {
+  uint8_t errorCode = 0;
+  vdm::LoadInfo info;
+};
+LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, LoadDetails& details);
+// What loadConfig() did at boot (/api/status).
+LoadSource bootLoadSource();
+const LoadDetails& bootLoadDetails();
+// True after the first successful applyConfig() since boot.
+bool configSavedSinceBoot();
 
 // Thread-safe config holder (all tasks). Copies in/out under a mutex.
 void setActiveConfig(const vdm::Config& c);
@@ -62,6 +88,42 @@ int64_t loadLastCalib();
 void saveLastCalib(int64_t epoch);
 bool haCleanupDone();
 void setHaCleanupDone();
+// Desired targets as encoded by their owner; 0 = none stored.
+bool saveTargets(const uint8_t* data, size_t len);
+size_t loadTargets(uint8_t* out, size_t cap);
+// Network trial record (raw bytes; the record format belongs to net); 0 =
+// none stored.
+size_t loadNetTrialBlob(uint8_t* out, size_t cap);
+bool saveNetTrialBlob(const uint8_t* data, size_t len);
+void clearNetTrial();
+// Factory reset done while the pin was still set (kept by factoryReset()).
+bool factoryLatched();
+void setFactoryLatched(bool on);
+// STM link was up when an ESP OTA was uploaded (read and cleared at the next
+// boot).
+bool otaStmRequired();
+void setOtaStmRequired(bool on);
+void clearOtaStmRequired();
+// Home Assistant discovery layout last published (0 = none).
+uint8_t haLayout();
+void setHaLayout(uint8_t layout);
+
+// ---------------------------------------------------------------- files
+
+// The legacy import report (kImportReportFile).
+bool writeImportReport(const vdm::ImportReport& report);
+bool hasImportReport();
+bool dismissImportReport();  // false when there was none
+
+enum class FileResult : uint8_t { Ok, BadPath, Protected, NotFound, Io };
+// The root and one directory level below it, at most `max` entries.
+size_t listFiles(vdm::FileEntry* out, size_t max, bool& truncated);
+FileResult deleteFile(const char* path);
+// Removes the images the legacy firmware left in the root; returns the
+// number of files, `kib` the space freed.
+uint32_t removeLegacyImages(uint32_t& kib);
+uint32_t fsTotal();
+uint32_t fsUsed();
 
 // ---------------------------------------------------------------- STM images
 
@@ -85,6 +147,7 @@ struct ImageEntry {
   vdm::FlashError check = vdm::FlashError::None;   // chip-independent checks incl. handshake
   uint32_t crc = 0;                                // valid when scanned
   char version[32] = {0};                          // "" = none found
+  char hwTag[4] = {0};                             // board of the image ("C2"), "" untagged
 };
 
 // Accepts "x" or "x.bin" (`len` bytes) and writes the bare name.

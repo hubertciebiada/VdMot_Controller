@@ -1,10 +1,12 @@
 // Tests for vdm/common.h helpers: time, Backoff, bounded strings, UTF-8,
-// names, host names, strict number parsers, IPv4 and 1-Wire ids. Every
-// boundary is checked from both sides (written against mutation testing).
+// names, host names, HA ids, strict number parsers, IPv4, target rounding
+// and 1-Wire ids. Every boundary is checked from both sides (written against
+// mutation testing).
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include <limits>
 #include <string>
 
 #include "doctest.h"
@@ -497,4 +499,148 @@ TEST_CASE("common: parseOneWireId and formatOneWireId") {
   REQUIRE(parseOneWireId("00-19-9a-af-f0-0f-a9-ff", 23, id));
   CHECK(formatOneWireId(id, out, 24) == 23);
   CHECK(std::string(out) == "00-19-9a-af-f0-0f-a9-ff");
+}
+
+namespace {
+
+std::string haId(const char* in) {
+  char out[64];
+  memset(out, 'x', sizeof out);
+  const size_t n = buildHaId(in, strlen(in), out, sizeof out);
+  CHECK(n == strlen(out));
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("common: buildHaId maps names to HA ids") {
+  CHECK(haId("VdMot") == "VdMot");
+  CHECK(haId("Dom 1") == "Dom_1");
+  CHECK(haId("\xC5\x81" "azienka") == "Lazienka");      // Łazienka
+  CHECK(haId("K\xC3\xBC" "che") == "Kuche");            // Küche
+  CHECK(haId("Stra\xC3\x9F" "e") == "Strasse");         // Straße
+  CHECK(haId("\xC3\x86" "ble") == "AEble");             // Æble
+  CHECK(haId("\xC5\xBC\xC3\xB3\xC5\x82w") == "zolw");   // żółw
+  CHECK(haId("\xC4\x8C" "e\xC5\xA1ky") == "Cesky");     // Česky
+  CHECK(haId("Bad.1") == "Bad_1");
+  CHECK(haId("a-b_c") == "a-b_c");
+  // Every other sequence is one '_': symbols, other scripts, 3 and 4 bytes.
+  CHECK(haId("\xE2\x82\xAC") == "_");      // €
+  CHECK(haId("\xC3\x97") == "_");          // ×
+  CHECK(haId("\xC3\xB7") == "_");          // ÷
+  CHECK(haId("\xC2\xBF") == "_");          // ¿ U+00BF, below the table
+  CHECK(haId("\xC6\x80") == "_");          // ƀ U+0180, above the table
+  CHECK(haId("\xCE\xA9") == "_");          // Ω
+  CHECK(haId("\xE4\xB8\xAD") == "_");      // 中 (its first two bytes would read as U+0138)
+  CHECK(haId("\xF0\x9F\x98\x80" "a") == "_a");
+  // Invalid UTF-8: one '_' per byte.
+  CHECK(haId("\x80") == "_");
+  CHECK(haId("\xC5" "a") == "_a");         // lead byte without continuation
+  CHECK(haId("a\xC5") == "a_");            // cut at the end
+  CHECK(haId("\xC0\xB0") == "__");         // overlong
+  CHECK(haId("\xC2\x80") == "__");         // C1 control
+  CHECK(haId("\xED\xA0\x80") == "___");    // surrogate
+  CHECK(haId("\xFF\xFE") == "__");
+  // Every ASCII byte: letters, digits, '_' and '-' are kept, the rest is '_'.
+  for (int c = 1; c < 0x80; ++c) {
+    const char in[2] = {static_cast<char>(c), '\0'};
+    const bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '_' || c == '-';
+    CAPTURE(c);
+    CHECK(haId(in) == (keep ? std::string(in) : std::string("_")));
+  }
+}
+
+TEST_CASE("common: buildHaId maps U+00C0..U+017F to base letters") {
+  const char* const kExpect[192] = {
+      "A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",  // C0
+      "D", "N", "O", "O", "O", "O", "O", "_", "O", "U", "U", "U", "U", "Y", "TH", "ss",  // D0
+      "a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",  // E0
+      "d", "n", "o", "o", "o", "o", "o", "_", "o", "u", "u", "u", "u", "y", "th", "y",  // F0
+      "A", "a", "A", "a", "A", "a", "C", "c", "C", "c", "C", "c", "C", "c", "D", "d",   // 100
+      "D", "d", "E", "e", "E", "e", "E", "e", "E", "e", "E", "e", "G", "g", "G", "g",   // 110
+      "G", "g", "G", "g", "H", "h", "H", "h", "I", "i", "I", "i", "I", "i", "I", "i",   // 120
+      "I", "i", "IJ", "ij", "J", "j", "K", "k", "k", "L", "l", "L", "l", "L", "l", "L", // 130
+      "l", "L", "l", "N", "n", "N", "n", "N", "n", "n", "N", "n", "O", "o", "O", "o",   // 140
+      "O", "o", "OE", "oe", "R", "r", "R", "r", "R", "r", "S", "s", "S", "s", "S", "s", // 150
+      "S", "s", "T", "t", "T", "t", "T", "t", "U", "u", "U", "u", "U", "u", "U", "u",   // 160
+      "U", "u", "U", "u", "W", "w", "Y", "y", "Y", "Z", "z", "Z", "z", "Z", "z", "s",   // 170
+  };
+  for (uint32_t cp = 0xC0; cp <= 0x17F; ++cp) {
+    const char in[3] = {static_cast<char>(0xC0 | (cp >> 6)), static_cast<char>(0x80 | (cp & 0x3F)),
+                        '\0'};
+    CAPTURE(cp);
+    CHECK(haId(in) == kExpect[cp - 0xC0]);
+  }
+  // Never longer than the input: every 2-byte sequence gives 1 or 2 chars.
+  for (uint32_t cp = 0x80; cp < 0x800; ++cp) {
+    const char in[2] = {static_cast<char>(0xC0 | (cp >> 6)), static_cast<char>(0x80 | (cp & 0x3F))};
+    char out[3];
+    CAPTURE(cp);
+    const size_t n = buildHaId(in, sizeof in, out, sizeof out);
+    CHECK(n >= 1);
+    CHECK(n <= 2);
+  }
+}
+
+TEST_CASE("common: buildHaId capacity and input bounds") {
+  char out[8];
+  memset(out, 'x', sizeof out);
+  CHECK(buildHaId("VdMot", 5, out, 6) == 5);  // capacity len + 1
+  CHECK(std::string(out) == "VdMot");
+  memset(out, 'x', sizeof out);
+  CHECK(buildHaId("VdMot", 5, out, 5) == 0);
+  CHECK(out[0] == '\0');
+  // A two-letter form fits as a whole or not at all.
+  memset(out, 'x', sizeof out);
+  CHECK(buildHaId("a\xC3\x9F", 3, out, 4) == 3);
+  CHECK(std::string(out) == "ass");
+  memset(out, 'x', sizeof out);
+  CHECK(buildHaId("a\xC3\x9F", 3, out, 3) == 0);
+  CHECK(out[0] == '\0');
+  // Empty, null, no room.
+  out[0] = 'x';
+  CHECK(buildHaId("", 0, out, sizeof out) == 0);
+  CHECK(out[0] == '\0');
+  out[0] = 'x';
+  CHECK(buildHaId(nullptr, 5, out, sizeof out) == 0);
+  CHECK(out[0] == '\0');
+  out[0] = 'x';
+  CHECK(buildHaId("ab", 2, out, 0) == 0);
+  CHECK(out[0] == 'x');
+  CHECK(buildHaId("ab", 2, nullptr, sizeof out) == 0);
+  // At most len bytes; a NUL ends the input earlier.
+  CHECK(buildHaId("abc", 2, out, sizeof out) == 2);
+  CHECK(std::string(out) == "ab");
+  CHECK(buildHaId("a\0b", 3, out, sizeof out) == 1);
+  CHECK(std::string(out) == "a");
+  // A sequence cut by len is an invalid byte; nothing past len is read
+  // (exact-size buffer for ASan).
+  CHECK(buildHaId("\xC3\xBC", 1, out, sizeof out) == 1);
+  CHECK(std::string(out) == "_");
+  const char cut[2] = {'a', '\xC5'};
+  CHECK(buildHaId(cut, sizeof cut, out, sizeof out) == 2);
+  CHECK(std::string(out) == "a_");
+}
+
+TEST_CASE("common: roundTargetPercent") {
+  struct Row {
+    double v;
+    bool ok;
+    uint8_t out;
+  };
+  const double inf = std::numeric_limits<double>::infinity();
+  const Row rows[] = {
+      {43.7, true, 44},     {43.5, true, 44},    {43.49999, true, 43}, {0.49, true, 0},
+      {0.5, true, 1},       {99.5, true, 100},   {99.49, true, 99},    {100.0, true, 100},
+      {0.0, true, 0},       {-0.0, true, 0},     {100.4, false, 0},    {100.0000001, false, 0},
+      {-0.4, false, 0},     {-1e-300, false, 0}, {inf, false, 0},      {-inf, false, 0},
+      {std::numeric_limits<double>::quiet_NaN(), false, 0},
+  };
+  for (const Row& r : rows) {
+    CAPTURE(r.v);
+    uint8_t out = 77;
+    CHECK(roundTargetPercent(r.v, out) == r.ok);
+    CHECK(out == (r.ok ? r.out : 77));
+  }
 }

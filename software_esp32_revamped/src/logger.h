@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <vdm/event_log.h>
+#include <vdm/json_api.h>
 
 namespace logger {
 
@@ -17,6 +18,8 @@ constexpr size_t kEventCapacity = 512;
 constexpr const char* kLogFile = "/log/events.log";
 constexpr const char* kLogFileOld = "/log/events.1.log";
 constexpr size_t kLogFileMax = 64 * 1024;
+// A batch may carry the file this far past kLogFileMax before it rotates.
+constexpr size_t kLogFileSlack = 8192;
 // File/syslog sinks follow the RAM log with a cursor; service() writes at
 // most kPendingLines events per call. Events overwritten in the RAM ring
 // before service() reached them are skipped (visible as a seq gap).
@@ -52,6 +55,13 @@ void configure(uint8_t syslogLevel, uint32_t syslogServer, uint16_t syslogPort, 
 // App task: drains pending lines to the file (rotation) and syslog (when the
 // network is up). Bounded work per call.
 void service(bool netUp);
+
+// App task, restart path: writes the pending lines to the file now.
+void flush();
+// Any task: the next service() writes the whole backlog (GET /api/log).
+void requestFlush();
+// Sink statistics for /api/health.
+vdm::LogHealthInfo stats(uint32_t nowMs);
 
 // Debug text (serial only, dev builds): printf-style, truncated at 160 chars.
 void debug(const char* fmt, ...) __attribute__((format(printf, 1, 2)));

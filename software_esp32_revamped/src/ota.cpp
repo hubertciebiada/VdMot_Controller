@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include <vdm/event_log.h>
-#include <vdm/health_monitor.h>
+#include <vdm/ota_policy.h>
 
 #include "app.h"
 #include "logger.h"
@@ -65,8 +65,8 @@ void fail(const char* text, int32_t code) {
 
 void begin() { gValidator.begin(pendingVerify(), millis()); }
 
-void service(uint32_t nowMs, bool netUp, bool linkUp) {
-  switch (gValidator.update(netUp, linkUp, nowMs)) {
+void service(uint32_t nowMs, bool netOk, bool linkUp, bool) {
+  switch (gValidator.update(netOk, linkUp, nowMs)) {
     case vdm::OtaValidator::Decision::MarkValid:
       if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
         logger::log(vdm::EventCode::AppMarkedValid, vdm::kNoValve,
@@ -89,6 +89,12 @@ void service(uint32_t nowMs, bool netUp, bool linkUp) {
   esp_ota_mark_app_invalid_rollback_and_reboot();
   // Only returns when there is no valid partition to roll back to: keep
   // running this image (better than a boot loop).
+}
+
+vdm::OtaHealthInfo health(uint32_t) {
+  vdm::OtaHealthInfo h;
+  h.pending = pendingVerify();
+  return h;
 }
 
 bool uploadBegin(size_t announcedBytes, const char* md5) {
@@ -181,7 +187,7 @@ bool uploadActive() { return gUploadActive; }
 
 const char* uploadError() { return gUploadError[0] ? gUploadError : "unknown"; }
 
-void requestRestart(uint8_t reason, uint32_t delayMs) {
+void requestRestart(uint8_t reason, uint32_t delayMs, int32_t detail) {
   bool first = false;
   portENTER_CRITICAL(&gMux);
   if (!gRestartPending) {
@@ -194,7 +200,7 @@ void requestRestart(uint8_t reason, uint32_t delayMs) {
   if (!first) return;
   logger::logSev(vdm::EventCode::RebootRequested,
                  (reason == 2 || reason == 4) ? vdm::Severity::Warning : vdm::Severity::Info,
-                 vdm::kNoValve, reason);
+                 vdm::kNoValve, reason, detail);
 }
 
 bool restartPending() {
@@ -204,7 +210,7 @@ bool restartPending() {
   return p;
 }
 
-void serviceRestart(uint32_t nowMs, bool netUp) {
+void serviceRestart(uint32_t nowMs, bool netUp, bool) {
   portENTER_CRITICAL(&gMux);
   const bool due = gRestartPending && vdm::timeReached(nowMs, gRestartAtMs);
   const uint8_t reason = gRestartReason;

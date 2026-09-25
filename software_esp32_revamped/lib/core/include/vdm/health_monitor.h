@@ -1,7 +1,5 @@
 // Health decisions: turns model/link changes into Events (with per-condition
-// dedup), rate-limits events for MQTT, decides when an OTA image is healthy
-// enough to be marked valid, and when a lost network justifies an ESP
-// restart. Hardware-free.
+// dedup). Hardware-free.
 #pragma once
 
 #include <stddef.h>
@@ -15,14 +13,6 @@ namespace vdm {
 
 // Maximum events one call may produce (callers size their arrays with it).
 constexpr size_t kMaxEventsPerUpdate = 8;
-
-// Legacy MQTT common/state value (0 ok, 1 info, 2 error), derived:
-//  2 when the link is Down, or an ACTIVE valve has kHealthBlocked or
-//    kHealthFailed;
-//  1 when the link is Unknown/Degraded/Booting, or an active valve has any
-//    other health flag;
-//  0 otherwise (Suspended during flashing counts as 1).
-uint8_t systemState(LinkState link, const ValveState* valves, uint8_t count, uint16_t activeMask);
 
 class HealthMonitor {
  public:
@@ -83,107 +73,6 @@ class HealthMonitor {
   static bool counterIncreased(CounterTrack& t, uint32_t total, uint32_t nowMs);
   CounterTrack rxOverflow_[2];
   CounterTrack parseErr_[2];
-};
-
-// Rate limit for events published to MQTT (<root>/events), architecture
-// §3.4: at most one event per (valve, code) per perKeyMs, and at most
-// maxPerHour events in any rolling hour (token bucket: capacity maxPerHour,
-// one token per 3600000/maxPerHour ms). Events below Warning are rejected
-// unless eventIsCalibrationOutcome(). Fixed table of kKeys (valve, code)
-// entries; when full the least recently used entry is recycled.
-class EventRateLimiter {
- public:
-  static constexpr size_t kKeys = 64;
-  explicit EventRateLimiter(uint32_t perKeyMs = 600000, uint16_t maxPerHour = 30);
-  // True when the event may be published now (and books it). Events below
-  // Warning that are not calibration outcomes are refused without counting
-  // them as suppressed. Key entries older than perKeyMs are freed on every
-  // call, so a millis() wrap cannot resurrect them.
-  bool allow(const Event& e, uint32_t nowMs);
-  uint32_t suppressed() const { return suppressed_; }
-
- private:
-  struct Key {
-    uint16_t code;
-    uint8_t valve;
-    bool used;
-    uint32_t lastMs;
-  };
-  void refill(uint32_t nowMs);
-  uint32_t perKeyMs_;
-  uint16_t maxPerHour_;
-  uint32_t tokensMilli_;   // tokens x 1000
-  uint32_t lastRefillMs_;
-  uint32_t refillRemainder_ = 0;  // sub-milli-token refill carried over (< 3600000)
-  Key keys_[kKeys];
-  uint32_t suppressed_ = 0;
-};
-
-// OTA rollback confirmation (architecture §3): a freshly flashed ESP image
-// is marked valid after it has been healthy for confirmMs (network up AND
-// STM link Up, continuously), or after networkOnlyMs of uptime with the
-// network up now (an STM problem must not roll back a good ESP image). If
-// neither happened by giveUpMs of uptime, the image is rolled back.
-class OtaValidator {
- public:
-  enum class Decision : uint8_t { NotPending, Wait, MarkValid, Rollback };
-  explicit OtaValidator(uint32_t confirmMs = 120000, uint32_t networkOnlyMs = 600000,
-                        uint32_t giveUpMs = 900000);
-  // pendingVerify: esp_ota_get_state_partition() == ESP_OTA_IMG_PENDING_VERIFY.
-  void begin(bool pendingVerify, uint32_t nowMs);
-  // Call every second. Returns MarkValid / Rollback exactly once, then
-  // NotPending forever.
-  Decision update(bool netUp, bool linkUp, uint32_t nowMs);
-  // A restart is about to happen. The bootloader treats any reset of a
-  // pending image as a failed boot and rolls back, so a restart the user
-  // asked for through this firmware (reboot button, network settings,
-  // factory reset) with the network up now confirms the image: that request
-  // proves more than the timer. Returns true (and ends pending) when the
-  // caller must mark the image valid first. Other restarts (network
-  // watchdog, rollback) keep the rollback.
-  bool confirmBeforeRestart(bool userRequested, bool netUp);
-  bool pending() const { return pending_; }
-
- private:
-  uint32_t confirmMs_, networkOnlyMs_, giveUpMs_;
-  bool pending_ = false;
-  uint32_t startMs_ = 0;
-  bool healthy_ = false;
-  uint32_t healthySinceMs_ = 0;
-};
-
-// Network watchdog (legacy netConnTO): the ESP restarts after `minutes`
-// consecutive minutes without an IP address. 0 disables it. The first
-// minutes after boot count as well.
-// Unlike the legacy firmware (a restart every N minutes for as long as the
-// outage lasts), the wait grows by kGrowth with every watchdog restart of the
-// same outage, up to kMaxWaitMin: each ESP restart also resets the STM
-// (IO15 strap, specs/06 §5.2), stopping motors and recalibrating every valve,
-// and restarting again does not fix a switch that is off. The glue keeps
-// restartsInOutage() across software restarts (RTC memory).
-class NetWatchdog {
- public:
-  static constexpr uint32_t kGrowth = 4;
-  static constexpr uint32_t kMaxWaitMin = 24 * 60;
-
-  void configure(uint8_t minutes);
-  // Watchdog restarts earlier in the outage that is still going on at boot
-  // (0 after power-on or once the network was up).
-  void setRestartsInOutage(uint8_t n) { restarts_ = n; }
-  uint8_t restartsInOutage() const { return restarts_; }
-  // Wait before the next restart: minutes * kGrowth^restarts, capped.
-  uint32_t waitMs() const;
-  // Call once per second. True = restart the ESP now (returned once per
-  // outage and configure(); counts the restart).
-  bool update(bool netUp, uint32_t nowMs);
-
- private:
-  uint8_t minutes_ = 0;
-  uint8_t restarts_ = 0;
-  bool down_ = true;
-  uint32_t downSinceMs_ = 0;
-  bool fired_ = false;
-  bool started_ = false;
 };
 
 }  // namespace vdm

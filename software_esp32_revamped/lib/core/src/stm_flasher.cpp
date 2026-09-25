@@ -223,8 +223,39 @@ const char* flashErrorName(FlashError e) {
     case FlashError::AppNotResponding: return "app_not_responding";
     case FlashError::AppVersionMismatch: return "app_version_mismatch";
     case FlashError::Aborted: return "aborted";
+    case FlashError::BoardMismatch: return "board_mismatch";
+    case FlashError::BoardRequired: return "board_required";
   }
   return "unknown";
+}
+
+// ---------------------------------------------------------------- board check
+
+const char* boardCheckName(BoardCheck c) {
+  switch (c) {
+    case BoardCheck::Ok: return "ok";
+    case BoardCheck::Untagged: return "untagged";
+    case BoardCheck::Mismatch: return "mismatch";
+    case BoardCheck::BoardRequired: return "board_required";
+  }
+  return "unknown";
+}
+
+bool boardTagValid(const char* s) {
+  if (s == nullptr || s[0] != 'C') return false;
+  size_t digits = 0;
+  while (digits < 3 && s[1 + digits] >= '0' && s[1 + digits] <= '9') ++digits;
+  return digits >= 1 && digits <= 2 && s[1 + digits] == '\0';
+}
+
+BoardCheck checkBoard(const char* imageHw, const char* boardHw) {
+  constexpr size_t kTagCap = sizeof(ImageInfo::hwTag);
+  const size_t imageLen = boundedLength(imageHw, kTagCap);
+  const size_t boardLen = boundedLength(boardHw, kTagCap);
+  if (imageLen == 0) return BoardCheck::Untagged;
+  if (boardLen == 0) return BoardCheck::BoardRequired;
+  return imageLen == boardLen && memcmp(imageHw, boardHw, imageLen) == 0 ? BoardCheck::Ok
+                                                                         : BoardCheck::Mismatch;
 }
 
 // ---------------------------------------------------------------- image

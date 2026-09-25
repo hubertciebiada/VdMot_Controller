@@ -19,7 +19,8 @@ namespace {
 constexpr size_t kVersionMaxLen = 31;
 // The suffix is what follows the shortest numeric part "0.0.0", so it always
 // fits and parseVersion needs no runtime length check for it.
-static_assert(sizeof(Version::suffix) >= kVersionMaxLen - 5 + 1, "suffix");  // NOMUTATE
+static_assert(sizeof(Version::suffix) >= kVersionMaxLen - 5 + 1,  // NOMUTATE: compile-time check
+              "suffix");
 
 bool isSuffixChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
@@ -112,5 +113,21 @@ size_t formatVersion(const Version& v, char* out, size_t cap) {
 const char* firmwareVersion() { return VDM_VERSION; }
 
 const char* minStmVersion() { return VDM_MIN_STM_VERSION; }
+
+const char* stmSupportName(StmSupport s) {
+  switch (s) {
+    case StmSupport::Unknown: return "unknown";
+    case StmSupport::Supported: return "ok";
+    case StmSupport::TooOld: return "too_old";
+  }
+  return "unknown";
+}
+
+StmSupport stmSupport(const Version& v) {
+  if (!v.valid) return StmSupport::Unknown;
+  Version min;
+  parseVersion(minStmVersion(), strlen(minStmVersion()), min);
+  return compareVersion(v, min) < 0 ? StmSupport::TooOld : StmSupport::Supported;
+}
 
 }  // namespace vdm

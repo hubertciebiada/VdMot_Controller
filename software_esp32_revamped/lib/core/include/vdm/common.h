@@ -126,6 +126,17 @@ size_t buildHostname(const char* station, char* out, size_t cap);
 // or ending with '-' or '.'. Used for the MQTT broker host and NTP server.
 bool isHostName(const char* s, size_t maxLen);
 
+// HA discovery id part (node_id / object_id must be [A-Za-z0-9_-], HA
+// discovery.py TOPIC_MATCHER) of at most `len` bytes of `in` (ends at a NUL):
+// ASCII letters, digits, '_' and '-' are kept; every other ASCII byte (space,
+// '.', ',', ...) becomes '_'; a well-formed UTF-8 letter U+00C0..U+017F becomes
+// its ASCII base letter (ł -> l, ü -> u, é -> e), with Æ -> AE, æ -> ae,
+// Þ -> TH, þ -> th, ß -> ss, Ĳ -> IJ, ĳ -> ij, Œ -> OE, œ -> oe; × and ÷ and
+// every other sequence (any script, symbols) become one '_', every invalid
+// byte one '_'. The output is never longer than the input. Returns the length;
+// 0 and out = "" when it does not fit or the input is empty.
+size_t buildHaId(const char* in, size_t len, char* out, size_t cap);
+
 // ---------------------------------------------------------------- numbers
 
 // Strict decimal parsers over exactly `len` bytes (no NUL needed):
@@ -141,6 +152,11 @@ bool parseInt(const char* s, size_t len, int32_t min, int32_t max, int32_t& out)
 bool parseIpv4(const char* s, size_t len, uint32_t& out);
 // Inverse of parseIpv4. `out` needs >= 16 bytes; returns chars written.
 size_t formatIpv4(uint32_t ip, char* out, size_t cap);
+
+// The one rounding rule for target percentages (MQTT payloads with
+// fractions): false for NaN, infinities, v < 0 and v > 100; else
+// out = floor(v + 0.5), so 43.5 -> 44 and -0.0 -> 0.
+bool roundTargetPercent(double v, uint8_t& out);
 
 // ---------------------------------------------------------------- 1-Wire
 

@@ -1,7 +1,7 @@
 // STM application protocol codec (ESP side): builds request lines and parses
 // reply lines into typed structs. Hardware-free, no state.
 //
-// Wire format (both protocol v1 = STM 1.4.x and v2 = revamped STM 2.x):
+// Wire format (protocol v1 = STM 1.4.x, v2 = revamped STM 2.0, v3 = STM 2.1):
 //   request : "<cmd>" { " " <arg> } " " "\r\n"  -- EVERY token, including the
 //             last, is followed by one space (the v1 STM tokenizer needs it);
 //             numbers are non-negative decimal; max 5 args; line <= 63 chars.
@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "vdm/common.h"
+#include "vdm/failsafe.h"
 #include "vdm/version.h"
 
 namespace vdm {
@@ -52,19 +53,35 @@ enum class Cmd : uint8_t {
   Scalx,   // set breakaway:        scalx <enable> <stepPct> <maxmA>
   Gcalx,   // get breakaway:        gcalx
   Gstat,   // STM health:           gstat
+  // protocol v3 (STM 2.1: gproto answers 3)
+  Gvlvy,   // valve data v3:        gvlvy <valve>
+  Gstax,   // STM health v3:        gstax
+  Slhbt,   // lease heartbeat:      slhbt <0|1>
+  Slcfg,   // set lease timeout:    slcfg <min>
+  Sfspo,   // set failsafe pos.:    sfspo <valve|255> <pct|255>
+  Glcfg,   // get lease config:     glcfg
+  Sstop,   // stop a move:          sstop <valve|255>
+  Gtlnt,   // get learn time:       gtlnt
+  Ssafe,   // leave safe mode:      ssafe 0
+  // protocol v1 command, appended (the numbers are external)
+  Stlnt,   // set learn time:       stlnt <seconds>
 };
-constexpr uint8_t kCmdCount = 31;  // including None
+constexpr uint8_t kCmdCount = 41;  // including None
 
 // "stgtp" etc.; "" for None/out of range. Never null.
 const char* cmdName(Cmd c);
-// Exact match of `len` bytes against the 30 names; None if unknown.
+// Exact match of `len` bytes against the 40 names; None if unknown.
 Cmd cmdFromName(const char* s, size_t len);
-// True for the v2-only commands (Gproto..Gstat).
+// Lowest protocol that answers the command: 1 for the v1 commands and
+// Stlnt, 2 for Gproto..Gstat, 3 for Gvlvy..Ssafe; 0 for None/out of range.
+uint8_t cmdMinProtocol(Cmd c);
+// True for the commands a v1 STM does not answer: cmdMinProtocol(c) >= 2.
 bool cmdIsV2(Cmd c);
 // True when sending the same request twice has the same effect as once
-// (all get*, stgtp, stvls, stlnm, smotc, scalx). Only these are retried by
-// LinkPolicy. Actions (staln, staop, stdet, stons, masns, svmov, reset) are
-// never retried automatically.
+// (all get*, stgtp, stvls, stlnm, smotc, scalx, stlnt and every v3 command:
+// a repeated heartbeat, stop or safe-mode exit changes nothing). Only these
+// are retried by LinkPolicy. Actions (staln, staop, stdet, stons, masns,
+// svmov, reset) are never retried automatically.
 bool cmdIsIdempotent(Cmd c);
 
 // ---------------------------------------------------------------- requests
@@ -73,14 +90,21 @@ constexpr size_t kRequestMaxLen = 63;  // chars incl. "\r\n", excl. NUL
 
 // One encoded request. `valve` is the valve the request is about (0..11),
 // kAllValves for "255" requests, or kNoValve. `arg` is the first numeric
-// argument when there is one that is not a valve (sensor bus index, count),
-// else 0; LinkPolicy uses (cmd, valve, arg) to match replies.
+// argument when there is one that is not a valve (sensor bus index, count;
+// slhbt: alive, slcfg: minutes, sfspo: pct), else 0; LinkPolicy uses
+// (cmd, valve, arg) to match replies.
 struct RequestLine {
   char text[kRequestMaxLen + 1] = {0};
   uint8_t len = 0;
   Cmd cmd = Cmd::None;
   uint8_t valve = kNoValve;
   uint16_t arg = 0;
+  // May stay unanswered by design (gproto on a v1 STM): its timeouts never
+  // count toward a link failure. Set only by buildGetProto().
+  bool probe = false;
+  // goned/gowvd: id expected at bus index `arg`; zero = unknown, any id
+  // matches (see replyMatches).
+  OneWireId expect;
 };
 
 // Motor characteristics (STM EEPROM), as in gmotc/smotc.
@@ -150,6 +174,18 @@ bool buildServiceMove(uint8_t valve, MoveDir dir, uint16_t counts, uint8_t maxmA
 bool buildSetBreakaway(const Breakaway& b, RequestLine& out);             // breakawayValid
 bool buildGetBreakaway(RequestLine& out);
 bool buildGetStatus(RequestLine& out);
+// v3
+bool buildValveExV3(uint8_t valve, RequestLine& out);                     // "gvlvy <v> ", 0..11
+bool buildGetStatusV3(RequestLine& out);                                  // "gstax "
+bool buildHeartbeat(bool alive, RequestLine& out);                        // "slhbt <0|1> "
+bool buildSetLeaseTimeout(uint32_t minutes, RequestLine& out);            // leaseTimeoutValid
+bool buildSetFailsafe(uint8_t valveOrAll, uint8_t pct, RequestLine& out); // 0..11|255, failsafePctValid
+bool buildGetLeaseConfig(RequestLine& out);                               // "glcfg "
+bool buildStop(uint8_t valveOrAll, RequestLine& out);                     // "sstop <v|255> "
+bool buildGetLearnTime(RequestLine& out);                                 // "gtlnt "
+bool buildLeaveSafeMode(RequestLine& out);                                // "ssafe 0 "
+// v1: "stlnt <seconds> " (0 = learn-time trigger off).
+bool buildSetLearnTime(uint32_t seconds, RequestLine& out);
 
 // ---------------------------------------------------------------- replies
 
@@ -278,6 +314,52 @@ struct MoveResult {
   uint32_t durationMs = 0;
 };
 
+// gvlvy (v3) field 20: valve flags (the STM's kVlvFlag* values).
+constexpr uint16_t kStmFlagFsLease = 0x001;       // at its failsafe position: lease expired
+constexpr uint16_t kStmFlagFsBlocked = 0x002;     // at its failsafe position: valve blocked
+constexpr uint16_t kStmFlagUncalibrated = 0x004;  // no valid calibration counts
+constexpr uint16_t kStmFlagNeedsRef = 0x008;      // next move goes to an end stop first
+constexpr uint16_t kStmFlagRecal = 0x010;         // full calibration once the valve is present
+constexpr uint16_t kStmFlagCalRestored = 0x020;   // counts restored from EEPROM
+constexpr uint16_t kStmFlagRetry = 0x040;         // automatic calibration retry scheduled
+constexpr uint16_t kStmFlagEarlyPending = 0x080;  // one early partial stop at this drive
+constexpr uint16_t kStmFlagAssembly = 0x100;      // staop hold
+constexpr uint16_t kStmFlagSvcHold = 0x200;       // left at a service move / sstop position
+// "fsLease","fsBlocked","uncalibrated","needsRef","recal","calRestored",
+// "retry","earlyPending","assembly","svcHold" for bits 0..9; "" for the
+// reserved bits 10..15 and above.
+const char* stmFlagName(uint8_t bit);
+
+// gvlvy field 21: why a valve failed (status 4) or is blocked (status 9).
+enum class ValveFault : uint8_t {
+  None = 0,
+  MoveTimeout = 1,
+  StrokeTimeout = 2,
+  Short = 3,            // presence test measured a short
+  StrokesTooShort = 4,  // blocked
+  InrushTrip = 5,       // the motor tripped the inrush limit at start
+};
+// "none","move_timeout","stroke_timeout","short","strokes_too_short",
+// "inrush_trip"; "unknown" for other values.
+const char* valveFaultName(uint8_t fault);
+
+// gstax field 18: STM configuration load flags.
+constexpr uint8_t kStmCfgLayoutCrc = 0x01;
+constexpr uint8_t kStmCfgShadowMissing = 0x02;
+constexpr uint8_t kStmCfgSettingsCorrupt = 0x04;
+constexpr uint8_t kStmCfgSafetyCorrupt = 0x08;
+constexpr uint8_t kStmCfgSensorSlot = 0x10;
+constexpr uint8_t kStmCfgCalib = 0x20;
+constexpr uint8_t kStmCfgUnverified = 0x40;
+constexpr uint8_t kStmCfgReadFailed = 0x80;
+// "layoutCrc","shadowMissing","settingsCorrupt","safetyCorrupt",
+// "sensorSlot","calib","unverified","readFailed" for bits 0..7; "" above.
+const char* stmCfgFlagName(uint8_t bit);
+
+// gstax field 23: the common-mode protection guard tripped; the short and
+// inrush limits are off until the next STM start.
+constexpr uint8_t kStmSysProtectSuspended = 0x01;
+
 struct ValveEx {
   uint8_t valve = 0;
   uint8_t status = 0;       // raw & 0x7F
@@ -299,6 +381,14 @@ struct ValveEx {
   uint32_t earlyStops = 0;
   uint32_t cmdRejected = 0;
   MoveResult lastMove;
+  // gvlvy (v3) only; gvlvx leaves the defaults.
+  bool v3 = false;
+  uint16_t flags = 0;               // field 20, kStmFlag*
+  uint8_t fault = 0;                // field 21, ValveFault
+  uint8_t fsPct = kFailsafeHold;    // field 22, 0..100 or kFailsafeHold
+  uint8_t drive = 0;                // field 23, the target the STM drives to
+  uint32_t retryS = 0;              // field 24, s to the next automatic retry (0 none)
+  uint8_t retries = 0;              // field 25, automatic retries since the fault began
 };
 
 // gprof (v2): "gprof idx n c1:m1 ... cn:mn", n 0..32, exactly n pairs.
@@ -313,14 +403,17 @@ struct Profile {
   ProfileSample samples[kProfileMaxSamples];
 };
 
-// svmov (v2): "svmov idx ok" or "svmov idx err <code>".
-struct ServiceMoveReply {
-  uint8_t valve = 0;
+// "<cmd> <idx> ok" or "<cmd> <idx> err <code>" (svmov v2; sfspo, sstop v3).
+// index -1: the STM could not read the index; such a reply answers any
+// outstanding request of that command. index 255 (sfspo, sstop): all valves.
+struct IndexedResult {
+  int16_t index = -1;
   bool ok = false;
   uint16_t errorCode = 0;
 };
 
 // gstat (v2): "gstat uptime_s resets bootReason rxOverflow parseErr eepState".
+// gstax (v3) starts with the same 6 fields and adds 17 more.
 struct StmStatus {
   uint32_t uptimeS = 0;
   uint32_t resets = 0;
@@ -328,11 +421,40 @@ struct StmStatus {
   uint32_t rxOverflow = 0;
   uint32_t parseErrors = 0;
   uint8_t eepState = 0;
+  // gstax only; gstat leaves the defaults.
+  bool v3 = false;
+  LeaseState lease = LeaseState::Off;   // 7
+  uint32_t leaseRemainS = 0;            // 8, while running
+  bool leaseClient = false;             // 9, a lease command within the last 300 s
+  uint16_t leaseTimeoutMin = 0;         // 10
+  uint16_t failsafeMask = 0;            // 11, bit v: valve v at its lease failsafe
+  bool safeMode = false;                // 12
+  uint8_t wdgResets = 0;                // 13, watchdog resets in the current window
+  uint32_t uartOre = 0, uartFe = 0, uartNe = 0, rxDropped = 0;  // 14..17, since start-up
+  uint8_t cfgFlags = 0;                 // 18, kStmCfg*
+  uint32_t cfgEvents = 0;               // 19, loads that repaired/defaulted a block
+  uint32_t eepWrites = 0;               // 20
+  uint32_t tempAgeS = 0;                // 21, s since the last complete temperature cycle
+  uint32_t owScanAgeS = 0;              // 22, s since the last 1-Wire enumeration
+  uint8_t sysFlags = 0;                 // 23, kStmSys*
+};
+
+// glcfg (v3): "glcfg <timeoutMin> <fs0> ... <fs11>".
+struct LeaseConfigReply {
+  uint16_t timeoutMin = 0;                     // 0..1440
+  uint8_t failsafePct[kValveCount] = {};       // 0..100 or kFailsafeHold
+};
+
+// slhbt (v3) ok form: "slhbt <lease> <remainS>".
+struct HeartbeatReply {
+  LeaseState lease = LeaseState::Off;
+  uint32_t remainS = 0;
 };
 
 // Replies without payload ("stgtp", "stons", "staln", "stlnm", "smotc",
-// "staop ", "stdet ", "masns ", "reset ", "stvls v", "scalx ok").
-// error=true for the v2 "smotc err" / "scalx err" forms.
+// "staop ", "stdet ", "masns ", "reset ", "stvls v", "scalx ok", "stlnt",
+// "slcfg ok", "ssafe ok"). error=true for the "smotc err" / "scalx err" /
+// "slcfg err" / "ssafe err" / "slhbt err" forms.
 struct Ack {
   bool error = false;
   uint8_t valve = kNoValve;  // stvls only
@@ -340,11 +462,12 @@ struct Ack {
 
 // A parsed reply. Plain struct (not a union) so every payload type stays
 // trivially copyable; only the member selected by `cmd` is meaningful.
-// sizeof(Reply) is ~1.3 KB: keep exactly one per task, never on small stacks.
+// sizeof(Reply) is ~1.4 KB: keep exactly one per task, never on small stacks.
 struct Reply {
   Cmd cmd = Cmd::None;
   bool gvlonError = false;       // "goned error" (v1 gvlon error)
-  Ack ack;                       // Stgtp Stons Stvls Masns Staop Staln Stdet Stlnm Smotc Reset Scalx
+  Ack ack;                       // Stgtp Stons Stvls Masns Staop Staln Stdet Stlnm Smotc Reset
+                                 // Scalx Stlnt Slcfg Ssafe, Slhbt error form
   ValveData valveData;           // Gvlvd
   ValveStates valveStates;       // Gvlst
   OneWireList oneWireList;       // Gonec, Gowvc
@@ -359,25 +482,36 @@ struct Reply {
   uint16_t hwId = 0;             // Ghwin (DBGMCU IDCODE & 0xFFF)
   bool eepromIdle = false;       // Eepst: "1" = nothing pending
   uint8_t proto = 0;             // Gproto
-  ValveEx valveEx;               // Gvlvx
+  ValveEx valveEx;               // Gvlvx, Gvlvy (v3 set)
   Profile profile;               // Gprof
-  ServiceMoveReply serviceMove;  // Svmov
+  IndexedResult serviceMove;     // Svmov
   Breakaway breakaway;           // Gcalx
-  StmStatus status;              // Gstat
+  StmStatus status;              // Gstat, Gstax (v3 set)
+  LeaseConfigReply leaseConfig;  // Glcfg
+  HeartbeatReply heartbeat;      // Slhbt ok form
+  IndexedResult failsafe;        // Sfspo
+  IndexedResult stop;            // Sstop
+  uint32_t learnTime = 0;        // Gtlnt
 };
 
 // Parses one complete line (no CR/LF; `len` bytes, NUL not required).
 // Tokens are separated by one or more spaces; trailing spaces are allowed.
 // Every numeric field is strict decimal and range-checked; on any error the
 // status says why and `out` is reset to Reply{}.
+// gvlvx has exactly 19 fields and gstat exactly 6. The v3 replies with a
+// fixed field list (gvlvy >= 25, gstax >= 23, glcfg >= 13, slhbt ok form
+// >= 2) accept extra fields a later STM may append: each must be a strict
+// decimal 0..2^32-1 and is ignored.
 ParseStatus parseReply(const char* line, size_t len, Reply& out);
 
 // True when `rep` is the answer to `req`: same command and, where the reply
 // carries it, the same valve / bus index. Special cases:
 //  - Gvlon request accepts a gvlonError reply.
 //  - Goned/Gowvd requests accept the invalid form ("goned 0") -- index match
-//    cannot be checked there.
+//    cannot be checked there; a valid reading must carry req.expect unless
+//    that is zero (a late reply for another bus index is not taken).
 //  - Gonec/Gowvc list requests accept a count-only reply with count 0.
+//  - Svmov/Sfspo/Sstop accept index -1 (the STM could not read the index).
 bool replyMatches(const RequestLine& req, const Reply& rep);
 
 // Maps a gvlon/list id to a 1-based config slot using the configured slot

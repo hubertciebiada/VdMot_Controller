@@ -59,4 +59,11 @@ const char* firmwareVersion();
 // the VDM_MIN_STM_VERSION build flag, default "1.4.0".
 const char* minStmVersion();
 
+// Whether the ESP supports the STM firmware it talks to.
+enum class StmSupport : uint8_t { Unknown = 0, Supported = 1, TooOld = 2 };
+const char* stmSupportName(StmSupport s);  // "unknown","ok","too_old"; "unknown" out of range
+// Invalid version -> Unknown; numeric part below minStmVersion() -> TooOld;
+// else Supported.
+StmSupport stmSupport(const Version& v);
+
 }  // namespace vdm

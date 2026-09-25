@@ -1193,7 +1193,8 @@ void handleApi(AsyncWebServerRequest* req, bool hasBody) {
       return sendAccepted(req);
     case R::MqttDiscovery: return handleDiscovery(req, hasBody);
     case R::LogDownload: return handleLog(req);
-    default: return sendError(req, 404, "not_found", url.c_str());
+    // Routes of 2.1 whose handlers are not there yet.
+    default: return sendError(req, 501, "not_implemented", url.c_str());
   }
 }
 

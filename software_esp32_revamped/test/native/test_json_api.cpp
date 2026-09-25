@@ -285,7 +285,7 @@ TEST_CASE("api: valves document") {
   st2.known = true;
   st2.lastSeenMs = 0xFFFFF000u;  // wrap: 6500 - 0xFFFFF000 = 10596 ms
   st2.status = 9;
-  st2.health = 0x1FF;
+  st2.health = 0xFFFF;  // bits above kHealthStrokeShort have no name
   st2.lastMove.dir = MoveDir::Open;
   st2.hasExtended = true;
   views[2].state = &st2;
@@ -316,7 +316,8 @@ TEST_CASE("api: valves document") {
       q(targetSyncName(TargetSync::Unknown)) +
       ",\"stmTarget\":null,\"meanCur\":0,\"moves\":0,\"oc\":0,\"cc\":0,\"dc\":0,\"cr\":0,"
       "\"health\":[\"blocked\",\"failed\",\"noValve\",\"calibRetries\",\"earlyStop\","
-      "\"cmdRejected\",\"stale\",\"targetUnconfirmed\",\"tempFailed\"],\"age\":10,\"sensors\":[],"
+      "\"cmdRejected\",\"stale\",\"targetUnconfirmed\",\"tempFailed\",\"failsafe\","
+      "\"strokeShort\"],\"age\":10,\"sensors\":[],"
       "\"ext\":{\"calState\":0,\"calEarlyStop\":false,\"calLastFailed\":false,"
       "\"earlyStops\":0,\"cmdRejected\":0,\"lastMove\":{\"dir\":\"open\","
       "\"req\":0,\"cnt\":0,\"stop\":" + q(stopReasonName(StopReason::None)) +
@@ -335,9 +336,15 @@ TEST_CASE("api: valves document") {
   CHECK(build([&](JsonWriter& jw) { return writeValvesJson(jw, &fv, 1, 0); })
             .find("\"name\":\"nnnnnnnnnn\",") != std::string::npos);
   // Unknown health bits above the table are ignored.
-  st2.health = 0xFE00;
+  st2.health = 0xF800;
   const std::string k = build([&](JsonWriter& jw) { return writeValvesJson(jw, &views[2], 1, 0); });
   CHECK(k.find("\"health\":[]") != std::string::npos);
+  st2.health = kHealthFailsafe;
+  CHECK(build([&](JsonWriter& jw) { return writeValvesJson(jw, &views[2], 1, 0); })
+            .find("\"health\":[\"failsafe\"]") != std::string::npos);
+  st2.health = kHealthStrokeShort;
+  CHECK(build([&](JsonWriter& jw) { return writeValvesJson(jw, &views[2], 1, 0); })
+            .find("\"health\":[\"strokeShort\"]") != std::string::npos);
   // No views.
   CHECK(build([&](JsonWriter& jw) { return writeValvesJson(jw, nullptr, 12, 0); }) ==
         "{\"valves\":[]}");
@@ -654,6 +661,15 @@ TEST_CASE("api: every route, method and auth flag") {
       {P, "/api/mqtt/reconnect", ApiRoute::MqttReconnect, false},
       {P, "/api/mqtt/discovery", ApiRoute::MqttDiscovery, false},
       {G, "/api/log", ApiRoute::LogDownload, false},
+      {P, "/api/valves/12/stop", ApiRoute::ValveStop, false},
+      {P, "/api/valves/stop", ApiRoute::StopAll, false},
+      {P, "/api/stm/safe-mode/leave", ApiRoute::StmSafeModeLeave, false},
+      {P, "/api/system/network/confirm", ApiRoute::NetConfirm, false},
+      {P, "/api/system/network/revert", ApiRoute::NetRevert, false},
+      {G, "/api/files", ApiRoute::Files, false},
+      {D, "/api/files", ApiRoute::FileDelete, false},
+      {G, "/api/import-report", ApiRoute::ImportReport, true},
+      {D, "/api/import-report", ApiRoute::ImportReportDismiss, false},
   };
   for (const Case& k : cases) {
     CAPTURE(k.path);
@@ -674,6 +690,20 @@ TEST_CASE("api: every route, method and auth flag") {
       CHECK(x.needsAuth);
     }
   }
+  // The health check is public, also with protectRead.
+  for (bool protectRead : {false, true}) {
+    CAPTURE(protectRead);
+    const RouteMatch h = route(G, "/api/health", protectRead);
+    CHECK(h.route == ApiRoute::Health);
+    CHECK_FALSE(h.needsAuth);
+    const RouteMatch x = route(P, "/api/health", protectRead);
+    CHECK(x.route == ApiRoute::MethodNotAllowed);
+    CHECK(x.needsAuth);
+  }
+  CHECK(route(P, "/api/valves/3/stop").valve == 2);
+  CHECK(route(P, "/api/valves/13/stop").route == ApiRoute::NotFound);
+  CHECK(route(P, "/api/stm/safe-mode").route == ApiRoute::NotFound);
+  CHECK(route(P, "/api/system/network").route == ApiRoute::NotFound);
 }
 
 TEST_CASE("api: route parameters") {

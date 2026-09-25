@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <vdm/json_api.h>
+
 namespace ota {
 
 // Reads the running partition's OTA state (PENDING_VERIFY after an update)
@@ -15,8 +17,12 @@ void begin();
 
 // App task, every second: MarkValid -> esp_ota_mark_app_valid_cancel_rollback()
 // + AppMarkedValid event; Rollback -> RebootRequested(4), log flush,
-// esp_ota_mark_app_invalid_rollback_and_reboot().
-void service(uint32_t nowMs, bool netUp, bool linkUp);
+// esp_ota_mark_app_invalid_rollback_and_reboot(). netOk: the network check
+// of the validator (net::otaNetOk()); webStarted: the web server runs.
+void service(uint32_t nowMs, bool netOk, bool linkUp, bool webStarted);
+
+// Validator state for /api/health.
+vdm::OtaHealthInfo health(uint32_t nowMs);
 
 // Upload steps called from the web handler (AsyncTCP task). begin fails when
 // an upload, an STM image upload or an STM flash is running, or when
@@ -32,15 +38,16 @@ bool uploadEnd(bool commit);
 bool uploadActive();
 const char* uploadError();
 
-// Deferred restart from any task: logs RebootRequested(reason), waits
-// delayMs so responses/MQTT offline can go out, then esp_restart(). The
-// first request wins; later ones are ignored.
-void requestRestart(uint8_t reason, uint32_t delayMs);
+// Deferred restart from any task: logs RebootRequested(reason, detail)
+// (vdm::RebootReason; detail: outage minutes for the net watchdog, missing
+// checks for a rollback), waits delayMs so responses/MQTT offline can go
+// out, then esp_restart(). The first request wins; later ones are ignored.
+void requestRestart(uint8_t reason, uint32_t delayMs, int32_t detail = 0);
 bool restartPending();
 // App task: performs a requested restart when due (log flushed first). A
 // user/config restart (reasons 0 and 3) of an image still pending
 // verification with the network up confirms the image first, so it is not
 // rolled back (vdm::OtaValidator::confirmBeforeRestart).
-void serviceRestart(uint32_t nowMs, bool netUp);
+void serviceRestart(uint32_t nowMs, bool netUp, bool linkUp);
 
 }  // namespace ota

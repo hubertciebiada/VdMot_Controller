@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <algorithm>
 #include <random>
 #include <string>
 #include <vector>
@@ -88,14 +89,20 @@ PatchResult patch(Config& c, const std::string& json, std::string* pathOut = nul
   return r;
 }
 
+// Equal stored configs: the `cfg` and the `cfgx` blob.
 bool sameConfig(const Config& a, const Config& b) {
   uint8_t ba[kConfigBlobMax], bb[kConfigBlobMax];
   const size_t na = encodeConfig(a, ba, sizeof ba);
   const size_t nb = encodeConfig(b, bb, sizeof bb);
-  return na > 0 && na == nb && memcmp(ba, bb, na) == 0;
+  uint8_t xa[kConfigExtBlobMax], xb[kConfigExtBlobMax];
+  const size_t ma = encodeConfigExt(a, xa, sizeof xa);
+  const size_t mb = encodeConfigExt(b, xb, sizeof xb);
+  return na > 0 && na == nb && memcmp(ba, bb, na) == 0 && ma > 0 && ma == mb &&
+         memcmp(xa, xb, ma) == 0;
 }
 
-// Config with every field away from its default, still valid.
+// Config with every field of the 2.0.0 blob away from its default, still
+// valid (the keys added later keep their defaults: fullConfigExt()).
 Config fullConfig() {
   Config c;
   REQUIRE(set(c, "station", S("Heizung OG")) == SetResult::Ok);
@@ -117,7 +124,8 @@ Config fullConfig() {
   REQUIRE(set(c, "web.user", S("admin")) == SetResult::Ok);
   REQUIRE(set(c, "web.password", S("pa ss\"w")) == SetResult::Ok);
   REQUIRE(set(c, "web.protectRead", B(true)) == SetResult::Ok);
-  REQUIRE(set(c, "mqtt.mode", I(2)) == SetResult::Ok);
+  // Plain MQTT: HA mode needs separate topics and the decimal point.
+  REQUIRE(set(c, "mqtt.mode", I(1)) == SetResult::Ok);
   REQUIRE(set(c, "mqtt.host", S("broker.lan")) == SetResult::Ok);
   REQUIRE(set(c, "mqtt.port", I(8883)) == SetResult::Ok);
   REQUIRE(set(c, "mqtt.user", S("mq")) == SetResult::Ok);
@@ -126,8 +134,9 @@ Config fullConfig() {
   REQUIRE(set(c, "mqtt.publishIntervalS", I(120)) == SetResult::Ok);
   REQUIRE(set(c, "mqtt.minDelayS", I(7)) == SetResult::Ok);
   // Every MQTT flag away from its default.
-  const char* flipToFalse[] = {"allTemps", "upTime",  "onChange", "retained", "plainText",
-                               "diag",     "newDiag", "events",   "haDiscoveryOnConnect"};
+  const char* flipToFalse[] = {"separate",  "allTemps", "upTime",  "onChange", "retained",
+                               "plainText", "diag",     "newDiag", "events",
+                               "haDiscoveryOnConnect"};
   for (const char* b : flipToFalse) {
     REQUIRE(set(c, (std::string("mqtt.") + b).c_str(), B(false)) == SetResult::Ok);
   }
@@ -152,6 +161,25 @@ Config fullConfig() {
   REQUIRE(set(c, "calib.hour", I(23)) == SetResult::Ok);
   REQUIRE(set(c, "calib.minute", I(59)) == SetResult::Ok);
   REQUIRE(set(c, "persistLog", B(false)) == SetResult::Ok);
+  REQUIRE(validatePath(c) == "OK");
+  return c;
+}
+
+// fullConfig() with every key of the `cfgx` blob away from its default too.
+Config fullConfigExt() {
+  Config c = fullConfig();
+  REQUIRE(set(c, "web.allowedHosts", S("vdmot.lan, 192.168.1.9")) == SetResult::Ok);
+  REQUIRE(set(c, "mqtt.rootTopic", S("VdMotFBH")) == SetResult::Ok);
+  REQUIRE(set(c, "mqtt.clientId", S("VdMot-east-6c1e51")) == SetResult::Ok);
+  REQUIRE(set(c, "mqtt.discoveryPrefix", S("ha/discovery")) == SetResult::Ok);
+  REQUIRE(set(c, "failsafe.timeoutMin", I(1440)) == SetResult::Ok);
+  REQUIRE(set(c, "valves.1.failsafePct", I(kFailsafeHold)) == SetResult::Ok);
+  REQUIRE(set(c, "valves.12.failsafePct", I(0)) == SetResult::Ok);
+  REQUIRE(set(c, "valves.2.topic", S("Bad/WC")) == SetResult::Ok);
+  REQUIRE(set(c, "valves.12.topic", S("x")) == SetResult::Ok);
+  REQUIRE(set(c, "temps.1.topic", S("t/1")) == SetResult::Ok);
+  REQUIRE(set(c, "temps.34.topic", S("t34")) == SetResult::Ok);
+  REQUIRE(set(c, "volts.8.topic", S("battery")) == SetResult::Ok);
   REQUIRE(validatePath(c) == "OK");
   return c;
 }
@@ -190,7 +218,9 @@ TEST_CASE("config: defaults are the documented values and validate") {
   c.station[0] = 'X';
   c.mqtt.port = 1;
   setDefaults(c);
-  CHECK(c.schema == 1);
+  CHECK(c.schema == 2);
+  CHECK(kConfigBaseSchema == 1);
+  CHECK(kConfigJsonSchema == 2);
   CHECK(std::string(c.station) == "VdMot");
   CHECK(c.net.iface == NetInterface::Auto);
   CHECK(c.net.dhcp);
@@ -222,6 +252,18 @@ TEST_CASE("config: defaults are the documented values and validate") {
   CHECK(c.calib.hour == 0);
   CHECK(c.calib.minute == 0);
   CHECK(c.persistLog);
+  // Keys of the cfgx blob.
+  CHECK(std::string(c.web.allowedHosts).empty());
+  CHECK(std::string(c.mqtt.rootTopic).empty());
+  CHECK(std::string(c.mqtt.clientId).empty());
+  CHECK(std::string(c.mqtt.discoveryPrefix) == "homeassistant");
+  CHECK(c.failsafe.timeoutMin == 60);
+  for (const ValveConfig& v : c.valves) {
+    CHECK(v.failsafePct == 50);
+    CHECK(std::string(v.topic).empty());
+  }
+  CHECK(std::string(c.temps[33].topic).empty());
+  CHECK(std::string(c.volts[7].topic).empty());
   CHECK(validatePath(c) == "OK");
 }
 
@@ -300,17 +342,22 @@ TEST_CASE("config: setter path parsing") {
   CHECK(sameConfig(c, d));
 }
 
-TEST_CASE("config: schema is read-only except for the current version") {
+TEST_CASE("config: schema is read-only except for the known versions") {
   Config c;
-  CHECK(set(c, "schema", I(1)) == SetResult::Ok);
+  CHECK(set(c, "schema", I(1)) == SetResult::Ok);  // a 2.0.0 export
   CHECK(set(c, "schema", S("1")) == SetResult::Ok);
   CHECK(set(c, "schema", F(1.0)) == SetResult::Ok);
-  CHECK(set(c, "schema", I(2)) == SetResult::ReadOnly);
+  CHECK(set(c, "schema", I(2)) == SetResult::Ok);
+  CHECK(set(c, "schema", I(3)) == SetResult::ReadOnly);
   CHECK(set(c, "schema", I(0)) == SetResult::ReadOnly);
+  CHECK(set(c, "schema", I(-1)) == SetResult::ReadOnly);
   CHECK(set(c, "schema", S("x")) == SetResult::ReadOnly);
   CHECK(set(c, "schema", B(true)) == SetResult::ReadOnly);
   CHECK(set(c, "schema.x", I(1)) == SetResult::UnknownKey);
-  CHECK(c.schema == 1);
+  CHECK(c.schema == 2);
+  // No-op: the posted value is not stored.
+  CHECK(set(c, "schema", I(1)) == SetResult::Ok);
+  CHECK(c.schema == 2);
 }
 
 // ---------------------------------------------------------------- setter: numbers
@@ -980,7 +1027,9 @@ TEST_CASE("config: sensor slots need ids and unique ids") {
 TEST_CASE("config: validation rejects out-of-range stored fields") {
   {
     Config c;
-    c.schema = 2;
+    c.schema = 3;
+    CHECK(validatePath(c) == "schema");
+    c.schema = 1;  // the JSON schema of a config in RAM is always the current one
     CHECK(validatePath(c) == "schema");
   }
   {
@@ -1176,34 +1225,38 @@ TEST_CASE("config: validation path buffer handling") {
 
 TEST_CASE("config: JSON export of the defaults (golden)") {
   std::string expected =
-      "{\"schema\":1,\"station\":\"VdMot\","
+      "{\"schema\":2,\"station\":\"VdMot\","
       "\"net\":{\"iface\":0,\"dhcp\":true,\"ip\":\"0.0.0.0\",\"mask\":\"0.0.0.0\","
       "\"gateway\":\"0.0.0.0\",\"dns\":\"0.0.0.0\",\"ssid\":\"\",\"wifiPasswordSet\":false,"
       "\"reconnectTimeoutMin\":5},"
       "\"time\":{\"ntpServer\":\"pool.ntp.org\",\"tzName\":\"Europe/Berlin\","
       "\"tzPosix\":\"CET-1CEST,M3.5.0,M10.5.0/3\"},"
       "\"syslog\":{\"level\":0,\"server\":\"0.0.0.0\",\"port\":514},"
-      "\"web\":{\"user\":\"\",\"passwordSet\":false,\"protectRead\":false},"
+      "\"web\":{\"user\":\"\",\"passwordSet\":false,\"protectRead\":false,\"allowedHosts\":\"\"},"
       "\"mqtt\":{\"mode\":0,\"host\":\"\",\"port\":1883,\"user\":\"\",\"passwordSet\":false,"
       "\"keepAliveS\":60,\"publishIntervalS\":10,\"minDelayS\":5,\"separate\":true,"
       "\"allTemps\":true,\"pathAsRoot\":false,\"upTime\":true,\"onChange\":true,"
       "\"retained\":true,\"plainText\":true,\"diag\":true,\"germanDecimal\":false,"
-      "\"newDiag\":true,\"events\":true,\"haDiscoveryOnConnect\":true},\"valves\":[";
+      "\"newDiag\":true,\"events\":true,\"haDiscoveryOnConnect\":true,\"rootTopic\":\"\","
+      "\"clientId\":\"\",\"discoveryPrefix\":\"homeassistant\"},\"valves\":[";
   for (int i = 0; i < 12; ++i) {
-    expected += std::string(i ? "," : "") + "{\"name\":\"\",\"active\":false}";
+    expected += std::string(i ? "," : "") +
+                "{\"name\":\"\",\"active\":false,\"failsafePct\":50,\"topic\":\"\"}";
   }
   expected += "],\"temps\":[";
   for (int i = 0; i < 34; ++i) {
     expected += std::string(i ? "," : "") +
-                "{\"name\":\"\",\"active\":false,\"offset\":0.0,\"id\":\"\"}";
+                "{\"name\":\"\",\"active\":false,\"offset\":0.0,\"id\":\"\",\"topic\":\"\"}";
   }
   expected += "],\"volts\":[";
   for (int i = 0; i < 8; ++i) {
     expected += std::string(i ? "," : "") +
                 "{\"name\":\"\",\"active\":false,\"offset\":0,\"factor\":1,\"unit\":\"\","
-                "\"id\":\"\"}";
+                "\"id\":\"\",\"topic\":\"\"}";
   }
-  expected += "],\"calib\":{\"dayMask\":9,\"hour\":0,\"minute\":0},\"persistLog\":true}";
+  expected +=
+      "],\"calib\":{\"dayMask\":9,\"hour\":0,\"minute\":0},\"failsafe\":{\"timeoutMin\":60},"
+      "\"persistLog\":true}";
   CHECK(exportJson(Config{}) == expected);
 }
 
@@ -1214,24 +1267,38 @@ TEST_CASE("config: JSON export of set values") {
   CHECK(j.find("\"iface\":2,\"dhcp\":false,\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
                "\"gateway\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"ssid\":\"My Wifi\","
                "\"wifiPasswordSet\":true,\"reconnectTimeoutMin\":17") != std::string::npos);
-  CHECK(j.find("\"web\":{\"user\":\"admin\",\"passwordSet\":true,\"protectRead\":true}") !=
-        std::string::npos);
-  CHECK(j.find("\"mode\":2,\"host\":\"broker.lan\",\"port\":8883,\"user\":\"mq\","
+  CHECK(j.find("\"web\":{\"user\":\"admin\",\"passwordSet\":true,\"protectRead\":true,"
+               "\"allowedHosts\":\"\"}") != std::string::npos);
+  CHECK(j.find("\"mode\":1,\"host\":\"broker.lan\",\"port\":8883,\"user\":\"mq\","
                "\"passwordSet\":true,\"keepAliveS\":30,\"publishIntervalS\":120,\"minDelayS\":7,"
-               "\"separate\":true,\"allTemps\":false,\"pathAsRoot\":true,\"upTime\":false,"
+               "\"separate\":false,\"allTemps\":false,\"pathAsRoot\":true,\"upTime\":false,"
                "\"onChange\":false,\"retained\":false,\"plainText\":false,\"diag\":false,"
                "\"germanDecimal\":true,\"newDiag\":false,\"events\":false,"
-               "\"haDiscoveryOnConnect\":false}") != std::string::npos);
+               "\"haDiscoveryOnConnect\":false,") != std::string::npos);
   CHECK(j.find("{\"name\":\"t1\",\"active\":true,\"offset\":-1.5,"
-               "\"id\":\"28-84-37-94-97-ff-03-23\"}") !=
-        std::string::npos);
+               "\"id\":\"28-84-37-94-97-ff-03-23\",\"topic\":\"\"}") != std::string::npos);
   CHECK(j.find("{\"name\":\"\",\"active\":false,\"offset\":10.0,"
-               "\"id\":\"28-aa-bb-cc-dd-ee-01-67\"}]") !=
-        std::string::npos);
+               "\"id\":\"28-aa-bb-cc-dd-ee-01-67\",\"topic\":\"\"}]") != std::string::npos);
   CHECK(j.find("{\"name\":\"bat\",\"active\":true,\"offset\":-0.25,\"factor\":0.01,\"unit\":\"V\","
-               "\"id\":\"26-11-22-33-44-55-66-29\"}]") != std::string::npos);
-  CHECK(j.find("\"calib\":{\"dayMask\":127,\"hour\":23,\"minute\":59},\"persistLog\":false}") !=
+               "\"id\":\"26-11-22-33-44-55-66-29\",\"topic\":\"\"}]") != std::string::npos);
+  CHECK(j.find("\"calib\":{\"dayMask\":127,\"hour\":23,\"minute\":59},"
+               "\"failsafe\":{\"timeoutMin\":60},\"persistLog\":false}") != std::string::npos);
+  // The keys of the cfgx blob.
+  const std::string x = exportJson(fullConfigExt());
+  CHECK(x.find("\"protectRead\":true,\"allowedHosts\":\"vdmot.lan, 192.168.1.9\"}") !=
         std::string::npos);
+  CHECK(x.find("\"haDiscoveryOnConnect\":false,\"rootTopic\":\"VdMotFBH\","
+               "\"clientId\":\"VdMot-east-6c1e51\",\"discoveryPrefix\":\"ha/discovery\"}") !=
+        std::string::npos);
+  CHECK(x.find("\"valves\":[{\"name\":\"Bad\",\"active\":true,\"failsafePct\":255,\"topic\":\"\"},"
+               "{\"name\":\"\",\"active\":false,\"failsafePct\":50,\"topic\":\"Bad/WC\"},") !=
+        std::string::npos);
+  CHECK(x.find("{\"name\":\"Kitchen\",\"active\":false,\"failsafePct\":0,\"topic\":\"x\"}]") !=
+        std::string::npos);
+  CHECK(x.find("\"id\":\"28-84-37-94-97-ff-03-23\",\"topic\":\"t/1\"}") != std::string::npos);
+  CHECK(x.find("\"id\":\"26-11-22-33-44-55-66-29\",\"topic\":\"battery\"}]") !=
+        std::string::npos);
+  CHECK(x.find("\"failsafe\":{\"timeoutMin\":1440}") != std::string::npos);
   // Secrets never appear.
   CHECK(j.find("secret123") == std::string::npos);
   CHECK(j.find("pa ss") == std::string::npos);
@@ -1347,9 +1414,10 @@ TEST_CASE("config: patch paths, nesting forms and clearSecrets") {
   CHECK(path == "calib.hour");
   CHECK(patch(c, "{\"calib\":{\"hour\":24}}", &path) == PatchResult::OutOfRange);
   CHECK(path == "calib.hour");
-  CHECK(patch(c, "{\"schema\":2}", &path) == PatchResult::ReadOnly);
+  CHECK(patch(c, "{\"schema\":3}", &path) == PatchResult::ReadOnly);
   CHECK(path == "schema");
   CHECK(patch(c, "{\"schema\":1}", &path) == PatchResult::Ok);
+  CHECK(patch(c, "{\"schema\":2}", &path) == PatchResult::Ok);
   CHECK(patch(c, "{\"calib\":{\"hour\":null}}", &path) == PatchResult::WrongType);
   CHECK(patch(c, "{\"nope\":{}}", &path) == PatchResult::Ok);  // empty container: no leaf
   CHECK(patch(c, "{\"nope\":1}", &path) == PatchResult::UnknownKey);
@@ -1782,6 +1850,9 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     b[5] = 1;  // 257
     fixCrc(b);
     expect(b, DecodeResult::UnsupportedSchema);
+    DecodeInfo info;
+    CHECK(decodeConfig(b.data(), b.size(), out, &info) == DecodeResult::UnsupportedSchema);
+    CHECK(info.schema == 257);
   }
   {
     // Payload length one short: last field incomplete -> too short a
@@ -1847,6 +1918,41 @@ TEST_CASE("config: decode rejects every kind of damage and keeps defaults") {
     fixCrc(b);
     expect(b, DecodeResult::Ok);
   }
+}
+
+TEST_CASE("config: the loader without repairs rejects two valves on one MQTT segment") {
+  // The 2.0.0 rule: names compare with ' ' == '_', each against every earlier
+  // valve. (sanitizeConfig() is still a pass-through, so decodeConfig drops
+  // such a blob like 2.0.0 did.)
+  struct Pair {
+    uint8_t a;
+    uint8_t b;
+    const char* nameA;
+    const char* nameB;
+  };
+  const Pair pairs[] = {{0, 1, "Dom", "Dom"}, {1, 11, "a b", "a_b"}, {3, 7, "x_y", "x y"}};
+  for (const Pair& p : pairs) {
+    CAPTURE(p.nameB);
+    Config c;
+    strcpy(c.valves[p.a].name, p.nameA);
+    strcpy(c.valves[p.b].name, p.nameB);
+    const std::vector<uint8_t> b = encode(c);
+    Config out;
+    CHECK(decodeConfig(b.data(), b.size(), out) == DecodeResult::Invalid);
+  }
+  // A name equal to the number of an unnamed valve is that valve's segment.
+  Config num;
+  strcpy(num.valves[4].name, "1");
+  const std::vector<uint8_t> nb = encode(num);
+  Config numOut;
+  CHECK(decodeConfig(nb.data(), nb.size(), numOut) == DecodeResult::Invalid);
+  Config ok;
+  strcpy(ok.valves[3].name, "x_y");
+  strcpy(ok.valves[7].name, "x-y");
+  const std::vector<uint8_t> b = encode(ok);
+  Config out;
+  CHECK(decodeConfig(b.data(), b.size(), out) == DecodeResult::Ok);
+  CHECK(std::string(out.valves[7].name) == "x-y");
 }
 
 TEST_CASE("config: decode fuzz") {
@@ -2114,4 +2220,1191 @@ TEST_CASE("config binary: an unterminated string is encoded at most cap-1 bytes"
   Config out;
   CHECK(decodeConfig(b.data(), n, out) == DecodeResult::Ok);
   CHECK(std::string(out.station) == std::string(sizeof c.station - 1, 'x'));
+}
+
+// ---------------------------------------------------------------- keys after 2.0.0
+
+TEST_CASE("config: one-byte fields are stored in one byte") {
+  Config c;
+  REQUIRE(set(c, "valves.2.topic", S("t")) == SetResult::Ok);
+  REQUIRE(set(c, "valves.2.failsafePct", I(7)) == SetResult::Ok);
+  CHECK(c.valves[1].failsafePct == 7);
+  CHECK(std::string(c.valves[1].topic) == "t");
+  REQUIRE(set(c, "net.iface", I(2)) == SetResult::Ok);
+  CHECK(c.net.iface == NetInterface::Wifi);
+  CHECK(c.net.dhcp);
+  REQUIRE(set(c, "calib.minute", I(9)) == SetResult::Ok);
+  REQUIRE(set(c, "calib.hour", I(5)) == SetResult::Ok);
+  REQUIRE(set(c, "calib.dayMask", I(3)) == SetResult::Ok);
+  CHECK(c.calib.minute == 9);
+  CHECK(c.calib.hour == 5);
+  CHECK(c.calib.dayMask == 3);
+  // Two-byte fields keep their high byte.
+  REQUIRE(set(c, "failsafe.timeoutMin", I(1440)) == SetResult::Ok);
+  CHECK(c.failsafe.timeoutMin == 1440);
+  REQUIRE(set(c, "mqtt.port", I(65535)) == SetResult::Ok);
+  CHECK(c.mqtt.port == 65535);
+  CHECK(set(c, "mqtt.port", I(65536)) == SetResult::OutOfRange);
+  CHECK(c.mqtt.port == 65535);
+}
+
+TEST_CASE("config: failsafe keys accept exactly their range (C-1)") {
+  Config c;
+  for (int64_t ok : {0, 1, 99, 100, 255}) {
+    CAPTURE(ok);
+    CHECK(set(c, "valves.3.failsafePct", I(ok)) == SetResult::Ok);
+    CHECK(c.valves[2].failsafePct == ok);
+  }
+  for (int64_t bad : {-1, 101, 102, 200, 254, 256, 355, 65535, 65536}) {
+    CAPTURE(bad);
+    CHECK(set(c, "valves.3.failsafePct", I(bad)) == SetResult::OutOfRange);
+    CHECK(c.valves[2].failsafePct == 255);
+  }
+  CHECK(set(c, "valves.12.failsafePct", S("42")) == SetResult::Ok);
+  CHECK(c.valves[11].failsafePct == 42);
+  CHECK(set(c, "valves.12.failsafePct", F(43.0)) == SetResult::Ok);
+  CHECK(c.valves[11].failsafePct == 43);
+  CHECK(set(c, "valves.12.failsafePct", F(43.5)) == SetResult::WrongType);
+  CHECK(set(c, "valves.12.failsafePct", B(true)) == SetResult::WrongType);
+  CHECK(set(c, "valves.12.failsafePct", S("x")) == SetResult::WrongType);
+  CHECK(c.valves[11].failsafePct == 43);
+  // The other valves keep their default.
+  CHECK(c.valves[0].failsafePct == 50);
+
+  for (int64_t ok : {0, 5, 6, 60, 1439, 1440}) {
+    CAPTURE(ok);
+    CHECK(set(c, "failsafe.timeoutMin", I(ok)) == SetResult::Ok);
+    CHECK(c.failsafe.timeoutMin == ok);
+  }
+  for (int64_t bad : {-1, 1, 4, 1441, 65535, 65536, 65541}) {
+    CAPTURE(bad);
+    CHECK(set(c, "failsafe.timeoutMin", I(bad)) == SetResult::OutOfRange);
+    CHECK(c.failsafe.timeoutMin == 1440);
+  }
+  CHECK(set(c, "failsafe.timeoutMin", S("300")) == SetResult::Ok);
+  CHECK(c.failsafe.timeoutMin == 300);
+  CHECK(set(c, "failsafe.timeoutMin", S("")) == SetResult::WrongType);
+  CHECK(set(c, "failsafe.timeoutMin", B(false)) == SetResult::WrongType);
+  CHECK(set(c, "failsafe.x", I(5)) == SetResult::UnknownKey);
+  CHECK(set(c, "failsafe.1.timeoutMin", I(5)) == SetResult::UnknownKey);
+  CHECK(c.failsafe.timeoutMin == 300);
+  CHECK(validatePath(c) == "OK");
+}
+
+TEST_CASE("config: string keys after 2.0.0 and their rules (C-1)") {
+  Config c;
+  struct Row {
+    const char* path;
+    const char* value;
+    SetResult r;
+  };
+  const std::string h79 = std::string(19, 'a') + "," + std::string(19, 'b') + "," +
+                          std::string(19, 'c') + "," + std::string(19, 'd');
+  const std::string h80 = h79 + "d";
+  const std::string h81 = h80 + "d";
+  const std::string label65 = std::string(65, 'a');
+  const std::string a80 = std::string(80, 'a');
+  const std::string c64(64, 'c'), c65(65, 'c');
+  const std::string p32 = "ha/" + std::string(29, 'p'), p33 = p32 + "p";
+  const Row rows[] = {
+      {"web.allowedHosts", "", SetResult::Ok},
+      {"web.allowedHosts", "vdmot.lan", SetResult::Ok},
+      {"web.allowedHosts", "vdmot.lan, 192.168.1.9", SetResult::Ok},
+      {"web.allowedHosts", "  a  ,  b  ", SetResult::Ok},
+      {"web.allowedHosts", "a,b,c,d", SetResult::Ok},
+      {"web.allowedHosts", h79.c_str(), SetResult::Ok},
+      {"web.allowedHosts", h80.c_str(), SetResult::Ok},
+      {"web.allowedHosts", h81.c_str(), SetResult::OutOfRange},
+      {"web.allowedHosts", "a,b,c,d,e", SetResult::OutOfRange},
+      {"web.allowedHosts", "a,,b", SetResult::OutOfRange},
+      {"web.allowedHosts", "a,", SetResult::OutOfRange},
+      {"web.allowedHosts", ",a", SetResult::OutOfRange},
+      {"web.allowedHosts", " , ", SetResult::OutOfRange},
+      {"web.allowedHosts", " ", SetResult::OutOfRange},
+      {"web.allowedHosts", "bad_host!", SetResult::OutOfRange},
+      {"web.allowedHosts", "a b", SetResult::OutOfRange},
+      {"web.allowedHosts", "a,-b", SetResult::OutOfRange},
+      {"web.allowedHosts", label65.c_str(), SetResult::OutOfRange},
+      {"web.allowedHosts", a80.c_str(), SetResult::OutOfRange},  // one entry, whole buffer
+      {"mqtt.clientId", "azAZ09._-", SetResult::Ok},
+      {"mqtt.clientId", "a`", SetResult::OutOfRange},
+      {"mqtt.clientId", "a{", SetResult::OutOfRange},
+      {"mqtt.clientId", "A[", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "azAZ09_-/x", SetResult::Ok},
+      {"mqtt.discoveryPrefix", "a`", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "a{", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "A@", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "A[", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "0:", SetResult::OutOfRange},
+      {"mqtt.rootTopic", "", SetResult::Ok},
+      {"mqtt.rootTopic", "VdMotFBH", SetResult::Ok},
+      {"mqtt.rootTopic", "Dom 1", SetResult::Ok},
+      {"mqtt.rootTopic", "12345678901234567890", SetResult::Ok},
+      {"mqtt.rootTopic", "123456789012345678901", SetResult::OutOfRange},
+      {"mqtt.rootTopic", "a/b", SetResult::OutOfRange},
+      {"mqtt.rootTopic", "a+b", SetResult::OutOfRange},
+      {"mqtt.clientId", "", SetResult::Ok},
+      {"mqtt.clientId", "VdMot-east-6c1e51", SetResult::Ok},
+      {"mqtt.clientId", "a.b_c-D9", SetResult::Ok},
+      {"mqtt.clientId", c64.c_str(), SetResult::Ok},
+      {"mqtt.clientId", c65.c_str(), SetResult::OutOfRange},
+      {"mqtt.clientId", "a b", SetResult::OutOfRange},
+      {"mqtt.clientId", "a/b", SetResult::OutOfRange},
+      {"mqtt.clientId", "a:b", SetResult::OutOfRange},
+      {"mqtt.clientId", "a@b", SetResult::OutOfRange},
+      {"mqtt.clientId", "@a", SetResult::OutOfRange},
+      {"mqtt.clientId", "K\xc3\xbc" "che", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "ha/discovery", SetResult::Ok},
+      {"mqtt.discoveryPrefix", "a", SetResult::Ok},
+      {"mqtt.discoveryPrefix", "a-b_c/D9/x", SetResult::Ok},
+      {"mqtt.discoveryPrefix", p32.c_str(), SetResult::Ok},
+      {"mqtt.discoveryPrefix", p33.c_str(), SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "/ha", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "ha/", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "/", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "a//b", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "a b", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "a.b", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "a+", SetResult::OutOfRange},
+      {"mqtt.discoveryPrefix", "+a", SetResult::OutOfRange},
+      {"valves.1.topic", "", SetResult::Ok},
+      {"valves.1.topic", "Bad/WC", SetResult::Ok},
+      {"valves.1.topic", "a\"b", SetResult::Ok},
+      {"valves.1.topic", "a\\b", SetResult::Ok},
+      {"valves.1.topic", "\xc3\xa4/\xc3\xb6", SetResult::Ok},
+      {"valves.1.topic", "1234567890", SetResult::Ok},
+      {"valves.1.topic", "12345678901", SetResult::OutOfRange},
+      {"valves.1.topic", "/a", SetResult::OutOfRange},
+      {"valves.1.topic", "a/", SetResult::OutOfRange},
+      {"valves.1.topic", "/", SetResult::OutOfRange},
+      {"valves.1.topic", "a//b", SetResult::OutOfRange},
+      {"valves.1.topic", "a b", SetResult::OutOfRange},
+      {"valves.1.topic", "a+b", SetResult::OutOfRange},
+      {"valves.1.topic", "a#b", SetResult::OutOfRange},
+      {"valves.1.topic", "a\x01", SetResult::OutOfRange},
+      {"valves.1.topic", "a\xc3", SetResult::OutOfRange},
+      {"temps.34.topic", "t/1", SetResult::Ok},
+      {"temps.34.topic", "t 1", SetResult::OutOfRange},
+      {"volts.8.topic", "v/1", SetResult::Ok},
+      {"volts.8.topic", "v/", SetResult::OutOfRange},
+  };
+  for (const Row& r : rows) {
+    CAPTURE(r.path);
+    CAPTURE(r.value);
+    Config k;
+    CHECK(set(k, r.path, S(r.value)) == r.r);
+  }
+  // Stored exactly; a rejected value leaves the field unchanged.
+  CHECK(set(c, "web.allowedHosts", S("  a  ,  b  ")) == SetResult::Ok);
+  CHECK(std::string(c.web.allowedHosts) == "  a  ,  b  ");
+  CHECK(set(c, "web.allowedHosts", S("a,,b")) == SetResult::OutOfRange);
+  CHECK(std::string(c.web.allowedHosts) == "  a  ,  b  ");
+  CHECK(set(c, "temps.34.topic", S("t/1")) == SetResult::Ok);
+  CHECK(std::string(c.temps[33].topic) == "t/1");
+  CHECK(set(c, "volts.8.topic", S("v/1")) == SetResult::Ok);
+  CHECK(std::string(c.volts[7].topic) == "v/1");
+  CHECK(set(c, "mqtt.discoveryPrefix", S("ha")) == SetResult::Ok);
+  CHECK(std::string(c.mqtt.discoveryPrefix) == "ha");
+  CHECK(set(c, "mqtt.clientId", I(1)) == SetResult::WrongType);
+  CHECK(set(c, "valves.13.topic", S("x")) == SetResult::UnknownKey);
+}
+
+TEST_CASE("config: stored values of the new keys are validated") {
+  struct Case {
+    void (*edit)(Config&);
+    const char* path;
+  };
+  const Case cases[] = {
+      {[](Config& c) { c.valves[3].failsafePct = 101; }, "valves.4.failsafePct"},
+      {[](Config& c) { c.valves[3].failsafePct = 254; }, "valves.4.failsafePct"},
+      {[](Config& c) { c.failsafe.timeoutMin = 4; }, "failsafe.timeoutMin"},
+      {[](Config& c) { c.failsafe.timeoutMin = 1; }, "failsafe.timeoutMin"},
+      {[](Config& c) { c.failsafe.timeoutMin = 1441; }, "failsafe.timeoutMin"},
+      {[](Config& c) { strcpy(c.web.allowedHosts, "a,,b"); }, "web.allowedHosts"},
+      {[](Config& c) { c.mqtt.discoveryPrefix[0] = '\0'; }, "mqtt.discoveryPrefix"},
+      {[](Config& c) { strcpy(c.mqtt.clientId, "a b"); }, "mqtt.clientId"},
+      {[](Config& c) { strcpy(c.mqtt.rootTopic, "a/b"); }, "mqtt.rootTopic"},
+      {[](Config& c) { strcpy(c.valves[0].topic, "a b"); }, "valves.1.topic"},
+      {[](Config& c) { strcpy(c.temps[1].topic, "/t"); }, "temps.2.topic"},
+      {[](Config& c) { strcpy(c.volts[2].topic, "v/"); }, "volts.3.topic"},
+      {[](Config& c) { memset(c.valves[0].topic, 'x', sizeof c.valves[0].topic); },
+       "valves.1.topic"},
+  };
+  for (const Case& k : cases) {
+    CAPTURE(k.path);
+    Config c;
+    k.edit(c);
+    CHECK(validatePath(c) == k.path);
+  }
+  Config ok;
+  ok.valves[3].failsafePct = kFailsafeHold;
+  ok.valves[4].failsafePct = 0;
+  ok.valves[5].failsafePct = 100;
+  ok.failsafe.timeoutMin = 0;
+  CHECK(validatePath(ok) == "OK");
+  ok.failsafe.timeoutMin = 5;
+  CHECK(validatePath(ok) == "OK");
+  ok.failsafe.timeoutMin = 1440;
+  CHECK(validatePath(ok) == "OK");
+}
+
+TEST_CASE("config: V1 Home Assistant needs the decimal point") {
+  Config c;
+  c.mqtt.mode = MqttMode::MqttHa;
+  strcpy(c.mqtt.host, "b");
+  c.mqtt.germanDecimal = true;
+  CHECK(validatePath(c) == "mqtt.germanDecimal");
+  c.mqtt.mode = MqttMode::Mqtt;
+  CHECK(validatePath(c) == "OK");
+  c.mqtt.mode = MqttMode::MqttHa;
+  c.mqtt.germanDecimal = false;
+  CHECK(validatePath(c) == "OK");
+  // Checked after every older rule.
+  c.mqtt.germanDecimal = true;
+  c.calib.hour = 24;
+  CHECK(validatePath(c) == "calib.hour");
+  std::string path;
+  Config p;
+  CHECK(patch(p, "{\"mqtt\":{\"mode\":2,\"host\":\"b\",\"germanDecimal\":true}}", &path) ==
+        PatchResult::Invalid);
+  CHECK(path == "mqtt.germanDecimal");
+}
+
+TEST_CASE("config: V2 every valve gets its own MQTT segment") {
+  Config c;
+  strcpy(c.valves[0].topic, "x");
+  strcpy(c.valves[1].name, "x");
+  CHECK(validatePath(c) == "valves.2.name");
+  Config d;
+  strcpy(d.valves[0].name, "x");
+  strcpy(d.valves[1].topic, "x");
+  CHECK(validatePath(d) == "valves.2.topic");
+  Config e;  // an override equal to an unnamed valve's number
+  strcpy(e.valves[0].topic, "3");
+  CHECK(validatePath(e) == "valves.3.name");
+  strcpy(e.valves[2].name, "three");
+  CHECK(validatePath(e) == "OK");
+  Config f;  // names map ' ' to '_'
+  strcpy(f.valves[4].name, "a b");
+  strcpy(f.valves[9].topic, "a_b");
+  CHECK(validatePath(f) == "valves.10.topic");
+  Config g;
+  strcpy(g.valves[10].topic, "a/b");
+  strcpy(g.valves[11].topic, "a/b");
+  CHECK(validatePath(g) == "valves.12.topic");
+  strcpy(g.valves[11].topic, "a/c");
+  CHECK(validatePath(g) == "OK");
+  Config h;  // the override replaces the name
+  strcpy(h.valves[0].name, "same");
+  strcpy(h.valves[0].topic, "one");
+  strcpy(h.valves[1].topic, "same");
+  CHECK(validatePath(h) == "OK");
+  // V2 is reported before V3: valves 2/3 only share an HA id, valves 5/6 a
+  // segment.
+  Config k;
+  strcpy(k.valves[1].name, "Bad 1");
+  strcpy(k.valves[2].name, "Bad.1");
+  strcpy(k.valves[4].topic, "x");
+  strcpy(k.valves[5].name, "x");
+  CHECK(validatePath(k) == "valves.6.name");
+  k.valves[5].name[0] = '\0';
+  CHECK(validatePath(k) == "valves.3.name");
+}
+
+TEST_CASE("config: V3 HA ids are unique among valves and active slots (C-1b)") {
+  Config c;
+  strcpy(c.valves[0].name, "Bad 1");
+  strcpy(c.valves[1].name, "Bad.1");
+  CHECK(validatePath(c) == "valves.2.name");
+  strcpy(c.valves[1].name, "Bad-1");
+  CHECK(validatePath(c) == "OK");
+  Config u;  // UTF-8 letters map to their base letter
+  strcpy(u.valves[3].name, "\xc5\x81" "azienka");
+  strcpy(u.valves[7].topic, "Lazienka");
+  CHECK(validatePath(u) == "valves.8.topic");
+  Config o;
+  strcpy(o.valves[0].topic, "a/b");
+  strcpy(o.valves[1].topic, "a.b");
+  CHECK(validatePath(o) == "valves.2.topic");
+
+  Config t;
+  t.temps[0].id = oid(kIdA);
+  t.temps[0].active = true;
+  strcpy(t.temps[0].name, "Bad 1");
+  t.temps[5].id = oid(kIdB);
+  t.temps[5].active = true;
+  strcpy(t.temps[5].name, "Bad.1");
+  CHECK(validatePath(t) == "temps.6.name");
+  strcpy(t.temps[5].topic, "Bad/1");
+  CHECK(validatePath(t) == "temps.6.topic");
+  t.temps[5].active = false;  // only active slots count
+  CHECK(validatePath(t) == "OK");
+  t.temps[5].active = true;
+  t.temps[0].active = false;
+  CHECK(validatePath(t) == "OK");
+  // Unnamed slots use their number.
+  Config n;
+  n.temps[0].id = oid(kIdA);
+  n.temps[0].active = true;
+  strcpy(n.temps[0].name, "2");
+  n.temps[1].id = oid(kIdB);
+  n.temps[1].active = true;
+  CHECK(validatePath(n) == "temps.2.name");
+
+  Config v;
+  v.volts[2].id = oid(kIdA);
+  v.volts[2].active = true;
+  strcpy(v.volts[2].name, "a b");
+  v.volts[7].id = oid(kIdV);
+  v.volts[7].active = true;
+  strcpy(v.volts[7].name, "a.b");
+  CHECK(validatePath(v) == "volts.8.name");
+  strcpy(v.volts[7].topic, "a/b");
+  CHECK(validatePath(v) == "volts.8.topic");
+  v.volts[2].active = false;
+  CHECK(validatePath(v) == "OK");
+  // Different tables never clash.
+  Config m;
+  strcpy(m.valves[0].name, "x");
+  m.temps[0].id = oid(kIdA);
+  m.temps[0].active = true;
+  strcpy(m.temps[0].name, "x");
+  m.volts[0].id = oid(kIdV);
+  m.volts[0].active = true;
+  strcpy(m.volts[0].name, "x");
+  CHECK(validatePath(m) == "OK");
+}
+
+TEST_CASE("config: the cfg blob stays the 2.0.0 blob (C-2)") {
+  // fullConfig() encoded by the 2.0.0 encoder (58632d6).
+  static const uint8_t kGolden200[] = {
+      0x56, 0x44, 0x4d, 0x43, 0x01, 0x00, 0x00, 0x03, 0x0a, 0x48, 0x65, 0x69, 0x7a, 0x75,
+      0x6e, 0x67, 0x20, 0x4f, 0x47, 0x02, 0x00, 0xc0, 0xa8, 0x01, 0x32, 0xff, 0xff, 0xff,
+      0x00, 0xc0, 0xa8, 0x01, 0x01, 0x08, 0x08, 0x08, 0x08, 0x07, 0x4d, 0x79, 0x20, 0x57,
+      0x69, 0x66, 0x69, 0x09, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74, 0x31, 0x32, 0x33, 0x11,
+      0x0b, 0x31, 0x39, 0x32, 0x2e, 0x31, 0x36, 0x38, 0x2e, 0x31, 0x2e, 0x31, 0x0d, 0x45,
+      0x75, 0x72, 0x6f, 0x70, 0x65, 0x2f, 0x57, 0x61, 0x72, 0x73, 0x61, 0x77, 0x1b, 0x43,
+      0x45, 0x54, 0x2d, 0x31, 0x43, 0x45, 0x53, 0x54, 0x2c, 0x4d, 0x33, 0x2e, 0x35, 0x2e,
+      0x30, 0x2c, 0x4d, 0x31, 0x30, 0x2e, 0x35, 0x2e, 0x30, 0x2f, 0x33, 0x78, 0x03, 0x0a,
+      0x00, 0x00, 0x09, 0xea, 0x05, 0x05, 0x61, 0x64, 0x6d, 0x69, 0x6e, 0x07, 0x70, 0x61,
+      0x20, 0x73, 0x73, 0x22, 0x77, 0x01, 0x01, 0x0a, 0x62, 0x72, 0x6f, 0x6b, 0x65, 0x72,
+      0x2e, 0x6c, 0x61, 0x6e, 0xb3, 0x22, 0x02, 0x6d, 0x71, 0x04, 0x6d, 0x71, 0x70, 0x77,
+      0x1e, 0x00, 0x78, 0x00, 0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x01, 0x00, 0x00, 0x00, 0x03, 0x42, 0x61, 0x64, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x07, 0x4b, 0x69, 0x74, 0x63, 0x68, 0x65, 0x6e, 0x00, 0x02, 0x74, 0x31, 0x01,
+      0xf1, 0xff, 0x28, 0x84, 0x37, 0x94, 0x97, 0xff, 0x03, 0x23, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x28, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01, 0x67,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+      0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x62, 0x61, 0x74, 0x01, 0x00, 0x00,
+      0x80, 0xbe, 0x0a, 0xd7, 0x23, 0x3c, 0x01, 0x56, 0x26, 0x11, 0x22, 0x33, 0x44, 0x55,
+      0x66, 0x29, 0x7f, 0x17, 0x3b, 0x00, 0xc0, 0xc3, 0x24, 0xb0,
+  };
+  const std::vector<uint8_t> golden(kGolden200, kGolden200 + sizeof kGolden200);
+  CHECK(encode(fullConfig()) == golden);
+  // The keys added later do not touch it.
+  CHECK(encode(fullConfigExt()) == golden);
+  Config back;
+  CHECK(decodeConfig(golden.data(), golden.size(), back) == DecodeResult::Ok);
+  CHECK(sameConfig(back, fullConfig()));
+}
+
+namespace {
+
+std::vector<uint8_t> encodeExt(const Config& c, const uint8_t* keep = nullptr, size_t n = 0) {
+  std::vector<uint8_t> b(kConfigExtBlobMax);
+  const size_t len = encodeConfigExt(c, b.data(), b.size(), keep, n);
+  REQUIRE(len > 0);
+  b.resize(len);
+  return b;
+}
+
+// A cfgx blob from raw records.
+std::vector<uint8_t> extBlob(const std::vector<uint8_t>& records, uint8_t version = 1) {
+  std::vector<uint8_t> b = {'V', 'D', 'M', 'X', version, static_cast<uint8_t>(records.size()),
+                            static_cast<uint8_t>(records.size() >> 8)};
+  b.insert(b.end(), records.begin(), records.end());
+  b.resize(b.size() + 4);
+  fixCrc(b);
+  return b;
+}
+
+ExtResult decodeExt(const std::vector<uint8_t>& b, Config& c, ExtInfo* info = nullptr,
+                    uint8_t* keep = nullptr, size_t keepCap = 0) {
+  return decodeConfigExt(b.data(), b.size(), c, info, keep, keepCap);
+}
+
+}  // namespace
+
+TEST_CASE("config: cfgx layout and round trip (C-4)") {
+  const Config full = fullConfigExt();
+  const std::vector<uint8_t> x = encodeExt(full);
+  REQUIRE(x.size() > 11);
+  CHECK(x[0] == 'V');
+  CHECK(x[1] == 'D');
+  CHECK(x[2] == 'M');
+  CHECK(x[3] == 'X');
+  CHECK(x[4] == 1);
+  CHECK(static_cast<size_t>(x[5] | (x[6] << 8)) == x.size() - 11);
+  const uint32_t crc = crc32(x.data(), x.size() - 4);
+  CHECK(x[x.size() - 4] == static_cast<uint8_t>(crc));
+  CHECK(x[x.size() - 3] == static_cast<uint8_t>(crc >> 8));
+  CHECK(x[x.size() - 2] == static_cast<uint8_t>(crc >> 16));
+  CHECK(x[x.size() - 1] == static_cast<uint8_t>(crc >> 24));
+  // Table order: web.allowedHosts first, as tag, element, length, bytes.
+  const std::string hosts = "vdmot.lan, 192.168.1.9";
+  CHECK(x[7] == 1);
+  CHECK(x[8] == 0);
+  CHECK(x[9] == hosts.size());
+  CHECK(std::string(x.begin() + 10, x.begin() + 10 + static_cast<long>(hosts.size())) == hosts);
+  // Then mqtt.rootTopic.
+  const size_t root = 10 + hosts.size();
+  CHECK(x[root] == 2);
+  CHECK(x[root + 1] == 0);
+  CHECK(x[root + 2] == 8);
+  CHECK(memcmp(&x[root + 3], "VdMotFBH", 8) == 0);
+  // failsafe.timeoutMin 1440 = 0x05A0: tag 5, element 0, length 2, u16 LE.
+  const uint8_t timeout[] = {5, 0, 2, 0xA0, 0x05};
+  CHECK(std::search(x.begin(), x.end(), timeout, timeout + 5) != x.end());
+  // valves.12.failsafePct 0 and its topic "x": tags 6 and 7, element 11.
+  const uint8_t valve12[] = {6, 11, 1, 0, 7, 11, 1, 'x'};
+  CHECK(std::search(x.begin(), x.end(), valve12, valve12 + 8) != x.end());
+
+  // Round trip on top of the decoded base blob.
+  Config back;
+  REQUIRE(decodeConfig(encode(full).data(), encode(full).size(), back) == DecodeResult::Ok);
+  CHECK_FALSE(sameConfig(back, full));
+  ExtInfo info;
+  info.bad = 9;
+  CHECK(decodeExt(x, back, &info) == ExtResult::Ok);
+  CHECK(sameConfig(back, full));
+  CHECK(info.applied == 1 + 3 + 12 * 2 + 34 + 8 + 1);
+  CHECK(info.unknown == 0);
+  CHECK(info.bad == 0);
+  CHECK(info.keepLen == 0);
+  // The defaults: every record present, strings also when empty.
+  const std::vector<uint8_t> d = encodeExt(Config{});
+  Config z = full;
+  CHECK(decodeExt(d, z) == ExtResult::Ok);
+  Config expect = full;
+  const Config defaults;
+  memcpy(expect.web.allowedHosts, defaults.web.allowedHosts, sizeof expect.web.allowedHosts);
+  memcpy(expect.mqtt.rootTopic, defaults.mqtt.rootTopic, sizeof expect.mqtt.rootTopic);
+  memcpy(expect.mqtt.clientId, defaults.mqtt.clientId, sizeof expect.mqtt.clientId);
+  memcpy(expect.mqtt.discoveryPrefix, defaults.mqtt.discoveryPrefix,
+         sizeof expect.mqtt.discoveryPrefix);
+  expect.failsafe = defaults.failsafe;
+  for (ValveConfig& v : expect.valves) {
+    v.failsafePct = kFailsafePctDefault;
+    v.topic[0] = '\0';
+  }
+  for (TempSlotConfig& t : expect.temps) t.topic[0] = '\0';
+  for (VoltSlotConfig& v : expect.volts) v.topic[0] = '\0';
+  CHECK(sameConfig(z, expect));
+}
+
+TEST_CASE("config: cfgx encode needs the full capacity") {
+  const Config full = fullConfigExt();
+  const std::vector<uint8_t> x = encodeExt(full);
+  std::vector<uint8_t> buf(x.size());
+  for (size_t cap = 0; cap < x.size(); ++cap) {
+    CAPTURE(cap);
+    CHECK(encodeConfigExt(full, buf.data(), cap) == 0);
+  }
+  CHECK(encodeConfigExt(full, buf.data(), x.size()) == x.size());
+  CHECK(buf == x);
+  CHECK(encodeConfigExt(full, nullptr, kConfigExtBlobMax) == 0);
+  // The largest possible blob plus the kept records fits kConfigExtBlobMax.
+  Config big;
+  memset(big.web.allowedHosts, 'a', kAllowedHostsMax);
+  memset(big.mqtt.rootTopic, 'r', kStationNameMax);
+  memset(big.mqtt.clientId, 'c', kClientIdMax);
+  memset(big.mqtt.discoveryPrefix, 'p', kTopicPrefixMax);
+  for (ValveConfig& v : big.valves) memset(v.topic, 't', kItemNameMax);
+  for (TempSlotConfig& t : big.temps) memset(t.topic, 't', kItemNameMax);
+  for (VoltSlotConfig& v : big.volts) memset(v.topic, 't', kItemNameMax);
+  const std::vector<uint8_t> keep(kConfigExtKeepMax, 0);
+  CHECK(encodeExt(big, keep.data(), keep.size()).size() <= kConfigExtBlobMax);
+}
+
+TEST_CASE("config: cfgx unknown records are kept and written back (C-4)") {
+  // Known record, unknown tag 200, known record.
+  const std::vector<uint8_t> recs = {5, 0, 2, 10, 0,           // failsafe.timeoutMin 10
+                                     200, 0, 3, 'a', 'b', 'c',  // unknown
+                                     6, 2, 1, 70};              // valves.3.failsafePct 70
+  const std::vector<uint8_t> b = extBlob(recs);
+  Config c;
+  ExtInfo info;
+  uint8_t keep[kConfigExtKeepMax];
+  CHECK(decodeExt(b, c, &info, keep, sizeof keep) == ExtResult::Ok);
+  CHECK(info.applied == 2);
+  CHECK(info.unknown == 1);
+  CHECK(info.bad == 0);
+  REQUIRE(info.keepLen == 6);
+  CHECK(memcmp(keep, &recs[5], 6) == 0);
+  CHECK(c.failsafe.timeoutMin == 10);
+  CHECK(c.valves[2].failsafePct == 70);
+  // Re-emitted verbatim after the own records.
+  const std::vector<uint8_t> x = encodeExt(c, keep, info.keepLen);
+  CHECK(std::equal(recs.begin() + 5, recs.begin() + 11, x.end() - 10));
+  Config again;
+  ExtInfo i2;
+  uint8_t keep2[kConfigExtKeepMax];
+  CHECK(decodeExt(x, again, &i2, keep2, sizeof keep2) == ExtResult::Ok);
+  CHECK(i2.unknown == 1);
+  CHECK(i2.keepLen == 6);
+  CHECK(sameConfig(again, c));
+  // Without a keep buffer, or one that is too small, the record is only counted.
+  ExtInfo i3;
+  CHECK(decodeExt(b, again, &i3) == ExtResult::Ok);
+  CHECK(i3.unknown == 1);
+  CHECK(i3.keepLen == 0);
+  uint8_t tiny[5];
+  CHECK(decodeExt(b, again, &i3, tiny, sizeof tiny) == ExtResult::Ok);
+  CHECK(i3.keepLen == 0);
+  uint8_t exact[6];
+  CHECK(decodeExt(b, again, &i3, exact, sizeof exact) == ExtResult::Ok);
+  CHECK(i3.keepLen == 6);
+  // At most kConfigExtKeepMax bytes are kept, whole records only.
+  std::vector<uint8_t> many;
+  for (int i = 0; i < 70; ++i) {
+    const uint8_t r[] = {201, 0, 5, 1, 2, 3, 4, static_cast<uint8_t>(i)};
+    many.insert(many.end(), r, r + 8);
+  }
+  std::vector<uint8_t> big(1024);
+  ExtInfo i4;
+  CHECK(decodeExt(extBlob(many), again, &i4, big.data(), big.size()) == ExtResult::Ok);
+  CHECK(i4.unknown == 70);
+  CHECK(i4.keepLen == 512);
+  CHECK(big[511] == 63);
+  CHECK(big[512] == 0);
+  ExtInfo i5;
+  CHECK(decodeExt(extBlob(many), again, &i5, big.data(), 511) == ExtResult::Ok);
+  CHECK(i5.keepLen == 504);
+}
+
+TEST_CASE("config: cfgx bad records change nothing (C-4)") {
+  struct Case {
+    std::vector<uint8_t> rec;
+    const char* why;
+  };
+  const Case cases[] = {
+      {{6, 12, 1, 40}, "valve element 12"},
+      {{6, 255, 1, 40}, "valve element 255"},
+      {{5, 1, 2, 10, 0}, "object element 1"},
+      {{6, 0, 2, 40, 0}, "pct with 2 bytes"},
+      {{6, 0, 0}, "pct with 0 bytes"},
+      {{6, 0, 1, 101}, "pct 101"},
+      {{6, 0, 1, 254}, "pct 254"},
+      {{5, 0, 1, 10}, "timeout with 1 byte"},
+      {{5, 0, 3, 10, 0, 0}, "timeout with 3 bytes"},
+      {{5, 0, 2, 4, 0}, "timeout 4"},
+      {{5, 0, 2, 0xA1, 0x05}, "timeout 1441"},
+      {{7, 0, 11, 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a'}, "topic of 11"},
+      {{7, 0, 3, 'a', 0, 'b'}, "NUL inside"},
+      {{7, 0, 3, 'a', ' ', 'b'}, "topic rule"},
+      {{4, 0, 0}, "empty discovery prefix"},
+      {{1, 0, 4, 'a', ',', ',', 'b'}, "host list rule"},
+      {{8, 34, 1, 't'}, "temp element 34"},
+      {{9, 8, 1, 'v'}, "volt element 8"},
+  };
+  for (const Case& k : cases) {
+    CAPTURE(k.why);
+    Config c;
+    ExtInfo info;
+    CHECK(decodeExt(extBlob(k.rec), c, &info) == ExtResult::Ok);
+    CHECK(info.bad == 1);
+    CHECK(info.applied == 0);
+    CHECK(info.unknown == 0);
+    CHECK(sameConfig(c, Config{}));
+  }
+  // The next record still applies; the last record for a field wins.
+  Config c;
+  ExtInfo info;
+  CHECK(decodeExt(extBlob({6, 12, 1, 40, 6, 11, 1, 41, 6, 11, 1, 42, 5, 0, 2, 0, 0}), c, &info) ==
+        ExtResult::Ok);
+  CHECK(info.bad == 1);
+  CHECK(info.applied == 3);
+  CHECK(c.valves[11].failsafePct == 42);
+  CHECK(c.failsafe.timeoutMin == 0);
+  // Longest valid string and the edge values.
+  Config e;
+  CHECK(decodeExt(extBlob({7, 0, 10, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 6, 0, 1,
+                           255, 5, 0, 2, 0xA0, 0x05, 8, 33, 1, 't', 9, 7, 1, 'v'}),
+                  e, &info) == ExtResult::Ok);
+  CHECK(info.applied == 5);
+  CHECK(std::string(e.valves[0].topic) == "abcdefghij");
+  CHECK(e.valves[0].failsafePct == kFailsafeHold);
+  CHECK(e.failsafe.timeoutMin == 1440);
+  CHECK(std::string(e.temps[33].topic) == "t");
+  CHECK(std::string(e.volts[7].topic) == "v");
+  // A shorter string replaces a longer one completely.
+  CHECK(decodeExt(extBlob({7, 0, 2, 'x', 'y'}), e, &info) == ExtResult::Ok);
+  CHECK(std::string(e.valves[0].topic) == "xy");
+}
+
+TEST_CASE("config: cfgx damage applies nothing (C-4)") {
+  const Config full = fullConfigExt();
+  const std::vector<uint8_t> good = encodeExt(full);
+  auto expect = [&](const std::vector<uint8_t>& b, ExtResult r) {
+    Config c;
+    ExtInfo info;
+    info.applied = 7;
+    CHECK(decodeExt(b, c, &info) == r);
+    CHECK(sameConfig(c, Config{}));
+    CHECK(info.applied == 0);
+  };
+  Config c;
+  ExtInfo info;
+  info.unknown = 3;
+  CHECK(decodeConfigExt(nullptr, 20, c, &info) == ExtResult::Absent);
+  CHECK(info.unknown == 0);
+  CHECK(decodeConfigExt(good.data(), 0, c, &info) == ExtResult::Absent);
+  CHECK(decodeConfigExt(good.data(), good.size(), c) == ExtResult::Ok);  // info optional
+  for (size_t n = 1; n < 11; ++n) {
+    CAPTURE(n);
+    expect(std::vector<uint8_t>(good.begin(), good.begin() + static_cast<long>(n)),
+           ExtResult::TooShort);
+  }
+  expect(std::vector<uint8_t>(good.begin(), good.end() - 1), ExtResult::TooShort);
+  {
+    std::vector<uint8_t> b = good;  // L one too large
+    const size_t l = good.size() - 11 + 1;
+    b[5] = static_cast<uint8_t>(l);
+    b[6] = static_cast<uint8_t>(l >> 8);
+    expect(b, ExtResult::TooShort);
+  }
+  for (int i = 0; i < 4; ++i) {
+    std::vector<uint8_t> b = good;
+    b[static_cast<size_t>(i)] ^= 0x20;
+    expect(b, ExtResult::BadMagic);
+  }
+  {
+    std::vector<uint8_t> b = good;
+    b[20] ^= 1;
+    expect(b, ExtResult::BadCrc);
+    b = good;
+    b.back() ^= 0x80;
+    expect(b, ExtResult::BadCrc);
+    b = good;
+    b[good.size() - 4] ^= 0x01;
+    expect(b, ExtResult::BadCrc);
+  }
+  // Empty payload: header and CRC only.
+  CHECK(decodeExt(extBlob({}), c, &info) == ExtResult::Ok);
+  CHECK(info.applied == 0);
+  // A newer format version is read like version 1; bytes after the CRC are
+  // ignored.
+  Config v2;
+  CHECK(decodeExt(extBlob({5, 0, 2, 30, 0}, 2), v2) == ExtResult::Ok);
+  CHECK(v2.failsafe.timeoutMin == 30);
+  std::vector<uint8_t> tail = extBlob({5, 0, 2, 31, 0});
+  tail.push_back(0xEE);
+  CHECK(decodeExt(tail, v2) == ExtResult::Ok);
+  CHECK(v2.failsafe.timeoutMin == 31);
+  // A record cut by the payload end: counted as bad, the ones before it apply.
+  for (const std::vector<uint8_t>& cut :
+       {std::vector<uint8_t>{5, 0, 2, 32, 0, 6}, std::vector<uint8_t>{5, 0, 2, 32, 0, 6, 0},
+        std::vector<uint8_t>{5, 0, 2, 32, 0, 6, 0, 1}, std::vector<uint8_t>{5, 0, 2, 32, 0, 7, 0, 3,
+                                                                           'a', 'b'}}) {
+    CAPTURE(cut.size());
+    Config k;
+    ExtInfo ki;
+    const std::vector<uint8_t> blob = extBlob(cut);
+    const std::vector<uint8_t> exact(blob.begin(), blob.end());  // ASan: nothing past it is read
+    CHECK(decodeExt(exact, k, &ki) == ExtResult::Ok);
+    CHECK(ki.applied == 1);
+    CHECK(ki.bad == 1);
+    CHECK(k.failsafe.timeoutMin == 32);
+  }
+  // The same with an unknown tag: a cut record is never kept.
+  for (const std::vector<uint8_t>& cut :
+       {std::vector<uint8_t>{5, 0, 2, 32, 0, 200}, std::vector<uint8_t>{5, 0, 2, 32, 0, 200, 0},
+        std::vector<uint8_t>{5, 0, 2, 32, 0, 200, 0, 1},
+        std::vector<uint8_t>{5, 0, 2, 32, 0, 200, 0, 3, 'a', 'b'}}) {
+    CAPTURE(cut.size());
+    Config k;
+    ExtInfo ki;
+    uint8_t keep[kConfigExtKeepMax];
+    CHECK(decodeExt(extBlob(cut), k, &ki, keep, sizeof keep) == ExtResult::Ok);
+    CHECK(ki.applied == 1);
+    CHECK(ki.bad == 1);
+    CHECK(ki.unknown == 0);
+    CHECK(ki.keepLen == 0);
+  }
+  // A record that ends exactly at the payload end is whole.
+  Config z;
+  ExtInfo zi;
+  strcpy(z.mqtt.rootTopic, "x");
+  CHECK(decodeExt(extBlob({5, 0, 2, 33, 0, 2, 0, 0}), z, &zi) == ExtResult::Ok);
+  CHECK(zi.applied == 2);
+  CHECK(zi.bad == 0);
+  CHECK(z.mqtt.rootTopic[0] == '\0');
+  uint8_t keep[kConfigExtKeepMax];
+  CHECK(decodeExt(extBlob({5, 0, 2, 33, 0, 200, 0, 0}), z, &zi, keep, sizeof keep) ==
+        ExtResult::Ok);
+  CHECK(zi.applied == 1);
+  CHECK(zi.unknown == 1);
+  CHECK(zi.bad == 0);
+  CHECK(zi.keepLen == 3);
+}
+
+TEST_CASE("config: restart reasons (C-7)") {
+  struct Row {
+    const char* what;
+    void (*edit)(Config&);
+    uint8_t reasons;
+  };
+  const Row rows[] = {
+      {"reconnectTimeoutMin", [](Config& c) { c.net.reconnectTimeoutMin = 0; }, 0},
+      {"dns with DHCP", [](Config& c) { c.net.dns = 0x08080808; }, 0},
+      {"ip with DHCP", [](Config& c) { c.net.ip = 0x0101A8C0; }, 0},
+      {"mask with DHCP", [](Config& c) { c.net.mask = 0x00FFFFFF; }, 0},
+      {"gateway with DHCP", [](Config& c) { c.net.gateway = 0x0501A8C0; }, 0},
+      {"iface", [](Config& c) { c.net.iface = NetInterface::Wifi; }, kRestartNetwork},
+      {"dhcp", [](Config& c) { c.net.dhcp = false; }, kRestartNetwork},
+      {"ssid with Auto", [](Config& c) { strcpy(c.net.ssid, "w"); }, kRestartNetwork},
+      {"wifiPassword with Auto", [](Config& c) { strcpy(c.net.wifiPassword, "12345678"); },
+       kRestartNetwork},
+      {"station Dom 1 -> Dom  1", [](Config& c) { strcpy(c.station, "Dom  1"); }, 0},
+      {"station Dom 1 -> Dom_1", [](Config& c) { strcpy(c.station, "Dom_1"); }, kRestartHostname},
+      {"mqtt.host", [](Config& c) { strcpy(c.mqtt.host, "b"); }, 0},
+      {"calib", [](Config& c) { c.calib.hour = 3; }, 0},
+      {"failsafe", [](Config& c) { c.failsafe.timeoutMin = 0; }, 0},
+      {"both",
+       [](Config& c) {
+         c.net.dhcp = false;
+         strcpy(c.station, "Dom_1");
+       },
+       kRestartNetwork | kRestartHostname},
+  };
+  Config before;
+  strcpy(before.station, "Dom 1");  // host name "Dom-1"
+  for (const Row& r : rows) {
+    CAPTURE(r.what);
+    Config after = before;
+    r.edit(after);
+    CHECK(configRestartReasons(before, after) == r.reasons);
+    CHECK(configRestartReasons(after, before) == r.reasons);
+    CHECK(configRestartReasons(after, after) == 0);
+  }
+  // Static addresses: every field counts, a dns of 0.0.0.0 means the gateway.
+  Config st;
+  st.net.dhcp = false;
+  st.net.ip = 0x3201A8C0;
+  st.net.mask = 0x00FFFFFF;
+  st.net.gateway = 0x0101A8C0;
+  const Row statics[] = {
+      {"dns with static", [](Config& c) { c.net.dns = 0x08080808; }, kRestartNetwork},
+      {"dns = gateway with static", [](Config& c) { c.net.dns = 0x0101A8C0; }, 0},
+      {"gateway with static and dns 0.0.0.0",
+       [](Config& c) { c.net.gateway = 0xFE01A8C0; }, kRestartNetwork},
+      {"ip with static", [](Config& c) { c.net.ip = 0x3301A8C0; }, kRestartNetwork},
+  };
+  for (const Row& r : statics) {
+    CAPTURE(r.what);
+    Config after = st;
+    r.edit(after);
+    CHECK(configRestartReasons(st, after) == r.reasons);
+  }
+  // WiFi credentials do not matter with Ethernet before and after.
+  Config eth = st;
+  eth.net.iface = NetInterface::Ethernet;
+  Config ethWifi = eth;
+  strcpy(ethWifi.net.ssid, "w");
+  strcpy(ethWifi.net.wifiPassword, "12345678");
+  CHECK(configRestartReasons(eth, ethWifi) == 0);
+  // Host names "K-che" and "Kuche".
+  Config k1, k2;
+  strcpy(k1.station, "K\xc3\xbc" "che");
+  strcpy(k2.station, "Kuche");
+  CHECK(configRestartReasons(k1, k2) == kRestartHostname);
+  // Station names of full length that differ in their last char.
+  strcpy(k1.station, "abcdefghijklmnopqrst");
+  strcpy(k2.station, "abcdefghijklmnopqrsu");
+  CHECK(configRestartReasons(k1, k2) == kRestartHostname);
+}
+
+TEST_CASE("config: network trial rule (C-7)") {
+  NetConfig dhcp;
+  NetConfig st;
+  st.dhcp = false;
+  st.ip = 0x3201A8C0;
+  st.mask = 0x00FFFFFF;
+  st.gateway = 0x0101A8C0;
+  CHECK_FALSE(netTrialRequired(st, st));
+  CHECK_FALSE(netTrialRequired(dhcp, dhcp));
+  CHECK(netTrialRequired(dhcp, st));
+  CHECK(netTrialRequired(st, dhcp));
+  struct Row {
+    const char* what;
+    void (*edit)(NetConfig&);
+    bool trial;
+  };
+  const Row rows[] = {
+      {"ip", [](NetConfig& n) { n.ip = 0x3301A8C0; }, true},
+      {"mask", [](NetConfig& n) { n.mask = 0x0000FFFF; }, true},
+      {"gateway", [](NetConfig& n) { n.gateway = 0xFE01A8C0; }, true},
+      {"dns", [](NetConfig& n) { n.dns = 0x08080808; }, true},
+      {"dns = gateway", [](NetConfig& n) { n.dns = 0x0101A8C0; }, false},
+      {"reconnect", [](NetConfig& n) { n.reconnectTimeoutMin = 9; }, false},
+      {"ssid", [](NetConfig& n) { strcpy(n.ssid, "w"); }, true},
+      {"password", [](NetConfig& n) { strcpy(n.wifiPassword, "12345678"); }, true},
+  };
+  for (const Row& r : rows) {
+    CAPTURE(r.what);
+    NetConfig after = st;
+    r.edit(after);
+    CHECK(netTrialRequired(st, after) == r.trial);
+    CHECK(netTrialRequired(after, st) == r.trial);
+  }
+  // Static fields do not matter with DHCP after the change.
+  NetConfig d2 = dhcp;
+  d2.ip = 5;
+  d2.dns = 7;
+  CHECK_FALSE(netTrialRequired(dhcp, d2));
+  // WiFi credentials do not matter when Ethernet is used before and after.
+  NetConfig e1;
+  e1.iface = NetInterface::Ethernet;
+  NetConfig e2 = e1;
+  strcpy(e2.ssid, "w");
+  strcpy(e2.wifiPassword, "12345678");
+  CHECK_FALSE(netTrialRequired(e1, e2));
+  e1.iface = NetInterface::Wifi;
+  e2.iface = NetInterface::Wifi;
+  CHECK(netTrialRequired(e1, e2));
+  strcpy(e1.ssid, "w");
+  CHECK(netTrialRequired(e1, e2));
+  strcpy(e1.wifiPassword, "12345678");
+  CHECK_FALSE(netTrialRequired(e1, e2));
+  // Bytes after the NUL are not part of the text.
+  e2.ssid[3] = 'z';
+  e2.wifiPassword[20] = 'z';
+  CHECK_FALSE(netTrialRequired(e1, e2));
+}
+
+TEST_CASE("config: effectiveDns, mqttRootTopic and itemSegment (C-8)") {
+  NetConfig n;
+  n.gateway = 0x0101A8C0;
+  CHECK(effectiveDns(n) == 0);  // DHCP: the configured dns
+  n.dns = 0x08080808;
+  CHECK(effectiveDns(n) == 0x08080808u);
+  n.dhcp = false;
+  CHECK(effectiveDns(n) == 0x08080808u);
+  n.dns = 0;
+  CHECK(effectiveDns(n) == 0x0101A8C0u);  // static without dns: the gateway
+
+  Config c;
+  CHECK(mqttRootTopic(c) == c.station);
+  strcpy(c.mqtt.rootTopic, "VdMotFBH");
+  CHECK(std::string(mqttRootTopic(c)) == "VdMotFBH");
+  strcpy(c.mqtt.rootTopic, "R");
+  CHECK(std::string(mqttRootTopic(c)) == "R");
+
+  char out[11];
+  memset(out, 'x', sizeof out);
+  CHECK(itemSegment(c, ItemKind::Valve, 2, out, sizeof out) == 1);
+  CHECK(std::string(out) == "3");
+  CHECK(itemSegment(c, ItemKind::Valve, 11, out, sizeof out) == 2);
+  CHECK(std::string(out) == "12");
+  CHECK(itemSegment(c, ItemKind::Temp, 33, out, sizeof out) == 2);
+  CHECK(std::string(out) == "34");
+  CHECK(itemSegment(c, ItemKind::Volt, 7, out, sizeof out) == 1);
+  CHECK(std::string(out) == "8");
+  strcpy(c.valves[2].name, "Bad OG 1");
+  CHECK(itemSegment(c, ItemKind::Valve, 2, out, sizeof out) == 8);
+  CHECK(std::string(out) == "Bad_OG_1");
+  strcpy(c.valves[2].topic, "Bad/WC");
+  CHECK(itemSegment(c, ItemKind::Valve, 2, out, sizeof out) == 6);
+  CHECK(std::string(out) == "Bad/WC");
+  strcpy(c.temps[0].name, "t 1");
+  CHECK(itemSegment(c, ItemKind::Temp, 0, out, sizeof out) == 3);
+  CHECK(std::string(out) == "t_1");
+  strcpy(c.temps[0].topic, "t/1");
+  CHECK(itemSegment(c, ItemKind::Temp, 0, out, sizeof out) == 3);
+  CHECK(std::string(out) == "t/1");
+  strcpy(c.volts[7].name, "bat");
+  CHECK(itemSegment(c, ItemKind::Volt, 7, out, sizeof out) == 3);
+  CHECK(std::string(out) == "bat");
+  strcpy(c.volts[7].topic, "v/8");
+  CHECK(itemSegment(c, ItemKind::Volt, 7, out, sizeof out) == 3);
+  CHECK(std::string(out) == "v/8");
+  memcpy(c.valves[0].name, "abcdefghij", 11);
+  CHECK(itemSegment(c, ItemKind::Valve, 0, out, sizeof out) == 10);  // exactly fits
+  CHECK(std::string(out) == "abcdefghij");
+  // Too small, out of range, no buffer.
+  memset(out, 'x', sizeof out);
+  CHECK(itemSegment(c, ItemKind::Valve, 0, out, 10) == 0);
+  CHECK(out[0] == '\0');
+  memset(out, 'x', sizeof out);
+  CHECK(itemSegment(c, ItemKind::Valve, 11, out, 2) == 0);
+  CHECK(out[0] == '\0');
+  CHECK(itemSegment(c, ItemKind::Valve, 11, out, 3) == 2);
+  for (const auto& bad : {std::make_pair(ItemKind::Valve, 12), std::make_pair(ItemKind::Temp, 34),
+                          std::make_pair(ItemKind::Volt, 8),
+                          std::make_pair(static_cast<ItemKind>(3), 0)}) {
+    memset(out, 'x', sizeof out);
+    CHECK(itemSegment(c, bad.first, static_cast<uint8_t>(bad.second), out, sizeof out) == 0);
+    CHECK(out[0] == '\0');
+  }
+  out[0] = 'x';
+  CHECK(itemSegment(c, ItemKind::Valve, 0, out, 0) == 0);
+  CHECK(out[0] == 'x');
+  CHECK(itemSegment(c, ItemKind::Valve, 0, nullptr, 8) == 0);
+}
+
+TEST_CASE("config: what changes the MQTT topics") {
+  const Config base = fullConfigExt();
+  CHECK_FALSE(mqttTopicConfigChanged(base, base));
+  struct Row {
+    const char* what;
+    void (*edit)(Config&);
+    bool changed;
+  };
+  const Row rows[] = {
+      {"station", [](Config& c) { strcpy(c.station, "Other"); }, true},
+      {"mqtt.mode", [](Config& c) { c.mqtt.mode = MqttMode::Off; }, true},
+      {"mqtt.host", [](Config& c) { strcpy(c.mqtt.host, "other"); }, true},
+      {"mqtt.port", [](Config& c) { c.mqtt.port = 1; }, true},
+      {"mqtt.password", [](Config& c) { strcpy(c.mqtt.password, "x"); }, true},
+      {"mqtt.keepAliveS", [](Config& c) { c.mqtt.keepAliveS = 60; }, true},
+      {"mqtt.separate", [](Config& c) { c.mqtt.separate = true; }, true},
+      {"mqtt.haDiscoveryOnConnect", [](Config& c) { c.mqtt.haDiscoveryOnConnect = true; }, true},
+      {"mqtt.rootTopic", [](Config& c) { strcpy(c.mqtt.rootTopic, "R"); }, true},
+      {"mqtt.clientId", [](Config& c) { strcpy(c.mqtt.clientId, "c"); }, true},
+      {"mqtt.discoveryPrefix", [](Config& c) { strcpy(c.mqtt.discoveryPrefix, "hb"); }, true},
+      {"valve name", [](Config& c) { strcpy(c.valves[11].name, "K"); }, true},
+      {"valve active", [](Config& c) { c.valves[11].active = true; }, true},
+      {"valve topic", [](Config& c) { strcpy(c.valves[11].topic, "y"); }, true},
+      {"temp name", [](Config& c) { strcpy(c.temps[33].name, "n"); }, true},
+      {"temp active", [](Config& c) { c.temps[33].active = true; }, true},
+      {"temp topic", [](Config& c) { strcpy(c.temps[33].topic, "z"); }, true},
+      {"temp id", [](Config& c) { c.temps[33].id.b[7] ^= 1; }, true},
+      {"volt name", [](Config& c) { strcpy(c.volts[0].name, "n"); }, true},
+      {"volt active", [](Config& c) { c.volts[7].active = false; }, true},
+      {"volt topic", [](Config& c) { strcpy(c.volts[7].topic, "b2"); }, true},
+      {"volt id", [](Config& c) { c.volts[7].id.b[0] ^= 1; }, true},
+      {"failsafe.timeoutMin", [](Config& c) { c.failsafe.timeoutMin = 5; }, false},
+      {"valve failsafePct", [](Config& c) { c.valves[0].failsafePct = 7; }, false},
+      {"temp offset", [](Config& c) { c.temps[0].offset = 3; }, false},
+      {"volt offset", [](Config& c) { c.volts[7].offset = 3.0f; }, false},
+      {"volt factor", [](Config& c) { c.volts[7].factor = 3.0f; }, false},
+      {"volt unit", [](Config& c) { strcpy(c.volts[7].unit, "A"); }, false},
+      {"web", [](Config& c) { c.web.protectRead = false; }, false},
+      {"net", [](Config& c) { c.net.reconnectTimeoutMin = 1; }, false},
+      {"calib", [](Config& c) { c.calib.hour = 1; }, false},
+      {"persistLog", [](Config& c) { c.persistLog = true; }, false},
+      // Bytes after the NUL are not part of a name.
+      {"after the NUL", [](Config& c) { c.mqtt.host[20] = 'q'; }, false},
+  };
+  for (const Row& r : rows) {
+    CAPTURE(r.what);
+    Config after = base;
+    r.edit(after);
+    CHECK(mqttTopicConfigChanged(base, after) == r.changed);
+    CHECK(mqttTopicConfigChanged(after, base) == r.changed);
+  }
+}
+
+TEST_CASE("config: JSON export with secrets and the apply members (C-9)") {
+  Config c;
+  strcpy(c.net.wifiPassword, "w\"1");
+  strcpy(c.web.user, "u");
+  strcpy(c.web.password, "pw");
+  const std::string flags = exportJson(c);
+  CHECK(flags.find("\"wifiPasswordSet\":true") != std::string::npos);
+  CHECK(flags.find("pw") == std::string::npos);
+  static char buf[8192];
+  JsonWriter jw(buf, sizeof buf);
+  REQUIRE(writeConfigJson(jw, c, SecretMode::Clear));
+  const std::string clear(buf, jw.length());
+  CHECK(clear.find("Set\"") == std::string::npos);
+  CHECK(clear.find("\"ssid\":\"\",\"wifiPassword\":\"w\\\"1\",\"reconnectTimeoutMin\":5") !=
+        std::string::npos);
+  CHECK(clear.find("\"web\":{\"user\":\"u\",\"password\":\"pw\",\"protectRead\":false,") !=
+        std::string::npos);
+  CHECK(clear.find("\"user\":\"\",\"password\":\"\",\"keepAliveS\":60") != std::string::npos);
+  CHECK(clear.compare(clear.size() - 18, 18, "\"persistLog\":true}") == 0);
+  // Golden: the defaults with SecretMode::Clear are the Flags document (golden
+  // above) with the secrets in place of the flags.
+  std::string expect = exportJson(Config{});
+  auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+    for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) {
+      s.replace(at, from.size(), to);
+    }
+  };
+  replaceAll(expect, "\"wifiPasswordSet\":false", "\"wifiPassword\":\"\"");
+  replaceAll(expect, "\"passwordSet\":false", "\"password\":\"\"");
+  JsonWriter jd(buf, sizeof buf);
+  REQUIRE(writeConfigJson(jd, Config{}, SecretMode::Clear));
+  CHECK(std::string(buf, jd.length()) == expect);
+  // A cleartext export posts back to the same config.
+  Config back;
+  std::string path;
+  CHECK(patch(back, clear, &path) == PatchResult::Ok);
+  CHECK(sameConfig(back, c));
+
+  auto endsWith = [](const std::string& s, const std::string& t) {
+    return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0;
+  };
+  ApplyInfo apply;
+  apply.restartRequired = true;
+  JsonWriter ja(buf, sizeof buf);
+  REQUIRE(writeConfigJson(ja, c, SecretMode::Flags, &apply));
+  const std::string a(buf, ja.length());
+  CHECK(endsWith(a, "\"persistLog\":true,\"restartRequired\":true,\"netTrial\":false}"));
+  apply.restartRequired = false;
+  apply.netTrial = true;
+  JsonWriter jb(buf, sizeof buf);
+  REQUIRE(writeConfigJson(jb, c, SecretMode::Flags, &apply));
+  const std::string b(buf, jb.length());
+  CHECK(endsWith(b, "\"persistLog\":true,\"restartRequired\":false,\"netTrial\":true}"));
+  // The apply members are not config keys.
+  CHECK(patch(back, a, &path) == PatchResult::UnknownKey);
+  CHECK(path == "restartRequired");
+}
+
+TEST_CASE("config: export and patch round trip with every key") {
+  const Config full = fullConfigExt();
+  static char buf[8192];
+  JsonWriter jw(buf, sizeof buf);
+  REQUIRE(writeConfigJson(jw, full, SecretMode::Clear));
+  Config c;
+  std::string path;
+  CHECK(patch(c, std::string(buf, jw.length()), &path) == PatchResult::Ok);
+  CHECK(path.empty());
+  CHECK(sameConfig(c, full));
+}
+
+TEST_CASE("config: load and repair API before the repairs") {
+  Config c = fullConfigExt();
+  Repairs r;
+  r.mask = 5;
+  r.count = 2;
+  strcpy(r.first, "x");
+  CHECK(sanitizeConfig(c, &r) == 0);
+  CHECK(r.mask == 0);
+  CHECK(r.count == 0);
+  CHECK(r.first[0] == '\0');
+  CHECK(sanitizeConfig(c, nullptr) == 0);
+  CHECK(sameConfig(c, fullConfigExt()));
+
+  // decodeConfig reports the header schema.
+  const std::vector<uint8_t> base = encode(fullConfigExt());
+  DecodeInfo info;
+  info.newerSchema = true;
+  info.repairs.count = 3;
+  Config d;
+  CHECK(decodeConfig(base.data(), base.size(), d, &info) == DecodeResult::Ok);
+  CHECK(info.schema == 1);
+  CHECK_FALSE(info.newerSchema);
+  CHECK(info.repairs.count == 0);
+  std::vector<uint8_t> newer = base;
+  newer[4] = 2;
+  fixCrc(newer);
+  CHECK(decodeConfig(newer.data(), newer.size(), d, &info) == DecodeResult::UnsupportedSchema);
+  CHECK(info.schema == 2);
+  std::vector<uint8_t> magic = base;
+  magic[0] = 'X';
+  CHECK(decodeConfig(magic.data(), magic.size(), d, &info) == DecodeResult::BadMagic);
+  CHECK(info.schema == 0);
+  CHECK(decodeConfig(nullptr, 0, d, &info) == DecodeResult::TooShort);
+
+  // loadConfigBlobs: base, then the ext records.
+  const std::vector<uint8_t> ext = encodeExt(fullConfigExt());
+  StoredBlobs b;
+  b.base = base.data();
+  b.baseLen = base.size();
+  b.ext = ext.data();
+  b.extLen = ext.size();
+  LoadInfo li;
+  Config out;
+  CHECK(loadConfigBlobs(b, out, li));
+  CHECK(li.base == DecodeResult::Ok);
+  CHECK(li.ext == ExtResult::Ok);
+  CHECK(li.extInfo.applied > 0);
+  CHECK(li.decode.schema == 1);
+  CHECK(li.repairs.mask == 0);
+  CHECK(sameConfig(out, fullConfigExt()));
+  // A damaged ext blob leaves the defaults of its keys.
+  std::vector<uint8_t> badExt = ext;
+  badExt[9] ^= 1;
+  b.ext = badExt.data();
+  CHECK(loadConfigBlobs(b, out, li));
+  CHECK(li.ext == ExtResult::BadCrc);
+  CHECK(sameConfig(out, fullConfig()));
+  // Unknown records go to `keep`.
+  const std::vector<uint8_t> unknown = extBlob({210, 0, 1, 9});
+  b.ext = unknown.data();
+  b.extLen = unknown.size();
+  uint8_t keep[16];
+  CHECK(loadConfigBlobs(b, out, li, keep, sizeof keep));
+  CHECK(li.extInfo.unknown == 1);
+  CHECK(li.extInfo.keepLen == 4);
+  CHECK(keep[0] == 210);
+  // An unusable base blob: false, defaults.
+  std::vector<uint8_t> badBase = base;
+  badBase[9] ^= 1;
+  b.base = badBase.data();
+  CHECK_FALSE(loadConfigBlobs(b, out, li));
+  CHECK(li.base == DecodeResult::BadCrc);
+  CHECK(li.ext == ExtResult::Absent);
+  CHECK(sameConfig(out, Config{}));
+}
+
+TEST_CASE("config: a stored config that breaks only V1-V3 is still loaded") {
+  Config ha;
+  ha.mqtt.mode = MqttMode::MqttHa;
+  strcpy(ha.mqtt.host, "b");
+  ha.mqtt.germanDecimal = true;
+  strcpy(ha.valves[0].name, "Bad 1");
+  strcpy(ha.valves[1].name, "Bad.1");
+  CHECK(validatePath(ha) == "mqtt.germanDecimal");
+  const std::vector<uint8_t> blob = encode(ha);
+  Config back;
+  CHECK(decodeConfig(blob.data(), blob.size(), back) == DecodeResult::Ok);
+  CHECK(sameConfig(back, ha));
+  ha.mqtt.germanDecimal = false;
+  CHECK(validatePath(ha) == "valves.2.name");
+  // A 2.0.0 rule still drops it.
+  ha.mqtt.separate = false;
+  const std::vector<uint8_t> broken = encode(ha);
+  CHECK(decodeConfig(broken.data(), broken.size(), back) == DecodeResult::Invalid);
+  CHECK(sameConfig(back, Config{}));
 }
