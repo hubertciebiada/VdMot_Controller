@@ -1528,7 +1528,7 @@ $("cfg-form").addEventListener("submit", async (e) => {
         throw err;
       };
       const dry = await api("POST", "/api/config?dryRun=1", patch).catch(rejected);
-      if (dry && dry.restartRequired && !await confirmDlg({ title: "Restart the ESP?", text: "These changes are applied by restarting the ESP. The STM and the valves keep running." +
+      if (dry && dry.restartRequired && !await confirmDlg({ title: "Restart the ESP?", text: "These changes are applied by restarting the ESP. With jumper X20 the STM restarts too (STM 2.1 keeps the valve positions)." +
         (dry.netTrial ? " The new network settings run on trial: open the dashboard at the new address and confirm them within 2 minutes, or the previous settings return." : ""),
       ok: "Save and restart" })) return;
       const res = await api("POST", "/api/config", patch).catch(rejected);
@@ -1927,7 +1927,7 @@ async function simpleAction(btn, opt, method, path, body, okMsg, after) {
   await busy(btn, async () => { const d = await api(method, path, body); toast(okMsg); if (after) after(d); });
 }
 $("btn-reboot").addEventListener("click", (e) => simpleAction(e.currentTarget,
-  { title: "Restart the ESP?", text: "The dashboard and MQTT are unavailable for about 20 seconds. The STM and the valves keep running.", ok: "Restart" },
+  { title: "Restart the ESP?", text: "The dashboard and MQTT are unavailable for about 20 seconds. With jumper X20 the STM restarts too (STM 2.1 keeps the valve positions).", ok: "Restart" },
   "POST", "/api/system/reboot", undefined, "Restart requested", () => expectRestart("Restart")));
 $("btn-stm-reset").addEventListener("click", (e) => simpleAction(e.currentTarget,
   { title: "Reset the STM?", text: "The STM restarts and every valve recalibrates (several minutes, valves move to their end positions).", ok: "Reset STM", danger: true },

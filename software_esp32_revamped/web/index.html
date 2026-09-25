@@ -103,7 +103,7 @@
   <div class="cols">
     <div class="panel" id="p-ota">
       <h3>ESP firmware update</h3>
-      <p class="small muted">Upload an ESP32 application image (<span class="mono">.bin</span>). The MD5 is computed here and checked by the device before the new image is activated. The ESP restarts; the STM and the valves keep running. A new image that does not come up healthy is rolled back automatically.</p>
+      <p class="small muted">Upload an ESP32 application image (<span class="mono">.bin</span>). The MD5 is computed here and checked by the device before the new image is activated. The ESP restarts; with jumper X20 the STM restarts too (STM 2.1 keeps the valve positions). A new image that does not come up healthy is rolled back automatically.</p>
       <div class="row"><label for="ota-file" class="sr">ESP firmware file</label><input type="file" id="ota-file" accept=".bin,application/octet-stream"></div>
       <p class="small" id="ota-info" aria-live="polite"></p>
       <progress id="ota-prog" max="100" value="0" hidden aria-label="ESP upload progress"></progress>
