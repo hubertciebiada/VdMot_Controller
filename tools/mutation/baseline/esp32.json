@@ -1,42 +1,42 @@
 {
  "suite": "esp32",
  "config": "tools/mutation/esp32.json",
- "score": 94.84,
+ "score": 94.7,
  "threshold": 95,
  "file_threshold": 95,
- "jobs": 3,
- "wall_s": 2343.3,
- "mean_s": 0.61,
- "vm": "6 CPUs shared with other agents' containers, load average 1.6 at the start",
- "note": "Baseline of the new tool semantics on software_esp32_revamped/lib/core as of 58632d6 (the sources are unchanged in this branch), measured on 2026-09-25 with `tools/mutation/esp32.json` (--jobs 3 --no-cache) at 3bc8832 on a container copy of the checkout in which the 8 NOMUTATE markers without a reason (config.cpp lines 193, 194, 198, 199, 201 and 969-970, version.cpp line 22; owned by C-ESP) got a reason, text only: those lines stay excluded as before, but the new rules reject a marker without a reason, so `docker.sh mutate esp32` exits 2 on the tree until the reasons are added. The randomized and slow cases of test_stm_flasher.cpp, test_config.cpp, test_event_log.cpp, test_stm_codec.cpp, test_json_api.cpp and test_version.cpp are not tagged yet, so they still run in stage 1. Files changed by later packages are compared against these numbers (PLAN.md rule 5).",
+ "jobs": 6,
+ "wall_s": 1915.6,
+ "mean_s": 0.938,
+ "vm": "6 CPUs, no other test or mutation run, load average 2.0 at the start (right after the STM run)",
+ "note": "Baseline of the tool semantics on software_esp32_revamped/lib/core as of 58632d6 (the sources are unchanged at bc90f81), measured on 2026-09-25 with `tools/mutation/esp32.json` of a163b02 (--jobs 6 --no-cache) on a container copy of the bc90f81 tree in which the 8 NOMUTATE markers without a reason (config.cpp lines 193, 194, 198, 199, 201 and 969-970, version.cpp line 22) got a reason, text only: those lines stay excluded as before (revamped has the reasons since 7edaf00). Refreshed after two generator fixes: the '&&' after an enum value is mutated (21 more mutants) and so are the comparisons on lines with a cast (60 more mutants). The mean s/mutant now counts both runs of a re-run timeout and leaves out not_compiled mutants. The fixed-seed fuzz and slow cases of test_stm_flasher.cpp, test_config.cpp, test_event_log.cpp, test_stm_codec.cpp, test_json_api.cpp, test_version.cpp, test_mqtt_topics.cpp, test_auth.cpp and test_json_writer.cpp are untagged at bc90f81 (tagged on revamped since 91749fa), so they run in stage 1 here. Files changed by later packages are compared against these numbers.",
  "totals": {
-  "counted": 8340,
-  "killed": 7865,
-  "timeout": 45,
-  "survived": 430,
+  "counted": 8421,
+  "killed": 7931,
+  "timeout": 47,
+  "survived": 443,
   "stillborn": 509,
   "not_compiled": 0,
   "equivalent": 0,
   "error": 0,
-  "gap": 13
+  "gap": 22
  },
  "files": {
   "lib/core/src/auth.cpp": {
-   "counted": 289,
-   "killed": 272,
+   "counted": 291,
+   "killed": 274,
    "timeout": 0,
    "survived": 17,
    "stillborn": 1,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 94.12,
+   "score": 94.16,
    "gap": 3,
-   "mean_s": 0.147
+   "mean_s": 0.272
   },
   "lib/core/src/calib_schedule.cpp": {
-   "counted": 419,
-   "killed": 415,
+   "counted": 421,
+   "killed": 417,
    "timeout": 0,
    "survived": 4,
    "stillborn": 5,
@@ -45,72 +45,72 @@
    "error": 0,
    "score": 99.05,
    "gap": 0,
-   "mean_s": 0.192
+   "mean_s": 0.287
   },
   "lib/core/src/common.cpp": {
-   "counted": 648,
-   "killed": 620,
+   "counted": 650,
+   "killed": 621,
    "timeout": 6,
-   "survived": 22,
+   "survived": 23,
    "stillborn": 2,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 96.6,
+   "score": 96.46,
    "gap": 0,
-   "mean_s": 0.238
+   "mean_s": 0.426
   },
   "lib/core/src/config.cpp": {
-   "counted": 1478,
-   "killed": 1387,
+   "counted": 1495,
+   "killed": 1403,
    "timeout": 2,
-   "survived": 89,
+   "survived": 90,
    "stillborn": 110,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
    "score": 93.98,
    "gap": 16,
-   "mean_s": 1.062
+   "mean_s": 1.207
   },
   "lib/core/src/event_log.cpp": {
-   "counted": 387,
-   "killed": 380,
+   "counted": 393,
+   "killed": 383,
    "timeout": 1,
-   "survived": 6,
+   "survived": 9,
    "stillborn": 3,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 98.45,
+   "score": 97.71,
    "gap": 0,
-   "mean_s": 0.436
+   "mean_s": 0.451
   },
   "lib/core/src/ha_discovery.cpp": {
-   "counted": 330,
-   "killed": 265,
+   "counted": 334,
+   "killed": 269,
    "timeout": 0,
    "survived": 65,
    "stillborn": 79,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 80.3,
+   "score": 80.54,
    "gap": 49,
-   "mean_s": 0.679
+   "mean_s": 1.09
   },
   "lib/core/src/health_monitor.cpp": {
-   "counted": 289,
-   "killed": 281,
+   "counted": 290,
+   "killed": 282,
    "timeout": 0,
    "survived": 8,
    "stillborn": 7,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 97.23,
+   "score": 97.24,
    "gap": 0,
-   "mean_s": 0.201
+   "mean_s": 0.377
   },
   "lib/core/src/json_api.cpp": {
    "counted": 293,
@@ -123,33 +123,33 @@
    "error": 0,
    "score": 93.52,
    "gap": 5,
-   "mean_s": 0.385
+   "mean_s": 0.702
   },
   "lib/core/src/json_writer.cpp": {
-   "counted": 273,
-   "killed": 262,
+   "counted": 283,
+   "killed": 267,
    "timeout": 0,
-   "survived": 11,
+   "survived": 16,
    "stillborn": 2,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 95.97,
-   "gap": 0,
-   "mean_s": 0.374
+   "score": 94.35,
+   "gap": 2,
+   "mean_s": 0.623
   },
   "lib/core/src/legacy_import.cpp": {
-   "counted": 438,
-   "killed": 401,
+   "counted": 440,
+   "killed": 403,
    "timeout": 4,
    "survived": 33,
    "stillborn": 21,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 92.47,
-   "gap": 12,
-   "mean_s": 0.312
+   "score": 92.5,
+   "gap": 11,
+   "mean_s": 0.586
   },
   "lib/core/src/line_assembler.cpp": {
    "counted": 63,
@@ -162,50 +162,50 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.836
+   "mean_s": 1.682
   },
   "lib/core/src/link_policy.cpp": {
-   "counted": 268,
-   "killed": 264,
+   "counted": 273,
+   "killed": 269,
    "timeout": 1,
    "survived": 3,
    "stillborn": 16,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 98.88,
+   "score": 98.9,
    "gap": 0,
-   "mean_s": 0.215
+   "mean_s": 0.399
   },
   "lib/core/src/mqtt_topics.cpp": {
-   "counted": 474,
-   "killed": 450,
+   "counted": 480,
+   "killed": 456,
    "timeout": 1,
    "survived": 23,
    "stillborn": 21,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 95.15,
+   "score": 95.21,
    "gap": 0,
-   "mean_s": 0.474
+   "mean_s": 0.801
   },
   "lib/core/src/poll_planner.cpp": {
-   "counted": 237,
-   "killed": 223,
-   "timeout": 13,
+   "counted": 246,
+   "killed": 230,
+   "timeout": 15,
    "survived": 1,
    "stillborn": 0,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 99.58,
+   "score": 99.59,
    "gap": 0,
-   "mean_s": 0.543
+   "mean_s": 1.16
   },
   "lib/core/src/stm_codec.cpp": {
-   "counted": 794,
-   "killed": 794,
+   "counted": 799,
+   "killed": 799,
    "timeout": 0,
    "survived": 0,
    "stillborn": 140,
@@ -214,33 +214,33 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.298
+   "mean_s": 0.525
   },
   "lib/core/src/stm_flasher.cpp": {
-   "counted": 989,
-   "killed": 872,
+   "counted": 997,
+   "killed": 878,
    "timeout": 8,
-   "survived": 109,
+   "survived": 111,
    "stillborn": 68,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 88.98,
-   "gap": 60,
-   "mean_s": 1.555
+   "score": 88.87,
+   "gap": 62,
+   "mean_s": 2.686
   },
   "lib/core/src/valve_model.cpp": {
-   "counted": 466,
-   "killed": 453,
+   "counted": 468,
+   "killed": 454,
    "timeout": 0,
-   "survived": 13,
+   "survived": 14,
    "stillborn": 18,
    "not_compiled": 0,
    "equivalent": 0,
    "error": 0,
-   "score": 97.21,
+   "score": 97.01,
    "gap": 0,
-   "mean_s": 0.273
+   "mean_s": 0.504
   },
   "lib/core/src/version.cpp": {
    "counted": 205,
@@ -253,7 +253,7 @@
    "error": 0,
    "score": 96.59,
    "gap": 0,
-   "mean_s": 0.139
+   "mean_s": 0.258
   }
  },
  "survivors": [
@@ -625,6 +625,15 @@
    "original": ">=",
    "replacement": ">",
    "text": "if (pos >= len) return false;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 225,
+   "col": 9,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (n < 0 || static_cast<size_t>(n) >= cap) {"
   },
   {
    "file": "lib/core/src/common.cpp",
@@ -1078,6 +1087,15 @@
   },
   {
    "file": "lib/core/src/config.cpp",
+   "line": 1056,
+   "col": 35,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (size_t i = 0; i < k && n < cap; ++i) out[n++] = static_cast<char>(b[i]);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
    "line": 1075,
    "col": 34,
    "op": "bool",
@@ -1448,10 +1466,28 @@
   {
    "file": "lib/core/src/event_log.cpp",
    "line": 104,
+   "col": 11,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (n > 0) len_ += static_cast<size_t>(n) < room ? static_cast<size_t>(n) : room - 1;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 104,
    "col": 13,
    "op": "const",
    "original": "0",
    "replacement": "1",
+   "text": "if (n > 0) len_ += static_cast<size_t>(n) < room ? static_cast<size_t>(n) : room - 1;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 104,
+   "col": 47,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
    "text": "if (n > 0) len_ += static_cast<size_t>(n) < room ? static_cast<size_t>(n) : room - 1;"
   },
   {
@@ -1480,6 +1516,15 @@
    "original": "146096",
    "replacement": "146095",
    "text": "const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 596,
+   "col": 15,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (e.valve < kValveCount) t.addf(\" v%u\", static_cast<unsigned>(e.valve) + 1);"
   },
   {
    "file": "lib/core/src/event_log.cpp",
@@ -2383,6 +2428,15 @@
   },
   {
    "file": "lib/core/src/json_writer.cpp",
+   "line": 193,
+   "col": 14,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return n > 0 && beforeValue() && putRaw(tmp, static_cast<size_t>(n));"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
    "line": 208,
    "col": 14,
    "op": "const",
@@ -2401,6 +2455,24 @@
   },
   {
    "file": "lib/core/src/json_writer.cpp",
+   "line": 217,
+   "col": 14,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return n > 0 && static_cast<size_t>(n) < sizeof tmp && beforeValue() &&"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 217,
+   "col": 44,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "return n > 0 && static_cast<size_t>(n) < sizeof tmp && beforeValue() &&"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
    "line": 229,
    "col": 14,
    "op": "const",
@@ -2416,6 +2488,24 @@
    "original": "40",
    "replacement": "41",
    "text": "char tmp[40];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 231,
+   "col": 14,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return n > 0 && static_cast<size_t>(n) < sizeof tmp && beforeValue() &&"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 231,
+   "col": 44,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "return n > 0 && static_cast<size_t>(n) < sizeof tmp && beforeValue() &&"
   },
   {
    "file": "lib/core/src/json_writer.cpp",
@@ -3032,6 +3122,15 @@
   {
    "file": "lib/core/src/stm_flasher.cpp",
    "line": 100,
+   "col": 21,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (sc.runLen < sizeof sc.run - 1) sc.run[sc.runLen] = static_cast<char>(c);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 100,
    "col": 37,
    "op": "arith",
    "original": "-",
@@ -3253,6 +3352,15 @@
    "original": "100",
    "replacement": "99",
    "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 387,
+   "col": 9,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (p > st_.percent) st_.percent = static_cast<uint8_t>(p);"
   },
   {
    "file": "lib/core/src/stm_flasher.cpp",
@@ -4063,6 +4171,15 @@
    "original": "<",
    "replacement": "<=",
    "text": "for (uint8_t i = 0; i < kValveCount; ++i) {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 455,
+   "col": 29,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const uint8_t n = l.count < N ? l.count : static_cast<uint8_t>(N);"
   },
   {
    "file": "lib/core/src/version.cpp",

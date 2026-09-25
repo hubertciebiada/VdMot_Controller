@@ -1,34 +1,34 @@
 # Mutation baseline: esp32 (ESP core)
 
-Baseline of the new tool semantics on software_esp32_revamped/lib/core as of 58632d6 (the sources are unchanged in this branch), measured on 2026-09-25 with `tools/mutation/esp32.json` (--jobs 3 --no-cache) at 3bc8832 on a container copy of the checkout in which the 8 NOMUTATE markers without a reason (config.cpp lines 193, 194, 198, 199, 201 and 969-970, version.cpp line 22; owned by C-ESP) got a reason, text only: those lines stay excluded as before, but the new rules reject a marker without a reason, so `docker.sh mutate esp32` exits 2 on the tree until the reasons are added. The randomized and slow cases of test_stm_flasher.cpp, test_config.cpp, test_event_log.cpp, test_stm_codec.cpp, test_json_api.cpp and test_version.cpp are not tagged yet, so they still run in stage 1. Files changed by later packages are compared against these numbers (PLAN.md rule 5).
+Baseline of the tool semantics on software_esp32_revamped/lib/core as of 58632d6 (the sources are unchanged at bc90f81), measured on 2026-09-25 with `tools/mutation/esp32.json` of a163b02 (--jobs 6 --no-cache) on a container copy of the bc90f81 tree in which the 8 NOMUTATE markers without a reason (config.cpp lines 193, 194, 198, 199, 201 and 969-970, version.cpp line 22) got a reason, text only: those lines stay excluded as before (revamped has the reasons since 7edaf00). Refreshed after two generator fixes: the '&&' after an enum value is mutated (21 more mutants) and so are the comparisons on lines with a cast (60 more mutants). The mean s/mutant now counts both runs of a re-run timeout and leaves out not_compiled mutants. The fixed-seed fuzz and slow cases of test_stm_flasher.cpp, test_config.cpp, test_event_log.cpp, test_stm_codec.cpp, test_json_api.cpp, test_version.cpp, test_mqtt_topics.cpp, test_auth.cpp and test_json_writer.cpp are untagged at bc90f81 (tagged on revamped since 91749fa), so they run in stage 1 here. Files changed by later packages are compared against these numbers.
 
-Result: **94.8 %** (7910 of 8340 counted mutants killed, 45 of them by a confirmed timeout); stillborn 509 (excluded), not compiled 0, equivalent 0, error 0. Mean 0.61 s per mutant, wall 39.1 min with 3 workers; VM: 6 CPUs shared with other agents' containers, load average 1.6 at the start.
+Result: **94.7 %** (7978 of 8421 counted mutants killed, 47 of them by a confirmed timeout); stillborn 509 (excluded), not compiled 0, equivalent 0, error 0. Mean 0.938 s per mutant (8930 built), wall 31.9 min with 6 workers; VM: 6 CPUs, no other test or mutation run, load average 2.0 at the start (right after the STM run).
 
-6 of 18 files are below 95 %; the gap column is the number of survivors each file still has to kill (or prove equivalent) to reach it.
+7 of 18 files are below 95 %; the gap column is the number of survivors each file still has to kill (or prove equivalent) to reach it.
 
 | file | counted | killed | timeout | survived | stillborn | not compiled | equivalent | score | gap | s/mutant |
 |---|---|---|---|---|---|---|---|---|---|---|
-| lib/core/src/auth.cpp | 289 | 272 | 0 | 17 | 1 | 0 | 0 | 94.1 % | 3 | 0.147 |
-| lib/core/src/calib_schedule.cpp | 419 | 415 | 0 | 4 | 5 | 0 | 0 | 99.0 % | 0 | 0.192 |
-| lib/core/src/common.cpp | 648 | 620 | 6 | 22 | 2 | 0 | 0 | 96.6 % | 0 | 0.238 |
-| lib/core/src/config.cpp | 1478 | 1387 | 2 | 89 | 110 | 0 | 0 | 94.0 % | 16 | 1.062 |
-| lib/core/src/event_log.cpp | 387 | 380 | 1 | 6 | 3 | 0 | 0 | 98.5 % | 0 | 0.436 |
-| lib/core/src/ha_discovery.cpp | 330 | 265 | 0 | 65 | 79 | 0 | 0 | 80.3 % | 49 | 0.679 |
-| lib/core/src/health_monitor.cpp | 289 | 281 | 0 | 8 | 7 | 0 | 0 | 97.2 % | 0 | 0.201 |
-| lib/core/src/json_api.cpp | 293 | 274 | 0 | 19 | 13 | 0 | 0 | 93.5 % | 5 | 0.385 |
-| lib/core/src/json_writer.cpp | 273 | 262 | 0 | 11 | 2 | 0 | 0 | 96.0 % | 0 | 0.374 |
-| lib/core/src/legacy_import.cpp | 438 | 401 | 4 | 33 | 21 | 0 | 0 | 92.5 % | 12 | 0.312 |
-| lib/core/src/line_assembler.cpp | 63 | 54 | 9 | 0 | 0 | 0 | 0 | 100.0 % | 0 | 0.836 |
-| lib/core/src/link_policy.cpp | 268 | 264 | 1 | 3 | 16 | 0 | 0 | 98.9 % | 0 | 0.215 |
-| lib/core/src/mqtt_topics.cpp | 474 | 450 | 1 | 23 | 21 | 0 | 0 | 95.2 % | 0 | 0.474 |
-| lib/core/src/poll_planner.cpp | 237 | 223 | 13 | 1 | 0 | 0 | 0 | 99.6 % | 0 | 0.543 |
-| lib/core/src/stm_codec.cpp | 794 | 794 | 0 | 0 | 140 | 0 | 0 | 100.0 % | 0 | 0.298 |
-| lib/core/src/stm_flasher.cpp | 989 | 872 | 8 | 109 | 68 | 0 | 0 | 89.0 % | 60 | 1.555 |
-| lib/core/src/valve_model.cpp | 466 | 453 | 0 | 13 | 18 | 0 | 0 | 97.2 % | 0 | 0.273 |
-| lib/core/src/version.cpp | 205 | 198 | 0 | 7 | 3 | 0 | 0 | 96.6 % | 0 | 0.139 |
-| **total** | 8340 | 7865 | 45 | 430 | 509 | 0 | 0 | 94.8 % | 13 | 0.61 |
+| lib/core/src/auth.cpp | 291 | 274 | 0 | 17 | 1 | 0 | 0 | 94.2 % | 3 | 0.272 |
+| lib/core/src/calib_schedule.cpp | 421 | 417 | 0 | 4 | 5 | 0 | 0 | 99.0 % | 0 | 0.287 |
+| lib/core/src/common.cpp | 650 | 621 | 6 | 23 | 2 | 0 | 0 | 96.5 % | 0 | 0.426 |
+| lib/core/src/config.cpp | 1495 | 1403 | 2 | 90 | 110 | 0 | 0 | 94.0 % | 16 | 1.207 |
+| lib/core/src/event_log.cpp | 393 | 383 | 1 | 9 | 3 | 0 | 0 | 97.7 % | 0 | 0.451 |
+| lib/core/src/ha_discovery.cpp | 334 | 269 | 0 | 65 | 79 | 0 | 0 | 80.5 % | 49 | 1.09 |
+| lib/core/src/health_monitor.cpp | 290 | 282 | 0 | 8 | 7 | 0 | 0 | 97.2 % | 0 | 0.377 |
+| lib/core/src/json_api.cpp | 293 | 274 | 0 | 19 | 13 | 0 | 0 | 93.5 % | 5 | 0.702 |
+| lib/core/src/json_writer.cpp | 283 | 267 | 0 | 16 | 2 | 0 | 0 | 94.3 % | 2 | 0.623 |
+| lib/core/src/legacy_import.cpp | 440 | 403 | 4 | 33 | 21 | 0 | 0 | 92.5 % | 11 | 0.586 |
+| lib/core/src/line_assembler.cpp | 63 | 54 | 9 | 0 | 0 | 0 | 0 | 100.0 % | 0 | 1.682 |
+| lib/core/src/link_policy.cpp | 273 | 269 | 1 | 3 | 16 | 0 | 0 | 98.9 % | 0 | 0.399 |
+| lib/core/src/mqtt_topics.cpp | 480 | 456 | 1 | 23 | 21 | 0 | 0 | 95.2 % | 0 | 0.801 |
+| lib/core/src/poll_planner.cpp | 246 | 230 | 15 | 1 | 0 | 0 | 0 | 99.6 % | 0 | 1.16 |
+| lib/core/src/stm_codec.cpp | 799 | 799 | 0 | 0 | 140 | 0 | 0 | 100.0 % | 0 | 0.525 |
+| lib/core/src/stm_flasher.cpp | 997 | 878 | 8 | 111 | 68 | 0 | 0 | 88.9 % | 62 | 2.686 |
+| lib/core/src/valve_model.cpp | 468 | 454 | 0 | 14 | 18 | 0 | 0 | 97.0 % | 0 | 0.504 |
+| lib/core/src/version.cpp | 205 | 198 | 0 | 7 | 3 | 0 | 0 | 96.6 % | 0 | 0.258 |
+| **total** | 8421 | 7931 | 47 | 443 | 509 | 0 | 0 | 94.7 % | 22 | 0.938 |
 
-## Survivors (430)
+## Survivors (443)
 
 The same list with the source lines is in `esp32.json`.
 
@@ -76,6 +76,7 @@ The same list with the source lines is in `esp32.json`.
   - 191:18 `0` -> `1` (const)
   - 206:18 `0` -> `1` (const)
   - 210:15 `>=` -> `>` (rel)
+  - 225:9 `<` -> `<=` (rel)
   - 225:11 `0` -> `1` (const)
   - 262:11 `1` -> `2` (const)
 - lib/core/src/config.cpp:
@@ -127,6 +128,7 @@ The same list with the source lines is in `esp32.json`.
   - 1026:28 `-` -> `+` (arith)
   - 1035:15 `4` -> `5` (const)
   - 1037:12 `<` -> `<=` (rel)
+  - 1056:35 `<` -> `<=` (rel)
   - 1075:34 `false` -> `true` (bool)
   - 1096:20 `<` -> `<=` (rel)
   - 1100:12 `false` -> `true` (bool)
@@ -169,10 +171,13 @@ The same list with the source lines is in `esp32.json`.
   - 1465:64 `0` -> `1` (const)
   - 1474:32 `16` -> `17` (const)
 - lib/core/src/event_log.cpp:
+  - 104:11 `>` -> `>=` (rel)
   - 104:13 `0` -> `1` (const)
+  - 104:47 `<` -> `<=` (rel)
   - 427:37 `1460` -> `1459` (const)
   - 427:50 `36524` -> `36523` (const)
   - 427:64 `146096` -> `146095` (const)
+  - 596:15 `<` -> `<=` (rel)
   - 603:12 `128` -> `127` (const)
   - 603:12 `128` -> `129` (const)
 - lib/core/src/ha_discovery.cpp:
@@ -277,10 +282,15 @@ The same list with the source lines is in `esp32.json`.
   - 160:41 `false` -> `true` (bool)
   - 191:14 `24` -> `23` (const)
   - 191:14 `24` -> `25` (const)
+  - 193:14 `>` -> `>=` (rel)
   - 208:14 `32` -> `31` (const)
   - 208:14 `32` -> `33` (const)
+  - 217:14 `>` -> `>=` (rel)
+  - 217:44 `<` -> `<=` (rel)
   - 229:14 `40` -> `39` (const)
   - 229:14 `40` -> `41` (const)
+  - 231:14 `>` -> `>=` (rel)
+  - 231:44 `<` -> `<=` (rel)
   - 247:14 `6` -> `7` (const)
 - lib/core/src/legacy_import.cpp:
   - 18:35 `11` -> `12` (const)
@@ -354,6 +364,7 @@ The same list with the source lines is in `esp32.json`.
   - 90:41 `>` -> `>=` (rel)
   - 90:43 `0` -> `1` (const)
   - 90:58 `<` -> `<=` (rel)
+  - 100:21 `<` -> `<=` (rel)
   - 100:37 `-` -> `+` (arith)
   - 100:39 `1` -> `0` (const)
   - 101:21 `<` -> `<=` (rel)
@@ -379,6 +390,7 @@ The same list with the source lines is in `esp32.json`.
   - 386:20 `100` -> `0` (const)
   - 386:20 `100` -> `101` (const)
   - 386:20 `100` -> `99` (const)
+  - 387:9 `>` -> `>=` (rel)
   - 409:14 `>=` -> `>` (rel)
   - 410:33 `-` -> `+` (arith)
   - 412:15 `<` -> `<=` (rel)
@@ -470,6 +482,7 @@ The same list with the source lines is in `esp32.json`.
   - 357:13 `>=` -> `>` (rel)
   - 365:25 `<` -> `<=` (rel)
   - 390:25 `<` -> `<=` (rel)
+  - 455:29 `<` -> `<=` (rel)
 - lib/core/src/version.cpp:
   - 55:51 `>=` -> `>` (rel)
   - 56:51 `>=` -> `>` (rel)

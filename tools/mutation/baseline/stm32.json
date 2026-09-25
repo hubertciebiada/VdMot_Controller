@@ -1,19 +1,19 @@
 {
  "suite": "stm32",
  "config": "tools/mutation/stm32.json",
- "score": 99.9,
+ "score": 99.1,
  "threshold": 95,
  "file_threshold": 95,
- "jobs": 3,
- "wall_s": 119.7,
- "mean_s": 0.179,
- "vm": "6 CPUs shared with other agents' containers, not idle",
- "note": "Baseline of the new tool semantics on software_stm32/lib/core as of 58632d6 (the sources are unchanged in this branch), measured on 2026-09-25 with `tools/native/docker.sh mutate stm32 --no-cache` (VDM_MUTATION_JOBS=3) at 3bc8832. Equivalents: `tools/mutation/equivalents/stm32/`. Files changed by later packages are compared against these numbers (PLAN.md rule 5).",
+ "jobs": 6,
+ "wall_s": 118.3,
+ "mean_s": 0.327,
+ "vm": "6 CPUs, no other test or mutation run, load average 0.4 at the start",
+ "note": "Baseline of the tool semantics on software_stm32/lib/core as of 58632d6 (the sources are unchanged at bc90f81), measured on 2026-09-25 with `tools/mutation/stm32.json` of a163b02 (--jobs 6 --no-cache) on a container copy of the bc90f81 tree. Refreshed after two generator fixes: the '&&' after an enum value is mutated (end_stop_detector.cpp:50, killed) and so are the comparisons on lines with a cast (18 mutants in buf_writer.cpp, calibration.cpp, move_classifier.cpp and profile_recorder.cpp; 8 survive, all at a saturation or sign boundary). The mean s/mutant now counts both runs of a re-run timeout and leaves out not_compiled mutants. Equivalents: `tools/mutation/equivalents/stm32/`. Files changed by later packages are compared against these numbers.",
  "totals": {
-  "counted": 976,
-  "killed": 965,
+  "counted": 995,
+  "killed": 976,
   "timeout": 10,
-  "survived": 1,
+  "survived": 9,
   "stillborn": 53,
   "not_compiled": 0,
   "equivalent": 37,
@@ -32,33 +32,33 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.138
+   "mean_s": 0.233
   },
   "lib/core/src/buf_writer.cpp": {
-   "counted": 129,
-   "killed": 129,
+   "counted": 131,
+   "killed": 130,
    "timeout": 0,
-   "survived": 0,
+   "survived": 1,
    "stillborn": 5,
    "not_compiled": 0,
    "equivalent": 2,
    "error": 0,
-   "score": 100.0,
+   "score": 99.24,
    "gap": 0,
-   "mean_s": 0.142
+   "mean_s": 0.252
   },
   "lib/core/src/calibration.cpp": {
-   "counted": 93,
-   "killed": 92,
+   "counted": 101,
+   "killed": 96,
    "timeout": 0,
-   "survived": 1,
+   "survived": 5,
    "stillborn": 3,
    "not_compiled": 0,
    "equivalent": 5,
    "error": 0,
-   "score": 98.92,
+   "score": 95.05,
    "gap": 0,
-   "mean_s": 0.124
+   "mean_s": 0.198
   },
   "lib/core/src/eeprom_layout.cpp": {
    "counted": 56,
@@ -71,11 +71,11 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.124
+   "mean_s": 0.188
   },
   "lib/core/src/end_stop_detector.cpp": {
-   "counted": 66,
-   "killed": 66,
+   "counted": 67,
+   "killed": 67,
    "timeout": 0,
    "survived": 0,
    "stillborn": 1,
@@ -84,7 +84,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.129
+   "mean_s": 0.224
   },
   "lib/core/src/line_assembler.cpp": {
    "counted": 69,
@@ -97,7 +97,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.799
+   "mean_s": 1.571
   },
   "lib/core/src/motor_params.cpp": {
    "counted": 64,
@@ -110,20 +110,20 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.135
+   "mean_s": 0.245
   },
   "lib/core/src/move_classifier.cpp": {
-   "counted": 32,
-   "killed": 32,
+   "counted": 36,
+   "killed": 35,
    "timeout": 0,
-   "survived": 0,
+   "survived": 1,
    "stillborn": 2,
    "not_compiled": 0,
    "equivalent": 3,
    "error": 0,
-   "score": 100.0,
+   "score": 97.22,
    "gap": 0,
-   "mean_s": 0.127
+   "mean_s": 0.228
   },
   "lib/core/src/onewire_check.cpp": {
    "counted": 34,
@@ -136,20 +136,20 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.129
+   "mean_s": 0.255
   },
   "lib/core/src/profile_recorder.cpp": {
-   "counted": 67,
-   "killed": 66,
+   "counted": 71,
+   "killed": 68,
    "timeout": 1,
-   "survived": 0,
+   "survived": 2,
    "stillborn": 2,
    "not_compiled": 0,
    "equivalent": 4,
    "error": 0,
-   "score": 100.0,
+   "score": 97.18,
    "gap": 0,
-   "mean_s": 0.189
+   "mean_s": 0.374
   },
   "lib/core/src/replies.cpp": {
    "counted": 32,
@@ -162,7 +162,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.108
+   "mean_s": 0.331
   },
   "lib/core/src/replies_v2.cpp": {
    "counted": 33,
@@ -175,7 +175,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.136
+   "mean_s": 0.249
   },
   "lib/core/src/retry_backoff.cpp": {
    "counted": 32,
@@ -188,7 +188,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.109
+   "mean_s": 0.221
   },
   "lib/core/src/system_stats.cpp": {
    "counted": 32,
@@ -201,7 +201,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.105
+   "mean_s": 0.167
   },
   "lib/core/src/target_rejection.cpp": {
    "counted": 13,
@@ -214,7 +214,7 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.116
+   "mean_s": 0.218
   },
   "lib/core/src/tokenizer.cpp": {
    "counted": 60,
@@ -227,10 +227,19 @@
    "error": 0,
    "score": 100.0,
    "gap": 0,
-   "mean_s": 0.139
+   "mean_s": 0.208
   }
  },
  "survivors": [
+  {
+   "file": "lib/core/src/buf_writer.cpp",
+   "line": 64,
+   "col": 26,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "uint32_t magnitude = v < 0 ? 0u - static_cast<uint32_t>(v) : static_cast<uint32_t>(v);"
+  },
   {
    "file": "lib/core/src/calibration.cpp",
    "line": 26,
@@ -239,6 +248,69 @@
    "original": "||",
    "replacement": "&&",
    "text": "if (!c.enable || repetition == 0 || c.stepPct == 0 || bound <= 0) return bound;"
+  },
+  {
+   "file": "lib/core/src/calibration.cpp",
+   "line": 28,
+   "col": 52,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "const int32_t cap = static_cast<int32_t>(c.maxmA > kSafetyLimit_mA ? kSafetyLimit_mA : c.maxmA) * 10;"
+  },
+  {
+   "file": "lib/core/src/calibration.cpp",
+   "line": 32,
+   "col": 16,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return grown > cap ? cap : static_cast<int32_t>(grown);"
+  },
+  {
+   "file": "lib/core/src/calibration.cpp",
+   "line": 46,
+   "col": 33,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const int64_t magnitude = sum < 0 ? -static_cast<int64_t>(sum) : sum;"
+  },
+  {
+   "file": "lib/core/src/calibration.cpp",
+   "line": 48,
+   "col": 15,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return mean > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(mean);"
+  },
+  {
+   "file": "lib/core/src/move_classifier.cpp",
+   "line": 15,
+   "col": 44,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "uint16_t saturate16(uint64_t v) { return v > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(v); }"
+  },
+  {
+   "file": "lib/core/src/profile_recorder.cpp",
+   "line": 7,
+   "col": 44,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "uint16_t saturate16(uint32_t v) { return v > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(v); }"
+  },
+  {
+   "file": "lib/core/src/profile_recorder.cpp",
+   "line": 10,
+   "col": 24,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const uint32_t m = v < 0 ? static_cast<uint32_t>(-static_cast<int64_t>(v)) : static_cast<uint32_t>(v);"
   }
  ]
 }
