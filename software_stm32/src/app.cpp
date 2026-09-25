@@ -39,6 +39,7 @@
 
 static_assert(VALVE_NO_TARGET == vdm::kNoRejectedTarget, "one marker for no rejected target");
 static_assert(LEARN_AFTER_MOVEMENTS_DEFAULT == vdm::kLearnMovementsDefault, "one learn movements default");
+static_assert(LEARN_AFTER_TIME_DEFAULT == vdm::kLearnTimeDefaultS, "one learn time default");
 
 
 volatile struct valve myvalves[ACTUATOR_COUNT];

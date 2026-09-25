@@ -85,6 +85,7 @@ static void eeprom_reread ();
 // size of the 1.x layout from EE_GENERALDATA_ADR: base block, sensor slots, tail
 static_assert(EE_GENERALDATA_ADR + 33 + (2 * ACTUATOR_COUNT + ADDITIONAL_SENSOR_COUNT) * 8 + 4 == vdm::kExtensionAddress,
 	"the extension block must follow the 1.x layout");
+static_assert(EE_GENERALDATA_ADR == vdm::kLegacyLayoutAddress, "one address of the 1.x layout");
 
 
 
@@ -390,10 +391,14 @@ int16_t eeprom_write_layout (struct eeprom_layout* lay) {
 	buf[x++] =  lay->maxCalibRetries;
 	if (eeprom.writeBlock(address, buf, x) != 0) return eeprom_write_failed();
 
-	// layout version 2 extension, behind the 1.x fields
+	// extension block, behind the 1.x fields: escalation and the CRC of the 1.x layout as written
+	// above (learn time and lease timeout are not kept yet: their defaults)
+	static uint8_t image[vdm::kLegacyImageSize];		// static: keeps it off the main loop stack
 	vdm::StoredExtension ext;
 	uint8_t extbuf[vdm::kExtensionBlockSize];
+	vdm::encodeLegacyLayout(*lay, image);
 	ext.escalation = lay->escalation;
+	ext.layoutCrc = vdm::crc16Ccitt(image, sizeof(image));
 	x = (uint16_t) vdm::encodeExtension(ext, extbuf);
 	if (eeprom.writeBlock(vdm::kExtensionAddress, extbuf, x) != 0) return eeprom_write_failed();
 
@@ -583,7 +588,7 @@ static bool eeprom_read_image (struct eeprom_layout* lay) {
 	lay->maxCalibRetries = buf[0];
 	address++;
 
-	// layout version 2 extension; a 1.x image or a damaged block loads the defaults
+	// extension block (escalation); a 1.x image or a damaged block loads the defaults
 	uint8_t extbuf[vdm::kExtensionBlockSize];
 	vdm::StoredExtension ext;
 	eeprom_read_block(vdm::kExtensionAddress, extbuf, sizeof(extbuf));
