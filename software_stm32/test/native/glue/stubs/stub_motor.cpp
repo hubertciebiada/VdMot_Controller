@@ -5,6 +5,7 @@ volatile enum ASTATE valvestate;
 volatile uint32_t valve_loop_ticks = 0;
 volatile bool valve_loop_stalled = false;
 volatile bool temp_refresh_request = false;
+volatile bool temp_gap_timeout = false;
 volatile bool protect_suspended = false;
 volatile bool protect_enforce = vdm::kProtectEnforce;
 uint8_t currentbound_low_fac = 17;
@@ -48,6 +49,7 @@ void resetMotor() {
     myvalvemots[v].tripSeq = 0;
   }
   temp_refresh_request = false;
+  temp_gap_timeout = false;
   protect_suspended = false;
   protect_enforce = vdm::kProtectEnforce;
   valvestate = A_INIT;

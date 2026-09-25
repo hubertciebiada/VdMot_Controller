@@ -18,9 +18,13 @@ bool TempRefresh::holdCommands(uint32_t nowMs) {
   }
   if (nowMs - holdStartMs_ < kTempHoldMaxMs) return true;
   // the cycle did not complete in time: go on and try again one period later
+  holdTimedOut(nowMs);
+  return false;
+}
+
+void TempRefresh::holdTimedOut(uint32_t nowMs) {
   holding_ = false;
   periodStartMs_ = nowMs;
-  return false;
 }
 
 }  // namespace vdm

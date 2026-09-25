@@ -115,6 +115,7 @@ volatile bool valve_loop_stalled = false;
 static vdm::StallDetector valve_stall(TIMEOUT_VALVESTATE);
 
 volatile bool temp_refresh_request = false;
+volatile bool temp_gap_timeout = false;
 volatile bool protect_suspended = false;
 volatile bool protect_enforce = vdm::kProtectEnforce;
 // sstop of the valve in work; cleared when the valve state machine is back in A_IDLE
@@ -948,6 +949,8 @@ void valve_loop () {
                     valvestate = A_IDLE;
                   }
                   else if (!temp_refresh_request || ++gaptimer >= TIMEOUT_TEMPGAP) {
+                    // app_loop ends this period, the next pause comes 60 s later
+                    if (temp_refresh_request) temp_gap_timeout = true;
                     temp_command(TEMP_CMD_LOCK);
                     start_learn_stroke(valveindex, gap_dir);
                     valvestate = gap_next;
@@ -1074,8 +1077,13 @@ void valve_loop () {
                     // a fault or a pending request stays until a calibration clears it
                     if (svc_prev_status != VLV_STATE_IDLE) myvalvemots[valveindex].status = svc_prev_status;
                     else if (temp == M_RES_NOCURRENT) myvalvemots[valveindex].status = VLV_STATE_OPENCIR;
-                    else if (temp == M_RES_ERROR) myvalvemots[valveindex].status = VLV_STATE_FAILED;
+                    else if (temp == M_RES_ERROR) {
+                      myvalvemots[valveindex].status = VLV_STATE_FAILED;
+                      myvalvemots[valveindex].faultReason = (uint8_t) vdm::ValveFault::MoveTimeout;
+                    }
                     else myvalvemots[valveindex].status = VLV_STATE_IDLE;
+                    // the inrush limit stopped the motor at its start (fault 5, set by finish_move)
+                    if (temp == M_RES_ENDSTOP && endstop.inrushTrip()) myvalvemots[valveindex].status = VLV_STATE_FAILED;
                     valvestate = A_IDLE;
                     isr_counter = 0;
                   }

@@ -101,6 +101,7 @@ A_SVC1, A_SVC2, A_GAP };
 extern volatile enum ASTATE valvestate;
 extern volatile uint32_t valve_loop_ticks;     // incremented on every valve_loop run (watchdog heartbeat)
 extern volatile bool valve_loop_stalled;       // valve state machine stuck in one busy state (watchdog must starve)
+extern volatile bool temp_gap_timeout;         // valve_loop: the pause between two calibration strokes timed out
 extern volatile bool temp_refresh_request;     // main loop: a temperature cycle is due (pause between calibration strokes)
 extern volatile bool protect_suspended;        // main loop: the short and inrush limits are off until the next start
 extern volatile bool protect_enforce;          // short and inrush limits stop the motor (vdm::kProtectEnforce)

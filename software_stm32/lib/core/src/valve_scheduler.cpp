@@ -51,7 +51,9 @@ Decision ValveScheduler::next(const ValveView (&v)[kValveCount], const Scheduler
     if (step2Run_ < kFairnessRun) step2Run_++;
     return d;
   }
-  if (step3(v, d)) step2Run_ = 0;
+  // the run counts step-2 decisions in a row only
+  step2Run_ = 0;
+  step3(v, d);
   return d;
 }
 

@@ -147,9 +147,10 @@ void app_target_changed (uint16_t valve) {
 
 
 // svmov: 0 accepted, -1 invalid arguments, -2 valve state machine busy, -3 calibration pending
-// (the calibration would start right after the move and undo it)
+// (the calibration would start right after the move and undo it); safe mode moves no valve (S9.2)
 int16_t app_service_move (uint16_t valve, uint8_t dir, uint16_t counts, uint8_t maxmA) {
   if (valve >= ACTUATOR_COUNT) return -1;
+  if (sysstat_safe_mode()) return -2;
   if (app_learn_pending(valve, myvalvemots[valve].status, myvalvemots[valve].calibration)) return -3;
   // an accepted move also starts the hold (svcHold), a start the valve state machine refuses ends it
   return appsetservice(valve, dir, counts, maxmA);
@@ -222,14 +223,12 @@ void app_load_config (void) {
   if (eep_content.learnTimeS != learning_time) app_set_learntime(eep_content.learnTimeS);
 
   // lease timeout: block A or its copy in block B, else the default (app_restore takes the copy of
-  // a warm reset instead)
+  // a warm reset instead); the mirror of both is corrected by eeprom.cpp, not here
   const uint16_t lease = eeprom_lease_source() == vdm::kLeaseSourceDefault
     ? vdm::kLeaseTimeoutDefaultMin : vdm::sanitizeLeaseTimeout(eep_content.leaseTimeoutMin);
-  eep_content.leaseTimeoutMin = lease;
   app_lease.setTimeout(lease);
   for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
     app_failsafe[x] = vdm::sanitizeFailsafePct(eep_content.failsafePct[x]);
-    eep_content.failsafePct[x] = app_failsafe[x];
   }
 }
 
@@ -393,6 +392,10 @@ int16_t app_loop (void) {
   if (terminal_manual_active()) return 0;
 
   // a due temperature cycle pauses a calibration series between two strokes (S1)
+  if (temp_gap_timeout) {
+    temp_gap_timeout = false;
+    app_temp.holdTimedOut(millis());
+  }
   temp_refresh_request = app_temp.due(millis());
 
   // if valve machine is idle search for new tasks; no valve moves until the next command,

@@ -22,6 +22,9 @@ class TempRefresh {
   // while due: true until a cycle completes or kTempHoldMaxMs passed since the
   // first call of this hold; a hold that timed out comes again kTempRefreshMs later
   bool holdCommands(uint32_t nowMs);
+  // a hold kept by someone else (the pause between two calibration strokes) timed out: the next
+  // one comes kTempRefreshMs later
+  void holdTimedOut(uint32_t nowMs);
   // seconds since the last complete cycle (since start-up if none)
   uint32_t ageS(uint32_t nowMs) const { return (nowMs - lastCycleMs_) / 1000; }
 

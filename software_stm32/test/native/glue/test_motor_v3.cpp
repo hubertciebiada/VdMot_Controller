@@ -447,6 +447,30 @@ TEST_CASE("C-4: an enforced inrush trip fails the move at its start, the guard s
   CHECK(+myvalvemots[6].faultReason == 0);
 }
 
+TEST_CASE("C-4: an enforced inrush trip and a timeout of a service move fail the valve with their fault") {
+  sim::Rig rig;
+  startValves(rig);
+  protect_enforce = true;
+  place(rig, 5, 20);
+  rig.valve[5].inrushPeak_dmA = 2800;
+  rig.valve[5].inrushMs = 60;
+  REQUIRE(appsetservice(5, vdm::kDirOpen, 1000, 40) == 0);
+  rig.runMs(10);
+  REQUIRE(rig.runUntil(idle, 10000));
+  CHECK(+myvalvemots[5].status == VLV_STATE_FAILED);
+  CHECK(+myvalvemots[5].faultReason == (uint8_t) vdm::ValveFault::InrushTrip);
+  // no end stop within 120 s
+  place(rig, 7, 20);
+  rig.valve[7].stroke = 10000000;
+  rig.valve[7].pulsesPerMs = 0.05f;
+  REQUIRE(appsetservice(7, vdm::kDirOpen, SVMOV_COUNTS_MAX, 40) == 0);
+  rig.runMs(10);
+  REQUIRE(rig.runUntil(idle, 130000));
+  CHECK(last(7).stopReason != (uint8_t) vdm::StopReason::Aborted);
+  CHECK(+myvalvemots[7].status == VLV_STATE_FAILED);
+  CHECK(+myvalvemots[7].faultReason == (uint8_t) vdm::ValveFault::MoveTimeout);
+}
+
 TEST_CASE("C-4: an enforced inrush trip in a calibration stroke fails it without BLOCKS or counts") {
   sim::Rig rig;
   startValves(rig);
@@ -480,12 +504,15 @@ TEST_CASE("S1: a due temperature cycle pauses the calibration between the stroke
   CHECK(rig.ms - gapStart <= 3010);
   CHECK(stub::callsOf("temp_command").back() == "temp_command(2)");
   CHECK(+valvestate == A_LEARN3);
+  CHECK(temp_gap_timeout);
+  temp_gap_timeout = false;
   // the request ends: the next stroke starts at once
   REQUIRE(rig.runUntil([] { return valvestate == A_GAP; }, 30000));
   rig.runMs(100);
   temp_refresh_request = false;
   rig.runMs(20);
   CHECK(+valvestate == A_LEARN4);
+  CHECK_FALSE(temp_gap_timeout);
   REQUIRE(rig.runUntil([] { return myvalvemots[0].calibActive == 0 && valvestate == A_IDLE; }, 30000));
   CHECK(states(rig) == "5 6 17 7 17 8 9 10 11 1");
   CHECK(+myvalvemots[0].status == VLV_STATE_IDLE);

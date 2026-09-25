@@ -645,6 +645,10 @@ TEST_CASE("safe mode S9: no command to the valve state machine, presence tests a
   myvalvemots[1].target_position = 80;
   stub::sysstat.safeMode = true;
   CHECK(loopActions(1000).empty());
+  myvalvemots[2].status = VLV_STATE_IDLE;
+  myvalvemots[2].calibrated = 1;
+  CHECK(app_service_move(2, 0, 100, 20) == -2);
+  CHECK(stub::callsOf("appsetservice").empty());
   stub::sysstat.safeMode = false;
   CHECK(loopActions() == stub::Calls{"appsetaction(x, 0, 0, 0)"});
 }
@@ -674,6 +678,23 @@ TEST_CASE("temperature hold S1: no new motor command while a cycle is due, up to
   CHECK(loopActions().empty());
   fake::advanceMs(1);
   CHECK(loopActions() == stub::Calls{"appsetaction(o, 0, 20, 0)"});
+}
+
+TEST_CASE("temperature hold S1: a timed-out pause between calibration strokes ends the period") {
+  begin();
+  fake::advanceMs(61000);
+  app_loop();
+  CHECK(temp_refresh_request);
+  temp_gap_timeout = true;
+  app_loop();
+  CHECK_FALSE(temp_gap_timeout);
+  CHECK_FALSE(temp_refresh_request);
+  fake::advanceMs(59999);
+  app_loop();
+  CHECK_FALSE(temp_refresh_request);
+  fake::advanceMs(1);
+  app_loop();
+  CHECK(temp_refresh_request);
 }
 
 TEST_CASE("stdet W2-7: every valve is tested again and a present one calibrates fully") {
@@ -777,11 +798,12 @@ TEST_CASE("app_load_config: lease timeout, failsafe positions and learn time fro
   CHECK(app_failsafe_pct(0) == 0);
   CHECK(app_failsafe_pct(10) == 100);
   CHECK(app_failsafe_pct(11) == 50);
-  CHECK(+eep_content.failsafePct[11] == 50);
+  // the mirror is corrected by eeprom.cpp only
+  CHECK(+eep_content.failsafePct[11] == 101);
   eep_content.leaseTimeoutMin = 3;
   app_load_config();
   CHECK(app_lease_timeout() == 60);
-  CHECK(eep_content.leaseTimeoutMin == 60);
+  CHECK(eep_content.leaseTimeoutMin == 3);
   stub::eeprom.leaseSource = vdm::kLeaseSourceSafety;
   eep_content.leaseTimeoutMin = 0;
   app_load_config();

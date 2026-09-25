@@ -471,6 +471,21 @@ TEST_CASE("ValveScheduler: fairness looks at step 3 first only while it has some
   CHECK(next(s, v) == "Learn 4");
 }
 
+TEST_CASE("ValveScheduler: a decision without step-2 work ends the run of step-2 decisions (C-3)") {
+  Views v;
+  idleAll(v);
+  v[0].drive = 70;
+  ValveScheduler s;
+  for (int i = 0; i < 11; i++) CHECK(next(s, v) == "Open 0 20");
+  v[0].drive = 50;
+  CHECK(next(s, v) == "None");
+  v[0].drive = 70;
+  v[4].status = vdm::kStPresent;
+  v[4].forcedLearn = true;
+  for (int i = 0; i < 12; i++) CHECK(next(s, v) == "Open 0 20");
+  CHECK(next(s, v) == "Learn 4");
+}
+
 TEST_CASE("ValveScheduler: blocked valve at 28 % after its failsafe move met the end stop (C-1)") {
   Views v;
   idleAll(v);

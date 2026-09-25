@@ -37,6 +37,20 @@ TEST_CASE("TempRefresh: a hold ends after 3000 ms and comes again 60 s later") {
   CHECK_FALSE(t.holdCommands(126000));
 }
 
+TEST_CASE("TempRefresh: a hold that timed out elsewhere ends the period") {
+  TempRefresh t;
+  CHECK(t.due(61000));
+  t.holdTimedOut(64000);
+  CHECK_FALSE(t.due(64000));
+  CHECK_FALSE(t.due(123999));
+  CHECK(t.due(124000));
+  CHECK(t.holdCommands(124000));
+  t.holdTimedOut(125000);
+  CHECK_FALSE(t.holdCommands(125000));
+  CHECK(t.holdCommands(185000));
+  CHECK(t.holdCommands(187999));
+}
+
 TEST_CASE("TempRefresh: the hold time starts with the first hold, not with the due time") {
   TempRefresh t;
   CHECK(t.due(70000));
