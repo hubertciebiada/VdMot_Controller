@@ -9,8 +9,10 @@
 
 #include "vdm/config.h"
 #include "vdm/event_log.h"
+#include "vdm/failsafe.h"
 #include "vdm/json_writer.h"
 #include "vdm/link_policy.h"
+#include "vdm/net_policy.h"
 #include "vdm/stm_flasher.h"
 #include "vdm/valve_model.h"
 #include "vdm/version.h"
@@ -65,6 +67,22 @@ struct StatusSnapshot {
   uint32_t nextCalibSlot = 0;       // yyyymmdd, 0 = none
   bool authEnabled = false;
   uint32_t lastEventSeq = 0;
+  // Added in 2.1.
+  const char* station = "";         // config station name (root "station", first member)
+  bool netTrialActive = false;      // net.trial: {"remainS":n} or null
+  uint32_t netTrialRemainS = 0;
+  char mqttClientId[24] = {0};      // mqtt.clientId (mqtt::status())
+  HaStatus mqttHaStatus = HaStatus::Unknown;
+  StmSupport stmSupport = StmSupport::Unknown;  // stm.support
+  LeaseStatus lease;                // stm.lease; null while lease.mode is None
+  bool haveLearnTime = false;       // stm.learnTime seconds, else null
+  uint32_t learnTimeS = 0;
+  int64_t nextCalibEpoch = 0;       // calibration.next local ISO time, 0 = null
+  uint8_t configSource = 0;         // config.source: stored, imported, defaults,
+                                    // defaults_after_error, backup (storage LoadSource)
+  uint32_t configRepairs = 0;       // config.repairs (RepairBit mask)
+  bool configNewerSchema = false;
+  bool importReport = false;        // root "importReport"
 };
 // {"esp":{"version":..,"build":..,"uptime":..,"resetReason":"..","boots":..,
 //  "heap":{"free":..,"min":..,"largest":..},"flash":{"used":..,"size":..}},
@@ -93,6 +111,7 @@ struct ValveView {
   const char* sensorName[2] = {"", ""};
   bool sensorValid[2] = {false, false};
   int32_t sensorTenths[2] = {0, 0};   // raw + slot offset
+  LocalTime calibrationEnd;           // last calibration seen by MQTT; null when !valid
 };
 // {"valves":[{"idx":1..12,"name":"..","active":..,"known":..,"state":<n>,
 //  "stateKey":"idle","calibrating":..,"pos":..,"target":..|null,
@@ -160,6 +179,55 @@ bool writeMotorJson(JsonWriter& jw, const MotorChars& m, uint16_t learnMovements
 // Uniform error body: {"error":"<code>","detail":"<text>"} (HTTP 4xx/5xx).
 bool writeErrorJson(JsonWriter& jw, const char* code, const char* detail);
 
+// ---------------------------------------------------------------- health
+
+constexpr uint8_t kHealthTaskMax = 8;
+struct TaskStackInfo {
+  const char* name = "";
+  uint32_t stackBytes = 0;
+  uint32_t minFreeBytes = 0;
+};
+struct NetHealthInfo {
+  bool ipUp = false, reachable = false, proven = false, pingArmed = false;
+  NetEvidence evidence = NetEvidence::None;
+  uint32_t evidenceAgeS = UINT32_MAX;  // UINT32_MAX = none
+  uint16_t ifaceRestarts = 0;
+  bool trialActive = false;
+  uint32_t trialRemainingS = 0;
+};
+struct OtaHealthInfo {
+  bool pending = false, stmRequired = false, netOk = false, httpOk = false, stmOk = false;
+  uint32_t healthyForS = 0, remainingS = 0;
+};
+struct LogHealthInfo {
+  bool persist = false;
+  uint32_t backlog = 0, flushes = 0, lost = 0, failures = 0;
+  bool flushed = false;  // a flush was attempted since boot
+  uint32_t lastFlushAgeS = 0;
+};
+// Everything GET /api/health shows (app::readHealth()).
+struct HealthSnapshot {
+  const char* version = "";
+  uint32_t uptimeS = 0;
+  uint32_t freeHeap = 0, minFreeHeap = 0, largestFreeBlock = 0, minLargestFreeBlock = 0;
+  TaskStackInfo tasks[kHealthTaskMax];
+  uint8_t taskCount = 0;
+  NetHealthInfo net;
+  OtaHealthInfo ota;
+  LogHealthInfo log;
+};
+// {"ok":true,"version":"..","uptime":..,
+//  "heap":{"free":..,"min":..,"largest":..,"minLargest":..},
+//  "tasks":[{"name":"stm","stack":..,"minFree":..},...],
+//  "net":{"ip":..,"reachable":..,"proven":..,"pingArmed":..,"evidence":"ping"|null,
+//         "evidenceAgeS":n|null,"ifaceRestarts":..,"trial":null|{"remainS":n}},
+//  "ota":null|{"stmRequired":..,"checks":{"net":..,"http":..,"stm":..},
+//              "healthyForS":..,"remainS":..},
+//  "log":{"persist":..,"backlog":..,"flushes":..,"lastFlushAgeS":n|null,"lost":..,
+//         "failures":..}}
+// Returns jw.complete().
+bool writeHealthJson(JsonWriter& jw, const HealthSnapshot& s);
+
 // ---------------------------------------------------------------- routing
 
 enum class HttpMethod : uint8_t { Get, Post, Delete, Other };
@@ -201,6 +269,16 @@ enum class ApiRoute : uint8_t {
   MqttReconnect,     // POST /api/mqtt/reconnect
   MqttDiscovery,     // POST /api/mqtt/discovery           {"action":"publish|delete|republish"}
   LogDownload,       // GET  /api/log                      current + previous log file, text/plain
+  Health,            // GET  /api/health                   public, also with protectRead
+  ValveStop,         // POST /api/valves/{n}/stop
+  StopAll,           // POST /api/valves/stop
+  StmSafeModeLeave,  // POST /api/stm/safe-mode/leave
+  NetConfirm,        // POST /api/system/network/confirm   keep the settings on trial
+  NetRevert,         // POST /api/system/network/revert
+  Files,             // GET  /api/files
+  FileDelete,        // DELETE /api/files?path=
+  ImportReport,      // GET  /api/import-report
+  ImportReportDismiss,  // DELETE /api/import-report
 };
 
 struct RouteMatch {
@@ -212,10 +290,11 @@ struct RouteMatch {
 
 // Matches "/api/..." (no query string; a trailing '/' is not accepted).
 // {n} must be 1..12 without leading zeros, else NotFound. needsAuth is false
-// only for the read-only GET routes (Status, Valves, ValveProfile, Sensors,
-// Events, Motor, StmFlashStatus; DESIGN.md "HTTP API" auth column "read")
-// and only when protectRead is false. MethodNotAllowed keeps needsAuth true.
-// A path containing NUL bytes is NotFound.
+// for Health, and for the read-only GET routes (Status, Valves,
+// ValveProfile, Sensors, Events, Motor, StmFlashStatus, ImportReport;
+// DESIGN.md "HTTP API" auth column "read") when protectRead is false.
+// MethodNotAllowed keeps needsAuth true. A path containing NUL bytes is
+// NotFound.
 RouteMatch matchApiRoute(HttpMethod m, const char* path, size_t len, bool protectRead);
 
 }  // namespace vdm

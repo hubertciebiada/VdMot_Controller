@@ -661,6 +661,15 @@ TEST_CASE("api: every route, method and auth flag") {
       {P, "/api/mqtt/reconnect", ApiRoute::MqttReconnect, false},
       {P, "/api/mqtt/discovery", ApiRoute::MqttDiscovery, false},
       {G, "/api/log", ApiRoute::LogDownload, false},
+      {P, "/api/valves/12/stop", ApiRoute::ValveStop, false},
+      {P, "/api/valves/stop", ApiRoute::StopAll, false},
+      {P, "/api/stm/safe-mode/leave", ApiRoute::StmSafeModeLeave, false},
+      {P, "/api/system/network/confirm", ApiRoute::NetConfirm, false},
+      {P, "/api/system/network/revert", ApiRoute::NetRevert, false},
+      {G, "/api/files", ApiRoute::Files, false},
+      {D, "/api/files", ApiRoute::FileDelete, false},
+      {G, "/api/import-report", ApiRoute::ImportReport, true},
+      {D, "/api/import-report", ApiRoute::ImportReportDismiss, false},
   };
   for (const Case& k : cases) {
     CAPTURE(k.path);
@@ -681,6 +690,20 @@ TEST_CASE("api: every route, method and auth flag") {
       CHECK(x.needsAuth);
     }
   }
+  // The health check is public, also with protectRead.
+  for (bool protectRead : {false, true}) {
+    CAPTURE(protectRead);
+    const RouteMatch h = route(G, "/api/health", protectRead);
+    CHECK(h.route == ApiRoute::Health);
+    CHECK_FALSE(h.needsAuth);
+    const RouteMatch x = route(P, "/api/health", protectRead);
+    CHECK(x.route == ApiRoute::MethodNotAllowed);
+    CHECK(x.needsAuth);
+  }
+  CHECK(route(P, "/api/valves/3/stop").valve == 2);
+  CHECK(route(P, "/api/valves/13/stop").route == ApiRoute::NotFound);
+  CHECK(route(P, "/api/stm/safe-mode").route == ApiRoute::NotFound);
+  CHECK(route(P, "/api/system/network").route == ApiRoute::NotFound);
 }
 
 TEST_CASE("api: route parameters") {
