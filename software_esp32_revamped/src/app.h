@@ -9,6 +9,7 @@
 #include <vdm/link_policy.h>
 #include <vdm/stm_codec.h>
 #include <vdm/stm_flasher.h>
+#include <vdm/stm_types.h>
 #include <vdm/valve_model.h>
 #include <vdm/version.h>
 
@@ -41,47 +42,9 @@ uint32_t uptimeS();
 
 // ---------------------------------------------------------------- commands
 
-// Commands into the STM task (web and MQTT never touch the UART or the
-// model directly). Validation happens before submit(): the STM task only
-// re-checks invariants the core builders enforce anyway.
-enum class CommandType : uint8_t {
-  SetTarget,          // valve, pos, source
-  Calibrate,          // valve or kAllValves
-  Assembly,           // valve or kAllValves
-  Detect,             // stdet 255
-  ScanSensors,        // stons, then lists
-  SetValveSensors,    // valve, ids[2]; followed by masns + gvlon 255
-  SetMotorSettings,   // motor / learnMovements / breakaway (v2), each if its has* flag
-  ServiceMove,        // valve, dir, counts, maxmA (v2)
-  RequestProfile,     // valve (v2)
-  ResetStm,           // NRST pulse by the user
-  StartFlash,         // image, blank, force
-  AbortFlash,
-  ConfigChanged,      // active mask / sensor slots changed: re-read config
-};
-
-struct Command {
-  CommandType type = CommandType::ConfigChanged;
-  uint8_t valve = vdm::kNoValve;
-  uint8_t pos = 0;
-  vdm::TargetSource source = vdm::TargetSource::None;
-  vdm::OneWireId ids[2];
-  // SetMotorSettings: one command, so a request is queued completely or not
-  // at all even while other tasks submit concurrently.
-  bool hasMotor = false;
-  vdm::MotorChars motor;
-  bool hasLearnMovements = false;
-  uint16_t learnMovements = 0;
-  bool hasBreakaway = false;
-  vdm::Breakaway breakaway;
-  vdm::MoveDir dir = vdm::MoveDir::Open;
-  uint16_t counts = 0;
-  uint8_t maxmA = 0;
-  char image[32] = {0};   // LittleFS name below /stm/
-  bool blank = false;
-  bool force = false;
-  bool scheduled = false;  // Calibrate: fired by the calibration schedule
-};
+// Commands into the STM task (vdm/stm_types.h).
+using CommandType = vdm::StmCommandType;
+using Command = vdm::StmCommand;
 
 // Depth of the FreeRTOS queue into the STM task.
 constexpr size_t kCommandQueueDepth = 16;
@@ -95,39 +58,8 @@ bool receive(Command& out);
 
 // ---------------------------------------------------------------- snapshot
 
-// Everything other tasks may know about the STM, published by the STM task
-// after every change (copy under a mutex, never references into the model).
-struct StmSnapshot {
-  uint32_t revision = 0;
-  uint32_t takenMs = 0;
-  vdm::ValveState valves[vdm::kValveCount];
-  vdm::TempReading temps[vdm::kTempSlotCount];
-  uint8_t tempCount = 0;
-  vdm::VoltReading volts[vdm::kVoltSlotCount];
-  uint8_t voltCount = 0;
-  vdm::LinkState link = vdm::LinkState::Unknown;
-  vdm::LinkStats linkStats;
-  uint8_t proto = 0;
-  vdm::Version version;
-  uint32_t build = 0;
-  uint16_t hwId = 0;
-  bool compatible = true;
-  bool haveMotor = false;
-  vdm::MotorChars motor;
-  uint16_t learnMovements = 0;
-  bool haveBreakaway = false;
-  vdm::Breakaway breakaway;
-  bool haveStatus = false;
-  vdm::StmStatus status;
-  // Link Up, re-sync finished and the 30 s sensor grace over: valve sensor
-  // assignments and temperatures reflect the STM (HA first-run cleanup).
-  bool sensorsSettled = false;
-  uint32_t lineOverflows = 0;
-  uint32_t lineMalformed = 0;
-  vdm::FlashStatus flash;
-  char flashImage[32] = {0};
-  vdm::Profile profiles[vdm::kValveCount];  // last gprof per valve (count 0 = none)
-};
+// The STM snapshot published by the STM task (vdm/stm_types.h).
+using StmSnapshot = vdm::StmSnapshot;
 
 // Copies the latest snapshot (~7 KB: callers keep `out` in static storage,
 // never on a task stack).
