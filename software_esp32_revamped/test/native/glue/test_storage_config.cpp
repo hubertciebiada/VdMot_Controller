@@ -102,8 +102,8 @@ TEST_CASE("storage load: cfg and cfgx are used, no event, the backup follows onc
   CHECK_FALSE(fakes::fs().exists("/sys/cfg.bak.tmp"));
   CHECK_FALSE(fakes::fs().exists("/sys/cfgx.bak.tmp"));
   CHECK(fakes::journalOf("fs.rename") ==
-        std::vector<std::string>{"fs.rename /sys/cfgx.bak.tmp /sys/cfgx.bak",
-                                 "fs.rename /sys/cfg.bak.tmp /sys/cfg.bak"});
+        std::vector<std::string>{"fs.rename /sys/cfg.bak.tmp /sys/cfg.bak",
+                                 "fs.rename /sys/cfgx.bak.tmp /sys/cfgx.bak"});
   // Nothing pending any more.
   const int writes = fakes::fs().writeOpens;
   storage::service();
