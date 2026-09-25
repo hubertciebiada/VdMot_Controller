@@ -1,0 +1,14 @@
+[
+  {"line": 35, "col": 19, "original": "0", "replacement": "1", "text": "uint32_t ip = 0;", "reason": "dead initial value: ip is compared only after parseIpv4() succeeded and assigned it"},
+  {"line": 44, "col": 28, "original": "<", "replacement": "<=", "text": "for (size_t pos = 0; pos < len;) {", "reason": "at pos == len the entry is empty (end == pos) and is skipped by e > b; the next pos is past len"},
+  {"line": 48, "col": 14, "original": "<", "replacement": "<=", "text": "while (b < e && list[b] == ' ') ++b;", "reason": "at b == e, list[b] is the ',' or the terminating NUL that ended the entry, never ' '"},
+  {"line": 50, "col": 11, "original": ">", "replacement": ">=", "text": "if (e > b && entryMatches(list + b, e - b, host, hostLen, hostIsIp, hostIp)) return true;", "reason": "an empty entry never matches: it is digitsAndDots, parseIpv4() of an empty string fails, and the host is never empty here"},
+  {"line": 57, "col": 14, "original": ">=", "replacement": ">", "text": "return len >= n && equalsNoCase(s, n, prefix, n);", "reason": "len == n means the origin is the bare scheme: accepted, it leaves an empty host that originAllowed() refuses; refused, the other scheme and then the final return refuse it too"},
+  {"line": 75, "col": 13, "original": "0", "replacement": "1", "text": "if (len > 0 && host[len - 1] == '.') --len;", "reason": "len == 1 differs only for the host \".\": stripped it is empty and refused; kept it is digitsAndDots and parseIpv4() refuses it"},
+  {"line": 79, "col": 19, "original": "0", "replacement": "1", "text": "uint32_t ip = 0;", "reason": "dead initial value: ip is read only after parseIpv4() succeeded and assigned it"},
+  {"line": 92, "col": 49, "original": "0", "replacement": "1", "text": "return listMatches(allowed, host, len, false, 0);", "reason": "listMatches() reads hostIp only when hostIsIp is true, and it is false here"},
+  {"line": 97, "col": 17, "original": "0", "replacement": "1", "text": "size_t skip = 0;", "reason": "dead initial value: every branch assigns skip or returns"},
+  {"line": 155, "col": 15, "original": ">", "replacement": ">=", "text": "if (echoLen > kGuardEchoMax) echoLen = kGuardEchoMax;", "reason": "at echoLen == kGuardEchoMax it is set to the same value"},
+  {"line": 156, "col": 11, "original": "0", "replacement": "1", "text": "int n = 0;", "reason": "dead initial value: every case of the switch assigns n or returns"},
+  {"line": 159, "col": 15, "original": "16", "replacement": "17", "text": "char ip[16];", "reason": "the longest dotted quad \"255.255.255.255\" needs 16 bytes: one more is never used"}
+]
