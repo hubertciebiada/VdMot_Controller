@@ -89,7 +89,7 @@ void loop() {
   if (bootstate) {
     setup_system() ;
 
-    while(1) {
+    for (;;) {
       loop_system();
     }
   }
@@ -118,7 +118,7 @@ void setup_system() {
 
   // power enable for valves
   pinMode(POWER_ENA, OUTPUT_OPEN_DRAIN);
-  digitalWrite(POWER_ENA, 1);   // high to disable valve PSU
+  digitalWrite(POWER_ENA, HIGH);   // high to disable valve PSU
 
   // status led
   pinMode(LED, OUTPUT);
@@ -175,17 +175,16 @@ void setup_system() {
   #endif
 
   // hardware timer for motor loop
-  if (ITimer1.attachInterruptInterval(10 * 1000, valve_loop))
-  {
-    #ifdef motDebug 
-        COMM_DBG.print(F("Starting ITimer1 OK, millis() = ")); COMM_DBG.println(millis());
-    #endif
-  }
-  else {
-    #ifdef motDebug
+  const bool timerStarted = ITimer1.attachInterruptInterval(10 * 1000, valve_loop);
+  #ifdef motDebug
+    if (timerStarted) {
+      COMM_DBG.print(F("Starting ITimer1 OK, millis() = ")); COMM_DBG.println(millis());
+    }
+    else {
       COMM_DBG.println(F("Can't set ITimer1. Select another freq. or timer"));
-    #endif
-  }
+    }
+  #endif
+  (void)timerStarted;
 }
 
 
@@ -196,7 +195,7 @@ void loop_system() {
   static uint32_t loop_100ms = 0;
   static uint32_t loop_1000ms = 0;
 
-  static uint8_t buttontest = 0;
+  static bool buttontest = false;
   static uint8_t ledTimer = 0;
   static uint32_t lastValveTicks = 0;
   static uint32_t last1sTick = 0;       // uptime (s) of the last app_1s_tick()
@@ -240,12 +239,12 @@ void loop_system() {
     Terminal_Serve();
     
     // button test
-    if (digitalRead(BUTTON) > 0 && buttontest == 0) 
+    if (digitalRead(BUTTON) > 0 && !buttontest) 
     {
-      buttontest = 1;
+      buttontest = true;
       COMM_DBG.println("Button pressed");
     }
-    else buttontest = 0;
+    else buttontest = false;
       
   }
 
