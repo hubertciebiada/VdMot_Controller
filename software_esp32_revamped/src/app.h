@@ -13,6 +13,10 @@
 #include <vdm/valve_model.h>
 #include <vdm/version.h>
 
+namespace vdm {
+struct HealthSnapshot;  // vdm/json_api.h
+}  // namespace vdm
+
 namespace app {
 
 // ---------------------------------------------------------------- tasks
@@ -70,9 +74,19 @@ bool stmFlashActive();   // flasher running (UART owned by it)
 // STM task, right after the flasher started (the snapshot follows later).
 void markStmFlashActive();
 uint32_t stmSnapshotRevision();  // changes whenever a new snapshot is published
-uint8_t stmProtocol();   // 0 unknown, 1, 2
+uint8_t stmProtocol();   // 0 unknown, 1..3
+// Support level of the running STM firmware (StmSnapshot::support).
+vdm::StmSupport stmSupport();
 // STM task only.
 void publishStmSnapshot(const StmSnapshot& in);
+
+// ---------------------------------------------------------------- restart
+
+// The STM EEPROM save before an ESP restart: a restart asks for it
+// (Waiting), the STM task reports the outcome.
+void requestStmSave();
+vdm::StmSaveState stmSaveState();
+void setStmSaveState(vdm::StmSaveState s);
 
 // ---------------------------------------------------------------- calibration
 
@@ -81,8 +95,15 @@ void publishStmSnapshot(const StmSnapshot& in);
 struct CalibInfo {
   int64_t lastScheduledEpoch = 0;  // vdmrev/lastCal
   uint32_t nextSlot = 0;           // yyyymmdd, 0 = none / no valid time
+  int64_t nextEpoch = 0;           // the next slot at calib.hour:calib.minute local time, 0 = none
 };
 CalibInfo calibInfo();
 void setCalibInfo(const CalibInfo& c);
+
+// ---------------------------------------------------------------- health
+
+// Everything GET /api/health shows (version, uptime, heap, tasks, network,
+// OTA, log).
+void readHealth(vdm::HealthSnapshot& out);
 
 }  // namespace app

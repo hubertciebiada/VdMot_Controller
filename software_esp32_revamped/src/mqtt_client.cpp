@@ -1008,6 +1008,12 @@ Status status() {
   return s;
 }
 
+// No regulator watch yet: mode Off reads as a live regulator, so no
+// failsafe starts because of it.
+vdm::RegulatorInput regulatorState() { return vdm::RegulatorInput{}; }
+
+bool calibrationEnd(uint8_t, vdm::LocalTime&) { return false; }
+
 void requestReconnect() { gReconnectRequested = true; }
 
 void requestDiscovery(DiscoveryAction a) {

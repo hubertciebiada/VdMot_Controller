@@ -217,7 +217,7 @@ void checkTimeSync(uint32_t nowMs) {
 
 }  // namespace
 
-void begin(const vdm::Config& cfg) {
+void begin(vdm::Config& cfg) {
   gCfg = cfg;
   // DHCP/mDNS need a host name; the station name may hold spaces and UTF-8.
   vdm::buildHostname(cfg.station, gHostname, sizeof gHostname);
@@ -241,7 +241,7 @@ void begin(const vdm::Config& cfg) {
   gClockRefMs = millis();
 }
 
-void service(uint32_t nowMs) {
+void service(uint32_t nowMs, bool) {
   refreshInfo(nowMs);
   checkTimeSync(nowMs);
   const bool eth = ethUp();
@@ -293,6 +293,26 @@ Info info() {
   portEXIT_CRITICAL(&gMux);
   return i;
 }
+
+vdm::NetHealthInfo health(uint32_t) {
+  vdm::NetHealthInfo h;
+  h.ipUp = isUp();
+  h.reachable = h.ipUp;
+  return h;
+}
+
+bool otaNetOk() { return isUp(); }
+
+const char* hostname() { return gHostname; }
+
+void noteInboundHttp(uint32_t) {}
+
+// No network trial yet: nothing to confirm or revert.
+bool requestTrialConfirm() { return false; }
+
+bool requestTrialRevert() { return false; }
+
+TrialInfo trialInfo() { return TrialInfo{}; }
 
 vdm::LocalTime localTime() {
   vdm::LocalTime t;

@@ -14,4 +14,8 @@ void begin();
 // App task, every second: scheduled calibration (evaluated every 10 s).
 void service(uint32_t nowMs);
 
+// App task, before an ESP restart (not for a factory reset): writes what
+// must survive the restart to NVS now.
+void flushForRestart();
+
 }  // namespace stm_service

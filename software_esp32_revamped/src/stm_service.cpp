@@ -76,4 +76,7 @@ void service(uint32_t nowMs) {
   calibrationTick(nowMs);
 }
 
+// Nothing is kept in RAM only yet.
+void flushForRestart() {}
+
 }  // namespace stm_service

@@ -24,18 +24,38 @@ struct Info {
 // Starts the interfaces per config (iface Auto: ETH and, if an SSID is set,
 // WiFi; the first to get an IP wins, WiFi is stopped when ETH gets an IP and
 // restarted when ETH loses its link for > 30 s). Also starts SNTP when
-// ntpServer != "" and sets TZ.
-void begin(const vdm::Config& cfg);
+// ntpServer != "" and sets TZ. May put back the previous network settings
+// into `cfg` (an interrupted network trial).
+void begin(vdm::Config& cfg);
 
 // App task, every second: state/IP refresh (NetUp/NetDown events), WiFi as
 // fallback after 30 s without Ethernet IP (Auto) with reconnect back-off
 // 5 s .. 60 s, WiFi off again once Ethernet has an IP, mDNS announce,
 // NetWatchdog (legacy netConnTO, wait growing per restart of one outage)
-// -> ota::requestRestart(2).
-void service(uint32_t nowMs);
+// -> ota::requestRestart(2). mqttConnected: the MQTT session is up (proof
+// that the network works end to end).
+void service(uint32_t nowMs, bool mqttConnected);
 
 bool isUp();
 Info info();
+// Reachability and trial state for /api/health.
+vdm::NetHealthInfo health(uint32_t nowMs);
+// The network check of the OTA validator.
+bool otaNetOk();
+// Host name in use (from the station name).
+const char* hostname();
+// A request from `remoteIp` reached the web server (evidence of a working
+// network; loopback and the own address are ignored).
+void noteInboundHttp(uint32_t remoteIp);
+
+// Network trial: true when a trial runs (acted on in the next service()).
+bool requestTrialConfirm();
+bool requestTrialRevert();
+struct TrialInfo {
+  bool active = false;
+  uint32_t remainS = 0;
+};
+TrialInfo trialInfo();
 
 // Local time; valid only after SNTP sync (year >= 2020).
 vdm::LocalTime localTime();

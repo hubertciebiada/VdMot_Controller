@@ -226,6 +226,17 @@ void service(bool netUp) {
   }
 }
 
+void flush() { service(false); }
+
+void requestFlush() {}
+
+vdm::LogHealthInfo stats(uint32_t) {
+  vdm::LogHealthInfo s;
+  Lock lock;
+  s.persist = gPersist;
+  return s;
+}
+
 void debug(const char* fmt, ...) {
 #ifdef VDM_DEV_BUILD
   char buf[160];

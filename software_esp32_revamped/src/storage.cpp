@@ -21,6 +21,10 @@ namespace {
 bool gFsReady = false;
 Preferences gPrefs;
 bool gPrefsOpen = false;
+LoadSource gBootSource = LoadSource::Defaults;
+// Written once in setup(), before the other tasks start.
+LoadDetails& gBootDetails = bootAlloc<LoadDetails>();
+volatile bool gSavedSinceBoot = false;
 
 StaticSemaphore_t gCfgMutexStorage;
 SemaphoreHandle_t gCfgMutex = nullptr;
@@ -158,6 +162,30 @@ struct FsLock : Lock {
 bool saveBlobLocked(const vdm::Config& c) {
   const size_t n = vdm::encodeConfig(c, gBlob.data(), sizeof gBlob.items);
   return n > 0 && openPrefs() && gPrefs.putBytes(kKeyConfig, gBlob.data(), n) == n;
+}
+
+// A stored blob of at most `cap` bytes; 0 when it is absent or larger.
+size_t loadBytesLocked(const char* key, uint8_t* out, size_t cap) {
+  if (out == nullptr || !openPrefs()) return 0;
+  const size_t len = gPrefs.getBytesLength(key);
+  if (len == 0 || len > cap) return 0;
+  return gPrefs.getBytes(key, out, len) == len ? len : 0;
+}
+
+bool saveBytesLocked(const char* key, const uint8_t* data, size_t len) {
+  return data != nullptr && len > 0 && openPrefs() && gPrefs.putBytes(key, data, len) == len;
+}
+
+// u8 flag: 1 = set, absent = clear.
+bool flagLocked(const char* key) { return openPrefs() && gPrefs.getUChar(key, 0) == 1; }
+
+void setFlagLocked(const char* key, bool on) {
+  if (!openPrefs()) return;
+  if (on) {
+    gPrefs.putUChar(key, 1);
+  } else {
+    gPrefs.remove(key);  // false when it was not there: nothing to do
+  }
 }
 
 // ---------------------------------------------------------------- images
@@ -342,6 +370,7 @@ void serviceScan() {
   gImages[i].check = err;
   gImages[i].crc = info.crc;
   vdm::copyString(gImages[i].version, sizeof gImages[i].version, info.version);
+  vdm::copyString(gImages[i].hwTag, sizeof gImages[i].hwTag, info.hwTag);
 }
 
 }  // namespace
@@ -402,16 +431,24 @@ LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, uint8_t& erro
 
 }  // namespace
 
-LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode) {
-  const LoadSource src = loadStored(out, report, errorCode);
+LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, LoadDetails& details) {
+  const LoadSource src = loadStored(out, report, details.errorCode);
   if (src == LoadSource::Imported) {
     logger::log(vdm::EventCode::ConfigImported, vdm::kNoValve, report.imported, report.rejected,
                 report.firstRejected);
   } else if (src == LoadSource::DefaultsAfterError) {
-    logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, errorCode);
+    logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, details.errorCode);
   }
+  gBootSource = src;
+  gBootDetails = details;
   return src;
 }
+
+LoadSource bootLoadSource() { return gBootSource; }
+
+const LoadDetails& bootLoadDetails() { return gBootDetails; }
+
+bool configSavedSinceBoot() { return gSavedSinceBoot; }
 
 void setActiveConfig(const vdm::Config& c) {
   CfgLock lock;
@@ -433,6 +470,7 @@ bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {
   if (ok) {
     gActive = c;
     gRevision = gRevision + 1;
+    gSavedSinceBoot = true;
   } else if (path && pathCap) {
     vdm::copyString(path, pathCap, "nvs");
   }
@@ -442,7 +480,10 @@ bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {
 bool factoryReset() {
   CfgLock lock;
   if (!openPrefs()) return false;
+  // The latch must survive: the pin is still set and must not reset again.
+  const bool latched = flagLocked(kKeyFactoryLatch);
   const bool ok = gPrefs.clear();
+  setFlagLocked(kKeyFactoryLatch, latched);
   return gPrefs.putUChar(kKeyImported, 1) == 1 && ok;
 }
 
@@ -485,6 +526,89 @@ void setHaCleanupDone() {
   CfgLock lock;
   if (openPrefs()) gPrefs.putUChar(kKeyHaCleanup, 1);
 }
+
+bool saveTargets(const uint8_t* data, size_t len) {
+  CfgLock lock;
+  return saveBytesLocked(kKeyTargets, data, len);
+}
+
+size_t loadTargets(uint8_t* out, size_t cap) {
+  CfgLock lock;
+  return loadBytesLocked(kKeyTargets, out, cap);
+}
+
+size_t loadNetTrialBlob(uint8_t* out, size_t cap) {
+  CfgLock lock;
+  return loadBytesLocked(kKeyNetTrial, out, cap);
+}
+
+bool saveNetTrialBlob(const uint8_t* data, size_t len) {
+  CfgLock lock;
+  return saveBytesLocked(kKeyNetTrial, data, len);
+}
+
+void clearNetTrial() {
+  CfgLock lock;
+  if (openPrefs()) gPrefs.remove(kKeyNetTrial);
+}
+
+bool factoryLatched() {
+  CfgLock lock;
+  return flagLocked(kKeyFactoryLatch);
+}
+
+void setFactoryLatched(bool on) {
+  CfgLock lock;
+  setFlagLocked(kKeyFactoryLatch, on);
+}
+
+bool otaStmRequired() {
+  CfgLock lock;
+  return flagLocked(kKeyOtaStm);
+}
+
+void setOtaStmRequired(bool on) {
+  CfgLock lock;
+  setFlagLocked(kKeyOtaStm, on);
+}
+
+void clearOtaStmRequired() { setOtaStmRequired(false); }
+
+uint8_t haLayout() {
+  CfgLock lock;
+  return openPrefs() ? gPrefs.getUChar(kKeyHaLayout, 0) : 0;
+}
+
+void setHaLayout(uint8_t layout) {
+  CfgLock lock;
+  if (openPrefs()) gPrefs.putUChar(kKeyHaLayout, layout);
+}
+
+// ---------------------------------------------------------------- files
+
+// The import report and the file list are not kept yet: nothing to show,
+// nothing to delete.
+bool writeImportReport(const vdm::ImportReport&) { return false; }
+
+bool hasImportReport() { return false; }
+
+bool dismissImportReport() { return false; }
+
+size_t listFiles(vdm::FileEntry*, size_t, bool& truncated) {
+  truncated = false;
+  return 0;
+}
+
+FileResult deleteFile(const char*) { return FileResult::NotFound; }
+
+uint32_t removeLegacyImages(uint32_t& kib) {
+  kib = 0;
+  return 0;
+}
+
+uint32_t fsTotal() { return gFsReady ? static_cast<uint32_t>(LittleFS.totalBytes()) : 0; }
+
+uint32_t fsUsed() { return gFsReady ? static_cast<uint32_t>(LittleFS.usedBytes()) : 0; }
 
 // ---------------------------------------------------------------- images
 

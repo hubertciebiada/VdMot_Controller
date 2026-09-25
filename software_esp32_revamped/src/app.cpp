@@ -12,6 +12,7 @@
 
 #include <vdm/config.h>
 #include <vdm/event_log.h>
+#include <vdm/json_api.h>
 
 #include "board.h"
 #include "boot_alloc.h"
@@ -39,6 +40,8 @@ volatile vdm::LinkState gLinkState = vdm::LinkState::Unknown;
 volatile bool gFlashActive = false;
 volatile uint8_t gProto = 0;
 volatile uint32_t gSnapRevision = 0;
+volatile vdm::StmSupport gSupport = vdm::StmSupport::Unknown;
+volatile vdm::StmSaveState gSaveState = vdm::StmSaveState::Idle;
 
 portMUX_TYPE gCalibMux = portMUX_INITIALIZER_UNLOCKED;
 CalibInfo gCalibInfo;
@@ -114,17 +117,18 @@ void appTask(void*) {
 
     if (storage::configRevision() != gCfgRevision) applyConfigChange();
 
+    const bool linkUp = stmLinkState() == vdm::LinkState::Up;
     if (vdm::elapsedMs(now, lastSecond) >= 1000) {
       lastSecond = now;
-      net::service(now);
+      net::service(now, mqtt::status().state == vdm::MqttState::Connected);
       if (net::isUp() && !web::started()) web::begin();
-      ota::service(now, net::isUp(), stmLinkState() == vdm::LinkState::Up);
+      ota::service(now, net::otaNetOk(), linkUp, web::started());
       checkHeap(now);
       stm_service::service(now);
     }
     logger::service(net::isUp());
     storage::service();
-    ota::serviceRestart(now, net::isUp());
+    ota::serviceRestart(now, net::isUp(), linkUp);
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -161,6 +165,8 @@ void markStmFlashActive() { gFlashActive = true; }
 
 uint8_t stmProtocol() { return gProto; }
 
+vdm::StmSupport stmSupport() { return gSupport; }
+
 uint32_t stmSnapshotRevision() { return gSnapRevision; }
 
 void publishStmSnapshot(const StmSnapshot& in) {
@@ -173,8 +179,15 @@ void publishStmSnapshot(const StmSnapshot& in) {
                  in.flash.phase != vdm::FlashPhase::Done &&
                  in.flash.phase != vdm::FlashPhase::Failed;
   gProto = in.proto;
+  gSupport = in.support;
   gSnapRevision = in.revision;
 }
+
+void requestStmSave() { gSaveState = vdm::StmSaveState::Waiting; }
+
+vdm::StmSaveState stmSaveState() { return gSaveState; }
+
+void setStmSaveState(vdm::StmSaveState s) { gSaveState = s; }
 
 CalibInfo calibInfo() {
   portENTER_CRITICAL(&gCalibMux);
@@ -187,6 +200,15 @@ void setCalibInfo(const CalibInfo& c) {
   portENTER_CRITICAL(&gCalibMux);
   gCalibInfo = c;
   portEXIT_CRITICAL(&gCalibMux);
+}
+
+void readHealth(vdm::HealthSnapshot& out) {
+  out = vdm::HealthSnapshot{};
+  out.version = vdm::firmwareVersion();
+  out.uptimeS = uptimeS();
+  out.freeHeap = ESP.getFreeHeap();
+  out.minFreeHeap = ESP.getMinFreeHeap();
+  out.largestFreeBlock = ESP.getMaxAllocHeap();
 }
 
 void setup() {
@@ -205,8 +227,8 @@ void setup() {
 
   const bool resetOk = factoryReset && storage::factoryReset();
   vdm::ImportReport report;
-  uint8_t loadError = 0;
-  storage::loadConfig(gCfg, report, loadError);
+  storage::LoadDetails loadDetails;
+  storage::loadConfig(gCfg, report, loadDetails);
   storage::setActiveConfig(gCfg);
   gCfgRevision = storage::configRevision();
 
