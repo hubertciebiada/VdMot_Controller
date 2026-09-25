@@ -1712,3 +1712,254 @@ TEST_CASE("DiscoveryRun: first-run cleanup, migration, foreign and oversize entr
   CHECK(has(bp.list, "homeassistant/event/VdMot/events/config\n"));
   CHECK(bp.configs().size() + 1 == topics(big).size());
 }
+
+// ---------------------------------------------------------------- edge cases
+
+TEST_CASE("discovery: a one-char station and a one-char prefix") {
+  static DiscoveryContext c;
+  small(c);
+  copyString(c.station, sizeof c.station, "X");
+  copyString(c.discoveryPrefix, sizeof c.discoveryPrefix, "a");
+  const std::vector<Msg> v = all(c);
+  REQUIRE_FALSE(v.empty());
+  CHECK(v[0].topic == "a/text/X/state/config");
+  CHECK(has(v[0].json, "\"identifiers\":\"X\""));
+  CHECK(has(v[0].json, "\"unique_id\":\"X.common.state\""));
+}
+
+TEST_CASE("discovery: expire_after is three publish intervals, at least 60 s") {
+  static DiscoveryContext c;
+  small(c);
+  valve(c, 0, "1", true);
+  for (const auto& p : std::vector<std::pair<uint16_t, std::string>>{{19, "60"}, {20, "60"}, {21, "63"}}) {
+    c.publishIntervalS = p.first;
+    CAPTURE(p.first);
+    CHECK(has(json(all(c), "homeassistant/sensor/VdMot/valves_temp1_1/config"),
+              "\"expire_after\":" + p.second + ","));
+  }
+}
+
+TEST_CASE("discovery: a valve name of the full 10 chars is kept whole in entity names") {
+  static DiscoveryContext c;
+  small(c);
+  valve(c, 0, "1", false, false, "ABCDEFGHIJ");
+  CHECK(has(json(all(c), "homeassistant/sensor/VdMot/valves_actual_1/config"),
+            "\"name\":\"ABCDEFGHIJ position\""));
+}
+
+TEST_CASE("discovery: the event entity lists fewer than 127 event types") {
+  CHECK(eventMqttNames(nullptr, 0) < 127);
+}
+
+TEST_CASE("classify: the shape of a config topic") {
+  static DiscoveryContext c;
+  small(c);
+  CHECK(classifyDiscoveryTopic(c, "a/b/c/config", 12) == TopicClass::Foreign);
+  const std::vector<std::string> foreign = {
+      "Xa/b/c/config", "abcdefghijklm/sensor/VdMot/x/config",
+      "homeassistant/sensor/VdMot/x/confiG",
+      "homeassistant/sensor/VdMot/" + std::string(110, 'x') + "/config"};
+  for (const std::string& t : foreign) {
+    CAPTURE(t);
+    CHECK(classifyDiscoveryTopic(c, t.c_str(), t.size()) == TopicClass::Foreign);
+  }
+  const std::string oneChar = "homeassistant/s/VdMot/x/config";
+  CHECK(classifyDiscoveryTopic(c, oneChar.c_str(), oneChar.size()) == TopicClass::Stale);
+}
+
+TEST_CASE("v20Topic: nothing for an unsafe station or a skipped last entity") {
+  static DiscoveryContext c;
+  small(c);
+  copyString(c.station, sizeof c.station, "a/b");
+  DiscoveryIterator bad(c);
+  DiscoveryMessage m;
+  CHECK_FALSE(bad.nextTopic(m));
+  CHECK(bad.position() == 309);
+  CHECK_FALSE(bad.v20Topic(m));
+  small(c);
+  copyString(c.station, sizeof c.station, "Dom 1");
+  DiscoveryIterator it(c);
+  while (it.nextTopic(m)) {
+  }
+  CHECK(it.position() == 309);  // the last entity (leave safe mode) needs STM v3
+  CHECK_FALSE(it.v20Topic(m));
+}
+
+TEST_CASE("DiscoveryIterator::reset starts again at the first entity") {
+  static DiscoveryContext c;
+  small(c);
+  DiscoveryIterator it(c);
+  DiscoveryMessage first;
+  DiscoveryMessage m;
+  REQUIRE(it.nextTopic(first));
+  REQUIRE(it.nextTopic(m));
+  it.reset(c);
+  CHECK(it.position() == 0);
+  REQUIRE(it.nextTopic(m));
+  CHECK(std::string(m.topic) == first.topic);
+}
+
+TEST_CASE("readListLine: a NUL byte does not end a line") {
+  FakePort p;
+  p.list = std::string("ab\0cd\n", 6);
+  REQUIRE(p.listOpen());
+  char out[kDiscoveryTopicMax + 1];
+  REQUIRE(readListLine(p, out));
+  CHECK(std::string(out) == "ab");
+  CHECK_FALSE(readListLine(p, out));
+}
+
+TEST_CASE("discoveryInputKey: CRC32 over the snapshot parts in their order") {
+  static Config cfg;
+  cfg = Config{};
+  copyString(cfg.station, sizeof cfg.station, "VdMot");
+  cfg.temps[0].active = true;
+  cfg.temps[0].id = owid(1);
+  cfg.temps[3].id = owid(5);  // inactive with an id: not active
+  cfg.volts[1].active = true;
+  cfg.volts[1].id = owid(4);
+  static ValveState valves[kValveCount];
+  for (ValveState& v : valves) v = ValveState{};
+  valves[0].known = true;
+  valves[0].temp1 = 215;
+  TempReading temps[1];
+  temps[0].id = owid(1);
+  VoltReading volts[2];
+  volts[1].id = owid(4);
+  DiscoveryInputs in;
+  in.cfg = &cfg;
+  in.valves = valves;
+  in.temps = temps;
+  in.tempCount = 1;
+  in.volts = volts;
+  in.voltCount = 2;
+  in.sensorsSettled = true;
+  in.stmProto = 3;
+  in.stmHw = "C2";
+  static DiscoveryContext c;
+  REQUIRE(buildDiscoveryContext(in, c));
+  CHECK_FALSE(c.temps[3].active);
+  CHECK(std::string(c.volts[1].topicSegment) == "2");
+  CHECK(c.volts[1].topicKnown);
+  uint32_t crc = 0;
+  for (const DiscoveryContext::Valve& v : c.valves) {
+    const uint8_t b[3] = {v.hasTemp1, v.hasTemp2, v.tempsKnown};
+    crc = crc32(b, sizeof b, crc);
+  }
+  for (const DiscoveryContext::Sensor* arr : {c.temps, c.volts}) {
+    const uint8_t n = arr == c.temps ? kTempSlotCount : kVoltSlotCount;
+    for (uint8_t i = 0; i < n; ++i) {
+      const uint8_t b[2] = {arr[i].published, arr[i].topicKnown};
+      crc = crc32(b, sizeof b, crc);
+      crc = crc32(reinterpret_cast<const uint8_t*>(arr[i].topicSegment), sizeof arr[i].topicSegment, crc);
+    }
+  }
+  crc = crc32(reinterpret_cast<const uint8_t*>(c.hwVersion), sizeof c.hwVersion, crc);
+  const uint8_t v3 = 1;
+  CHECK(discoveryInputKey(in) == crc32(&v3, 1, crc));
+}
+
+TEST_CASE("DiscoveryRun: a prune without publish writes a missing list") {
+  static DiscoveryContext c;
+  small(c);
+  FakePort port;
+  port.exists = false;
+  DiscoveryPlan plan;  // prune only
+  DiscoveryRun run;
+  run.start(c, plan);
+  REQUIRE(runAll(run, port) == DiscoveryRun::Phase::Done);
+  CHECK(port.commits == 1);
+  CHECK(run.stats().listWritten);
+  CHECK(port.list.empty());
+}
+
+TEST_CASE("DiscoveryRun: the same topics in another order are written again") {
+  static DiscoveryContext c;
+  small(c);
+  std::vector<std::string> cur = topics(c);
+  std::vector<std::string> reversed(cur.rbegin(), cur.rend());
+  FakePort port;
+  port.list = lines(reversed);
+  DiscoveryPlan plan;
+  plan.publish = true;
+  DiscoveryRun run;
+  run.start(c, plan);
+  REQUIRE(runAll(run, port) == DiscoveryRun::Phase::Done);
+  CHECK(port.commits == 1);
+  CHECK(port.list == lines(cur));
+  CHECK(port.closes == port.opens);
+}
+
+TEST_CASE("DiscoveryRun: an unbuildable entity adds no list line") {
+  static DiscoveryContext c;
+  small(c);
+  valve(c, 0, "a//b");
+  FakePort port;
+  port.list = lines(topics(c));
+  DiscoveryPlan plan;
+  plan.publish = true;
+  DiscoveryRun run;
+  run.start(c, plan);
+  REQUIRE(runAll(run, port) == DiscoveryRun::Phase::Done);
+  CHECK(run.stats().skipped == 9);
+  CHECK(port.begins == 0);
+  CHECK(port.commits == 0);
+}
+
+TEST_CASE("DiscoveryRun: eight list lines per step") {
+  static DiscoveryContext c;
+  small(c);
+  FakePort port;
+  for (int i = 0; i < 20; ++i) port.list += "x\n";
+  DiscoveryPlan plan;
+  plan.removeAll = true;
+  plan.prune = false;
+  DiscoveryRun run;
+  run.start(c, plan);
+  REQUIRE(run.phase() == DiscoveryRun::Phase::RemoveList);
+  static char buf[4096];
+  JsonWriter jw(buf, sizeof buf);
+  run.step(port, jw);
+  CHECK(port.readPos == 16);
+  CHECK(run.phase() == DiscoveryRun::Phase::RemoveList);
+  REQUIRE(runAll(run, port) == DiscoveryRun::Phase::Done);
+  CHECK(port.closes == port.opens);
+}
+
+TEST_CASE("DiscoveryRun: eight current topics per list write step") {
+  static DiscoveryContext c;
+  base(c);
+  FakePort port;
+  port.exists = false;
+  DiscoveryPlan plan;
+  plan.publish = true;
+  DiscoveryRun run;
+  run.start(c, plan);
+  static char buf[4096];
+  JsonWriter jw(buf, sizeof buf);
+  for (int i = 0; i < 5000 && run.phase() != DiscoveryRun::Phase::WriteCurrent; ++i) run.step(port, jw);
+  REQUIRE(run.phase() == DiscoveryRun::Phase::WriteCurrent);
+  REQUIRE(port.writes == 0);
+  run.step(port, jw);
+  CHECK(port.writes == 8);
+  REQUIRE(runAll(run, port) == DiscoveryRun::Phase::Done);
+  CHECK(port.list == lines(topics(c)));
+  CHECK(port.commits == 1);
+}
+
+TEST_CASE("DiscoveryRun: delete and publish with prune closes and commits each list once") {
+  static DiscoveryContext c;
+  small(c);
+  FakePort port;
+  port.list = lines(topics(c));
+  DiscoveryPlan plan;
+  plan.removeAll = true;
+  plan.publish = true;
+  DiscoveryRun run;
+  run.start(c, plan);
+  REQUIRE(runAll(run, port) == DiscoveryRun::Phase::Done);
+  CHECK(port.aborts == 0);
+  CHECK(port.closes == port.opens);
+  CHECK(port.commits == 2);  // the cleared list, then the new one
+  CHECK(port.list == lines(topics(c)));
+}
