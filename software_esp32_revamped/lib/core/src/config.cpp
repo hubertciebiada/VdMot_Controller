@@ -1796,14 +1796,44 @@ size_t encodeConfig(const Config& c, uint8_t* out, size_t cap) {
 
 namespace {
 
-// The factory defaults (flash, not RAM or stack: Config is ~2.7 KB).
-constexpr Config kDefaultConfig{};
+// The fields of Config before `net`: a struct with the same first members
+// has the same offsets (common initial sequence).
+struct RootHead {
+  uint16_t schema = kConfigJsonSchema;
+  char station[kStationNameMax + 1] = "VdMot";
+};
+static_assert(offsetof(RootHead, station) == offsetof(Config, station), "root head layout");
+
+// Encoded default of field f of a group whose struct is T (only the group's
+// struct is built: a whole default Config would cost 2.7 KB of flash).
+template <typename T>
+size_t encodeDefault(const Field& f, uint8_t* out, size_t cap) {
+  const T d{};
+  return encodeOneField(f, reinterpret_cast<const uint8_t*>(&d) + f.offset, out, cap);
+}
+
+size_t defaultEncoding(const Group& g, const Field& f, uint8_t* out, size_t cap) {
+  switch (&g - kGroups) {
+    case 0: return encodeDefault<RootHead>(f, out, cap);
+    case 1: return encodeDefault<NetConfig>(f, out, cap);
+    case 2: return encodeDefault<TimeConfig>(f, out, cap);
+    case 3: return encodeDefault<SyslogConfig>(f, out, cap);
+    case 4: return encodeDefault<WebConfig>(f, out, cap);
+    case 5: return encodeDefault<MqttConfig>(f, out, cap);
+    case 6: return encodeDefault<ValveConfig>(f, out, cap);
+    case 7: return encodeDefault<TempSlotConfig>(f, out, cap);
+    case 8: return encodeDefault<VoltSlotConfig>(f, out, cap);
+    case 9: return encodeDefault<CalibScheduleConfig>(f, out, cap);
+    case 10: return encodeDefault<FailsafeConfig>(f, out, cap);
+  }
+  return 0;  // NOMUTATE: the root tail (persistLog, a bool) never fails its rule
+}
 
 // Field f of group g, element e back to its default, through the codec (so
 // every kind resets by its own encoding).
 void resetField(Config& c, const Group& g, uint8_t e, const Field& f) {
   uint8_t buf[sizeof(WebConfig::allowedHosts)];  // the longest encoding: length byte + 80 chars
-  ByteIn in(buf, encodeOneField(f, fieldPtr(kDefaultConfig, g, e, f), buf, sizeof buf));
+  ByteIn in(buf, defaultEncoding(g, f, buf, sizeof buf));
   decodeField(in, f, fieldPtr(c, g, e, f));
 }
 

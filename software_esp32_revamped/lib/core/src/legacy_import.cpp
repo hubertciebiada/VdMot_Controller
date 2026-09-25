@@ -355,19 +355,22 @@ class Importer {
     if (!isPrintableText(name, len)) return false;
     char safe[kLegacyNameLen];
     char topic[kLegacyNameLen];
-    bool keepTopic = true;
+    bool wildcard = false;
+    bool separator = false;
     for (size_t k = 0; k <= len; ++k) {
       const char ch = name[k];
-      const bool wildcard = ch == '+' || ch == '#';
-      keepTopic = keepTopic && !wildcard;
-      safe[k] = wildcard || ch == '/' || ch == '"' || ch == '\\' ? '_' : ch;
+      const bool w = ch == '+' || ch == '#';
+      const bool s = ch == '/' || ch == '"' || ch == '\\';
+      wildcard = wildcard || w;
+      separator = separator || s;
+      safe[k] = w || s ? '_' : ch;
       topic[k] = ch == ' ' ? '_' : ch;
     }
     char path[24];
     snprintf(path, sizeof path, "%s.%u.name", group, static_cast<unsigned>(i + 1));
     if (!setString(path, safe)) return false;
     markRenamed(kind, i);
-    if (keepTopic && strpbrk(name, "/\"\\") != nullptr) {
+    if (separator && !wildcard) {
       snprintf(path, sizeof path, "%s.%u.topic", group, static_cast<unsigned>(i + 1));
       setString(path, topic);  // not a valid segment ("/Bad"): no override
     }
@@ -484,7 +487,7 @@ class Importer {
   // Every legacy version starts its element with controlFlags; the element
   // size grew over the versions, the count is always 12.
   void importValvesCtrl() {
-    static uint8_t blob[kLegacyValvesCtrlMax];
+    uint8_t blob[kLegacyValvesCtrlMax];
     size_t stored = 0;
     if (!nvs_.readBlob("valvesCtrlCfg", "valvesCtrl", blob, sizeof blob, stored)) return;
     if (stored % kValveCount != 0 || stored < kValveCount || stored > sizeof blob) {
@@ -530,7 +533,7 @@ class Importer {
   // sanitizeConfig() makes the result valid; every repair is reported under
   // the legacy key it came from, in the order of the rules.
   void repair() {
-    static Name temps[kTempSlotCount];  // 374 bytes: off the caller's stack
+    Name temps[kTempSlotCount];
     Name volts[kVoltSlotCount];
     for (uint8_t i = 0; i < kTempSlotCount; ++i) memcpy(temps[i], c_.temps[i].name, sizeof temps[i]);
     for (uint8_t i = 0; i < kVoltSlotCount; ++i) memcpy(volts[i], c_.volts[i].name, sizeof volts[i]);
