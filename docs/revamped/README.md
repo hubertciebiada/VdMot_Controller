@@ -91,7 +91,8 @@ See [MQTT.md](MQTT.md) and [API.md](API.md) for the details.
 ## Dashboard preview
 
 `python3 software_esp32_revamped/tools/mock_api.py` serves the dashboard with simulated data on a
-local port, without a controller.
+local port, without a controller. `--proto 3 --scenario health --import-report` adds a blocked valve
+at its failsafe position, an unconfirmed target, stale data and the legacy import report.
 
 ## Testing
 
