@@ -31,16 +31,19 @@ void begin(vdm::Config& cfg);
 // App task, every second: state/IP refresh (NetUp/NetDown events), WiFi as
 // fallback after 30 s without Ethernet IP (Auto) with reconnect back-off
 // 5 s .. 60 s, WiFi off again once Ethernet has an IP, mDNS announce,
-// NetWatchdog (legacy netConnTO, wait growing per restart of one outage)
-// -> ota::requestRestart(2). mqttConnected: the MQTT session is up (proof
-// that the network works end to end).
+// end-to-end reachability (gateway ping every 60 s, evidence, NetUnreachable
+// / NetReachable), the network trial, and the NetWatchdog (legacy
+// netConnTO): interface restart after reconnectTimeoutMin, then
+// ota::requestRestart(2) with a wait growing per restart of one outage.
+// mqttConnected: the MQTT session is up (proof that the network works end
+// to end).
 void service(uint32_t nowMs, bool mqttConnected);
 
 bool isUp();
 Info info();
 // Reachability and trial state for /api/health.
 vdm::NetHealthInfo health(uint32_t nowMs);
-// The network check of the OTA validator.
+// The network check of the OTA validator: reachable and proven end to end.
 bool otaNetOk();
 // Host name in use (from the station name).
 const char* hostname();
@@ -62,10 +65,11 @@ vdm::LocalTime localTime();
 bool timeValid();
 uint32_t lastSyncEpoch();
 
-// Applies changed network settings. TZ/NTP apply live; interface, address,
-// WiFi credential or station-name changes schedule an ESP restart (the STM
-// keeps running, architecture R6) because the Arduino ETH driver cannot be
-// re-initialised at run time.
+// Applies changed network settings. TZ/NTP apply live; changes of
+// vdm::configRestartReasons() (interface, address, used WiFi credentials,
+// host name) schedule an ESP restart because the Arduino ETH driver cannot
+// be re-initialised at run time; with jumper X20 fitted the ESP restart also
+// resets the STM (INSTALL.md). A change of the trial fields runs on trial.
 void reconfigure(const vdm::Config& cfg);
 
 }  // namespace net
