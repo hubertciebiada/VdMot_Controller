@@ -409,6 +409,21 @@ report hog "M[2]['detail']" | grep -q "exceeded 4.0 s under load; alone killed a
 [ "$(report hog "M[2]['seconds'] >= 7")" = "True" ] || fail "the first run of a re-run timeout was not counted"
 ok "unconfirmed timeout under a CPU hog is an error; killed alone is a kill, timed with both runs"
 
+# --- cached kills belong to the tests that made them: after a test change they run again
+project cache
+printf 'int c(int a) {\n  return a + 1;\n}\n' >"$T/cache/proj/src/c.cpp"
+printf '#include "src/c.cpp"\nint main() { return c(1) == 2 ? 0 : 1; }\n' >"$T/cache/proj/test_c.cpp"
+config cache '{"threshold": 0}'
+mutate cache --jobs 2
+[ "$RC" -eq 0 ] && [ "$(report cache "sorted({m['status'] for m in M})")" = "['killed']" ] || fail "cache: first run"
+mutate cache --jobs 2
+grep -q "from the cache, 0 to run" "$T/out" || fail "cache: the kills of an unchanged tree were not reused"
+printf '#include "src/c.cpp"\nint main() { return c(1) > 0 ? 0 : 1; }\n' >"$T/cache/proj/test_c.cpp"
+mutate cache --jobs 2
+grep -q " 0 from the cache" "$T/out" || fail "cache: kills reused after the test changed"
+[ "$(report cache "sum(m['status'] == 'survived' for m in M)")" -eq 2 ] || fail "cache: the weaker test killed $(report cache "[m['status'] for m in M]")"
+ok "a changed test invalidates the cached kills"
+
 # --- every config validates against the one schema; unknown and missing keys are errors
 for c in "$HERE"/*.json; do
   case "$c" in *.cache.json | *.report.json) continue ;; esac

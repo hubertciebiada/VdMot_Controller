@@ -51,10 +51,11 @@ mutated file, or an undefined symbol); not_compiled; equivalent; error (a timeou
 its tests alone, a build that failed for another reason, e.g. a compiler crash, a full disk or a
 build timeout, a test run that did not start or whose runner failed (exit 125-127); never
 cached, the run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
-<config>.cache.json (key: file, source hash, config hash, position, operator, replacement), so
-an interrupted run resumes; survivors always run again. The checkout is never written: every
-worker is a copy under --workdir. The mean s/mutant covers the mutants built in this run; a
-re-run timeout counts with both runs.
+<config>.cache.json (key: file, source hash, config hash, hash of every file the workers copy
+(tests, headers, build files, sources), position, operator, replacement), so an interrupted run
+resumes and a change of the tests invalidates their kills; survivors always run again. The
+checkout is never written: every worker is a copy under --workdir. The mean s/mutant covers
+the mutants built in this run; a re-run timeout counts with both runs.
 
 Exit code: 0 when the score >= threshold, every file >= file_threshold and no mutant has the
 status error; 1 when a threshold is missed; 2 on a configuration error, a failing unmutated
@@ -660,7 +661,8 @@ class Worker:
         self.build = os.path.join(self.dir, "build")
 
 
-IGNORED = shutil.ignore_patterns(".pio", "build", ".git", "node_modules", "__pycache__")
+IGNORED_NAMES = (".pio", "build", ".git", "node_modules", "__pycache__")
+IGNORED = shutil.ignore_patterns(*IGNORED_NAMES)
 
 
 def copy_sources(repo: str, dst: str, cfg: dict) -> None:
@@ -669,6 +671,25 @@ def copy_sources(repo: str, dst: str, cfg: dict) -> None:
         if not os.path.isdir(src):
             raise ConfigError(f"{rel}: directory not found")
         shutil.copytree(src, os.path.join(dst, rel), symlinks=True, ignore=IGNORED)
+
+
+def inputs_hash(repo: str, cfg: dict) -> str:
+    """Hash of every file a worker copies (root and shared): a cached result is reused only while
+    the tests, headers, build files and sources it came from are unchanged."""
+    h = hashlib.sha1()
+    for top in [cfg["root"]] + list(cfg["shared"]):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(repo, top)):
+            dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_NAMES)
+            for name in sorted(n for n in filenames if n not in IGNORED_NAMES):
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, repo).replace(os.sep, "/")
+                h.update(rel.encode("utf-8", "surrogateescape") + b"\0")
+                try:
+                    with open(path, "rb") as f:
+                        h.update(hashlib.sha1(f.read()).digest())
+                except OSError:
+                    h.update(b"\0unreadable")
+    return h.hexdigest()[:16]
 
 
 def build_env(disable_ccache: bool, jobs: int) -> dict:
@@ -818,8 +839,9 @@ def evaluate(m: Mutant, w: Worker, cfg: dict, budgets: dict, quick: bool, runner
         m.seconds = round(time.monotonic() - t0, 3)
 
 
-def mutant_key(m: Mutant, src_hash: str, cfg_hash: str) -> str:
-    return f"{m.file}|{src_hash}|{cfg_hash}|{m.line}:{m.col}|{m.op}|{m.original}|{m.replacement}"
+def mutant_key(m: Mutant, src_hash: str, run_hash: str) -> str:
+    """Cache key; run_hash covers the config commands and every file of the worker copies."""
+    return f"{m.file}|{src_hash}|{run_hash}|{m.line}:{m.col}|{m.op}|{m.original}|{m.replacement}"
 
 
 def config_hash(cfg: dict) -> str:
@@ -1051,14 +1073,14 @@ def run(args: argparse.Namespace) -> int:
         print(f"{len(all_muts)} mutants")
         return 0
 
-    cfg_hash = config_hash(cfg)
+    run_hash = f"{config_hash(cfg)}|{inputs_hash(repo, cfg)}"
     cache_path = os.path.splitext(cfg_path)[0] + ".cache.json"
     cache = {} if args.no_cache else load_cache(cache_path)
     reused = 0
     for m in all_muts:
         if m.status != "pending":
             continue
-        hit = cache.get(mutant_key(m, src_hash[m.file], cfg_hash))
+        hit = cache.get(mutant_key(m, src_hash[m.file], run_hash))
         if hit in CACHEABLE:
             m.status = hit
             m.cached = True
@@ -1102,7 +1124,7 @@ def run(args: argparse.Namespace) -> int:
             with cache_lock:
                 for m in todo:
                     if m.status == "not_compiled":
-                        cache[mutant_key(m, src_hash[m.file], cfg_hash)] = m.status
+                        cache[mutant_key(m, src_hash[m.file], run_hash)] = m.status
             todo = [m for m in todo if m.status == "pending"]
         workers += [Worker(base, i, cfg) for i in range(1, min(jobs, len(todo)))]
         for w in workers[1:]:
@@ -1125,7 +1147,7 @@ def run(args: argparse.Namespace) -> int:
             with cache_lock:
                 done[0] += 1
                 if m.status in CACHEABLE:
-                    cache[mutant_key(m, src_hash[m.file], cfg_hash)] = m.status
+                    cache[mutant_key(m, src_hash[m.file], run_hash)] = m.status
                 if done[0] % 50 == 0:
                     save_cache(cache_path, cache)
                 if done[0] % 25 == 0 or m.status in ("survived", "error"):
