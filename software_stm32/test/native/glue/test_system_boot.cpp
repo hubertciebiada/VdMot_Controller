@@ -44,12 +44,13 @@ TEST_CASE("system: a new controller answers gvers, gproto, gtgtp, gvlvd, gstat a
   bootController(rig);
   CHECK(millis() == 3511);
   CHECK(exchange("gvers\n") == "gvers 2.0.0-revamped_C2 1 \r\n");
-  CHECK(exchange("gproto\n") == "gproto 2\r\n");
+  CHECK(exchange("gproto\n") == "gproto 3\r\n");
   // erased EEPROM: startOnPower loads its default 30
   CHECK(exchange("gtgtp 0\n") == "gtgtp 0 30 \r\n");
   // valve 0 is still under its presence test: status 5 (unknown)
   CHECK(exchange("gvlvd 0\n") == "gvlvd 0 30 20 5 -500 -500 0 0 0 0 0 \r\n");
-  CHECK(exchange("gstat\n") == "gstat 3 0 1 0 0 0\r\n");
+  // the first start stores the configuration with its CRC: eepState 1 until the write 3 s later
+  CHECK(exchange("gstat\n") == "gstat 3 0 1 0 0 1\r\n");
   CHECK(exchange("stgtp 0 50\n") == "stgtp\r\n");
   CHECK(exchange("gtgtp 0\n") == "gtgtp 0 50 \r\n");
 }
@@ -72,7 +73,7 @@ TEST_CASE("system: reset answers, waits for the EEPROM and restarts the controll
     glue::run([] {
       while (fake::tx(Serial1).empty()) runMain(1);
       CHECK(fake::takeTx(Serial1) == "reset \r\n");
-      runMain(100);
+      runMain(4000);  // the first start's configuration write comes first
       FAIL("the controller did not reset");
     });
   }

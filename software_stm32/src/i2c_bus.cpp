@@ -4,6 +4,7 @@
 ***************************************************************************/
 
 #include <Arduino.h>
+#include <Wire.h>
 #include "hardware.h"
 #include "i2c_bus.h"
 
@@ -40,6 +41,12 @@ void i2c_bus_recover() {
 }
 
 
-// not used yet: EEPROM retries do not restart the bus
+// A retry of a failed EEPROM transfer may find the bus stuck the same way (a slave that lost
+// clocks when the transfer was disturbed): Wire is stopped, the bus freed and Wire started again.
 void i2c_bus_restart() {
+  Wire.end();
+  i2c_bus_recover();
+  Wire.setSDA(I2C_SDA_PIN);
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.begin();
 }
