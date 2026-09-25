@@ -15,8 +15,9 @@
 //
 // Exit code of the runner (fork mode), the first that applies; tools/mutation/mutate.py tells a
 // kill from a timeout and from a broken environment by it:
-//   1    a case failed: an assertion, an invariant, a crash, a store hook, too many boots
-//   125  the runner itself failed: fork, waitpid, the hand-off directory or the reset kind file
+//   1    a case failed: an assertion, an invariant, a crash, too many boots
+//   125  the runner itself failed: fork, waitpid, the hand-off directory, the hand-off file of the
+//        stores (Hooks::save or Hooks::load returned false) or the reset kind file
 //   124  a case ran out of VDM_CASE_TIMEOUT_S (a timeout, not a kill)
 //   0    every case passed
 #pragma once
@@ -45,7 +46,9 @@ struct Hooks {
   // Boot 0 and every PowerOn reboot: power-on content of the warm RAM (.noinit, RTC: 0xA5),
   // volatile fakes reset. Persistent stores (EEPROM, NVS, flash files) are not touched.
   void (*powerOn)();
-  // Persistent stores and warm RAM to / from the hand-off file; false fails the case.
+  // Persistent stores and warm RAM to / from the hand-off file. false means that the file could
+  // not be written or read, a failure of the environment and not of the code under test: the
+  // runner exits with 125. A store state that must fail the case is a checkInvariants message.
   bool (*save)(const char* path);
   bool (*load)(const char* path);
   // After every case and before every reboot(); a message (not nullptr) fails the case even

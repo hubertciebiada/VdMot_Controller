@@ -19,6 +19,8 @@ int g_counter = 0;  // file-static state: every case starts at 0
 __attribute__((section(".testkit_warm"))) uint8_t g_warm[32];
 uint32_t g_store = 0;               // stands for EEPROM / NVS: kept by every reset
 const char* g_violation = nullptr;  // reported by the invariant hook
+bool g_saveFails = false;           // the save hook cannot write the hand-off file
+bool g_saveTruncated = false;       // the save hook leaves out g_store: the next load fails
 
 testkit::Region warmSection() {
   uint8_t* start = nullptr;
@@ -33,8 +35,9 @@ void powerOn() {
 }
 
 bool save(const char* path) {
+  if (g_saveFails) return false;
   const testkit::Region regions[] = {warmSection(), {&g_store, sizeof g_store}};
-  return regions[0].data != nullptr && testkit::saveRegions(path, regions, 2);
+  return regions[0].data != nullptr && testkit::saveRegions(path, regions, g_saveTruncated ? 1 : 2);
 }
 
 bool load(const char* path) {
@@ -185,6 +188,21 @@ TEST_SUITE("invreboot") {
   TEST_CASE("a broken invariant stops the reboot") {
     marker("invreboot");
     g_violation = "2 unanswered HTTP exchanges";
+    testkit::reboot(Reset::Pin);
+  }
+}
+
+TEST_SUITE("savefail") {
+  TEST_CASE("the stores cannot be saved") {
+    g_saveFails = true;
+    testkit::reboot(Reset::Pin);
+  }
+}
+
+TEST_SUITE("loadfail") {
+  TEST_CASE("the stores cannot be loaded") {
+    marker("loadfail");
+    g_saveTruncated = true;
     testkit::reboot(Reset::Pin);
   }
 }

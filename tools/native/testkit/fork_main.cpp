@@ -29,10 +29,11 @@ namespace {
 // Exit codes of a case process.
 constexpr int kExitPassed = 0;
 constexpr int kExitFailed = 1;
-constexpr int kExitHooks = 2;       // stores not saved or loaded, reboot() without the fork runner
+constexpr int kExitNoFork = 2;      // reboot() without the fork runner
 constexpr int kExitInvariant = 3;   // Hooks::checkInvariants reported a violation
 constexpr int kExitNoReboot = 4;    // reboot() after a failed assertion
-constexpr int kExitHandOff = 5;     // the reset kind could not be written
+constexpr int kExitHandOff = 5;     // the stores (Hooks::save, Hooks::load) or the reset kind
+                                    // could not be handed over
 constexpr int kExitReboot = 75;     // reboot() requested the next boot
 
 // Exit codes of the runner (testkit.h).
@@ -184,7 +185,7 @@ int runDoctest(std::vector<const char*> args) {
   } else {
     if (g_hooks.load != nullptr && !g_hooks.load(g_storesPath.c_str())) {
       std::cout << "[testkit] loading the stores for boot " << g_boot << " failed" << std::endl;
-      exitCase(kExitHooks);
+      exitCase(kExitHandOff);
     }
     if (g_lastReset == Reset::PowerOn && g_hooks.powerOn != nullptr) g_hooks.powerOn();
   }
@@ -255,11 +256,10 @@ Verdict runCase(const std::vector<const char*>& args, unsigned index, bool failF
     }
     switch (code) {
       case kExitPassed: return {Outcome::Passed, ""};
-      case kExitHooks: return {Outcome::Failed, "stores not saved or loaded" + at};
       case kExitInvariant: return {Outcome::Failed, "invariant violated" + at};
       case kExitNoReboot:
         return {Outcome::Failed, "reboot requested after a failed assertion" + at};
-      case kExitHandOff: return {Outcome::Error, "reset kind not written" + at};
+      case kExitHandOff: return {Outcome::Error, "stores or reset kind not handed over" + at};
       default: return {Outcome::Failed, "failed (exit " + std::to_string(code) + ")" + at};
     }
   }
@@ -340,7 +340,7 @@ void reboot(Reset kind) {
   if (!g_caseProcess) {
     std::cout << "[testkit] reboot(" << resetName(kind)
               << ") needs the fork runner (not available with --no-fork)" << std::endl;
-    exitCase(kExitHooks);
+    exitCase(kExitNoFork);
   }
   const doctest::detail::ContextState* cs = doctest::detail::g_cs;
   if (cs != nullptr && cs->numAssertsFailedCurrentTest_atomic > 0) {
@@ -352,7 +352,7 @@ void reboot(Reset kind) {
   if (!invariantsHold()) exitCase(kExitInvariant);
   if (g_hooks.save != nullptr && !g_hooks.save(g_storesPath.c_str())) {
     std::cout << "[testkit] saving the stores at boot " << g_boot << " failed" << std::endl;
-    exitCase(kExitHooks);
+    exitCase(kExitHandOff);
   }
   FILE* f = fopen(g_resetPath.c_str(), "wb");
   if (f == nullptr || fputc(static_cast<int>(kind), f) == EOF || fclose(f) != 0) {

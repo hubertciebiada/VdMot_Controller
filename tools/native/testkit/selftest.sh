@@ -78,6 +78,20 @@ TMPDIR="$T/missing" run handoff -ts=pass
 [ "$RC" -eq 125 ] || fail "no hand-off directory: exit $RC, expected 125"
 grep -q "cannot create a hand-off directory" "$T/out" || fail "no hand-off directory: message"
 
+# So does a store hook that returns false (the hand-off file could not be written or read); a
+# failed case still wins.
+run savefail -ts=savefail
+[ "$RC" -eq 125 ] || fail "failing save hook: exit $RC, expected 125"
+grep -q "saving the stores at boot 0 failed" "$T/out" || fail "failing save hook: message"
+grep -q ": stores or reset kind not handed over at boot 0" "$T/out" || fail "failing save hook: verdict"
+run loadfail -ts=loadfail
+[ "$RC" -eq 125 ] || fail "failing load hook: exit $RC, expected 125"
+[ "$(lines "$T/loadfail/loadfail")" -eq 1 ] || fail "failing load hook: the case ran at boot 1"
+grep -q "loading the stores for boot 1 failed" "$T/out" || fail "failing load hook: message"
+grep -q ": stores or reset kind not handed over at boot 1" "$T/out" || fail "failing load hook: verdict"
+run savefail_fail -ts=fail,savefail
+[ "$RC" -eq 1 ] || fail "failing and save-failing cases: exit $RC, expected 1"
+
 # VDM_MAX_BOOTS bounds the boots of a case.
 VDM_MAX_BOOTS=3 run boots -ts=boots
 [ "$RC" -eq 1 ] || fail "endless reboots: exit $RC, expected 1"
