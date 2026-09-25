@@ -31,7 +31,6 @@
 #include <Arduino.h>
 #include "hardware.h"
 #include <Wire.h>
-#include "../lib/OneWire/OneWire.cpp"
 #include <DallasTemperature.h>
 #include "owDevices.h"
 #include "DS2438.h"
