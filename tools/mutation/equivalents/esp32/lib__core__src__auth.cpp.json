@@ -1,0 +1,9 @@
+[
+  {"line": 20, "col": 11, "original": "1", "replacement": "2", "text": "return -1;", "reason": "the only use is v < 0: any negative sentinel is the same"},
+  {"line": 53, "col": 31, "original": "1", "replacement": "2", "text": "uint8_t diff = (la != lb) ? 1 : 0;", "reason": "only diff == 0 is tested: any non-zero start is the same"},
+  {"line": 55, "col": 42, "original": "0", "replacement": "1", "text": "const uint8_t ca = (i < la) ? a[i] : 0;", "reason": "i >= la only happens when la != lb, and then diff is non-zero anyway"},
+  {"line": 79, "col": 14, "original": "0", "replacement": "1", "text": "size_t n = 0;", "reason": "dead initial value: base64Decode() sets outLen = 0 first"},
+  {"line": 127, "col": 38, "original": "<", "replacement": "<=", "text": "if (pick == nullptr || e.lastUse < pick->lastUse) pick = &e;", "reason": "lastUse values are unique (a counter set on every use), so there are no ties"},
+  {"line": 174, "col": 32, "original": "<", "replacement": "<=", "text": "e->lockMs = kLockMs[e->level < 2 ? e->level : 2];", "reason": "level 2 indexes kLockMs[2] either way"},
+  {"line": 174, "col": 34, "original": "2", "replacement": "3", "text": "e->lockMs = kLockMs[e->level < 2 ? e->level : 2];", "reason": "level 2 indexes kLockMs[2] either way, and every higher level is capped to 2 in both"}
+]
