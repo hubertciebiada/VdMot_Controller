@@ -15,29 +15,36 @@ namespace {
 // ---------------------------------------------------------------- schema table
 //
 // One table drives the key-path setter, validation, JSON export and the NVS
-// encoding, so the four can never disagree about a field. Table order is the
-// JSON order and the binary order (changing it is a schema change).
+// encodings, so they can never disagree about a field. Table order is the
+// JSON order; the fields without an ext tag in table order are the `cfg`
+// blob (exactly the 2.0.0 layout), the others go to `cfgx` by tag.
 
 enum class Kind : uint8_t {
-  Bool,    // bool, stored 0/1
-  U8,      // uint8_t or uint8_t-based enum, [min,max]
-  U16,     // uint16_t, [min,max]
-  Str,     // char[cap], length [min,max], rule
-  Secret,  // like Str, write-only
-  Ip,      // uint32_t legacy IPv4 layout, any value
-  Mask,    // uint32_t legacy IPv4 layout, contiguous
-  Tenths,  // int16_t tenths, [min,max]
-  Float,   // float, finite, [min,max]
-  Id,      // OneWireId, zero = empty
+  Bool,        // bool, stored 0/1
+  U8,          // uint8_t or uint8_t-based enum, [min,max]
+  U16,         // uint16_t, [min,max]
+  Str,         // char[cap], length [min,max], rule
+  Secret,      // like Str, write-only
+  Ip,          // uint32_t legacy IPv4 layout, any value
+  Mask,        // uint32_t legacy IPv4 layout, contiguous
+  Tenths,      // int16_t tenths, [min,max]
+  Float,       // float, finite, [min,max]
+  Id,          // OneWireId, zero = empty
+  PctHold,     // uint8_t, [min,max] or kFailsafeHold
+  OffOrRange,  // uint16_t, 0 or [min,max]
 };
 
 enum class Rule : uint8_t {
   None,
-  Printable,  // isPrintableText: ASCII 0x20..0x7E and UTF-8 (SSIDs, secrets, like legacy)
-  NoSpace,    // 0x21..0x7E
-  NoColon,    // Printable without ':' (HTTP Basic user)
-  SafeName,   // isSafeName()
-  Host,       // isHostName() or dotted IPv4
+  Printable,     // isPrintableText: ASCII 0x20..0x7E and UTF-8 (SSIDs, secrets, like legacy)
+  NoSpace,       // 0x21..0x7E
+  NoColon,       // Printable without ':' (HTTP Basic user)
+  SafeName,      // isSafeName()
+  Host,          // isHostName() or dotted IPv4
+  HostList,      // "" or 1..4 isHostName() entries separated by ',', spaces around them ignored
+  ClientId,      // [A-Za-z0-9._-]
+  TopicPath,     // levels of [A-Za-z0-9_-] separated by single '/'
+  TopicSegment,  // Printable without ' ', '+', '#'; '/' only between two non-empty parts
 };
 
 struct Field {
@@ -49,6 +56,7 @@ struct Field {
   int32_t max;
   Rule rule;
   bool nonZero;     // Float: 0 is not allowed
+  uint8_t ext;      // 0: `cfg` blob; else the `cfgx` record tag (never reused)
 };
 
 // Members a kind does not use stay zero.
@@ -79,10 +87,18 @@ constexpr Field floatField(const char* n, size_t off, int32_t mn, int32_t mx, bo
   f.nonZero = nonZero;
   return f;
 }
+// A field stored in the `cfgx` blob under `tag`.
+constexpr Field extField(Field f, uint8_t tag) {
+  f.ext = tag;
+  return f;
+}
 
 constexpr int32_t kSecretMaxI = static_cast<int32_t>(kSecretMax);
 constexpr int32_t kHostMaxI = static_cast<int32_t>(kHostMax);
 constexpr int32_t kItemNameMaxI = static_cast<int32_t>(kItemNameMax);
+// Longest string the patch reader keeps (PatchWalker).
+// NOMUTATE on the next line: any size above the longest field (80) is equivalent.
+constexpr size_t kPatchStrMax = 96;  // NOMUTATE
 
 constexpr Field kRootHead[] = {
     strField("station", Kind::Str, offsetof(Config, station), sizeof(Config::station), 1,
@@ -124,6 +140,10 @@ constexpr Field kWebFields[] = {
     strField("password", Kind::Secret, offsetof(WebConfig, password), sizeof(WebConfig::password),
              0, kSecretMaxI, Rule::Printable),
     boolField("protectRead", offsetof(WebConfig, protectRead)),
+    extField(strField("allowedHosts", Kind::Str, offsetof(WebConfig, allowedHosts),
+                      sizeof(WebConfig::allowedHosts), 0, static_cast<int32_t>(kAllowedHostsMax),
+                      Rule::HostList),
+             1),
 };
 
 constexpr Field kMqttFields[] = {
@@ -150,12 +170,28 @@ constexpr Field kMqttFields[] = {
     boolField("newDiag", offsetof(MqttConfig, newDiag)),
     boolField("events", offsetof(MqttConfig, events)),
     boolField("haDiscoveryOnConnect", offsetof(MqttConfig, haDiscoveryOnConnect)),
+    extField(strField("rootTopic", Kind::Str, offsetof(MqttConfig, rootTopic),
+                      sizeof(MqttConfig::rootTopic), 0, static_cast<int32_t>(kStationNameMax),
+                      Rule::SafeName),
+             2),
+    extField(strField("clientId", Kind::Str, offsetof(MqttConfig, clientId),
+                      sizeof(MqttConfig::clientId), 0, static_cast<int32_t>(kClientIdMax),
+                      Rule::ClientId),
+             3),
+    extField(strField("discoveryPrefix", Kind::Str, offsetof(MqttConfig, discoveryPrefix),
+                      sizeof(MqttConfig::discoveryPrefix), 1,
+                      static_cast<int32_t>(kTopicPrefixMax), Rule::TopicPath),
+             4),
 };
 
 constexpr Field kValveFields[] = {
     strField("name", Kind::Str, offsetof(ValveConfig, name), sizeof(ValveConfig::name), 0,
              kItemNameMaxI, Rule::SafeName),
     boolField("active", offsetof(ValveConfig, active)),
+    extField(intField("failsafePct", Kind::PctHold, offsetof(ValveConfig, failsafePct), 0, 100), 6),
+    extField(strField("topic", Kind::Str, offsetof(ValveConfig, topic), sizeof(ValveConfig::topic),
+                      0, kItemNameMaxI, Rule::TopicSegment),
+             7),
 };
 
 constexpr Field kTempFields[] = {
@@ -164,6 +200,9 @@ constexpr Field kTempFields[] = {
     boolField("active", offsetof(TempSlotConfig, active)),
     intField("offset", Kind::Tenths, offsetof(TempSlotConfig, offset), -100, 100),
     plainField("id", Kind::Id, offsetof(TempSlotConfig, id)),
+    extField(strField("topic", Kind::Str, offsetof(TempSlotConfig, topic),
+                      sizeof(TempSlotConfig::topic), 0, kItemNameMaxI, Rule::TopicSegment),
+             8),
 };
 
 constexpr Field kVoltFields[] = {
@@ -175,6 +214,9 @@ constexpr Field kVoltFields[] = {
     strField("unit", Kind::Str, offsetof(VoltSlotConfig, unit), sizeof(VoltSlotConfig::unit), 0,
              static_cast<int32_t>(kUnitMax), Rule::SafeName),
     plainField("id", Kind::Id, offsetof(VoltSlotConfig, id)),
+    extField(strField("topic", Kind::Str, offsetof(VoltSlotConfig, topic),
+                      sizeof(VoltSlotConfig::topic), 0, kItemNameMaxI, Rule::TopicSegment),
+             9),
 };
 
 constexpr Field kCalibFields[] = {
@@ -183,15 +225,23 @@ constexpr Field kCalibFields[] = {
     intField("minute", Kind::U8, offsetof(CalibScheduleConfig, minute), 0, 59),
 };
 
+constexpr Field kFailsafeFields[] = {
+    extField(intField("timeoutMin", Kind::OffOrRange, offsetof(FailsafeConfig, timeoutMin),
+                      kFailsafeTimeoutMinMin, kFailsafeTimeoutMaxMin),
+             5),
+};
+
 constexpr Field kRootTail[] = {
     boolField("persistLog", offsetof(Config, persistLog)),
 };
 
-// String fields: max < cap (room for the NUL) and cap <= 65 (setField's
-// scratch buffer). Checked at compile time for every table.
+// String fields: max < cap (room for the NUL), cap within setField's scratch
+// buffer, and shorter than what the patch reader keeps (so a cut string is
+// still too long). Checked at compile time for every table.
 constexpr bool fits(const Field& f) {  // NOMUTATE: compile-time check
   return (f.kind != Kind::Str && f.kind != Kind::Secret) ||  // NOMUTATE
-         (f.max < f.cap && f.cap <= kHostMax + 1);             // NOMUTATE
+         (f.max < f.cap && f.cap <= kAllowedHostsMax + 1 &&   // NOMUTATE
+          static_cast<size_t>(f.max) < kPatchStrMax);           // NOMUTATE
 }
 template <size_t N>
 constexpr bool allFit(const Field (&a)[N]) {
@@ -203,7 +253,7 @@ constexpr bool allFit(const Field (&a)[N]) {
 static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&
                   allFit(kSyslogFields) && allFit(kWebFields) && allFit(kMqttFields) &&
                   allFit(kValveFields) && allFit(kTempFields) && allFit(kVoltFields) &&
-                  allFit(kCalibFields) && allFit(kRootTail),
+                  allFit(kCalibFields) && allFit(kFailsafeFields) && allFit(kRootTail),
               "string field limits");
 
 struct Group {
@@ -236,6 +286,8 @@ const Group kGroups[] = {
      sizeof(VoltSlotConfig)},
     {"calib", kCalibFields, countOf(kCalibFields), offsetof(Config, calib), 0,
      sizeof(CalibScheduleConfig)},
+    {"failsafe", kFailsafeFields, countOf(kFailsafeFields), offsetof(Config, failsafe), 0,
+     sizeof(FailsafeConfig)},
     {nullptr, kRootTail, countOf(kRootTail), 0, 0, sizeof(Config)},
 };
 
@@ -297,18 +349,73 @@ bool hostValid(const char* s, size_t len) {
   return isHostName(s, kHostMax);
 }
 
+// "" or 1..4 host names separated by ','; spaces around an entry are ignored.
+bool hostListValid(const char* s, size_t len) {
+  size_t entries = 0;
+  for (size_t pos = 0; pos < len;) {
+    size_t end = pos;
+    while (end < len && s[end] != ',') ++end;
+    size_t b = pos, e = end;
+    while (b < e && s[b] == ' ') ++b;
+    while (e > b && s[e - 1] == ' ') --e;
+    char host[kAllowedHostsMax + 1];
+    memcpy(host, s + b, e - b);
+    host[e - b] = '\0';
+    if (++entries > 4 || !isHostName(host, kHostMax)) return false;
+    if (end == len) return true;
+    pos = end + 1;
+    if (pos == len) return false;  // trailing ','
+  }
+  return true;
+}
+
+bool isIdChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+         c == '-';
+}
+
+// '/' only between two non-empty parts.
+bool slashesInside(const char* s, size_t len) {
+  if (len > 0 && (s[0] == '/' || s[len - 1] == '/')) return false;
+  for (size_t i = 1; i < len; ++i) {
+    if (s[i] == '/' && s[i - 1] == '/') return false;
+  }
+  return true;
+}
+
 // `s` holds exactly `len` chars, none of them NUL, followed by a NUL.
 bool stringRuleOk(const Field& f, const char* s, size_t len) {
   if (len < static_cast<size_t>(f.min) || len > static_cast<size_t>(f.max)) return false;
-  if (f.rule == Rule::SafeName) return isSafeName(s, static_cast<size_t>(f.max), f.min == 0);
-  if (f.rule == Rule::Host) return hostValid(s, len);
-  if (f.rule == Rule::NoSpace) {
-    for (size_t i = 0; i < len; ++i) {
-      if (s[i] <= 0x20 || s[i] > 0x7E) return false;
+  switch (f.rule) {
+    case Rule::SafeName: return isSafeName(s, static_cast<size_t>(f.max), f.min == 0);
+    case Rule::Host: return hostValid(s, len);
+    case Rule::HostList: return hostListValid(s, len);
+    case Rule::NoSpace:
+      for (size_t i = 0; i < len; ++i) {
+        if (s[i] <= 0x20 || s[i] > 0x7E) return false;
+      }
+      return true;
+    case Rule::ClientId:
+    case Rule::TopicPath: {
+      const char extra = f.rule == Rule::ClientId ? '.' : '/';
+      for (size_t i = 0; i < len; ++i) {
+        if (!isIdChar(s[i]) && s[i] != extra) return false;
+      }
+      return slashesInside(s, len);
     }
-    return true;
+    case Rule::TopicSegment:
+      if (memchr(s, ' ', len) != nullptr || memchr(s, '+', len) != nullptr ||
+          memchr(s, '#', len) != nullptr || !slashesInside(s, len)) {
+        return false;
+      }
+      break;
+    case Rule::NoColon:
+      if (memchr(s, ':', len) != nullptr) return false;
+      break;
+    case Rule::None:
+    case Rule::Printable:
+      break;
   }
-  if (f.rule == Rule::NoColon && memchr(s, ':', len) != nullptr) return false;
   return isPrintableText(s, len);
 }
 
@@ -354,6 +461,12 @@ bool fieldValid(const Field& f, const uint8_t* p) {
     }
     case Kind::Float:
       return floatOk(f, loadFloat(p));
+    case Kind::PctHold:
+      return *p == kFailsafeHold || (*p >= f.min && *p <= f.max);
+    case Kind::OffOrRange: {
+      const uint16_t v = loadU16(p);
+      return v == 0 || (v >= f.min && v <= f.max);
+    }
   }
   return false;
 }
@@ -421,15 +534,52 @@ bool failAt(PathOut& po, const Group& g, const char* field) {
   return false;
 }
 
+// An item that clashes with an earlier one: its topic override, else its name.
+bool failItem(PathOut& po, const Group& g, int i, const char* topic) {
+  return failAt(po, g, static_cast<uint8_t>(i), topic[0] != '\0' ? "topic" : "name");
+}
+
+// MQTT segment (or with `haId` its buildHaId()) of item i into `out`
+// (kItemNameMax + 1 bytes); false for a temp or volt slot that is not
+// active (validateConfig has already made sure active slots have an id).
+bool itemKey(const Config& c, ItemKind kind, uint8_t i, bool haId, char* out) {
+  if (kind == ItemKind::Temp && !c.temps[i].active) return false;
+  if (kind == ItemKind::Volt && !c.volts[i].active) return false;
+  char seg[kItemNameMax + 1];
+  const size_t n = itemSegment(c, kind, i, seg, sizeof seg);
+  if (haId) {
+    buildHaId(seg, n, out, kItemNameMax + 1);
+  } else {
+    memcpy(out, seg, n + 1);
+  }
+  return true;
+}
+
+// Index of the first item whose key equals the key of an earlier one, -1
+// when there is none.
+int duplicateItem(const Config& c, ItemKind kind, uint8_t count, bool haId) {
+  char a[kItemNameMax + 1];
+  char b[kItemNameMax + 1];
+  for (uint8_t i = 1; i < count; ++i) {
+    if (!itemKey(c, kind, i, haId, a)) continue;
+    for (uint8_t j = 0; j < i; ++j) {
+      if (itemKey(c, kind, j, haId, b) && strcmp(a, b) == 0) return i;
+    }
+  }
+  return -1;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- defaults / validation
 
 void setDefaults(Config& c) { c = Config{}; }
 
-bool validateConfig(const Config& c, char* path, size_t pathCap) {
-  PathOut po(path, pathCap);
-  if (c.schema != kConfigSchemaVersion) return failAt(po, kGroups[0], "schema");
+namespace {
+
+// The rules of 2.0.0: a stored config that passes them can be used as it is.
+bool storedRulesOk(const Config& c, PathOut& po) {
+  if (c.schema != kConfigJsonSchema) return failAt(po, kGroups[0], "schema");
   for (size_t gi = 0; gi < kGroupCount; ++gi) {
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g); ++e) {
@@ -498,6 +648,134 @@ bool validateConfig(const Config& c, char* path, size_t pathCap) {
     }
   }
   return true;
+}
+
+// V1-V3, the rules added after 2.0.0: checked on save and import; a stored
+// config that breaks them is repaired, not dropped.
+bool newRulesOk(const Config& c, PathOut& po) {
+  // V1: Home Assistant reads a decimal point.
+  const MqttConfig& m = c.mqtt;
+  if (m.mode == MqttMode::MqttHa && m.germanDecimal) return failAt(po, kMqtt, "germanDecimal");
+  // V2: one MQTT segment per valve; V3: one HA id per valve, per active slot.
+  int dup = duplicateItem(c, ItemKind::Valve, kValveCount, false);
+  if (dup < 0) dup = duplicateItem(c, ItemKind::Valve, kValveCount, true);
+  if (dup >= 0) return failItem(po, kValves, dup, c.valves[dup].topic);
+  dup = duplicateItem(c, ItemKind::Temp, kTempSlotCount, true);
+  if (dup >= 0) return failItem(po, kTemps, dup, c.temps[dup].topic);
+  dup = duplicateItem(c, ItemKind::Volt, kVoltSlotCount, true);
+  if (dup >= 0) return failItem(po, kVolts, dup, c.volts[dup].topic);
+  return true;
+}
+
+}  // namespace
+
+bool validateConfig(const Config& c, char* path, size_t pathCap) {
+  PathOut po(path, pathCap);
+  return storedRulesOk(c, po) && newRulesOk(c, po);
+}
+
+// ---------------------------------------------------------------- helpers
+
+size_t itemSegment(const Config& c, ItemKind kind, uint8_t idx0, char* out, size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  out[0] = '\0';
+  const char* name = nullptr;
+  const char* topic = nullptr;
+  if (kind == ItemKind::Valve && idx0 < kValveCount) {
+    name = c.valves[idx0].name;
+    topic = c.valves[idx0].topic;
+  } else if (kind == ItemKind::Temp && idx0 < kTempSlotCount) {
+    name = c.temps[idx0].name;
+    topic = c.temps[idx0].topic;
+  } else if (kind == ItemKind::Volt && idx0 < kVoltSlotCount) {
+    name = c.volts[idx0].name;
+    topic = c.volts[idx0].topic;
+  } else {
+    return 0;
+  }
+  char seg[kItemNameMax + 1];
+  const char* src = topic[0] != '\0' ? topic : name;
+  size_t n = boundedLength(src, kItemNameMax);
+  if (n == 0) {
+    n = static_cast<size_t>(snprintf(seg, sizeof seg, "%u", idx0 + 1u));
+  } else {
+    for (size_t i = 0; i < n; ++i) seg[i] = src[i] == ' ' ? '_' : src[i];
+  }
+  if (n >= cap) return 0;
+  memcpy(out, seg, n);
+  out[n] = '\0';
+  return n;
+}
+
+const char* mqttRootTopic(const Config& c) {
+  return c.mqtt.rootTopic[0] != '\0' ? c.mqtt.rootTopic : c.station;
+}
+
+uint32_t effectiveDns(const NetConfig& n) { return !n.dhcp && n.dns == 0 ? n.gateway : n.dns; }
+
+bool netTrialRequired(const NetConfig& before, const NetConfig& after) {
+  if (before.iface != after.iface || before.dhcp != after.dhcp) return true;
+  if (!after.dhcp && (before.ip != after.ip || before.mask != after.mask ||
+                      before.gateway != after.gateway ||
+                      effectiveDns(before) != effectiveDns(after))) {
+    return true;
+  }
+  if (after.iface == NetInterface::Ethernet) return false;  // the same iface in both
+  return strncmp(before.ssid, after.ssid, sizeof before.ssid) != 0 ||
+         strncmp(before.wifiPassword, after.wifiPassword, sizeof before.wifiPassword) != 0;
+}
+
+uint8_t configRestartReasons(const Config& before, const Config& after) {
+  uint8_t r = netTrialRequired(before.net, after.net) ? kRestartNetwork : 0;
+  char a[kStationNameMax + 1];
+  char b[kStationNameMax + 1];
+  buildHostname(before.station, a, sizeof a);
+  buildHostname(after.station, b, sizeof b);
+  if (strcmp(a, b) != 0) r |= kRestartHostname;
+  return r;
+}
+
+namespace {
+
+// Equal stored values of one field (strings compared up to their NUL).
+bool sameField(const Field& f, const uint8_t* a, const uint8_t* b) {
+  if (f.kind == Kind::Str || f.kind == Kind::Secret) {
+    return strncmp(reinterpret_cast<const char*>(a), reinterpret_cast<const char*>(b), f.cap) == 0;
+  }
+  size_t size = 1;  // Bool, U8, PctHold
+  if (f.kind == Kind::U16 || f.kind == Kind::Tenths || f.kind == Kind::OffOrRange) size = 2;
+  if (f.kind == Kind::Ip || f.kind == Kind::Mask || f.kind == Kind::Float) size = 4;
+  if (f.kind == Kind::Id) size = sizeof(OneWireId::b);
+  return memcmp(a, b, size) == 0;
+}
+
+// The fields of a valve or sensor slot that shape its MQTT topics.
+bool topicField(const Field& f) {
+  return strcmp(f.name, "name") == 0 || strcmp(f.name, "active") == 0 ||
+         strcmp(f.name, "topic") == 0 || strcmp(f.name, "id") == 0;
+}
+
+// The fields of group g, element e (with `itemsOnly` the topicField() ones).
+bool sameFields(const Config& a, const Config& b, const Group& g, uint8_t e, bool itemsOnly) {
+  for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
+    const Field& f = g.fields[fi];
+    if (itemsOnly && !topicField(f)) continue;
+    if (!sameField(f, fieldPtr(a, g, e, f), fieldPtr(b, g, e, f))) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool mqttTopicConfigChanged(const Config& a, const Config& b) {
+  if (!sameFields(a, b, kGroups[0], 0, false) || !sameFields(a, b, kMqtt, 0, false)) return true;
+  const Group* const items[] = {&kValves, &kTemps, &kVolts};
+  for (const Group* g : items) {
+    for (uint8_t e = 0; e < g->count; ++e) {
+      if (!sameFields(a, b, *g, e, true)) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- key paths
@@ -655,17 +933,23 @@ SetResult setField(Config& c, const Group& g, uint8_t element, const Field& f,
       return SetResult::Ok;
     }
     case Kind::U8:
-    case Kind::U16: {
+    case Kind::U16:
+    case Kind::PctHold:
+    case Kind::OffOrRange: {
       int64_t i;
       const Conv r = toInteger(v, i);
       if (r != Conv::Ok) return fromConv(r);
-      if (i < f.min || i > f.max) return SetResult::OutOfRange;
-      if (f.kind == Kind::U8) {
-        *p = static_cast<uint8_t>(i);
-      } else {
+      // Stored like the field, then checked like a stored value, so the
+      // special values (kFailsafeHold, 0 = off) follow the one rule.
+      const bool wide = f.kind == Kind::U16 || f.kind == Kind::OffOrRange;
+      if (i < 0 || i > (wide ? UINT16_MAX : UINT8_MAX)) return SetResult::OutOfRange;
+      uint8_t probe[2] = {static_cast<uint8_t>(i), 0};
+      if (wide) {
         const uint16_t u = static_cast<uint16_t>(i);
-        memcpy(p, &u, sizeof u);
+        memcpy(probe, &u, sizeof u);
       }
+      if (!fieldValid(f, probe)) return SetResult::OutOfRange;
+      memcpy(p, probe, wide ? 2 : 1);
       return SetResult::Ok;
     }
     case Kind::Str:
@@ -676,7 +960,7 @@ SetResult setField(Config& c, const Group& g, uint8_t element, const Field& f,
       if (v.len > static_cast<size_t>(f.max) || memchr(v.s, '\0', v.len) != nullptr) {
         return SetResult::OutOfRange;
       }
-      char tmp[kHostMax + 1];  // the largest field (64 chars) incl. NUL
+      char tmp[kAllowedHostsMax + 1];  // the largest field (80 chars) incl. NUL
       memcpy(tmp, v.s, v.len);
       tmp[v.len] = '\0';
       if (!stringRuleOk(f, tmp, v.len)) return SetResult::OutOfRange;
@@ -773,9 +1057,10 @@ SetResult setConfigValue(Config& c, const char* path, const ConfigValue& v, bool
 
   if (last) {
     if (segmentIs(seg, segLen, "schema")) {
+      // A 2.0.0 export says 1; both post back unchanged.
       int64_t i;
-      return toInteger(v, i) == Conv::Ok && i == kConfigSchemaVersion ? SetResult::Ok
-                                                                      : SetResult::ReadOnly;
+      return toInteger(v, i) == Conv::Ok && i >= 1 && i <= kConfigJsonSchema ? SetResult::Ok
+                                                                              : SetResult::ReadOnly;
     }
     for (size_t gi = 0; gi < kGroupCount; ++gi) {
       if (kGroups[gi].name != nullptr) continue;
@@ -827,8 +1112,8 @@ void writeFloat(JsonWriter& jw, float v) {
   jw.raw(tmp);
 }
 
-void writeField(JsonWriter& jw, const Field& f, const uint8_t* p) {
-  if (f.kind == Kind::Secret) {
+void writeField(JsonWriter& jw, const Field& f, const uint8_t* p, SecretMode secrets) {
+  if (f.kind == Kind::Secret && secrets == SecretMode::Flags) {
     char name[32];
     snprintf(name, sizeof name, "%sSet", f.name);
     jw.key(name);
@@ -841,12 +1126,15 @@ void writeField(JsonWriter& jw, const Field& f, const uint8_t* p) {
       jw.value(*p != 0);
       break;
     case Kind::U8:
+    case Kind::PctHold:
       jw.value(static_cast<uint32_t>(*p));
       break;
     case Kind::U16:
+    case Kind::OffOrRange:
       jw.value(static_cast<uint32_t>(loadU16(p)));
       break;
-    case Kind::Str: {
+    case Kind::Str:
+    case Kind::Secret: {
       const char* s = reinterpret_cast<const char*>(p);
       jw.value(s, boundedLength(s, f.cap - 1u));
       break;
@@ -872,41 +1160,44 @@ void writeField(JsonWriter& jw, const Field& f, const uint8_t* p) {
       jw.value(tmp);
       break;
     }
-    case Kind::Secret:
-      break;
   }
 }
 
-void writeFields(JsonWriter& jw, const Config& c, const Group& g, uint8_t element) {
+void writeFields(JsonWriter& jw, const Config& c, const Group& g, uint8_t element,
+                 SecretMode secrets) {
   for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
-    writeField(jw, g.fields[fi], fieldPtr(c, g, element, g.fields[fi]));
+    writeField(jw, g.fields[fi], fieldPtr(c, g, element, g.fields[fi]), secrets);
   }
 }
 
 }  // namespace
 
-bool writeConfigJson(JsonWriter& jw, const Config& c) {
+bool writeConfigJson(JsonWriter& jw, const Config& c, SecretMode secrets, const ApplyInfo* apply) {
   jw.beginObject();
   jw.kv("schema", static_cast<uint32_t>(c.schema));
   for (size_t gi = 0; gi < kGroupCount; ++gi) {
     const Group& g = kGroups[gi];
     if (g.name == nullptr) {
-      writeFields(jw, c, g, 0);
+      writeFields(jw, c, g, 0, secrets);
     } else if (g.count == 0) {
       jw.key(g.name);
       jw.beginObject();
-      writeFields(jw, c, g, 0);
+      writeFields(jw, c, g, 0, secrets);
       jw.endObject();
     } else {
       jw.key(g.name);
       jw.beginArray();
       for (uint8_t e = 0; e < g.count; ++e) {
         jw.beginObject();
-        writeFields(jw, c, g, e);
+        writeFields(jw, c, g, e, secrets);
         jw.endObject();
       }
       jw.endArray();
     }
+  }
+  if (apply != nullptr) {
+    jw.kv("restartRequired", apply->restartRequired);
+    jw.kv("netTrial", apply->netTrial);
   }
   jw.endObject();
   return jw.ok();
@@ -964,10 +1255,9 @@ class PatchWalker {
   bool clearSecrets() const { return clearSecretsValue_; }
 
  private:
-  // Longest decoded string kept; every string field is shorter, so a
-  // truncated value is still rejected as out of range.
-  // NOMUTATE on the next line: any size above the longest field (64) is equivalent.
-  static constexpr size_t kStrMax = 96;  // NOMUTATE
+  // Longest decoded string kept; every string field is shorter (fits()), so
+  // a truncated value is still rejected as out of range.
+  static constexpr size_t kStrMax = kPatchStrMax;
 
   bool syntaxError() {
     result_ = PatchResult::Malformed;
@@ -1271,6 +1561,10 @@ namespace {
 constexpr uint8_t kMagic[4] = {'V', 'D', 'M', 'C'};
 constexpr size_t kHeaderSize = 8;  // magic + schema + payload length
 constexpr size_t kCrcSize = 4;
+constexpr uint8_t kExtMagic[4] = {'V', 'D', 'M', 'X'};
+constexpr uint8_t kExtVersion = 1;
+constexpr size_t kExtHeaderSize = 7;  // magic + version + payload length
+constexpr size_t kExtRecordHead = 3;  // tag, element, length
 
 class ByteOut {
  public:
@@ -1346,10 +1640,12 @@ void encodeField(ByteOut& out, const Field& f, const uint8_t* p) {
   switch (f.kind) {
     case Kind::Bool:
     case Kind::U8:
+    case Kind::PctHold:
       out.u8(*p);
       break;
     case Kind::U16:
     case Kind::Tenths:
+    case Kind::OffOrRange:
       out.u16(loadU16(p));
       break;
     case Kind::Str:
@@ -1375,11 +1671,13 @@ void decodeField(ByteIn& in, const Field& f, uint8_t* p) {
   switch (f.kind) {
     case Kind::Bool:
     case Kind::U8:
+    case Kind::PctHold:
       *p = in.u8();
       if (f.kind == Kind::Bool && *p > 1) in.fail();
       break;
     case Kind::U16:
-    case Kind::Tenths: {
+    case Kind::Tenths:
+    case Kind::OffOrRange: {
       const uint16_t v = in.u16();
       memcpy(p, &v, sizeof v);
       break;
@@ -1410,17 +1708,59 @@ void decodeField(ByteIn& in, const Field& f, uint8_t* p) {
   }
 }
 
+uint32_t loadLe32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+// The `cfgx` field with this tag.
+bool findExt(uint8_t tag, const Group*& group, const Field*& field) {
+  for (const Group& g : kGroups) {
+    for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
+      if (g.fields[fi].ext != tag) continue;
+      group = &g;
+      field = &g.fields[fi];
+      return true;
+    }
+  }
+  return false;
+}
+
+// One record's value into its field, when it passes the field rule.
+bool applyExt(Config& c, const Group& g, const Field& f, uint8_t element, const uint8_t* v,
+              uint8_t n) {
+  if (element >= elementCount(g)) return false;
+  uint8_t tmp[kAllowedHostsMax + 1] = {0};
+  size_t size = n;
+  if (f.kind == Kind::Str) {
+    if (n > f.max || memchr(v, '\0', n) != nullptr) return false;
+    memcpy(tmp, v, n);
+    ++size;  // with the NUL
+  } else {
+    if (n != (f.kind == Kind::PctHold ? 1 : 2)) return false;
+    tmp[0] = v[0];
+    if (n == 2) {
+      const uint16_t u = static_cast<uint16_t>(v[0] | v[1] << 8);  // little endian on the wire
+      memcpy(tmp, &u, sizeof u);
+    }
+  }
+  if (!fieldValid(f, tmp)) return false;
+  memcpy(fieldPtr(c, g, element, f), tmp, size);
+  return true;
+}
+
 }  // namespace
 
 size_t encodeConfig(const Config& c, uint8_t* out, size_t cap) {
   ByteOut bo(out, cap);
   bo.bytes(kMagic, sizeof kMagic);
-  bo.u16(kConfigSchemaVersion);
+  bo.u16(kConfigBaseSchema);
   bo.u16(0);  // payload length, patched below
   for (size_t gi = 0; gi < kGroupCount; ++gi) {
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g); ++e) {
       for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
+        if (g.fields[fi].ext != 0) continue;
         encodeField(bo, g.fields[fi], fieldPtr(c, g, e, g.fields[fi]));
       }
     }
@@ -1433,23 +1773,28 @@ size_t encodeConfig(const Config& c, uint8_t* out, size_t cap) {
   return bo.ok() ? bo.length() : 0;
 }
 
-DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out) {
+uint32_t sanitizeConfig(Config& c, Repairs* out) {
+  // Pass-through: the loader still rejects what a repair would fix.
+  (void)c;
+  if (out != nullptr) *out = Repairs{};
+  return 0;
+}
+
+DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out, DecodeInfo* info) {
   setDefaults(out);
+  if (info != nullptr) *info = DecodeInfo{};
   if (data == nullptr || len < kHeaderSize + kCrcSize) return DecodeResult::TooShort;
   if (memcmp(data, kMagic, sizeof kMagic) != 0) return DecodeResult::BadMagic;
   const uint16_t schema = static_cast<uint16_t>(data[4] | (data[5] << 8));
+  if (info != nullptr) info->schema = schema;
   const size_t payload = static_cast<size_t>(data[6] | (data[7] << 8));
   if (len < kHeaderSize + payload + kCrcSize) return DecodeResult::TooShort;
   if (len > kHeaderSize + payload + kCrcSize) return DecodeResult::Invalid;
   const size_t crcAt = kHeaderSize + payload;
-  const uint32_t stored = static_cast<uint32_t>(data[crcAt]) |
-                          (static_cast<uint32_t>(data[crcAt + 1]) << 8) |
-                          (static_cast<uint32_t>(data[crcAt + 2]) << 16) |
-                          (static_cast<uint32_t>(data[crcAt + 3]) << 24);
-  if (crc32(data, crcAt) != stored) return DecodeResult::BadCrc;
+  if (crc32(data, crcAt) != loadLe32(data + crcAt)) return DecodeResult::BadCrc;
   // Schema 1 is the first one; older blobs do not exist. A newer schema is
   // left alone so a downgrade does not destroy it.
-  if (schema != kConfigSchemaVersion) return DecodeResult::UnsupportedSchema;
+  if (schema != kConfigBaseSchema) return DecodeResult::UnsupportedSchema;
 
   // Decoded in place (Config is too big for a second copy on small stacks);
   // any failure puts the defaults back.
@@ -1458,15 +1803,94 @@ DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out) {
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g) && in.ok(); ++e) {
       for (uint8_t fi = 0; fi < g.fieldCount && in.ok(); ++fi) {
+        if (g.fields[fi].ext != 0) continue;
         decodeField(in, g.fields[fi], fieldPtr(out, g, e, g.fields[fi]));
       }
     }
   }
-  if (!in.ok() || !in.atEnd() || !validateConfig(out, nullptr, 0)) {
+  // The rules added after 2.0.0 never drop a stored config.
+  PathOut none(nullptr, 0);
+  if (!in.ok() || !in.atEnd() || !storedRulesOk(out, none)) {
     setDefaults(out);
     return DecodeResult::Invalid;
   }
   return DecodeResult::Ok;
+}
+
+size_t encodeConfigExt(const Config& c, uint8_t* out, size_t cap, const uint8_t* keep,
+                       size_t keepLen) {
+  ByteOut bo(out, cap);
+  bo.bytes(kExtMagic, sizeof kExtMagic);
+  bo.u8(kExtVersion);
+  bo.u16(0);  // payload length, patched below
+  for (size_t gi = 0; gi < kGroupCount; ++gi) {
+    const Group& g = kGroups[gi];
+    for (uint8_t e = 0; e < elementCount(g); ++e) {
+      for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
+        const Field& f = g.fields[fi];
+        if (f.ext == 0) continue;
+        bo.u8(f.ext);
+        bo.u8(e);
+        // Strings carry their length byte already.
+        if (f.kind != Kind::Str) bo.u8(f.kind == Kind::PctHold ? 1 : 2);
+        encodeField(bo, f, fieldPtr(c, g, e, f));
+      }
+    }
+  }
+  if (keep != nullptr) bo.bytes(keep, keepLen);
+  if (!bo.ok()) return 0;
+  const size_t payload = bo.length() - kExtHeaderSize;  // < 2 KiB, fits u16
+  out[5] = static_cast<uint8_t>(payload);
+  out[6] = static_cast<uint8_t>(payload >> 8);
+  bo.u32(crc32(out, bo.length()));
+  return bo.ok() ? bo.length() : 0;
+}
+
+ExtResult decodeConfigExt(const uint8_t* data, size_t len, Config& inout, ExtInfo* info,
+                          uint8_t* keep, size_t keepCap) {
+  ExtInfo local;
+  ExtInfo& r = info != nullptr ? *info : local;
+  r = ExtInfo{};
+  if (data == nullptr || len == 0) return ExtResult::Absent;
+  if (len < kExtHeaderSize + kCrcSize) return ExtResult::TooShort;
+  if (memcmp(data, kExtMagic, sizeof kExtMagic) != 0) return ExtResult::BadMagic;
+  const size_t end = kExtHeaderSize + static_cast<size_t>(data[5] | (data[6] << 8));
+  if (len < end + kCrcSize) return ExtResult::TooShort;
+  if (crc32(data, end) != loadLe32(data + end)) return ExtResult::BadCrc;
+  const size_t keepMax = keepCap < kConfigExtKeepMax ? keepCap : kConfigExtKeepMax;
+  for (size_t pos = kExtHeaderSize; pos < end;) {
+    // A record cut by the payload end (only a broken writer does that).
+    if (end - pos < kExtRecordHead || end - pos - kExtRecordHead < data[pos + 2]) {
+      ++r.bad;
+      break;
+    }
+    const size_t recLen = kExtRecordHead + data[pos + 2];
+    const Group* g = nullptr;
+    const Field* f = nullptr;
+    if (!findExt(data[pos], g, f)) {
+      ++r.unknown;
+      if (keep != nullptr && recLen <= keepMax - r.keepLen) {
+        memcpy(keep + r.keepLen, data + pos, recLen);
+        r.keepLen += recLen;
+      }
+    } else if (applyExt(inout, *g, *f, data[pos + 1], data + pos + kExtRecordHead,
+                        data[pos + 2])) {
+      ++r.applied;
+    } else {
+      ++r.bad;
+    }
+    pos += recLen;
+  }
+  return ExtResult::Ok;
+}
+
+bool loadConfigBlobs(const StoredBlobs& b, Config& out, LoadInfo& info, uint8_t* keep,
+                     size_t keepCap) {
+  info = LoadInfo{};
+  info.base = decodeConfig(b.base, b.baseLen, out, &info.decode);
+  if (info.base != DecodeResult::Ok) return false;
+  info.ext = decodeConfigExt(b.ext, b.extLen, out, &info.extInfo, keep, keepCap);
+  return true;
 }
 
 uint32_t crc32(const uint8_t* data, size_t len, uint32_t crc) {
