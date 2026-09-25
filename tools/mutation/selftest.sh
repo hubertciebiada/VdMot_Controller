@@ -212,6 +212,9 @@ int fixed() { return Fixed<1>{}.v[0]; }
 CHECKED(1);
 constexpr int kSize = 4;
 #include "wsize.h"
+void sink(int) {}
+void call() { return sink(1);  // out of memory
+}
 CPP
 cat >"$T/warn/proj/src/wh.h" <<'CPP'
 template <int N> struct Fixed { static_assert(N > 0, "N"); int v[N > 0 ? N : 1]; };
@@ -239,6 +242,9 @@ for check in "14:src/wh.h:required from" "15:src/wh.h:in expansion of macro" "16
 done
 [ "$(report warn "r['totals']['counted'] == r['totals']['killed'] + r['totals']['survived'] + r['totals']['timeout']")" = "True" ] ||
   fail "stillborn mutants were counted"
+# GCC quotes the source line of the error: its comment is not a toolchain crash
+[ "$(report warn "[m['status'] for m in M if m['line'] == 19 and m['op'] == 'retval']")" = "['stillborn']" ] ||
+  fail "an error quoting '// out of memory' is not stillborn: $(report warn "[(m['status'], m['detail']) for m in M if m['line'] == 19]")"
 ok "-Wparentheses mutant built and counted; compile errors located in the file and undefined symbols stillborn, excluded"
 
 # --- a build that fails without an error in the mutated file (full disk, a killed linker, linker

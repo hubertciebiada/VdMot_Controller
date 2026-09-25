@@ -158,6 +158,9 @@ DIAGNOSTIC_CONTEXT = re.compile(r"(?:In file included|\s+) from (?P<include>[^:]
                                 r"|(?P<scope>[^\s:][^:]*): (?:In|At) .*:"
                                 r"|(?P<chain>[^\s:][^:]*):\d+(?::\d+)?:   \S.*")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# GCC quotes the source of a diagnostic (" 1210 |   return 0;  // out of memory", "   |   ^"): the
+# text of a source line is never a toolchain message.
+SOURCE_EXCERPT = re.compile(r"^\s*\d*\s*\|")
 
 
 class ConfigError(Exception):
@@ -700,8 +703,10 @@ def classify_build_failure(rc: int, out: str, rel: str) -> tuple[str, str]:
     build environment."""
     if rc == TIMEOUT_RC:
         return "error", "build timeout"
+    messages = "\n".join(line for line in ANSI_ESCAPE.sub("", out).splitlines()
+                         if not SOURCE_EXCERPT.match(line))
     for pattern in BUILD_CRASHES:
-        if pattern in out:
+        if pattern in messages:
             return "error", f"build failed: {pattern}"
     if rc < 0:
         return "error", f"build killed by signal {-rc}"
