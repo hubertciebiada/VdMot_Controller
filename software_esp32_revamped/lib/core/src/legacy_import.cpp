@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "vdm/json_writer.h"
+
 namespace vdm {
 
 namespace {
@@ -10,7 +12,7 @@ namespace {
 constexpr int64_t kEpoch2020 = 1577836800;  // 2020-01-01T00:00:00Z
 constexpr int64_t kEpoch2100 = 4102444800;  // sanity bound for a stored time_t
 
-// Legacy blob element layouts (Xtensa GCC, specs/04 §5).
+// Legacy blob element layouts (Xtensa GCC, DESIGN.md "Legacy import").
 constexpr size_t kValveElem = 12;   // name[11]@0 active@11
 constexpr size_t kTempElem = 44;    // name[11]@0 active@11 int offset@12 ID[25]@16
 constexpr size_t kVoltElem = 56;    // name[11]@0 active@11 float offset@12 float factor@16
@@ -22,6 +24,7 @@ constexpr size_t kLegacyIdLen = 25;
 static_assert(kValveElem * kValveCount == kLegacyValvesBlob, "valves blob layout");
 static_assert(kTempElem * kTempSlotCount == kLegacyTempsBlob, "temps blob layout");
 static_assert((kVoltElem + 4) * kVoltSlotCount == kLegacyVoltsBlob, "volts blob layout");
+static_assert(kVoltElem * kVoltSlotCount == kLegacyVoltsBlob140, "1.4.0 volts blob layout");
 
 // Largest legacy string (64 chars) plus one, so an over-long value is read
 // completely and rejected by the field rule instead of being cut.
@@ -74,8 +77,10 @@ class Importer {
     importTemps();
     importVolts();
     importMisc();
+    importValvesCtrl();
+    importMessenger();
     countDropped();
-    fixCrossFieldRules();
+    repair();
   }
 
  private:
@@ -200,7 +205,17 @@ class Importer {
 
   // ------------------------------------------------------------ namespaces
 
-  void importSys() { stringKey("sysCfg", "stName", "station"); }
+  void importSys() {
+    char s[kStrBuf];
+    if (!readString("sysCfg", "stName", s)) return;
+    if (s[0] == '\0') {
+      // The legacy firmware published under "VdMotFBH/" without a name.
+      setString("mqtt.rootTopic", "VdMotFBH");
+      imported();
+      return;
+    }
+    setString("station", s) ? imported() : rejected("sysCfg", "stName");
+  }
 
   void importNet() {
     intKey("netCfg", "ethwifi", "net.iface");
@@ -215,7 +230,13 @@ class Importer {
     stringKey("netCfg", "userName", "web.user");
     stringKey("netCfg", "userPwd", "web.password");
     stringKey("netCfg", "timeServer", "time.ntpServer");
-    intKey("netCfg", "syslogEnable", "syslog.level");
+    int64_t level;
+    if (readInt("netCfg", "syslogEnable", level)) {
+      // 1..3 were debug verbosity levels: everything is sent.
+      r_.syslogDebug = level >= 1 && level <= 3;
+      const bool ok = (level == 0 || r_.syslogDebug) && setInt("syslog.level", level == 0 ? 0 : 3);
+      ok ? imported() : rejected("netCfg", "syslogEnable");
+    }
     ipKey("netCfg", "sysLogIp", "syslog.server");
     portKey("netCfg", "sysLogPort", "syslog.port", 514);
   }
@@ -276,8 +297,19 @@ class Importer {
         c_.mqtt.germanDecimal = (v & 0x04) != 0;
         imported();
         if ((v & 0x03) != 0) ++r_.ignored;  // tValue / DS18 failsafes are dropped
+        if ((v & 0x01) != 0) r_.dropped |= kDroppedLegacyFailsafe;
+        if ((v & 0x02) != 0) r_.dropped |= kDroppedDs18Timeout;
+        r_.legacyFailsafeEnabled = (v & 0x01) != 0;
       }
     }
+    // Reported only: the new failsafe keeps its defaults (60 min / 50 %).
+    int64_t timeout;
+    int64_t pct;
+    const bool haveTimeout = nvs_.readInt("protCfg", "brokerMQTO", timeout);
+    const bool havePct = nvs_.readInt("protCfg", "brokerMQToPos", pct);
+    r_.legacyFailsafeValid = haveTimeout || havePct;
+    if (haveTimeout) r_.legacyFailsafeTimeoutMin = static_cast<int32_t>(timeout);
+    if (havePct) r_.legacyFailsafePct = static_cast<int32_t>(pct);
   }
 
   // Legacy char[n] field: the text up to the first NUL; false when the
@@ -304,13 +336,52 @@ class Importer {
     return f;
   }
 
+  void markRenamed(ItemKind kind, size_t i) {
+    if (kind == ItemKind::Valve) {
+      r_.renamedValves = static_cast<uint16_t>(r_.renamedValves | (1u << i));
+    } else if (kind == ItemKind::Temp) {
+      r_.renamedTemps |= 1ull << i;
+    } else {
+      r_.renamedVolts = static_cast<uint8_t>(r_.renamedVolts | (1u << i));
+    }
+  }
+
+  // A printable legacy name with characters MQTT topics cannot carry: they
+  // become '_'; a name with '/', '"' or '\' (and no wildcard) keeps its
+  // legacy topic segment as the item's override. False when even the
+  // replaced name is not valid.
+  bool renameItem(const char* group, ItemKind kind, size_t i, const char* name) {
+    const size_t len = strlen(name);
+    if (!isPrintableText(name, len)) return false;
+    char safe[kLegacyNameLen];
+    char topic[kLegacyNameLen];
+    bool keepTopic = true;
+    for (size_t k = 0; k <= len; ++k) {
+      const char ch = name[k];
+      const bool wildcard = ch == '+' || ch == '#';
+      keepTopic = keepTopic && !wildcard;
+      safe[k] = wildcard || ch == '/' || ch == '"' || ch == '\\' ? '_' : ch;
+      topic[k] = ch == ' ' ? '_' : ch;
+    }
+    char path[24];
+    snprintf(path, sizeof path, "%s.%u.name", group, static_cast<unsigned>(i + 1));
+    if (!setString(path, safe)) return false;
+    markRenamed(kind, i);
+    if (keepTopic && strpbrk(name, "/\"\\") != nullptr) {
+      snprintf(path, sizeof path, "%s.%u.topic", group, static_cast<unsigned>(i + 1));
+      setString(path, topic);  // not a valid segment ("/Bad"): no override
+    }
+    return true;
+  }
+
   // Common part of every blob element: name[11]@0, active@11.
-  void elemNameActive(const char* ns, const char* key, const char* group, size_t i,
+  void elemNameActive(const char* ns, const char* key, const char* group, ItemKind kind, size_t i,
                       const uint8_t* e) {
     char path[24];
     char name[kLegacyNameLen];
     snprintf(path, sizeof path, "%s.%u.name", group, static_cast<unsigned>(i + 1));
-    if (!fixedString(e, kLegacyNameLen, name) || !setString(path, name)) {
+    if (!fixedString(e, kLegacyNameLen, name) ||
+        (!setString(path, name) && !renameItem(group, kind, i, name))) {
       rejectedElem(ns, key, i, "name");
     }
     snprintf(path, sizeof path, "%s.%u.active", group, static_cast<unsigned>(i + 1));
@@ -330,7 +401,7 @@ class Importer {
     if (readBlob("valvesCfg", "valves", blob, sizeof blob)) {
       imported();
       for (size_t i = 0; i < kValveCount; ++i) {
-        elemNameActive("valvesCfg", "valves", "valves", i, blob + i * kValveElem);
+        elemNameActive("valvesCfg", "valves", "valves", ItemKind::Valve, i, blob + i * kValveElem);
       }
     }
     importCalib();
@@ -357,7 +428,7 @@ class Importer {
     imported();
     for (size_t i = 0; i < kTempSlotCount; ++i) {
       const uint8_t* e = blob + i * kTempElem;
-      elemNameActive("tempsCfg", "temps", "temps", i, e);
+      elemNameActive("tempsCfg", "temps", "temps", ItemKind::Temp, i, e);
       int32_t off = loadI32(e + 12);
       if (off < -100 || off > 100) {
         rejectedElem("tempsCfg", "temps", i, "offset");
@@ -370,12 +441,20 @@ class Importer {
 
   void importVolts() {
     uint8_t blob[kLegacyVoltsBlob];
-    if (!readBlob("voltsCfg", "volts", blob, sizeof blob)) return;
+    size_t stored = 0;
+    if (!nvs_.readBlob("voltsCfg", "volts", blob, sizeof blob, stored)) return;
+    r_.anyLegacy = true;
+    // 1.4.0 wrote the 8 elements without the tail of 1.4.1.
+    if (stored != kLegacyVoltsBlob && stored != kLegacyVoltsBlob140) {
+      rejected("voltsCfg", "volts");
+      return;
+    }
+    r_.voltsBlob448 = stored == kLegacyVoltsBlob140;
     imported();
     for (size_t i = 0; i < kVoltSlotCount; ++i) {
       const uint8_t* e = blob + i * kVoltElem;
       char path[24];
-      elemNameActive("voltsCfg", "volts", "volts", i, e);
+      elemNameActive("voltsCfg", "volts", "volts", ItemKind::Volt, i, e);
       snprintf(path, sizeof path, "volts.%u.offset", static_cast<unsigned>(i + 1));
       if (!setFloat(path, loadF32(e + 12))) rejectedElem("voltsCfg", "volts", i, "offset");
       snprintf(path, sizeof path, "volts.%u.factor", static_cast<unsigned>(i + 1));
@@ -401,6 +480,34 @@ class Importer {
     }
   }
 
+  // valvesCtrl (PI control, window contacts): only counted for the report.
+  // Every legacy version starts its element with controlFlags; the element
+  // size grew over the versions, the count is always 12.
+  void importValvesCtrl() {
+    static uint8_t blob[kLegacyValvesCtrlMax];
+    size_t stored = 0;
+    if (!nvs_.readBlob("valvesCtrlCfg", "valvesCtrl", blob, sizeof blob, stored)) return;
+    if (stored % kValveCount != 0 || stored < kValveCount || stored > sizeof blob) {
+      rejected("valvesCtrlCfg", "valvesCtrl");
+      return;
+    }
+    const size_t elem = stored / kValveCount;
+    for (size_t i = 0; i < kValveCount; ++i) {
+      const uint8_t flags = blob[i * elem];
+      if ((flags & 0x01) != 0) ++r_.piValves;
+      if ((flags & 0x10) != 0) ++r_.windowValves;
+    }
+    if (r_.piValves != 0) r_.dropped |= kDroppedPi;
+    if (r_.windowValves != 0) r_.dropped |= kDroppedWindow;
+  }
+
+  void importMessenger() {
+    int64_t flags;
+    if (nvs_.readInt("msgCfg", "msgFlags", flags) && (flags & 0x03) != 0) {
+      r_.dropped |= kDroppedMessenger;  // bit0 PushOver, bit1 e-mail
+    }
+  }
+
   void countDropped() {
     for (const DroppedKey& k : kDropped) {
       int64_t i;
@@ -418,158 +525,56 @@ class Importer {
 
   // ------------------------------------------------------------ cross-field rules
 
-  // Clears the optional feature that breaks a rule, so the result always
-  // passes validateConfig(). Order matches validateConfig().
-  void fixCrossFieldRules() {
-    NetConfig& n = c_.net;
-    if (!n.dhcp && (n.ip == 0 || n.mask == 0 || n.gateway == 0)) {
-      n.dhcp = true;  // an incomplete static setup would leave the device unreachable
-      rejected("netCfg", "dhcp");
-    }
-    const size_t pwdLen = strlen(n.wifiPassword);
-    if (n.ssid[0] != '\0' && pwdLen > 0 && pwdLen < 8) {  // "" = open network
-      n.ssid[0] = '\0';
-      n.wifiPassword[0] = '\0';
-      rejected("netCfg", "pwd");
-    }
-    if (n.iface == NetInterface::Wifi && n.ssid[0] == '\0') {
-      n.iface = NetInterface::Auto;
-      rejected("netCfg", "ethwifi");
-    }
-    if (c_.syslog.level > 0 && c_.syslog.server == 0) {
-      c_.syslog.level = 0;
-      rejected("netCfg", "syslogEnable");
-    }
-    WebConfig& w = c_.web;
-    if ((w.user[0] == '\0') != (w.password[0] == '\0')) {
-      rejected("netCfg", w.user[0] == '\0' ? "userName" : "userPwd");
-      w.user[0] = '\0';
-      w.password[0] = '\0';
-    }
-    MqttConfig& m = c_.mqtt;
-    if (m.mode != MqttMode::Off && m.host[0] == '\0') {
-      m.mode = MqttMode::Off;
-      rejected("protCfg", "brokerIp");
-    }
-    if (m.minDelayS > m.publishIntervalS) {
-      m.minDelayS = m.publishIntervalS;
-      rejected("protCfg", "brokerMD");
-    }
-    if (m.mode == MqttMode::MqttHa && !m.separate) {
-      m.mode = MqttMode::Mqtt;
-      rejected("protCfg", "dataProt");
-    }
-    // Home Assistant reads a decimal point (legacy HA mode allowed the comma).
-    if (m.mode == MqttMode::MqttHa && m.germanDecimal) {
-      m.germanDecimal = false;
-      rejected("protCfg", "brokerMQF");
-    }
-    fixValveNames();
-    fixSlots();
+  using Name = char[kItemNameMax + 1];
 
-    // Safety net: never hand out a config that does not validate.
-    char path[40];
-    if (!validateConfig(c_, path, sizeof path)) {
-      setDefaults(c_);
-      rejected("validate", path);
+  // sanitizeConfig() makes the result valid; every repair is reported under
+  // the legacy key it came from, in the order of the rules.
+  void repair() {
+    static Name temps[kTempSlotCount];  // 374 bytes: off the caller's stack
+    Name volts[kVoltSlotCount];
+    for (uint8_t i = 0; i < kTempSlotCount; ++i) memcpy(temps[i], c_.temps[i].name, sizeof temps[i]);
+    for (uint8_t i = 0; i < kVoltSlotCount; ++i) memcpy(volts[i], c_.volts[i].name, sizeof volts[i]);
+    Repairs r;
+    sanitizeConfig(c_, &r);
+    struct Bit {
+      uint32_t bit;
+      const char* ns;
+      const char* key;
+    };
+    static const Bit kKeys[] = {
+        {kRepairStaticIp, "netCfg", "dhcp"},         {kRepairWifiPassword, "netCfg", "pwd"},
+        {kRepairWifiIface, "netCfg", "ethwifi"},     {kRepairSyslog, "netCfg", "syslogEnable"},
+        {kRepairWebNoPassword, "netCfg", "userPwd"}, {kRepairWebNoUser, "netCfg", "userName"},
+        {kRepairMqttHost, "protCfg", "brokerIp"},    {kRepairMinDelay, "protCfg", "brokerMD"},
+        {kRepairHaSeparate, "protCfg", "dataProt"},  {kRepairHaDecimal, "protCfg", "brokerMQF"},
+    };
+    for (const Bit& b : kKeys) {
+      if ((r.mask & b.bit) != 0) rejected(b.ns, b.key);
     }
+    for (uint8_t i = 0; i < kValveCount; ++i) {
+      if ((r.valveNames >> i) & 1u) rejectedElem("valvesCfg", "valves", i, "name");
+      if ((r.valveTopics >> i) & 1u) rejectedElem("valvesCfg", "valves", i, "topic");
+      if (((r.valveNames | r.valveTopics) >> i) & 1u) markRenamed(ItemKind::Valve, i);
+    }
+    slotRepairs(c_.temps, kTempSlotCount, temps, r.tempIds, r.tempActive, ItemKind::Temp,
+                "tempsCfg", "temps");
+    slotRepairs(c_.volts, kVoltSlotCount, volts, r.voltIds, r.voltActive, ItemKind::Volt,
+                "voltsCfg", "volts");
   }
 
-  using HaId = char[sizeof(ValveConfig::name)];  // a segment is never longer than a name
-
-  // buildHaId() of item i's MQTT segment.
-  void haId(ItemKind kind, uint8_t i, HaId& out) const {
-    HaId seg;
-    buildHaId(seg, itemSegment(c_, kind, i, seg, sizeof seg), out, sizeof out);
-  }
-
-  // One HA id for two items (also true for one MQTT segment: "a b"/"a_b").
-  bool sameHaId(ItemKind kind, uint8_t a, uint8_t b) const {
-    HaId ida;
-    HaId idb;
-    haId(kind, a, ida);
-    haId(kind, b, idb);
-    return strcmp(ida, idb) == 0;
-  }
-
-  // "1".."12" without leading zero -> 1..12, else 0.
-  static uint8_t numberSegment(const char* s) {
-    uint32_t v;
-    if (s[0] == '0' || !parseUint(s, strlen(s), kValveCount, v)) return 0;
-    return static_cast<uint8_t>(v);
-  }
-
-  // Later duplicates of a name (one MQTT segment or one HA id: "Bad 1"/
-  // "Bad.1") are cleared; a name that equals the number segment of another
-  // unnamed valve is cleared too. Clearing can create a new number
-  // collision, so repeat until stable (at most 12 rounds).
-  void fixValveNames() {
-    for (bool changed = true; changed;) {
-      changed = false;
-      for (uint8_t i = 0; i < kValveCount && !changed; ++i) {
-        char* name = c_.valves[i].name;
-        if (name[0] == '\0') continue;
-        bool clash = false;
-        for (uint8_t j = 0; j < i && !clash; ++j) {
-          clash = c_.valves[j].name[0] != '\0' && sameHaId(ItemKind::Valve, i, j);
-        }
-        const uint8_t num = numberSegment(name);
-        if (num != 0 && c_.valves[num - 1].name[0] == '\0') clash = true;
-        if (clash) {
-          name[0] = '\0';
-          rejectedElem("valvesCfg", "valves", i, "name");
-          changed = true;
-        }
-      }
-    }
-  }
-
-  template <typename Slot>
-  void fixSlotArray(Slot* slots, uint8_t count, const char* ns, const char* key) {
+  // Ids and active flags per slot, then the names cleared for one HA id.
+  template <typename Slot, typename Bits>
+  void slotRepairs(const Slot* slots, uint8_t count, const Name* before, Bits ids, Bits active,
+                   ItemKind kind, const char* ns, const char* key) {
     for (uint8_t i = 0; i < count; ++i) {
-      Slot& s = slots[i];
-      if (!isZero(s.id)) {
-        for (uint8_t j = 0; j < i; ++j) {
-          if (slots[j].id == s.id) {
-            s.id = OneWireId{};
-            rejectedElem(ns, key, i, "id");
-            break;
-          }
-        }
-      }
-      if (s.active && isZero(s.id)) {
-        s.active = false;
-        rejectedElem(ns, key, i, "active");
-      }
+      if ((ids >> i) & 1u) rejectedElem(ns, key, i, "id");
+      if ((active >> i) & 1u) rejectedElem(ns, key, i, "active");
     }
-  }
-
-  // Active slots (each has an id by now) with one HA id: the later slot loses
-  // its name; when it has none (its segment is its number), the earlier slot
-  // named like that number does. Clearing can create a new clash, so repeat
-  // until stable (every round clears one name).
-  template <typename Slot>
-  void fixSlotHaIds(Slot* slots, uint8_t count, ItemKind kind, const char* ns, const char* key) {
-    for (bool changed = true; changed;) {
-      changed = false;
-      // Slot a before slot b.
-      for (uint8_t a = count; a-- > 0 && !changed;) {
-        for (uint8_t b = a + 1; b < count && !changed; ++b) {
-          if (!slots[a].active || !slots[b].active || !sameHaId(kind, a, b)) continue;
-          const uint8_t k = slots[b].name[0] != '\0' ? b : a;
-          slots[k].name[0] = '\0';
-          rejectedElem(ns, key, k, "name");
-          changed = true;
-        }
-      }
+    for (uint8_t i = 0; i < count; ++i) {
+      if (strcmp(before[i], slots[i].name) == 0) continue;
+      rejectedElem(ns, key, i, "name");
+      markRenamed(kind, i);
     }
-  }
-
-  void fixSlots() {
-    fixSlotArray(c_.temps, kTempSlotCount, "tempsCfg", "temps");
-    fixSlotArray(c_.volts, kVoltSlotCount, "voltsCfg", "volts");
-    fixSlotHaIds(c_.temps, kTempSlotCount, ItemKind::Temp, "tempsCfg", "temps");
-    fixSlotHaIds(c_.volts, kVoltSlotCount, ItemKind::Volt, "voltsCfg", "volts");
   }
 
   LegacyNvsReader& nvs_;
@@ -584,6 +589,67 @@ ImportReport importLegacyConfig(LegacyNvsReader& nvs, Config& out) {
   setDefaults(out);
   Importer(nvs, out, report).run();
   return report;
+}
+
+namespace {
+
+const char* const kDroppedNames[] = {"pi", "window", "messenger", "ds18Timeout", "legacyFailsafe"};
+
+template <typename Bits, typename Item>
+void writeRenamed(JsonWriter& jw, Bits bits, const Item* items, uint8_t count, const char* kind) {
+  for (uint8_t i = 0; i < count; ++i) {
+    if (((bits >> i) & 1u) == 0) continue;
+    jw.beginObject();
+    jw.kv("kind", kind);
+    jw.kv("n", static_cast<uint32_t>(i + 1u));
+    jw.kv("name", items[i].name);
+    jw.kv("topic", items[i].topic);
+    jw.endObject();
+  }
+}
+
+}  // namespace
+
+bool writeImportReportJson(JsonWriter& jw, const ImportReport& r, const Config& c) {
+  jw.beginObject();
+  jw.kv("imported", static_cast<uint32_t>(r.imported));
+  jw.kv("rejected", static_cast<uint32_t>(r.rejected));
+  jw.kv("ignored", static_cast<uint32_t>(r.ignored));
+  jw.kv("firstRejected", r.firstRejected);
+  jw.kv("piValves", static_cast<uint32_t>(r.piValves));
+  jw.kv("windowValves", static_cast<uint32_t>(r.windowValves));
+  jw.key("dropped");
+  jw.beginArray();
+  for (size_t i = 0; i < sizeof kDroppedNames / sizeof *kDroppedNames; ++i) {
+    if ((r.dropped >> i) & 1u) jw.value(kDroppedNames[i]);
+  }
+  jw.endArray();
+  jw.key("legacyFailsafe");
+  if (r.legacyFailsafeValid) {
+    jw.beginObject();
+    jw.kv("enabled", r.legacyFailsafeEnabled);
+    jw.kv("timeoutMin", r.legacyFailsafeTimeoutMin);
+    jw.kv("pct", r.legacyFailsafePct);
+    jw.endObject();
+  } else {
+    jw.nullValue();
+  }
+  jw.key("rootTopic");
+  if (c.mqtt.rootTopic[0] != '\0') {
+    jw.value(c.mqtt.rootTopic);
+  } else {
+    jw.nullValue();
+  }
+  jw.key("renamed");
+  jw.beginArray();
+  writeRenamed(jw, r.renamedValves, c.valves, kValveCount, "valve");
+  writeRenamed(jw, r.renamedTemps, c.temps, kTempSlotCount, "temp");
+  writeRenamed(jw, r.renamedVolts, c.volts, kVoltSlotCount, "volt");
+  jw.endArray();
+  jw.kv("syslogDebug", r.syslogDebug);
+  jw.kv("voltsBlob448", r.voltsBlob448);
+  jw.endObject();
+  return jw.ok();
 }
 
 }  // namespace vdm

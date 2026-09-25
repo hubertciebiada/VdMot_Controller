@@ -1,4 +1,4 @@
-// legacy_import: every legacy NVS key of specs/04 §5 with its quirks,
+// legacy_import: every legacy NVS key of DESIGN.md "Legacy import" with its quirks,
 // blob layouts, per-key rejection, cross-field repair, dropped keys,
 // idempotence, and a fuzz run that the result always validates.
 #include <math.h>
@@ -12,6 +12,7 @@
 
 #include "doctest.h"
 #include "vdm/config.h"
+#include "vdm/json_writer.h"
 #include "vdm/legacy_import.h"
 
 using namespace vdm;
@@ -601,10 +602,18 @@ TEST_CASE("legacy: station name") {
   CHECK(std::string(c.station) == "VdMot");
   CHECK(first(r) == "sysCfg/stName");
   CHECK(r.anyLegacy);  // a string key alone counts
+  CHECK(c.mqtt.rootTopic[0] == '\0');
+  // Empty: the legacy topics were under "VdMotFBH/" (W18-1).
   n.putStr("sysCfg", "stName", "");
   r = importLegacyConfig(n, c);
   CHECK(std::string(c.station) == "VdMot");
-  CHECK(r.rejected == 1);
+  CHECK(std::string(c.mqtt.rootTopic) == "VdMotFBH");
+  CHECK(r.rejected == 0);
+  CHECK(r.imported == 1);
+  n.putStr("sysCfg", "stName", "Dom 1");
+  r = importLegacyConfig(n, c);
+  CHECK(std::string(c.station) == "Dom 1");
+  CHECK(c.mqtt.rootTopic[0] == '\0');
   n.putStr("sysCfg", "stName", std::string(20, 'x'));
   r = importLegacyConfig(n, c);
   CHECK(std::string(c.station) == std::string(20, 'x'));
@@ -965,7 +974,7 @@ TEST_CASE("legacy: valves blob") {
     setValve(b, 0, "ok", 1);
     memset(&b[12], 'x', 11);  // valve 2: name without NUL
     b[23] = 1;
-    setValve(b, 2, "bad/name", 0);
+    setValve(b, 2, "bad\x01", 0);  // not printable
     setValve(b, 3, "x", 2);  // active byte not a bool
     setValve(b, 11, "1234567890", 1);
     n.putBlob("valvesCfg", "valves", b);
@@ -973,6 +982,7 @@ TEST_CASE("legacy: valves blob") {
     const ImportReport r = importLegacyConfig(n, c);
     CHECK(r.imported == 1);
     CHECK(r.rejected == 3);
+    CHECK(r.renamedValves == 0);
     CHECK(first(r) == "valvesCfg/valves.2.name");
     CHECK(std::string(c.valves[0].name) == "ok");
     CHECK(c.valves[0].active);
@@ -1017,7 +1027,8 @@ TEST_CASE("legacy: valves blob") {
     CHECK(std::string(c.valves[1].name) == "x");
     CHECK(std::string(c.valves[7].name) == "8");
     CHECK(r.rejected == 2);
-    CHECK(first(r) == "valvesCfg/valves.4.name");
+    CHECK(first(r) == "valvesCfg/valves.1.name");  // repairs are reported by valve number
+    CHECK(r.renamedValves == ((1u << 0) | (1u << 3)));
     CHECK(valid(c));
   }
 }
@@ -1171,7 +1182,8 @@ TEST_CASE("legacy: a sensor named like the number of a later unnamed one loses i
   CHECK(c.temps[2].active);
   CHECK(c.temps[6].active);
   CHECK(r.rejected == 2);
-  CHECK(first(r) == "tempsCfg/temps.3.name");
+  CHECK(first(r) == "tempsCfg/temps.1.name");  // repairs are reported by slot number
+  CHECK(r.renamedTemps == ((1ull << 0) | (1ull << 2)));
   CHECK(valid(c));
 }
 
@@ -1188,7 +1200,7 @@ TEST_CASE("legacy: a sensor name cleared for one clash is checked again") {
   CHECK(std::string(c.temps[1].name).empty());
   CHECK(std::string(c.temps[2].name).empty());
   CHECK(r.rejected == 2);
-  CHECK(first(r) == "tempsCfg/temps.3.name");
+  CHECK(first(r) == "tempsCfg/temps.2.name");  // repairs are reported by slot number
   CHECK(valid(c));
 }
 
@@ -1263,19 +1275,28 @@ TEST_CASE("legacy: temps blob") {
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
     CHECK(std::string(c.temps[0].name) == "Wohnzimmer");
-    CHECK(std::string(c.temps[1].name).empty());
+    CHECK(std::string(c.temps[1].name) == "x_");  // renamed (W18)
+    CHECK(c.temps[1].topic[0] == '\0');
+    CHECK(r.renamedTemps == 2);
     CHECK(std::string(c.temps[2].name).empty());
-    CHECK(r.rejected == 2);
-    CHECK(first(r) == "tempsCfg/temps.2.name");
+    CHECK(r.rejected == 1);
+    CHECK(first(r) == "tempsCfg/temps.3.name");
   }
 }
 
 TEST_CASE("legacy: volts blob") {
   SUBCASE("wrong size") {
-    FakeNvs n;
-    n.putBlob("voltsCfg", "volts", std::vector<uint8_t>(448, 0));  // without the AV table
-    Config c;
-    CHECK(first(importLegacyConfig(n, c)) == "voltsCfg/volts");
+    for (size_t size : {size_t{447}, size_t{449}, size_t{479}, size_t{481}}) {
+      CAPTURE(size);
+      FakeNvs n;
+      n.putBlob("voltsCfg", "volts", std::vector<uint8_t>(size, 0));
+      Config c;
+      const ImportReport r = importLegacyConfig(n, c);
+      CHECK(first(r) == "voltsCfg/volts");
+      CHECK(r.imported == 0);
+      CHECK(r.anyLegacy);
+      CHECK_FALSE(r.voltsBlob448);
+    }
   }
   SUBCASE("fields") {
     FakeNvs n;
@@ -1343,7 +1364,7 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
   n.putInt("protCfg", "brokerMQTO", 120);
   n.putInt("protCfg", "brokerMQToPos", 10);
   n.putInt("valvesCfg", "movCalib", 1);
-  n.putBlob("valvesCtrlCfg", "valvesCtrl", std::vector<uint8_t>(400, 1));
+  n.putBlob("valvesCtrlCfg", "valvesCtrl", std::vector<uint8_t>(240, 0));
   n.putBlob("valvesCtrlCfg", "valvesCtrl1", std::vector<uint8_t>(10, 1));
   n.putBlob("valvesCtrlCfg", "vCtrlInit", std::vector<uint8_t>(48, 1));
   n.putInt("valvesCtrlCfg", "vCtrlHeat", 1);
@@ -1368,6 +1389,10 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
   CHECK(r.ignored == 24);
   CHECK(r.imported == 0);
   CHECK(r.rejected == 0);
+  CHECK(r.dropped == kDroppedMessenger);
+  CHECK(r.piValves == 0);
+  CHECK(r.legacyFailsafeValid);
+  CHECK_FALSE(r.legacyFailsafeEnabled);
   CHECK(r.anyLegacy);
   CHECK(sameConfig(c, Config{}));
 
@@ -1386,8 +1411,8 @@ TEST_CASE("legacy: first rejected key is kept, counting continues") {
   n.putInt("valvesCfg", "hourOfCalib", 256);
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
-  CHECK(r.rejected == 3);
-  CHECK(first(r) == "sysCfg/stName");
+  CHECK(r.rejected == 2);
+  CHECK(first(r) == "netCfg/ethwifi");
 }
 
 TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fuzz")) {
@@ -1476,4 +1501,306 @@ TEST_CASE("legacy: a one-character WiFi password is repaired, not reset to defau
   CHECK(std::string(c.station) == "keep");
   CHECK(first(r) == "netCfg/pwd");
   CHECK(r.rejected == 1);
+}
+
+TEST_CASE("legacy: names MQTT cannot carry are renamed, the legacy segment kept (W18-2)") {
+  struct Case {
+    const char* legacy;
+    const char* name;
+    const char* topic;
+  };
+  const Case cases[] = {
+      {"Bad/WC", "Bad_WC", "Bad/WC"},  {"Ba d\"x", "Ba d_x", "Ba_d\"x"},
+      {"A+B", "A_B", ""},              {"/Bad", "_Bad", ""},
+      {"a\\b", "a_b", "a\\b"},         {"x#/y", "x__y", ""},
+      {"a//b", "a__b", ""},
+  };
+  for (const Case& k : cases) {
+    CAPTURE(k.legacy);
+    FakeNvs n;
+    auto v = valvesBlob();
+    setValve(v, 2, k.legacy, 1);
+    n.putBlob("valvesCfg", "valves", v);
+    auto t = tempsBlob();
+    setTemp(t, 33, k.legacy, 0, 0, "");
+    n.putBlob("tempsCfg", "temps", t);
+    auto w = voltsBlob();
+    setVolt(w, 7, k.legacy, 0, 0.0f, 1.0f, "", "");
+    n.putBlob("voltsCfg", "volts", w);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.rejected == 0);
+    CHECK(r.imported == 3);
+    CHECK(std::string(c.valves[2].name) == k.name);
+    CHECK(std::string(c.valves[2].topic) == k.topic);
+    CHECK(std::string(c.temps[33].name) == k.name);
+    CHECK(std::string(c.temps[33].topic) == k.topic);
+    CHECK(std::string(c.volts[7].name) == k.name);
+    CHECK(std::string(c.volts[7].topic) == k.topic);
+    CHECK(r.renamedValves == (1u << 2));
+    CHECK(r.renamedTemps == (1ull << 33));
+    CHECK(r.renamedVolts == (1u << 7));
+    CHECK(valid(c));
+  }
+  // A valid name is not renamed, a name that stays invalid is rejected.
+  FakeNvs n;
+  auto v = valvesBlob();
+  setValve(v, 0, "Bad WC", 1);
+  setValve(v, 1, "a/\x01", 1);
+  n.putBlob("valvesCfg", "valves", v);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(r.renamedValves == 0);
+  CHECK(r.rejected == 1);
+  CHECK(first(r) == "valvesCfg/valves.2.name");
+  CHECK(std::string(c.valves[0].name) == "Bad WC");
+  CHECK(c.valves[0].topic[0] == '\0');
+  CHECK(c.valves[1].name[0] == '\0');
+}
+
+TEST_CASE("legacy: a renamed valve that clashes loses its name and its override") {
+  FakeNvs n;
+  auto v = valvesBlob();
+  setValve(v, 0, "Bad/WC", 1);
+  setValve(v, 4, "Bad/WC", 1);
+  n.putBlob("valvesCfg", "valves", v);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(std::string(c.valves[0].name) == "Bad_WC");
+  CHECK(std::string(c.valves[0].topic) == "Bad/WC");
+  CHECK(c.valves[4].name[0] == '\0');
+  CHECK(c.valves[4].topic[0] == '\0');
+  CHECK(r.rejected == 2);
+  CHECK(first(r) == "valvesCfg/valves.5.name");
+  CHECK(r.renamedValves == ((1u << 0) | (1u << 4)));
+  CHECK(valid(c));
+}
+
+TEST_CASE("legacy: the volts blob of 1.4.0 (448 bytes) is imported (W18-3)") {
+  for (size_t size : {size_t{448}, size_t{480}}) {
+    CAPTURE(size);
+    FakeNvs n;
+    auto w = voltsBlob();
+    for (size_t i = 0; i < 8; ++i) {
+      const std::string name = "v" + std::to_string(i + 1);
+      const std::string id = "26-00-00-00-00-00-00-0" + std::to_string(i + 1);
+      setVolt(w, i, name.c_str(), 1, 0.5f * static_cast<float>(i), 2.0f, "V", id.c_str());
+    }
+    w.resize(size);
+    n.putBlob("voltsCfg", "volts", w);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.voltsBlob448 == (size == 448));
+    CHECK(r.imported == 1);
+    CHECK(r.rejected == 0);
+    for (size_t i = 0; i < 8; ++i) {
+      CHECK(std::string(c.volts[i].name) == "v" + std::to_string(i + 1));
+      CHECK(c.volts[i].active);
+      CHECK(c.volts[i].offset == 0.5f * static_cast<float>(i));
+      CHECK(c.volts[i].factor == 2.0f);
+      CHECK(!isZero(c.volts[i].id));
+    }
+  }
+}
+
+TEST_CASE("legacy: valvesCtrl counts PI valves and window contacts (W18-4)") {
+  auto ctrl = [](size_t elem) {
+    std::vector<uint8_t> b(12 * elem, 0xEE);
+    for (size_t i = 0; i < 12; ++i) b[i * elem] = 0x20;  // other flag bits
+    b[0 * elem] = 0x21;  // valve 1 PI
+    b[2 * elem] = 0x11;  // valve 3 PI + window
+    return b;
+  };
+  for (size_t elem : {size_t{20}, size_t{16}, size_t{1}, size_t{64}}) {
+    CAPTURE(elem);
+    FakeNvs n;
+    n.putBlob("valvesCtrlCfg", "valvesCtrl", ctrl(elem));
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.piValves == 2);
+    CHECK(r.windowValves == 1);
+    CHECK(r.dropped == (kDroppedPi | kDroppedWindow));
+    CHECK(r.ignored == 1);
+    CHECK(r.rejected == 0);
+  }
+  // Window only.
+  {
+    FakeNvs n;
+    std::vector<uint8_t> b(12 * 20, 0);
+    b[5 * 20] = 0x10;
+    n.putBlob("valvesCtrlCfg", "valvesCtrl", b);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.piValves == 0);
+    CHECK(r.windowValves == 1);
+    CHECK(r.dropped == kDroppedWindow);
+  }
+  for (size_t size : {size_t{100}, size_t{0}, size_t{780}, size_t{11}}) {
+    CAPTURE(size);
+    FakeNvs n;
+    n.putBlob("valvesCtrlCfg", "valvesCtrl", std::vector<uint8_t>(size, 0x11));
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.rejected == 1);
+    CHECK(first(r) == "valvesCtrlCfg/valvesCtrl");
+    CHECK(r.piValves == 0);
+    CHECK(r.dropped == 0);
+    CHECK(r.ignored == 1);
+  }
+}
+
+TEST_CASE("legacy: messenger, DS18 timeout and the legacy failsafe are reported (W18-5, W-4)") {
+  for (int64_t flags : {1, 2, 3, 0, 4}) {
+    CAPTURE(flags);
+    FakeNvs n;
+    n.putInt("msgCfg", "msgFlags", flags);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.dropped == ((flags & 3) != 0 ? kDroppedMessenger : 0));
+    CHECK(r.ignored == 1);
+  }
+  {
+    FakeNvs n;
+    n.putInt("protCfg", "brokerMQF", 0x02);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.dropped == kDroppedDs18Timeout);
+    CHECK_FALSE(r.legacyFailsafeEnabled);
+    CHECK_FALSE(r.legacyFailsafeValid);
+    CHECK(r.ignored == 1);
+  }
+  {
+    // bit0 with the legacy timeout: not mapped, only reported.
+    FakeNvs n;
+    n.putInt("protCfg", "brokerMQF", 0x01);
+    n.putInt("protCfg", "brokerMQTO", 120);
+    n.putInt("protCfg", "brokerMQToPos", 10);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(c.failsafe.timeoutMin == 60);
+    for (const ValveConfig& v : c.valves) CHECK(v.failsafePct == 50);
+    CHECK(r.legacyFailsafeValid);
+    CHECK(r.legacyFailsafeEnabled);
+    CHECK(r.legacyFailsafeTimeoutMin == 120);
+    CHECK(r.legacyFailsafePct == 10);
+    CHECK(r.dropped == kDroppedLegacyFailsafe);
+    CHECK(r.ignored == 3);  // bit0 once, MQTO and ToPos
+    CHECK(r.imported == 1);
+  }
+  {
+    // Only one of the keys: still reported, the other stays 0.
+    FakeNvs n;
+    n.putInt("protCfg", "brokerMQToPos", 30);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.legacyFailsafeValid);
+    CHECK_FALSE(r.legacyFailsafeEnabled);
+    CHECK(r.legacyFailsafeTimeoutMin == 0);
+    CHECK(r.legacyFailsafePct == 30);
+    CHECK(r.dropped == 0);
+    FakeNvs m;
+    m.putInt("protCfg", "brokerMQTO", 45);
+    const ImportReport r2 = importLegacyConfig(m, c);
+    CHECK(r2.legacyFailsafeValid);
+    CHECK(r2.legacyFailsafeTimeoutMin == 45);
+    CHECK(r2.legacyFailsafePct == 0);
+  }
+}
+
+TEST_CASE("legacy: syslog levels 1-3 were debug verbosity and become 3 (E27-1)") {
+  struct Case {
+    int64_t legacy;
+    bool ok;
+    uint8_t level;
+    bool debug;
+  };
+  const Case cases[] = {{0, true, 0, false}, {1, true, 3, true}, {2, true, 3, true},
+                        {3, true, 3, true},  {4, false, 0, false}, {-1, false, 0, false}};
+  for (const Case& k : cases) {
+    CAPTURE(k.legacy);
+    FakeNvs n;
+    n.putInt("netCfg", "syslogEnable", k.legacy);
+    n.putInt("netCfg", "sysLogIp", 0x0901A8C0);
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(c.syslog.level == k.level);
+    CHECK(r.syslogDebug == k.debug);
+    CHECK(r.rejected == (k.ok ? 0 : 1));
+    CHECK(r.imported == (k.ok ? 2 : 1));
+    if (!k.ok) CHECK(first(r) == "netCfg/syslogEnable");
+  }
+}
+
+TEST_CASE("legacy: the import report document (W18-6)") {
+  ImportReport r;
+  r.imported = 57;
+  r.rejected = 2;
+  r.ignored = 14;
+  strcpy(r.firstRejected, "valvesCfg/valves.5.name");
+  r.piValves = 3;
+  r.windowValves = 1;
+  r.dropped = kDroppedPi | kDroppedWindow | kDroppedMessenger | kDroppedDs18Timeout |
+              kDroppedLegacyFailsafe;
+  r.legacyFailsafeValid = true;
+  r.legacyFailsafeEnabled = true;
+  r.legacyFailsafeTimeoutMin = 120;
+  r.legacyFailsafePct = 10;
+  r.renamedValves = (1u << 2) | (1u << 4);
+  r.renamedTemps = 1ull << 33;
+  r.renamedVolts = 1u << 7;
+  r.syslogDebug = true;
+  r.voltsBlob448 = false;
+  Config c;
+  strcpy(c.mqtt.rootTopic, "VdMotFBH");
+  strcpy(c.valves[2].name, "Bad_WC");
+  strcpy(c.valves[2].topic, "Bad/WC");
+  strcpy(c.temps[33].name, "a\"b");
+  strcpy(c.volts[7].name, "v");
+  char buf[1024];
+  JsonWriter jw(buf, sizeof buf);
+  CHECK(writeImportReportJson(jw, r, c));
+  CHECK(std::string(buf, jw.length()) ==
+        "{\"imported\":57,\"rejected\":2,\"ignored\":14,\"firstRejected\":\"valvesCfg/valves.5.name\","
+        "\"piValves\":3,\"windowValves\":1,"
+        "\"dropped\":[\"pi\",\"window\",\"messenger\",\"ds18Timeout\",\"legacyFailsafe\"],"
+        "\"legacyFailsafe\":{\"enabled\":true,\"timeoutMin\":120,\"pct\":10},"
+        "\"rootTopic\":\"VdMotFBH\","
+        "\"renamed\":[{\"kind\":\"valve\",\"n\":3,\"name\":\"Bad_WC\",\"topic\":\"Bad/WC\"},"
+        "{\"kind\":\"valve\",\"n\":5,\"name\":\"\",\"topic\":\"\"},"
+        "{\"kind\":\"temp\",\"n\":34,\"name\":\"a\\\"b\",\"topic\":\"\"},"
+        "{\"kind\":\"volt\",\"n\":8,\"name\":\"v\",\"topic\":\"\"}],"
+        "\"syslogDebug\":true,\"voltsBlob448\":false}");
+  // Empty report: nulls and empty arrays.
+  ImportReport e;
+  e.dropped = kDroppedMessenger;
+  e.voltsBlob448 = true;
+  JsonWriter je(buf, sizeof buf);
+  CHECK(writeImportReportJson(je, e, Config{}));
+  CHECK(std::string(buf, je.length()) ==
+        "{\"imported\":0,\"rejected\":0,\"ignored\":0,\"firstRejected\":\"\",\"piValves\":0,"
+        "\"windowValves\":0,\"dropped\":[\"messenger\"],\"legacyFailsafe\":null,"
+        "\"rootTopic\":null,\"renamed\":[],\"syslogDebug\":false,\"voltsBlob448\":true}");
+  // Too small a buffer: false.
+  JsonWriter small(buf, 40);
+  CHECK_FALSE(writeImportReportJson(small, r, c));
+}
+
+TEST_CASE("legacy: a typical device reports its dropped features in one import") {
+  FakeNvs n = typicalDevice();
+  n.putStr("sysCfg", "stName", "");
+  n.putInt("protCfg", "brokerMQF", 0x03);
+  std::vector<uint8_t> ctrl(12 * 20, 0);
+  ctrl[0] = 0x01;
+  n.putBlob("valvesCtrlCfg", "valvesCtrl", ctrl);
+  n.putInt("msgCfg", "msgFlags", 1);
+  Config c;
+  const ImportReport r = importLegacyConfig(n, c);
+  CHECK(r.dropped == (kDroppedPi | kDroppedMessenger | kDroppedDs18Timeout |
+                      kDroppedLegacyFailsafe));
+  CHECK(r.piValves == 1);
+  CHECK(std::string(c.mqtt.rootTopic) == "VdMotFBH");
+  CHECK(std::string(c.station) == "VdMot");
+  CHECK(r.legacyFailsafeTimeoutMin == 120);
+  CHECK(r.legacyFailsafePct == 10);
+  CHECK(valid(c));
 }
