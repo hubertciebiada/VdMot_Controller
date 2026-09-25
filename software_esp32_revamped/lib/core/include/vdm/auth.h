@@ -16,30 +16,47 @@ bool constantTimeEquals(const char* a, const char* b);
 // only for an exact user and password match.
 bool checkBasicAuth(const char* header, size_t len, const char* user, const char* password);
 
-// Brute-force limiter: after maxFailures failed attempts within windowMs,
-// every attempt is refused for lockoutMs (HTTP 429), regardless of the
-// credentials. One global counter (the device has one account).
-// maxFailures 0 disables the limiter. A success clears the failure count.
-// Expired windows and lockouts are cleared lazily by locked()/onResult().
+// Brute-force limiter per client address (IPv4, legacy uint32 layout): 10
+// failed attempts of one address within 60 s of its first failure lock that
+// address for 1 min, its second lockout 5 min, the third and every later one
+// 15 min; other addresses are not affected. A success forgets the address
+// (failures and level). Up to kSlots addresses are tracked: a new address
+// replaces the least recently used unlocked entry, or, when all are locked,
+// the entry whose lock ends first. Recency is a use counter, durations use
+// elapsedMs(), so the 49-day millis() wrap changes nothing.
 class AuthLimiter {
  public:
-  explicit AuthLimiter(uint8_t maxFailures = 10, uint32_t windowMs = 60000,
-                       uint32_t lockoutMs = 60000);
-  bool locked(uint32_t nowMs) const;
-  // Record the result of a checked attempt (not called while locked).
-  void onResult(bool success, uint32_t nowMs);
-  uint32_t failuresInWindow() const { return failures_; }
+  static constexpr size_t kSlots = 8;
+  static constexpr uint8_t kMaxFailures = 10;
+  static constexpr uint32_t kWindowMs = 60000;
+  static constexpr uint32_t kLockMs[3] = {60000, 300000, 900000};
+  // True while `ip` is locked; retryAfterS = whole seconds to the end (>= 1).
+  bool locked(uint32_t ip, uint32_t nowMs, uint32_t* retryAfterS = nullptr);
+  // Result of a checked attempt (not called while locked). Returns true when
+  // this failure started a lockout.
+  bool onResult(uint32_t ip, bool success, uint32_t nowMs);
+  uint32_t failuresInWindow(uint32_t ip) const;  // 0 for unknown addresses
+  uint8_t lockLevel(uint32_t ip) const;          // lockouts of the address so far
 
  private:
-  uint8_t maxFailures_;
-  uint32_t windowMs_;
-  uint32_t lockoutMs_;
-  void expire(uint32_t nowMs) const;
+  struct Entry {
+    bool used = false;
+    uint32_t ip = 0;
+    uint8_t failures = 0;
+    uint32_t windowStartMs = 0;
+    bool locked = false;
+    uint32_t lockStartMs = 0;
+    uint32_t lockMs = 0;
+    uint8_t level = 0;
+    uint32_t lastUse = 0;
+  };
+  Entry* find(uint32_t ip);
+  const Entry* find(uint32_t ip) const;
+  Entry& claim(uint32_t ip, uint32_t nowMs);
+  static void expire(Entry& e, uint32_t nowMs);
 
-  mutable uint32_t failures_ = 0;
-  uint32_t windowStartMs_ = 0;
-  mutable bool lockedOut_ = false;
-  uint32_t lockStartMs_ = 0;
+  Entry slots_[kSlots];
+  uint32_t useCounter_ = 0;
 };
 
 }  // namespace vdm

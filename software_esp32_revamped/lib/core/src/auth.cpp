@@ -90,36 +90,100 @@ bool checkBasicAuth(const char* header, size_t len, const char* user, const char
   return userOk & pwdOk;
 }
 
-AuthLimiter::AuthLimiter(uint8_t maxFailures, uint32_t windowMs, uint32_t lockoutMs)
-    : maxFailures_(maxFailures), windowMs_(windowMs), lockoutMs_(lockoutMs) {}
+constexpr uint32_t AuthLimiter::kLockMs[3];
 
-void AuthLimiter::expire(uint32_t nowMs) const {
-  if (lockedOut_ && elapsedMs(nowMs, lockStartMs_) >= lockoutMs_) {
-    lockedOut_ = false;
-    failures_ = 0;
+AuthLimiter::Entry* AuthLimiter::find(uint32_t ip) {
+  for (Entry& e : slots_) {
+    if (e.used && e.ip == ip) return &e;
   }
-  if (!lockedOut_ && failures_ > 0 && elapsedMs(nowMs, windowStartMs_) >= windowMs_) failures_ = 0;
+  return nullptr;
 }
 
-bool AuthLimiter::locked(uint32_t nowMs) const {
-  expire(nowMs);
-  return lockedOut_;
+const AuthLimiter::Entry* AuthLimiter::find(uint32_t ip) const {
+  for (const Entry& e : slots_) {
+    if (e.used && e.ip == ip) return &e;
+  }
+  return nullptr;
 }
 
-void AuthLimiter::onResult(bool success, uint32_t nowMs) {
-  expire(nowMs);
-  if (lockedOut_) return;
+void AuthLimiter::expire(Entry& e, uint32_t nowMs) {
+  if (e.locked && elapsedMs(nowMs, e.lockStartMs) >= e.lockMs) {
+    e.locked = false;
+    e.failures = 0;
+  }
+}
+
+// A free entry, else the least recently used unlocked one, else the locked
+// one whose lock ends first.
+AuthLimiter::Entry& AuthLimiter::claim(uint32_t ip, uint32_t nowMs) {
+  Entry* pick = nullptr;
+  for (Entry& e : slots_) {
+    if (!e.used) {
+      pick = &e;
+      break;
+    }
+    expire(e, nowMs);
+    if (e.locked) continue;
+    if (pick == nullptr || e.lastUse < pick->lastUse) pick = &e;
+  }
+  if (pick == nullptr) {
+    uint32_t best = UINT32_MAX;
+    for (Entry& e : slots_) {
+      const uint32_t left = e.lockMs - elapsedMs(nowMs, e.lockStartMs);
+      if (left < best) {
+        best = left;
+        pick = &e;
+      }
+    }
+  }
+  *pick = Entry{};
+  pick->used = true;
+  pick->ip = ip;
+  return *pick;
+}
+
+bool AuthLimiter::locked(uint32_t ip, uint32_t nowMs, uint32_t* retryAfterS) {
+  Entry* e = find(ip);
+  if (e == nullptr) return false;
+  expire(*e, nowMs);
+  if (!e->locked) return false;
+  if (retryAfterS != nullptr) {
+    const uint32_t left = e->lockMs - elapsedMs(nowMs, e->lockStartMs);
+    *retryAfterS = (left + 999) / 1000;
+  }
+  return true;
+}
+
+bool AuthLimiter::onResult(uint32_t ip, bool success, uint32_t nowMs) {
+  Entry* e = find(ip);
   if (success) {
-    failures_ = 0;
-    return;
+    if (e != nullptr) *e = Entry{};
+    return false;
   }
-  if (maxFailures_ == 0) return;  // limiter disabled
-  if (failures_ == 0) windowStartMs_ = nowMs;
-  ++failures_;
-  if (failures_ >= maxFailures_) {
-    lockedOut_ = true;
-    lockStartMs_ = nowMs;
+  if (e == nullptr) e = &claim(ip, nowMs);
+  expire(*e, nowMs);
+  e->lastUse = ++useCounter_;
+  if (e->locked) return false;
+  if (e->failures == 0 || elapsedMs(nowMs, e->windowStartMs) >= kWindowMs) {
+    e->failures = 0;
+    e->windowStartMs = nowMs;
   }
+  if (++e->failures < kMaxFailures) return false;
+  e->locked = true;
+  e->lockStartMs = nowMs;
+  e->lockMs = kLockMs[e->level < 2 ? e->level : 2];
+  if (e->level < 255) ++e->level;
+  return true;
+}
+
+uint32_t AuthLimiter::failuresInWindow(uint32_t ip) const {
+  const Entry* e = find(ip);
+  return e != nullptr ? e->failures : 0;
+}
+
+uint8_t AuthLimiter::lockLevel(uint32_t ip) const {
+  const Entry* e = find(ip);
+  return e != nullptr ? e->level : 0;
 }
 
 }  // namespace vdm

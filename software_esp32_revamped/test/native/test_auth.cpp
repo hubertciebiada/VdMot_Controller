@@ -1,5 +1,5 @@
 // Tests for vdm/auth.h: constant-time compare, Basic-auth header check and
-// the brute-force limiter.
+// the per-address brute-force limiter.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -156,64 +156,6 @@ TEST_CASE("checkBasicAuth survives random input" * doctest::test_suite("fuzz")) 
   }
 }
 
-TEST_CASE("AuthLimiter locks after maxFailures within the window") {
-  AuthLimiter l(3, 1000, 5000);
-  CHECK_FALSE(l.locked(0));
-  l.onResult(false, 100);
-  l.onResult(false, 200);
-  CHECK(l.failuresInWindow() == 2);
-  CHECK_FALSE(l.locked(300));
-  l.onResult(false, 1099);  // still inside the window started at 100
-  CHECK(l.locked(1099));
-  CHECK(l.locked(6098));
-  CHECK_FALSE(l.locked(6099));  // lockout 5000 ms from 1099
-  CHECK(l.failuresInWindow() == 0);
-}
-
-TEST_CASE("AuthLimiter window expiry restarts the count") {
-  AuthLimiter l(3, 1000, 5000);
-  l.onResult(false, 0);
-  l.onResult(false, 500);
-  l.onResult(false, 1000);  // window from 0 has expired: count restarts
-  CHECK_FALSE(l.locked(1000));
-  CHECK(l.failuresInWindow() == 1);
-  l.onResult(false, 1500);
-  l.onResult(false, 1999);
-  CHECK(l.locked(1999));
-}
-
-TEST_CASE("AuthLimiter success clears failures, results while locked are ignored") {
-  AuthLimiter l(2, 1000, 5000);
-  l.onResult(false, 0);
-  l.onResult(true, 10);
-  CHECK(l.failuresInWindow() == 0);
-  l.onResult(false, 20);
-  CHECK_FALSE(l.locked(20));
-  l.onResult(false, 30);
-  CHECK(l.locked(30));
-  l.onResult(true, 40);  // not counted while locked
-  CHECK(l.locked(40));
-  CHECK_FALSE(l.locked(5030));
-}
-
-TEST_CASE("AuthLimiter defaults and wrap") {
-  AuthLimiter l;
-  const uint32_t t0 = 0xFFFFFF00u;
-  for (int i = 0; i < 9; ++i) l.onResult(false, t0 + static_cast<uint32_t>(i));
-  CHECK_FALSE(l.locked(t0 + 10));
-  l.onResult(false, t0 + 59999u);  // wraps past 2^32, still within 60 s
-  CHECK(l.locked(t0 + 60000u));
-  CHECK(l.locked(t0 + 59999u + 59999u));
-  CHECK_FALSE(l.locked(t0 + 59999u + 60000u));
-}
-
-TEST_CASE("AuthLimiter with maxFailures 0 never locks") {
-  AuthLimiter l(0, 1000, 1000);
-  for (uint32_t i = 0; i < 100; ++i) l.onResult(false, i);
-  CHECK_FALSE(l.locked(100));
-  CHECK(l.failuresInWindow() == 0);
-}
-
 // ---- mutation-driven cases -------------------------------------------------
 
 TEST_CASE("checkBasicAuth decodes the whole base64 alphabet exactly") {
@@ -347,28 +289,187 @@ TEST_CASE("checkBasicAuth: 130-byte credentials against a longer password") {
   CHECK(check(hdr, "u", pwd));
 }
 
-TEST_CASE("AuthLimiter: a single failure also expires with its window") {
-  AuthLimiter l(3, 1000, 5000);
-  l.onResult(false, 0);
-  CHECK(l.failuresInWindow() == 1);
-  l.onResult(false, 1000);  // window from 0 has expired
-  CHECK(l.failuresInWindow() == 1);
-  l.onResult(false, 1500);
-  CHECK_FALSE(l.locked(1500));
-  CHECK(l.failuresInWindow() == 2);
-  l.onResult(false, 1999);
-  CHECK(l.locked(1999));
+// ---- per-address limiter ---------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kA = 0x0201A8C0;  // 192.168.1.2
+constexpr uint32_t kB = 0x0301A8C0;  // 192.168.1.3
+
+// n failures of `ip` at `t`; returns how many of them started a lockout.
+int fail(AuthLimiter& l, uint32_t ip, int n, uint32_t t) {
+  int starts = 0;
+  for (int i = 0; i < n; ++i) starts += l.onResult(ip, false, t) ? 1 : 0;
+  return starts;
 }
 
-TEST_CASE("AuthLimiter: lockout shorter than the window clears the count") {
-  AuthLimiter l(2, 10000, 1000);
-  l.onResult(false, 0);
-  l.onResult(false, 10);
-  CHECK(l.locked(10));
-  CHECK(l.locked(1009));
-  CHECK_FALSE(l.locked(1010));
-  CHECK(l.failuresInWindow() == 0);
-  l.onResult(false, 1020);
-  CHECK_FALSE(l.locked(1020));
-  CHECK(l.failuresInWindow() == 1);
+}  // namespace
+
+TEST_CASE("AuthLimiter: 10 failures of one address lock it for 60 s, not the others") {
+  AuthLimiter l;
+  CHECK(fail(l, kA, 9, 1000) == 0);
+  CHECK(l.failuresInWindow(kA) == 9);
+  CHECK_FALSE(l.locked(kA, 1000));
+  CHECK(l.onResult(kA, false, 1000));
+  CHECK(l.failuresInWindow(kA) == 10);
+  CHECK(l.lockLevel(kA) == 1);
+  uint32_t retry = 0;
+  CHECK(l.locked(kA, 1000, &retry));
+  CHECK(retry == 60);
+  CHECK_FALSE(l.locked(kB, 1000, &retry));
+  CHECK(retry == 60);  // untouched for an unlocked address
+  CHECK(l.locked(kA, 1001, &retry));
+  CHECK(retry == 60);  // 59.999 s rounds up
+  CHECK(l.locked(kA, 60001, &retry));
+  CHECK(retry == 1);
+  CHECK(l.locked(kA, 60999, &retry));
+  CHECK(retry == 1);
+  CHECK_FALSE(l.locked(kA, 61000));
+  CHECK(l.failuresInWindow(kA) == 0);
+  CHECK(l.lockLevel(kA) == 1);
+  CHECK(l.failuresInWindow(kB) == 0);
+  CHECK(l.lockLevel(kB) == 0);
+}
+
+TEST_CASE("AuthLimiter: lockouts escalate 60 s, 300 s, 900 s, 900 s") {
+  AuthLimiter l;
+  const uint32_t expected[] = {60, 300, 900, 900};
+  uint32_t t = 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    CHECK(fail(l, kA, 10, t) == 1);
+    uint32_t retry = 0;
+    CHECK(l.locked(kA, t, &retry));
+    CHECK(retry == expected[i]);
+    CHECK(l.lockLevel(kA) == i + 1);
+    CHECK(l.locked(kA, t + expected[i] * 1000 - 1));
+    t += expected[i] * 1000;
+    CHECK_FALSE(l.locked(kA, t));
+  }
+}
+
+TEST_CASE("AuthLimiter: failures while locked are ignored") {
+  AuthLimiter l;
+  fail(l, kA, 10, 0);
+  CHECK_FALSE(l.onResult(kA, false, 10));
+  CHECK(l.failuresInWindow(kA) == 10);
+  CHECK(l.lockLevel(kA) == 1);
+  uint32_t retry = 0;
+  CHECK(l.locked(kA, 10, &retry));
+  CHECK(retry == 60);  // the lock still counts from its start
+  // the first failure after the lock starts a new window
+  CHECK_FALSE(l.onResult(kA, false, 60000));
+  CHECK(l.failuresInWindow(kA) == 1);
+}
+
+TEST_CASE("AuthLimiter: a success forgets its own address only") {
+  AuthLimiter l;
+  fail(l, kA, 10, 0);
+  fail(l, kB, 9, 0);
+  CHECK_FALSE(l.onResult(kB, true, 5));
+  CHECK(l.failuresInWindow(kB) == 0);
+  CHECK(l.locked(kA, 5));
+  CHECK(l.lockLevel(kA) == 1);
+  CHECK_FALSE(l.onResult(kA, true, 60000));
+  CHECK(l.lockLevel(kA) == 0);
+  CHECK(l.failuresInWindow(kA) == 0);
+  // level forgotten: the next lockout is 60 s again
+  fail(l, kA, 10, 70000);
+  uint32_t retry = 0;
+  CHECK(l.locked(kA, 70000, &retry));
+  CHECK(retry == 60);
+  CHECK_FALSE(l.onResult(0x0909090Au, true, 70000));  // unknown address: nothing to forget
+}
+
+TEST_CASE("AuthLimiter: failures older than 60 s restart the window") {
+  AuthLimiter l;
+  fail(l, kA, 9, 0);
+  CHECK(l.onResult(kA, false, 59999));  // 10th inside the window starting at 0
+  AuthLimiter m;
+  fail(m, kA, 9, 0);
+  CHECK_FALSE(m.onResult(kA, false, 60000));  // window over: a new one starts here
+  CHECK(m.failuresInWindow(kA) == 1);
+  CHECK(fail(m, kA, 8, 119999) == 0);
+  CHECK(m.failuresInWindow(kA) == 9);
+  CHECK(m.onResult(kA, false, 119999));
+}
+
+TEST_CASE("AuthLimiter: the 10th failure at 59999 ms after the first locks") {
+  AuthLimiter l;
+  fail(l, kA, 9, 100);
+  CHECK(l.onResult(kA, false, 60099));
+  CHECK(l.locked(kA, 60099));
+}
+
+TEST_CASE("AuthLimiter: a 9th address replaces the least recently used unlocked entry") {
+  AuthLimiter l;
+  for (uint32_t i = 1; i <= 8; ++i) l.onResult(i, false, i);
+  l.onResult(1, false, 20);  // 1 used again: 2 is now the least recent
+  l.onResult(9, false, 30);
+  CHECK(l.failuresInWindow(9) == 1);
+  CHECK(l.failuresInWindow(2) == 0);
+  CHECK(l.failuresInWindow(1) == 2);
+  for (uint32_t i = 3; i <= 8; ++i) CHECK(l.failuresInWindow(i) == 1);
+}
+
+TEST_CASE("AuthLimiter: locked entries are kept while an unlocked one exists") {
+  AuthLimiter l;
+  fail(l, 1, 10, 0);  // oldest, but locked
+  for (uint32_t i = 2; i <= 8; ++i) l.onResult(i, false, i);
+  l.onResult(9, false, 100);
+  CHECK(l.locked(1, 100));
+  CHECK(l.failuresInWindow(2) == 0);  // the least recent unlocked one went
+  CHECK(l.failuresInWindow(9) == 1);
+}
+
+TEST_CASE("AuthLimiter: an expired lock counts as unlocked when a slot is needed") {
+  AuthLimiter l;
+  for (uint32_t i = 1; i <= 8; ++i) fail(l, i, 10, i * 1000);
+  // at 61500 the lock of 1 (from 1000) is over, the others still run
+  l.onResult(9, false, 61500);
+  CHECK(l.failuresInWindow(9) == 1);
+  CHECK(l.lockLevel(1) == 0);
+  for (uint32_t i = 2; i <= 8; ++i) CHECK(l.locked(i, 61500));
+}
+
+TEST_CASE("AuthLimiter: 8 locked addresses, a 9th replaces the lock that ends first") {
+  AuthLimiter l;
+  // 3 gets the longest lock: 60 s + 300 s levels
+  fail(l, 3, 10, 0);
+  CHECK_FALSE(l.locked(3, 60000));
+  for (uint32_t i = 1; i <= 8; ++i) fail(l, i, 10, 60000 + i);
+  CHECK(l.lockLevel(3) == 2);
+  // lock ends: i at 120000 + i, 3 at 360003; the first to end is 1
+  l.onResult(9, false, 70000);
+  CHECK(l.failuresInWindow(9) == 1);
+  CHECK(l.lockLevel(1) == 0);
+  CHECK_FALSE(l.locked(1, 70000));
+  for (uint32_t i = 2; i <= 8; ++i) CHECK(l.locked(i, 70000));
+  // next: 2 ends first
+  fail(l, 9, 9, 70000);
+  CHECK(l.locked(9, 70000));
+  l.onResult(10, false, 70001);
+  CHECK(l.lockLevel(2) == 0);
+  CHECK(l.locked(3, 70001));
+  CHECK(l.locked(9, 70001));
+}
+
+TEST_CASE("AuthLimiter: millis wrap during the window and the lock") {
+  AuthLimiter l;
+  const uint32_t t0 = 0xFFFFFF00u;
+  fail(l, kA, 9, t0);
+  CHECK(l.onResult(kA, false, t0 + 59999u));  // wraps past 2^32, still within 60 s
+  uint32_t retry = 0;
+  CHECK(l.locked(kA, t0 + 59999u + 59000u, &retry));
+  CHECK(retry == 1);
+  CHECK(l.locked(kA, t0 + 59999u + 59999u));
+  CHECK_FALSE(l.locked(kA, t0 + 59999u + 60000u));
+}
+
+TEST_CASE("AuthLimiter: constants") {
+  CHECK(AuthLimiter::kSlots == 8);
+  CHECK(AuthLimiter::kMaxFailures == 10);
+  CHECK(AuthLimiter::kWindowMs == 60000);
+  CHECK(AuthLimiter::kLockMs[0] == 60000);
+  CHECK(AuthLimiter::kLockMs[1] == 300000);
+  CHECK(AuthLimiter::kLockMs[2] == 900000);
 }
