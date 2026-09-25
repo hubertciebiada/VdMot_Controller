@@ -531,6 +531,7 @@ TEST_CASE("read-back handling per sync state") {
   CHECK(m.valve(1).revision == 3);
 
   // AwaitAck: the read-back may predate the push; sync unchanged.
+  m.applyTarget(target(0, 100), 45);  // valve 0 synced: the push below is valve 1's
   m.applyValveData(data(1), 50);
   m.setDesiredTarget(1, 10, TargetSource::Web, 60);
   uint8_t v, p;
@@ -761,7 +762,9 @@ TEST_CASE("onStmRebooted re-pushes desired targets and forgets STM targets") {
   CHECK(m.valve(0).earlyStopsAtBoot == 1);
   CHECK(m.valve(0).cmdRejectedAtBoot == 0);
   CHECK((m.valve(0).health & kHealthEarlyStop) == 0);
-  CHECK(m.valve(0).sync == TargetSync::Synced);  // read-back equal
+  // Read-back equal, but the rebooted STM gets the target once more.
+  CHECK(m.valve(0).sync == TargetSync::Pending);
+  CHECK(m.valve(0).forcePush);
   // Valve without desired target adopts again.
   m.applyTarget(target(1, 77), 3100);
   CHECK(m.valve(1).desired == 77);
@@ -1017,7 +1020,7 @@ TEST_CASE("applySensorTemps: v2 valve temperatures from gvlon + goned") {
   vs.ids[0][0] = idWithCrc(1);
   vs.ids[0][1] = idWithCrc(2);
   vs.ids[1][0] = idWithCrc(3);
-  vs.ids[2][0] = idWithCrc(7);  // garbage id (not on the bus)
+  vs.ids[2][0] = idWithCrc(7);  // not on the bus
   m.applyValveSensors(vs, nullptr, 0);
 
   // Nothing read yet: nothing to publish.
@@ -1027,7 +1030,8 @@ TEST_CASE("applySensorTemps: v2 valve temperatures from gvlon + goned") {
   CHECK(m.valve(0).revision == rev0);
 
   read(0, 215, 1000);
-  read(1, -1270, 1000);  // the STM reports a read error for this sensor
+  read(1, -1270, 1000);  // the STM reports a read error for this sensor twice
+  read(1, -1270, 1000);
   read(2, 199, 1000);
   m.applySensorTemps(s, 2000, 60000);
   CHECK(m.valve(0).temp1 == 215);
@@ -1036,31 +1040,86 @@ TEST_CASE("applySensorTemps: v2 valve temperatures from gvlon + goned") {
   CHECK((m.valve(0).health & kHealthTempFailed) != 0);
   CHECK(m.valve(1).temp1 == 199);
   CHECK(m.valve(1).temp2 == kTempUnassigned);  // zero id
-  CHECK(m.valve(2).temp1 == kTempUnassigned);  // not on the bus
+  CHECK(m.valve(2).temp1 == kTempUnassigned);  // not on the bus, not settled
   CHECK(m.valve(3).temp1 == kTempUnassigned);
   // Unchanged readings: no revision bump.
   m.applySensorTemps(s, 3000, 60000);
   CHECK(m.valve(0).revision == rev0 + 1);
   CHECK((diffValve(ValveState{}, m.valve(1)) & kChangeTemp1) != 0);
 
-  // Stale readings stop counting; fresh ones come back.
+  // Readings older than maxAge are read errors; fresh ones come back.
   read(0, 216, 50000);
   m.applySensorTemps(s, 61001, 60000);
   CHECK(m.valve(0).temp1 == 216);
-  CHECK(m.valve(0).temp2 == kTempUnassigned);
-  CHECK(m.valve(1).temp1 == kTempUnassigned);
-  CHECK((m.valve(0).health & kHealthTempFailed) == 0);
+  CHECK(m.valve(0).temp2 == kTempReadError);
+  CHECK(m.valve(1).temp1 == kTempReadError);
+  m.applySensorTemps(s, 61000, 60000);
+  CHECK(m.valve(1).temp1 == 199);  // exactly maxAge old: still fresh
 
   // A sensor that left the bus (list re-read without it).
   l.count = 1;
   s.applyTempList(l, 62000);
   m.applySensorTemps(s, 62000, 60000);
   CHECK(m.valve(0).temp1 == 216);
-  read(0, 217, 63000);
-  vs.ids[0][0] = idWithCrc(2);  // re-assigned to a sensor that is gone
+  CHECK(m.valve(1).temp1 == kTempUnassigned);  // gone, not settled
+  m.applySensorTemps(s, 62000, 60000, true);
+  CHECK(m.valve(1).temp1 == kTempReadError);   // gone, settled
+  CHECK(m.valve(2).temp1 == kTempReadError);   // never on the bus, settled
+  CHECK(m.valve(0).temp1 == 216);
+  CHECK(m.valve(3).temp1 == kTempUnassigned);  // nothing assigned stays unassigned
+}
+
+TEST_CASE("applySensorTemps: the combined table per sensor") {
+  SensorModel s;
+  OneWireList l;
+  l.count = 2;
+  l.hasList = true;
+  l.ids[0] = idWithCrc(1);
+  l.ids[1] = idWithCrc(2);
+  s.applyTempList(l, 0);
+  auto read = [&](uint8_t bus, int16_t raw, uint32_t now) {
+    TempData td;
+    td.valid = true;
+    td.id = l.ids[bus];
+    td.value = raw;
+    s.applyTempData(bus, td, now);
+  };
+  ValveModel m;
+  m.setActiveMask(0x007);
+  ValveSensors vs;
+  vs.isList = true;
+  vs.ids[0][0] = idWithCrc(1);
+  vs.ids[0][1] = idWithCrc(2);
+  OneWireId badCrc = idWithCrc(1);
+  badCrc.b[7] ^= 1;
+  vs.ids[1][0] = badCrc;
   m.applyValveSensors(vs, nullptr, 0);
-  m.applySensorTemps(s, 63000, 60000);
-  CHECK(m.valve(0).temp1 == kTempUnassigned);
+
+  read(0, 215, 1000);
+  read(1, 199, 1000);
+  m.applySensorTemps(s, 1000, 60000, true);
+  CHECK(m.valve(0).temp1 == 215);
+  CHECK(m.valve(0).temp2 == 199);
+  CHECK(m.valve(1).temp1 == kTempUnassigned);  // bad CRC: nothing assigned, even settled
+  CHECK(m.valve(1).temp2 == kTempUnassigned);  // zero id
+  // One failed read after a good one: the previous value (debounce).
+  read(0, kTempReadError, 2000);
+  m.applySensorTemps(s, 2000, 60000, true);
+  CHECK(m.valve(0).temp1 == 215);
+  CHECK(m.valve(0).temp2 == 199);  // sensor 2 independent of sensor 1
+  read(0, kTempReadError, 3000);
+  m.applySensorTemps(s, 3000, 60000, true);
+  CHECK(m.valve(0).temp1 == kTempReadError);
+  CHECK(m.valve(0).temp2 == 199);
+  // The STM's temperature cycle is older than 200 s: every reading is stale.
+  read(0, 220, 4000);
+  s.setStmTempAge(201, 4000);
+  m.applySensorTemps(s, 4000, 60000, true);
+  CHECK(m.valve(0).temp1 == kTempReadError);
+  CHECK(m.valve(0).temp2 == kTempReadError);
+  s.setStmTempAge(0, 5000);
+  m.applySensorTemps(s, 5000, 60000, true);
+  CHECK(m.valve(0).temp1 == 220);
 }
 
 TEST_CASE("health flags per condition and activity") {
@@ -1290,8 +1349,10 @@ TEST_CASE("SensorModel temperature list and data") {
   CHECK(s.temp(1).id == idWithCrc(4));
   CHECK(s.findTemp(idWithCrc(4)) == 1);
 
-  // Invalid form marks not seen.
+  // Invalid form marks not seen (the second one in a row).
   TempData inv;
+  s.applyTempData(1, inv, 900);
+  CHECK(s.temp(1).seen);
   s.applyTempData(1, inv, 900);
   CHECK_FALSE(s.temp(1).seen);
   CHECK(s.temp(1).raw == kTempUnassigned);
@@ -1374,6 +1435,8 @@ TEST_CASE("SensorModel volt list and data") {
   CHECK(s.volt(1).vad == 1234);
   CHECK(s.volt(1).lastSeenMs == 10);
   VoltData inv;
+  s.applyVoltData(1, inv, 20);
+  CHECK(s.volt(1).seen);
   s.applyVoltData(1, inv, 20);
   CHECK_FALSE(s.volt(1).seen);
   CHECK(s.volt(1).vad == kVadFailed);

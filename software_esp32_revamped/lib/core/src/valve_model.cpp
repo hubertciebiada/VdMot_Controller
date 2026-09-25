@@ -33,6 +33,19 @@ bool sameState(const ValveState& a, const ValveState& b) {
 
 bool tempFailed(int16_t raw) { return raw != kTempUnassigned && !tempRawValid(raw); }
 
+bool addressed(uint8_t valveOrAll, uint8_t i) { return valveOrAll == kAllValves || valveOrAll == i; }
+
+// gvlvd/gvlvx carry no protocol 3 fields; fsPct stays (ESP config on 1/2).
+void clearV3(ValveState& v) {
+  v.hasV3 = false;
+  v.stmFlags = 0;
+  v.fault = 0;
+  v.drive = 0;
+  v.retryS = 0;
+  v.retries = 0;
+  v.autoRetry = false;
+}
+
 }  // namespace
 
 const char* valveStatusText(uint8_t status) {
@@ -62,6 +75,12 @@ FailsafeKind failsafeKind(const ValveState& v) {
 }
 
 bool valveAtFailsafe(const ValveState& v) { return failsafeKind(v) == FailsafeKind::Lease; }
+
+bool strokeNearMinimum(uint32_t openCount, uint32_t closeCount, uint16_t minCounts) {
+  if (minCounts == 0 || openCount == 0 || closeCount == 0) return false;
+  const uint64_t stroke = openCount < closeCount ? openCount : closeCount;
+  return stroke * 5 < uint64_t{minCounts} * 6;
+}
 
 const char* targetSyncName(TargetSync s) {
   switch (s) {
@@ -102,6 +121,11 @@ uint32_t diffValve(const ValveState& a, const ValveState& b) {
   }
   if (a.health != b.health) m |= kChangeHealth;
   if (a.known != b.known) m |= kChangeKnown;
+  if (a.hasV3 != b.hasV3 || a.stmFlags != b.stmFlags || a.fault != b.fault ||
+      a.fsPct != b.fsPct || a.drive != b.drive || a.retries != b.retries ||
+      a.autoRetry != b.autoRetry || a.fsOverride != b.fsOverride || a.fsTarget != b.fsTarget) {
+    m |= kChangeFailsafe;
+  }
   return m;
 }
 
@@ -113,7 +137,12 @@ bool ValveModel::isActive(uint8_t i) const { return ((active_ >> i) & 1u) != 0; 
 
 void ValveModel::commit(uint8_t i, const ValveState& before) {
   updateHealth(i);
-  if (!sameState(before, v_[i])) ++v_[i].revision;
+  const ValveState& v = v_[i];
+  if (before.desiredValid != v.desiredValid || before.desired != v.desired ||
+      before.source != v.source) {
+    ++desiredRev_;
+  }
+  if (!sameState(before, v)) ++v_[i].revision;
 }
 
 void ValveModel::setActiveMask(uint16_t mask) {
@@ -135,7 +164,10 @@ bool ValveModel::setDesiredTarget(uint8_t valve, uint8_t pos, TargetSource src, 
   if (valve >= kValveCount || pos > 100 || !isActive(valve)) return false;
   ValveState& v = v_[valve];
   const ValveState before = v;
-  if (v.desiredValid && v.desired == pos) {
+  // The same value from a web/MQTT command ends an assembly: the stgtp ends
+  // the STM's assembly hold.
+  const bool endsAssembly = v.source == TargetSource::Assembly && src != TargetSource::Assembly;
+  if (v.desiredValid && v.desired == pos && !endsAssembly) {
     // Same value: only a Failed delivery is re-armed (explicit retry).
     if (v.sync == TargetSync::Failed) {
       v.source = src;
@@ -144,14 +176,23 @@ bool ValveModel::setDesiredTarget(uint8_t valve, uint8_t pos, TargetSource src, 
       keepUnconfirmed_[valve] = false;
     }
   } else {
+    const uint8_t pushedBefore = pushTarget(valve);
     const bool inFlight = v.sync == TargetSync::AwaitAck || v.sync == TargetSync::AwaitVerify;
     v.desiredValid = true;
     v.desired = pos;
     v.source = src;
-    v.pushAttempts = 0;
-    keepUnconfirmed_[valve] = false;
-    v.sync = (!inFlight && v.stmTargetKnown && v.stmTarget == pos) ? TargetSync::Synced
-                                                                   : TargetSync::Pending;
+    assemblyPending_[valve] = false;
+    readBackFirst_[valve] = false;
+    if (endsAssembly) v.forcePush = true;
+    // Under the failsafe override the STM keeps getting fsTarget: the new
+    // desired value waits without touching the delivery.
+    if (!(v.fsOverride && before.desiredValid && pushTarget(valve) == pushedBefore)) {
+      v.pushAttempts = 0;
+      keepUnconfirmed_[valve] = false;
+      v.sync = (!inFlight && !v.forcePush && v.stmTargetKnown && v.stmTarget == pushTarget(valve))
+                   ? TargetSync::Synced
+                   : TargetSync::Pending;
+    }
   }
   commit(valve, before);
   return true;
@@ -181,6 +222,7 @@ void ValveModel::applyValveData(const ValveData& d, uint32_t nowMs) {
   v.closeCount = d.closeCount;
   v.deadZone = d.deadZone;
   v.calibRetries = d.calibRetries;
+  clearV3(v);
   commit(d.valve, before);
 }
 
@@ -214,7 +256,23 @@ void ValveModel::applyValveEx(const ValveEx& d, uint32_t nowMs) {
     v.lastMove = d.lastMove;
     ++v.moveSeq;
   }
-  applyReadBack(i, d.target);
+  if (d.v3) {
+    v.hasV3 = true;
+    v.stmFlags = d.flags;
+    v.fault = d.fault;
+    v.fsPct = d.fsPct;
+    v.drive = d.drive;
+    v.retryS = d.retryS;
+    // More automatic retries than before: the next calibration start is one.
+    if (d.retries > v.retries) v.autoRetry = true;
+    v.retries = d.retries;
+    if (d.retries == 0 || (before.calibrating && !d.calibrating)) v.autoRetry = false;
+  } else {
+    clearV3(v);
+  }
+  const bool holdOk = !(d.v3 && v.source == TargetSource::Assembly &&
+                        (d.flags & kStmFlagAssembly) == 0);
+  applyReadBack(i, d.target, holdOk);
   commit(i, before);
 }
 
@@ -238,10 +296,11 @@ void ValveModel::applyTarget(const TargetReply& t, uint32_t nowMs) {
   commit(t.valve, before);
 }
 
-void ValveModel::applyReadBack(uint8_t i, uint8_t target) {
+void ValveModel::applyReadBack(uint8_t i, uint8_t target, bool holdOk) {
   ValveState& v = v_[i];
   v.stmTargetKnown = true;
   v.stmTarget = target;
+  readBackFirst_[i] = false;
   if (!v.desiredValid) {
     v.desiredValid = true;
     v.desired = target;
@@ -249,7 +308,8 @@ void ValveModel::applyReadBack(uint8_t i, uint8_t target) {
     markSynced(i);
     return;
   }
-  const bool equal = target == v.desired;
+  // A forced push (after an STM reboot) goes out although the value matches.
+  const bool equal = target == pushTarget(i) && holdOk && !v.forcePush;
   switch (v.sync) {
     case TargetSync::AwaitAck:
       // The read-back may predate the stgtp in flight; the ack decides.
@@ -292,15 +352,22 @@ void ValveModel::applyValveSensors(const ValveSensors& s, const OneWireId* slotI
   }
 }
 
-void ValveModel::applySensorTemps(const SensorModel& sensors, uint32_t nowMs,
-                                  uint32_t maxAgeMs) {
+void ValveModel::applySensorTemps(const SensorModel& sensors, uint32_t nowMs, uint32_t maxAgeMs,
+                                  bool settled) {
   for (uint8_t i = 0; i < kValveCount; ++i) {
     ValveState& v = v_[i];
-    int16_t raw[2] = {kTempUnassigned, kTempUnassigned};
+    int16_t raw[2];
     for (uint8_t k = 0; k < 2; ++k) {
-      const int bus = sensors.findTemp(v.sensorId[k]);  // -1 for a zero id
-      if (bus >= 0 && sensors.tempFresh(static_cast<uint8_t>(bus), nowMs, maxAgeMs)) {
+      const OneWireId& id = v.sensorId[k];
+      const int bus = sensors.findTemp(id);  // -1 for a zero id
+      if (isZero(id) || !crcValid(id)) {
+        raw[k] = kTempUnassigned;
+      } else if (bus >= 0 && sensors.tempFresh(static_cast<uint8_t>(bus), nowMs, maxAgeMs)) {
         raw[k] = sensors.temp(static_cast<uint8_t>(bus)).raw;
+      } else if (bus >= 0 && sensors.temp(static_cast<uint8_t>(bus)).seen) {
+        raw[k] = kTempReadError;  // read before, too old now
+      } else {
+        raw[k] = settled ? kTempReadError : kTempUnassigned;
       }
     }
     if (raw[0] == v.temp1 && raw[1] == v.temp2) continue;
@@ -311,11 +378,14 @@ void ValveModel::applySensorTemps(const SensorModel& sensors, uint32_t nowMs,
   }
 }
 
-bool ValveModel::nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos) {
+bool ValveModel::nextDelivery(uint32_t nowMs, bool assembly, uint8_t& valve) {
   for (uint8_t n = 0; n < kValveCount; ++n) {
     const uint8_t i = static_cast<uint8_t>((pushCursor_ + n) % kValveCount);
     ValveState& v = v_[i];
-    if (!isActive(i) || !v.known || !v.desiredValid) continue;
+    if (!isActive(i) || !(v.known || v.stmTargetKnown) || !v.desiredValid) continue;
+    if (readBackFirst_[i]) continue;
+    const bool viaStaop = assemblyViaStaop_ && v.source == TargetSource::Assembly;
+    if (viaStaop != assembly) continue;
     if (v.calibrating && holdWhileCalibrating_) continue;
     const uint32_t sincePush = elapsedMs(nowMs, v.lastPushMs);
     const bool rearm = v.sync == TargetSync::Failed;
@@ -334,14 +404,25 @@ bool ValveModel::nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos) {
     if (v.pushAttempts < UINT8_MAX) ++v.pushAttempts;
     v.lastPushMs = nowMs;
     v.stmTargetKnown = false;  // uncertain until the read-back
+    v.forcePush = false;
+    assemblyPending_[i] = assembly;
     pushedOnce_[i] = true;
     pushCursor_ = static_cast<uint8_t>((i + 1) % kValveCount);
     commit(i, before);
     valve = i;
-    pos = v.desired;
     return true;
   }
   return false;
+}
+
+bool ValveModel::nextTargetPush(uint32_t nowMs, uint8_t& valve, uint8_t& pos) {
+  if (!nextDelivery(nowMs, false, valve)) return false;
+  pos = pushTarget(valve);
+  return true;
+}
+
+bool ValveModel::nextAssemblyPush(uint32_t nowMs, uint8_t& valve) {
+  return nextDelivery(nowMs, true, valve);
 }
 
 void ValveModel::onTargetPushDropped(uint8_t valve, uint32_t nowMs) {
@@ -350,6 +431,7 @@ void ValveModel::onTargetPushDropped(uint8_t valve, uint32_t nowMs) {
   ValveState& v = v_[valve];
   const ValveState before = v;
   v.sync = TargetSync::Pending;
+  assemblyPending_[valve] = false;
   if (v.pushAttempts > 0) --v.pushAttempts;
   commit(valve, before);
 }
@@ -357,6 +439,7 @@ void ValveModel::onTargetPushDropped(uint8_t valve, uint32_t nowMs) {
 void ValveModel::onTargetAck(uint8_t valve, uint32_t nowMs) {
   (void)nowMs;
   if (valve >= kValveCount || v_[valve].sync != TargetSync::AwaitAck) return;
+  if (assemblyPending_[valve]) return;  // the staop result decides
   const ValveState before = v_[valve];
   v_[valve].sync = TargetSync::AwaitVerify;
   commit(valve, before);
@@ -365,10 +448,132 @@ void ValveModel::onTargetAck(uint8_t valve, uint32_t nowMs) {
 void ValveModel::onTargetTimeout(uint8_t valve, uint32_t nowMs) {
   (void)nowMs;
   if (valve >= kValveCount || v_[valve].sync != TargetSync::AwaitAck) return;
+  if (assemblyPending_[valve]) return;
   ValveState& v = v_[valve];
   const ValveState before = v;
   v.sync = v.pushAttempts >= params_.maxPushAttempts ? TargetSync::Failed : TargetSync::Pending;
   commit(valve, before);
+}
+
+void ValveModel::setAssembly(uint8_t valveOrAll, uint32_t nowMs) {
+  (void)nowMs;
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    if (!addressed(valveOrAll, i) || !isActive(i)) continue;
+    ValveState& v = v_[i];
+    const ValveState before = v;
+    v.desiredValid = true;
+    v.desired = 100;
+    v.source = TargetSource::Assembly;
+    v.sync = TargetSync::AwaitAck;
+    v.pushAttempts = 0;
+    v.stmTargetKnown = false;
+    v.forcePush = false;
+    v.fsOverride = false;
+    v.fsTarget = 0;
+    keepUnconfirmed_[i] = false;
+    readBackFirst_[i] = false;
+    assemblyPending_[i] = true;
+    commit(i, before);
+  }
+}
+
+void ValveModel::assemblyResult(uint8_t valveOrAll, bool ok) {
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    if (!addressed(valveOrAll, i) || !assemblyPending_[i]) continue;
+    ValveState& v = v_[i];
+    const ValveState before = v;
+    assemblyPending_[i] = false;
+    if (ok) {
+      v.sync = TargetSync::AwaitVerify;
+    } else {
+      v.sync =
+          v.pushAttempts >= params_.maxPushAttempts ? TargetSync::Failed : TargetSync::Pending;
+    }
+    commit(i, before);
+  }
+}
+
+void ValveModel::onAssemblyAck(uint8_t valveOrAll, uint32_t nowMs) {
+  (void)nowMs;
+  assemblyResult(valveOrAll, true);
+}
+
+void ValveModel::onAssemblyFailed(uint8_t valveOrAll, uint32_t nowMs) {
+  (void)nowMs;
+  assemblyResult(valveOrAll, false);
+}
+
+bool ValveModel::restoreDesired(uint8_t valve, uint8_t pos, TargetSource src) {
+  if (valve >= kValveCount || pos > 100 || !isActive(valve)) return false;
+  ValveState& v = v_[valve];
+  const ValveState before = v;
+  v.desiredValid = true;
+  v.desired = pos;
+  v.source = src == TargetSource::Assembly ? TargetSource::Assembly : TargetSource::Restored;
+  v.sync = TargetSync::Pending;
+  v.pushAttempts = 0;
+  keepUnconfirmed_[valve] = false;
+  readBackFirst_[valve] = true;
+  commit(valve, before);
+  return true;
+}
+
+uint8_t ValveModel::pushTarget(uint8_t valve) const {
+  if (valve >= kValveCount) return 0;
+  const ValveState& v = v_[valve];
+  return v.fsOverride ? v.fsTarget : v.desired;
+}
+
+void ValveModel::setFailsafeDrive(uint16_t mask, const uint8_t (&pct)[kValveCount]) {
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    ValveState& v = v_[i];
+    const ValveState before = v;
+    const bool on = ((mask >> i) & 1u) != 0 && isActive(i) && v.desiredValid &&
+                    v.source != TargetSource::Assembly && pct[i] <= 100;
+    v.fsOverride = on;
+    v.fsTarget = on ? pct[i] : 0;
+    if (!v.hasV3) v.fsPct = pct[i];
+    const uint8_t pushed = pushTarget(i);
+    const uint8_t pushedBefore = before.fsOverride ? before.fsTarget : before.desired;
+    if (v.desiredValid && pushed != pushedBefore) {
+      v.pushAttempts = 0;
+      keepUnconfirmed_[i] = false;
+      v.sync = v.stmTargetKnown && v.stmTarget == pushed ? TargetSync::Synced : TargetSync::Pending;
+    }
+    commit(i, before);
+  }
+}
+
+void ValveModel::setMinCounts(uint16_t minCounts) {
+  minCounts_ = minCounts;
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    const ValveState before = v_[i];
+    commit(i, before);
+  }
+}
+
+void ValveModel::forgetStmData() {
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    ValveState& v = v_[i];
+    const ValveState before = v;
+    ValveState fresh;
+    fresh.desiredValid = v.desiredValid;
+    fresh.desired = v.desired;
+    fresh.source = v.source;
+    fresh.sync = v.desiredValid ? TargetSync::Pending : TargetSync::Unknown;
+    fresh.fsOverride = v.fsOverride;
+    fresh.fsTarget = v.fsTarget;
+    fresh.fsPct = v.fsPct;
+    fresh.moveSeq = v.moveSeq;
+    fresh.revision = v.revision;
+    v = fresh;
+    stale_[i] = false;
+    staleRefValid_[i] = false;
+    baselined_[i] = false;
+    assemblyPending_[i] = false;
+    keepUnconfirmed_[i] = false;
+    commit(i, before);
+  }
 }
 
 bool ValveModel::nextVerify(uint8_t& valve) const {
@@ -390,7 +595,9 @@ void ValveModel::onStmRebooted(uint32_t nowMs) {
     v.stmTarget = 0;
     v.pushAttempts = 0;
     v.sync = v.desiredValid ? TargetSync::Pending : TargetSync::Unknown;
+    v.forcePush = v.desiredValid;
     keepUnconfirmed_[i] = false;
+    assemblyPending_[i] = false;
     baselined_[i] = false;
     commit(i, before);
   }
@@ -444,6 +651,8 @@ void ValveModel::updateHealth(uint8_t i) {
       h |= kHealthTargetUnconfirmed;
     }
     if (tempFailed(v.temp1) || tempFailed(v.temp2)) h |= kHealthTempFailed;
+    if (valveAtFailsafe(v)) h |= kHealthFailsafe;
+    if (strokeNearMinimum(v.openCount, v.closeCount, minCounts_)) h |= kHealthStrokeShort;
   }
   v_[i].health = h;
 }
@@ -492,10 +701,16 @@ bool SensorModel::applyVoltList(const OneWireList& l, uint32_t nowMs) {
 void SensorModel::applyTempData(uint8_t busIndex, const TempData& d, uint32_t nowMs) {
   if (busIndex >= kTempSlotCount) return;
   TempReading& r = temps_[busIndex];
-  if (!d.valid) {
-    r.seen = false;
-    r.raw = kTempUnassigned;
-    return;
+  if (d.valid && tempRawValid(d.value)) {
+    r.failStreak = 0;
+  } else {
+    if (r.failStreak < UINT8_MAX) ++r.failStreak;
+    if (r.failStreak < kSensorFailDebounce) return;  // one failure is held
+    if (!d.valid) {
+      r.seen = false;
+      r.raw = kTempUnassigned;
+      return;
+    }
   }
   r.id = d.id;
   r.raw = d.value;
@@ -506,15 +721,41 @@ void SensorModel::applyTempData(uint8_t busIndex, const TempData& d, uint32_t no
 void SensorModel::applyVoltData(uint8_t busIndex, const VoltData& d, uint32_t nowMs) {
   if (busIndex >= kVoltSlotCount) return;
   VoltReading& r = volts_[busIndex];
-  if (!d.valid) {
-    r.seen = false;
-    r.vad = kVadFailed;
-    return;
+  if (d.valid && vadValid(d.vad)) {
+    r.failStreak = 0;
+  } else {
+    if (r.failStreak < UINT8_MAX) ++r.failStreak;
+    if (r.failStreak < kSensorFailDebounce) return;  // one failure is held
+    if (!d.valid) {
+      r.seen = false;
+      r.vad = kVadFailed;
+      return;
+    }
   }
   r.id = d.id;
   r.vad = d.vad;
   r.seen = true;
   r.lastSeenMs = nowMs;
+}
+
+bool SensorModel::applyStrayTempData(const TempData& d, uint32_t nowMs) {
+  const int bus = d.valid ? findTemp(d.id) : -1;
+  if (bus < 0) return false;
+  applyTempData(static_cast<uint8_t>(bus), d, nowMs);
+  return true;
+}
+
+bool SensorModel::applyStrayVoltData(const VoltData& d, uint32_t nowMs) {
+  const int bus = d.valid ? findVolt(d.id) : -1;
+  if (bus < 0) return false;
+  applyVoltData(static_cast<uint8_t>(bus), d, nowMs);
+  return true;
+}
+
+void SensorModel::setStmTempAge(uint32_t ageS, uint32_t nowMs) {
+  haveStmAge_ = true;
+  stmAgeS_ = ageS;
+  stmAgeAtMs_ = nowMs;
 }
 
 void SensorModel::clear() {
@@ -553,7 +794,17 @@ int SensorModel::findVolt(const OneWireId& id) const {
 bool SensorModel::tempFresh(uint8_t busIndex, uint32_t nowMs, uint32_t maxAgeMs) const {
   if (busIndex >= kTempSlotCount) return false;
   const TempReading& r = temps_[busIndex];
-  return r.seen && elapsedMs(nowMs, r.lastSeenMs) <= maxAgeMs;
+  if (!r.seen || elapsedMs(nowMs, r.lastSeenMs) > maxAgeMs) return false;
+  return !haveStmAge_ ||
+         uint64_t{stmAgeS_} + elapsedMs(nowMs, stmAgeAtMs_) / 1000 <= kStmTempMaxAgeS;
+}
+
+void expectSensor(RequestLine& r, const SensorModel& s) {
+  if (r.cmd == Cmd::Goned) {
+    r.expect = s.temp(static_cast<uint8_t>(r.arg)).id;
+  } else if (r.cmd == Cmd::Gowvd) {
+    r.expect = s.volt(static_cast<uint8_t>(r.arg)).id;
+  }
 }
 
 }  // namespace vdm
