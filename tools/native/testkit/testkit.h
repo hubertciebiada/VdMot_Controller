@@ -12,6 +12,13 @@
 //   --no-fork     VDM_GLUE_NOFORK=1   run every case in this process (debugger); no reboots
 //                 VDM_CASE_TIMEOUT_S  seconds per boot of a case, 0 = no limit (default 5)
 //                 VDM_MAX_BOOTS       boots per case (default 8)
+//
+// Exit code of the runner (fork mode), the first that applies; tools/mutation/mutate.py tells a
+// kill from a timeout and from a broken environment by it:
+//   1    a case failed: an assertion, an invariant, a crash, a store hook, too many boots
+//   125  the runner itself failed: fork, waitpid, the hand-off directory or the reset kind file
+//   124  a case ran out of VDM_CASE_TIMEOUT_S (a timeout, not a kill)
+//   0    every case passed
 #pragma once
 
 #include <stddef.h>

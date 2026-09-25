@@ -32,7 +32,13 @@ constexpr int kExitFailed = 1;
 constexpr int kExitHooks = 2;       // stores not saved or loaded, reboot() without the fork runner
 constexpr int kExitInvariant = 3;   // Hooks::checkInvariants reported a violation
 constexpr int kExitNoReboot = 4;    // reboot() after a failed assertion
+constexpr int kExitHandOff = 5;     // the reset kind could not be written
 constexpr int kExitReboot = 75;     // reboot() requested the next boot
+
+// Exit codes of the runner (testkit.h).
+constexpr int kRunnerFailed = 1;
+constexpr int kRunnerTimeout = 124;
+constexpr int kRunnerError = 125;
 
 Hooks g_hooks;  // zero-initialized before any static initializer calls setHooks()
 unsigned g_boot = 0;
@@ -42,6 +48,13 @@ std::string g_storesPath;
 std::string g_resetPath;
 const char* g_invariantMessage = nullptr;
 unsigned g_invariantFailures = 0;
+
+// Verdict of one case: Timeout and Error are no evidence against the code under test.
+enum class Outcome { Passed, Failed, Timeout, Error };
+struct Verdict {
+  Outcome outcome;
+  std::string reason;
+};
 
 struct CaseInfo {
   std::string name;
@@ -198,16 +211,16 @@ bool readResetKind(Reset& kind) {
   return true;
 }
 
-// Runs every boot of one case; returns "" when it passed, else the reason.
-std::string runCase(const std::vector<const char*>& args, unsigned index, bool failFast,
-                    int timeoutS, int maxBoots) {
+// Runs every boot of one case.
+Verdict runCase(const std::vector<const char*>& args, unsigned index, bool failFast, int timeoutS,
+                int maxBoots) {
   unlink(g_storesPath.c_str());
   unlink(g_resetPath.c_str());
   Reset kind = Reset::PowerOn;
   for (unsigned boot = 0;; ++boot) {
     flushAll();
     const pid_t pid = fork();
-    if (pid < 0) return std::string("fork failed: ") + strerror(errno);
+    if (pid < 0) return {Outcome::Error, std::string("fork failed: ") + strerror(errno)};
     if (pid == 0) {
       g_boot = boot;
       g_lastReset = kind;
@@ -216,30 +229,36 @@ std::string runCase(const std::vector<const char*>& args, unsigned index, bool f
     }
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
-      if (errno != EINTR) return std::string("waitpid failed: ") + strerror(errno);
+      if (errno != EINTR) {
+        return {Outcome::Error, std::string("waitpid failed: ") + strerror(errno)};
+      }
     }
     const std::string at = " at boot " + std::to_string(boot);
     if (WIFSIGNALED(status)) {
       const int sig = WTERMSIG(status);
       if (sig == SIGALRM) {
-        return "timeout (signal 14) after " + std::to_string(timeoutS) + " s" + at;
+        return {Outcome::Timeout,
+                "timeout (signal 14) after " + std::to_string(timeoutS) + " s" + at};
       }
-      return "killed by signal " + std::to_string(sig) + " (" + strsignal(sig) + ")" + at;
+      return {Outcome::Failed,
+              "killed by signal " + std::to_string(sig) + " (" + strsignal(sig) + ")" + at};
     }
     const int code = WEXITSTATUS(status);
     if (code == kExitReboot) {
       if (boot + 1 >= static_cast<unsigned>(maxBoots)) {
-        return "too many boots (VDM_MAX_BOOTS " + std::to_string(maxBoots) + ")";
+        return {Outcome::Failed, "too many boots (VDM_MAX_BOOTS " + std::to_string(maxBoots) + ")"};
       }
-      if (!readResetKind(kind)) return "reboot without a reset kind" + at;
+      if (!readResetKind(kind)) return {Outcome::Error, "reboot without a reset kind" + at};
       continue;
     }
     switch (code) {
-      case kExitPassed: return "";
-      case kExitHooks: return "stores not saved or loaded" + at;
-      case kExitInvariant: return "invariant violated" + at;
-      case kExitNoReboot: return "reboot requested after a failed assertion" + at;
-      default: return "failed (exit " + std::to_string(code) + ")" + at;
+      case kExitPassed: return {Outcome::Passed, ""};
+      case kExitHooks: return {Outcome::Failed, "stores not saved or loaded" + at};
+      case kExitInvariant: return {Outcome::Failed, "invariant violated" + at};
+      case kExitNoReboot:
+        return {Outcome::Failed, "reboot requested after a failed assertion" + at};
+      case kExitHandOff: return {Outcome::Error, "reset kind not written" + at};
+      default: return {Outcome::Failed, "failed (exit " + std::to_string(code) + ")" + at};
     }
   }
 }
@@ -258,22 +277,28 @@ int runForked(const std::vector<const char*>& args, bool failFast, int timeoutS,
   dir.push_back('\0');
   if (mkdtemp(dir.data()) == nullptr) {
     std::cout << "[testkit] cannot create a hand-off directory: " << strerror(errno) << std::endl;
-    return 1;
+    return kRunnerError;
   }
   g_storesPath = std::string(dir.data()) + "/stores";
   g_resetPath = std::string(dir.data()) + "/reset";
 
   unsigned ran = 0;
   unsigned failed = 0;
+  bool anyFailed = false;
+  bool anyTimeout = false;
+  bool anyError = false;
   for (size_t i = 0; i < g_cases.size(); ++i) {
     ++ran;
-    const std::string verdict = runCase(args, static_cast<unsigned>(i + 1), failFast, timeoutS,
-                                        maxBoots);
-    if (verdict.empty()) continue;
+    const Verdict verdict = runCase(args, static_cast<unsigned>(i + 1), failFast, timeoutS,
+                                    maxBoots);
+    if (verdict.outcome == Outcome::Passed) continue;
     ++failed;
+    anyFailed = anyFailed || verdict.outcome == Outcome::Failed;
+    anyTimeout = anyTimeout || verdict.outcome == Outcome::Timeout;
+    anyError = anyError || verdict.outcome == Outcome::Error;
     const CaseInfo& c = g_cases[i];
     std::cout << "[testkit] FAILED \"" << c.name << "\" (" << c.file << ":" << c.line
-              << "): " << verdict << std::endl;
+              << "): " << verdict.reason << std::endl;
     if (failFast) {
       std::cout << "[testkit] fail-fast: stopped after the first failing case" << std::endl;
       break;
@@ -284,7 +309,9 @@ int runForked(const std::vector<const char*>& args, bool failFast, int timeoutS,
   rmdir(dir.data());
   std::cout << "[testkit] " << g_cases.size() << " cases, " << ran << " run: " << (ran - failed)
             << " passed, " << failed << " failed" << std::endl;
-  return failed == 0 ? 0 : 1;
+  if (anyFailed) return kRunnerFailed;
+  if (anyError) return kRunnerError;
+  return anyTimeout ? kRunnerTimeout : 0;
 }
 
 // dl_iterate_phdr() reports the executable first: its load address is the bias of a PIE.
@@ -326,7 +353,7 @@ void reboot(Reset kind) {
   FILE* f = fopen(g_resetPath.c_str(), "wb");
   if (f == nullptr || fputc(static_cast<int>(kind), f) == EOF || fclose(f) != 0) {
     std::cout << "[testkit] cannot write the reset kind at boot " << g_boot << std::endl;
-    exitCase(kExitHooks);
+    exitCase(kExitHandOff);
   }
   exitCase(kExitReboot);
 }

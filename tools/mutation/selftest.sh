@@ -199,6 +199,21 @@ printf 'bool w(bool a, bool b, bool c) { if (a || b && c) return true; return fa
   fail "stillborn mutants were counted"
 ok "-Wparentheses mutant built and counted, stillborn excluded"
 
+# --- exit codes of the glue runner: 124 (a case timed out) is a timeout that a solo re-run
+# confirms, 125 (the runner failed) an error; neither is a kill by itself
+project codes
+printf 'int c1(int a) {\n  return a;\n}\nint c2(int a) {\n  return a;\n}\nint c3(int a) {\n  return a;\n}\n' >"$T/codes/proj/src/c.cpp"
+printf '#include "src/c.cpp"\nint main() { if (c1(5) == 0) return 124; if (c2(5) == 0) return 125; return c3(5) == 5 ? 0 : 1; }\n' \
+  >"$T/codes/proj/test_c.cpp"
+config codes '{"threshold": 0}'
+mutate codes --jobs 2
+[ "$RC" -eq 2 ] || fail "runner exit codes: exit $RC, expected 2"
+[ "$(report codes "[m['status'] for m in M]")" = "['timeout', 'error', 'killed']" ] ||
+  fail "runner exit codes: $(report codes "[(m['status'], m['detail']) for m in M]")"
+report codes "M[0]['detail']" | grep -q "a test case timed out (exit 124); confirmed alone" || fail "exit 124: detail"
+report codes "M[1]['detail']" | grep -q "no test verdict (exit 125)" || fail "exit 125: detail"
+ok "runner exit 124 is a timeout to confirm, 125 an error"
+
 # --- equivalents: a valid entry, a stale entry, line-only and reason-less entries
 project equiv
 printf 'int e(int a) {\n  if (a > 5) return 5;\n  return a;\n}\n' >"$T/equiv/proj/src/e.cpp"

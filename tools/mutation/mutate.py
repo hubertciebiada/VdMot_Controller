@@ -33,7 +33,8 @@ Config (JSON; every key is required except "test"; keys starting with "_" are co
   test_file        stage 1: the module's fast tests ({build}, {stem}); must pass unmutated
   test             optional stage 2 for the survivors of stage 1 (slow and fuzz cases)
   timeout_min      test budget per stem and stage: max(timeout_min, timeout_factor x the
-  timeout_factor   unmutated run) seconds; a timeout is confirmed by one solo re-run
+  timeout_factor   unmutated run) seconds; a timeout (also exit 124 of the glue runner, a case
+                   that ran out of VDM_CASE_TIMEOUT_S) is confirmed by one solo re-run
   timeout_build    limit in seconds of setup, builds and the unmutated test runs
   threshold        minimum score (%) of the run
   file_threshold   minimum score (%) of every file
@@ -46,10 +47,11 @@ reason is a configuration error. Preprocessor directive lines are never mutated.
 
 Statuses: killed; survived; timeout (confirmed by a solo re-run, counts as killed); stillborn
 (the compiler printed "error:"); not_compiled; equivalent; error (unconfirmed timeout,
-compiler crash or build timeout; never cached, the run exits 2). Killed, timeout, stillborn
-and not_compiled results are cached in <config>.cache.json (key: file, source hash, config
-hash, position, operator, replacement), so an interrupted run resumes; survivors always run
-again. The checkout is never written: every worker is a copy under --workdir.
+compiler crash or build timeout, a test run that did not start or whose runner failed (exit
+125-127); never cached, the run exits 2). Killed, timeout, stillborn and not_compiled results
+are cached in <config>.cache.json (key: file, source hash, config hash, position, operator,
+replacement), so an interrupted run resumes; survivors always run again. The checkout is never
+written: every worker is a copy under --workdir.
 
 Exit code: 0 when the score >= threshold, every file >= file_threshold and no mutant has the
 status error; 1 when a threshold is missed; 2 on a configuration error, a failing unmutated
@@ -122,6 +124,11 @@ TEMPLATE_OPEN = re.compile(r"\b(?:template|static_cast|reinterpret_cast|const_ca
                            r"std::\w+|array|vector)\s*<(?![<=])")
 
 TIMEOUT_RC = -999
+# Exit codes of a test command that are no kill: the glue runner (tools/native/testkit) exits with
+# 124 when a case timed out and with 125 when the runner itself failed; the shell exits with 126
+# or 127 when the command cannot be started.
+RUNNER_TIMEOUT = 124
+NOT_RUN = (125, 126, 127)
 CACHEABLE = ("killed", "timeout", "stillborn", "not_compiled")
 STATUSES = ("killed", "survived", "timeout", "stillborn", "not_compiled", "equivalent", "error")
 BUILD_CRASHES = ("internal compiler error", "Killed signal terminated program",
@@ -773,10 +780,20 @@ def evaluate(m: Mutant, w: Worker, cfg: dict, budgets: dict, quick: bool, runner
             stages.append((2, cfg["test"]))
         for stage, cmd in stages:
             m.stage = stage
-            rc, _, _ = runner.run(fmt(cmd, w.build, stem), w.root, budgets[stem][stage - 1], env)
+            budget = budgets[stem][stage - 1]
+            rc, out, _ = runner.run(fmt(cmd, w.build, stem), w.root, budget, env)
             if rc == TIMEOUT_RC:
                 m.status = "timeout?"
-                m.detail = f"stage {stage} exceeded {budgets[stem][stage - 1]:.1f} s"
+                m.detail = f"stage {stage} exceeded {budget:.1f} s"
+                return
+            if rc == RUNNER_TIMEOUT:
+                m.status = "timeout?"
+                m.detail = f"stage {stage}: a test case timed out (exit {rc})"
+                return
+            if rc in NOT_RUN:
+                last = out.strip().splitlines()[-1:] or [""]
+                m.status = "error"
+                m.detail = f"stage {stage}: no test verdict (exit {rc}): {last[0][:200]}"
                 return
             if rc != 0:
                 m.status = "killed"
