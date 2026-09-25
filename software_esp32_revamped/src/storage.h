@@ -37,6 +37,7 @@ bool fsReady();
 // explicit save replaces it). `report` is filled when an import ran.
 // For DefaultsAfterError `errorCode` receives the reason: the
 // vdm::DecodeResult value, 100 = NVS not usable, 101 = blob unreadable.
+// Logs the result (ConfigImported, ConfigDefaults).
 enum class LoadSource : uint8_t { Stored, Imported, Defaults, DefaultsAfterError };
 LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode);
 

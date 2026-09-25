@@ -366,7 +366,9 @@ bool beginFs(bool& formatted) {
 
 bool fsReady() { return gFsReady; }
 
-LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode) {
+namespace {
+
+LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode) {
   CfgLock lock;
   errorCode = 0;
   vdm::setDefaults(out);
@@ -396,6 +398,19 @@ LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, uint8_t& erro
   // the (idempotent) import on the next boot.
   if (saveBlobLocked(out)) gPrefs.putUChar(kKeyImported, 1);
   return report.anyLegacy ? LoadSource::Imported : LoadSource::Defaults;
+}
+
+}  // namespace
+
+LoadSource loadConfig(vdm::Config& out, vdm::ImportReport& report, uint8_t& errorCode) {
+  const LoadSource src = loadStored(out, report, errorCode);
+  if (src == LoadSource::Imported) {
+    logger::log(vdm::EventCode::ConfigImported, vdm::kNoValve, report.imported, report.rejected,
+                report.firstRejected);
+  } else if (src == LoadSource::DefaultsAfterError) {
+    logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, errorCode);
+  }
+  return src;
 }
 
 void setActiveConfig(const vdm::Config& c) {

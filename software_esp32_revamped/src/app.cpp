@@ -206,7 +206,7 @@ void setup() {
   const bool resetOk = factoryReset && storage::factoryReset();
   vdm::ImportReport report;
   uint8_t loadError = 0;
-  const storage::LoadSource src = storage::loadConfig(gCfg, report, loadError);
+  storage::loadConfig(gCfg, report, loadError);
   storage::setActiveConfig(gCfg);
   gCfgRevision = storage::configRevision();
 
@@ -221,12 +221,6 @@ void setup() {
   if (factoryReset) {
     logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve, static_cast<int32_t>(gCfgRevision),
                 resetOk ? 0 : -1, "factory");
-  }
-  if (src == storage::LoadSource::Imported) {
-    logger::log(vdm::EventCode::ConfigImported, vdm::kNoValve, report.imported, report.rejected,
-                report.firstRejected);
-  } else if (src == storage::LoadSource::DefaultsAfterError) {
-    logger::log(vdm::EventCode::ConfigDefaults, vdm::kNoValve, loadError);
   }
   logger::configure(gCfg.syslog.level, gCfg.syslog.server, gCfg.syslog.port, gCfg.persistLog,
                     gCfg.station);
