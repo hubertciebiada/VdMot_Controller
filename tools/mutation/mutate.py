@@ -54,9 +54,10 @@ equivalent; error (a timeout that passes its tests alone, a build that failed fo
 e.g. a compiler or linker crash, a full disk or a build timeout, also when the mutant warns in
 the file, a test run that did not start or whose runner failed (exit 125-127); never cached,
 the run exits 2). Killed, timeout, stillborn and not_compiled results are cached in
-<config>.cache.json (key: file, source hash, config hash, hash of every file the workers copy
-(tests, headers, build files, sources), position, operator, replacement), so an interrupted run
-resumes and a change of the tests invalidates their kills; survivors always run again. The
+<config>.cache.json (key: file, source hash, hash of the config commands and of mutate.py, hash
+of every file the workers copy (tests, headers, build files, sources), position, operator,
+replacement), so an interrupted run resumes and a change of the tests or of this tool
+invalidates the results; survivors always run again. The
 checkout is never written: every worker is a copy under --workdir. The mean s/mutant covers
 the mutants built in this run; a re-run timeout counts with both runs.
 
@@ -888,15 +889,20 @@ def evaluate(m: Mutant, w: Worker, cfg: dict, budgets: dict, quick: bool, runner
 
 
 def mutant_key(m: Mutant, src_hash: str, run_hash: str) -> str:
-    """Cache key; run_hash covers the config commands and every file of the worker copies."""
+    """Cache key; run_hash covers this tool, the config commands and every file of the worker
+    copies."""
     return f"{m.file}|{src_hash}|{run_hash}|{m.line}:{m.col}|{m.op}|{m.original}|{m.replacement}"
 
 
 def config_hash(cfg: dict) -> str:
+    """Hash of the config commands and of this file: a cached result is reused only with the
+    generator and the classification that made it."""
     keys = ("setup", "build", "test_file", "test", "shared", "deadcode", "stillborn",
             "timeout_min", "timeout_factor")
     blob = json.dumps({k: cfg.get(k) for k in keys}, sort_keys=True)
-    return hashlib.sha1(blob.encode()).hexdigest()[:12]
+    with open(__file__, "rb") as f:
+        tool = f.read()
+    return hashlib.sha1(blob.encode() + tool).hexdigest()[:12]
 
 
 def load_cache(path: str) -> dict:
