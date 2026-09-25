@@ -92,6 +92,16 @@ TEST_CASE("EventRateLimiter: key table recycles the least recently used entry") 
   CHECK(rl.allow(event(EventCode::EarlyStop, 2), 105));
 }
 
+TEST_CASE("EventRateLimiter: of equally old entries the first one is recycled") {
+  EventRateLimiter rl(1000000000u, 1000);
+  for (uint8_t i = 0; i < EventRateLimiter::kKeys; ++i) {
+    REQUIRE(rl.allow(event(EventCode::EarlyStop, i), 10));
+  }
+  CHECK(rl.allow(event(EventCode::EarlyStop, 200), 20));  // evicts valve 0
+  CHECK_FALSE(rl.allow(event(EventCode::EarlyStop, EventRateLimiter::kKeys - 1), 21));
+  CHECK(rl.allow(event(EventCode::EarlyStop, 0), 22));
+}
+
 TEST_CASE("EventRateLimiter: entries expire across a millis() wrap") {
   EventRateLimiter rl(600000, 30);
   const uint32_t t0 = 0xFFFFFF00u;

@@ -489,6 +489,7 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::NetTrialReverted, kNoValve, 1, -1, "dhcp"), "network settings could not be reverted (not confirmed)"},
       {ev(EventCode::NetTrialReverted, kNoValve, 1, -2), "network settings reverted (not confirmed)"},
       {ev(EventCode::NetTrialReverted, kNoValve, 1, 1), "network settings reverted (not confirmed)"},
+      {ev(EventCode::NetTrialReverted, kNoValve, 4, 0, "x"), "network settings reverted (user, back to x)"},
       {ev(EventCode::NetUnreachable, kNoValve, 150, 1), "network unreachable (nothing for 150 s, last ping)"},
       {ev(EventCode::NetUnreachable, kNoValve, 150, 0), "network unreachable (nothing for 150 s, last none)"},
       {ev(EventCode::NetUnreachable, kNoValve, 150, 5), "network unreachable (nothing for 150 s, last dhcp)"},

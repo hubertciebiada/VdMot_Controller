@@ -1,5 +1,7 @@
 #include "vdm/net_policy.h"
 
+#include <algorithm>
+
 #include "vdm/common.h"
 
 namespace vdm {
@@ -22,9 +24,9 @@ void NetWatchdog::configure(uint8_t minutes) {
 }
 
 uint32_t NetWatchdog::waitMs() const {
-  uint32_t min = minutes_;
-  for (uint8_t i = 0; i < restarts_ && min < kMaxWaitMin; ++i) min *= kGrowth;
-  return (min < kMaxWaitMin ? min : kMaxWaitMin) * 60000u;
+  uint32_t min = minutes_;  // <= 255, below the cap
+  for (uint8_t i = 0; i < restarts_; ++i) min = std::min<uint32_t>(min * kGrowth, kMaxWaitMin);
+  return min * 60000u;
 }
 
 bool NetWatchdog::update(bool netUp, uint32_t nowMs) {

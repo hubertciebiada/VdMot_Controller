@@ -12,7 +12,7 @@ EventRateLimiter::EventRateLimiter(uint32_t perKeyMs, uint16_t maxPerHour)
     : perKeyMs_(perKeyMs),
       maxPerHour_(maxPerHour),
       tokensMilli_(static_cast<uint32_t>(maxPerHour) * 1000u),
-      lastRefillMs_(0),
+      lastRefillMs_(0),  // NOMUTATE: the bucket starts full, the first refill only resets it
       keys_() {}
 
 void EventRateLimiter::refill(uint32_t nowMs) {
@@ -25,7 +25,9 @@ void EventRateLimiter::refill(uint32_t nowMs) {
   refillRemainder_ = static_cast<uint32_t>(num % kHourMs);
   if (tokensMilli_ + add >= capacity) {
     tokensMilli_ = capacity;
-    refillRemainder_ = 0;
+    // NOMUTATE on the next line: remainders are multiples of 1000 (so is an
+    // hour in ms), a remainder off by < 1000 never changes a refill.
+    refillRemainder_ = 0;  // NOMUTATE
   } else {
     tokensMilli_ += static_cast<uint32_t>(add);
   }
