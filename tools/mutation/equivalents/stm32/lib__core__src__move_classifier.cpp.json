@@ -1,5 +1,11 @@
 [
-  {"line": 10, "col": 46, "original": ">", "replacement": ">=", "text": "const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;", "reason": "expectedTravelPct == 100 is capped to 100, the same value"},
-  {"line": 10, "col": 48, "original": "100", "replacement": "99", "text": "const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;", "reason": "> 99 differs from > 100 only for 100, which is capped to 100, the same value"},
-  {"line": 55, "col": 24, "original": "<=", "replacement": "<", "text": "r.peakCurrent = peak <= 0 ? 0 : saturate16(static_cast<uint64_t>(peak));", "reason": "peak == 0 gives saturate16(0) == 0 either way"}
+  {"line": 14, "col": 46, "original": ">", "replacement": ">=", "text": "const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;", "reason": "expectedTravelPct == 100 is capped to 100, the same value"},
+  {"line": 14, "col": 48, "original": "100", "replacement": "99", "text": "const uint32_t pct = req.expectedTravelPct > 100 ? 100 : req.expectedTravelPct;", "reason": "> 99 differs from > 100 only for 100, which is capped to 100, the same value"},
+  {"line": 19, "col": 44, "original": ">", "replacement": ">=", "text": "uint16_t saturate16(uint64_t v) { return v > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(v); }", "reason": "v == 0xFFFF saturates to 0xFFFF, the same value"},
+  {"line": 59, "col": 24, "original": "<=", "replacement": "<", "text": "r.peakCurrent = peak <= 0 ? 0 : saturate16(static_cast<uint64_t>(peak));", "reason": "peak == 0 gives saturate16(0) == 0 either way"},
+  {"line": 68, "col": 30, "original": ">", "replacement": ">=", "text": "const uint32_t delta = pct > 100 ? 100 : pct;", "reason": "pct == 100 is capped to 100, the same value"},
+  {"line": 68, "col": 32, "original": "100", "replacement": "99", "text": "const uint32_t delta = pct > 100 ? 100 : pct;", "reason": "> 99 differs from > 100 only for 100, which is capped to 100, the same value"},
+  {"line": 69, "col": 38, "original": ">=", "replacement": ">", "text": "if (dir == kDirClose) return delta >= start ? 0 : static_cast<uint8_t>(start - delta);", "reason": "delta == start gives start - delta == 0, the same value"},
+  {"line": 71, "col": 14, "original": ">", "replacement": ">=", "text": "return sum > 100 ? 100 : static_cast<uint8_t>(sum);", "reason": "sum == 100 is capped to 100, the same value"},
+  {"line": 71, "col": 16, "original": "100", "replacement": "99", "text": "return sum > 100 ? 100 : static_cast<uint8_t>(sum);", "reason": "> 99 differs from > 100 only for 100, which is capped to 100, the same value"}
 ]
