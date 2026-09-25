@@ -40,10 +40,7 @@ uint32_t ResetGate::waitedMs(uint32_t nowMs) const {
   return state_ == State::Idle ? 0 : elapsedMs(nowMs, beganMs_);
 }
 
-void ResetGate::reset() {
-  state_ = State::Idle;
-  inFlight_ = false;
-  polledOnce_ = false;
-}
+// Idle: pollDue() is false whatever the poll flags say; begin() sets them.
+void ResetGate::reset() { state_ = State::Idle; }
 
 }  // namespace vdm
