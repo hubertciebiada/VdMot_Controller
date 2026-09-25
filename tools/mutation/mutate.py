@@ -12,7 +12,8 @@ Usage (normally through tools/native/docker.sh mutate <suite> [args]):
   ... --files lib/core/src/tokenizer.cpp [--lines 30-80] [--max 20]
   ... --list                  list the mutants and exit
   ... --no-fallback           stage 1 only: a quick run, not a gate
-  ... --changed-since <rev>   print the configured files changed since <rev> and exit
+  ... --changed-since <rev>   print the configured files changed since <rev> and exit (needs
+                              git, so on the host: the native image has none)
   ... --workdir <dir>         where the worker copies live (default: the system temp directory)
   ... --no-cache              ignore the kill cache
 
@@ -1011,8 +1012,15 @@ def run(args: argparse.Namespace) -> int:
     files = resolve_files(cfg, root)
 
     if args.changed_since:
-        p = subprocess.run(["git", "diff", "--name-only", args.changed_since, "--", "."],
-                           cwd=root, capture_output=True, text=True)
+        try:
+            p = subprocess.run(["git", "diff", "--name-only", args.changed_since, "--", "."],
+                               cwd=root, capture_output=True, text=True)
+        except OSError as e:
+            # the native image has no git on purpose: in the container it would not see the host's
+            # core.autocrlf and would report every CRLF file as changed
+            print(f"--changed-since needs git: {e.strerror}. Run it where the checkout's git is "
+                  f"(the host) and pass the files with --files.", file=sys.stderr)
+            return 2
         if p.returncode != 0:
             print(p.stderr, file=sys.stderr)
             return 2

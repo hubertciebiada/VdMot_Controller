@@ -424,6 +424,14 @@ grep -q " 0 from the cache" "$T/out" || fail "cache: kills reused after the test
 [ "$(report cache "sum(m['status'] == 'survived' for m in M)")" -eq 2 ] || fail "cache: the weaker test killed $(report cache "[m['status'] for m in M]")"
 ok "a changed test invalidates the cached kills"
 
+# --- --changed-since needs git; without it (the native image) it exits 2 and says so
+mkdir -p "$T/nogit"
+PY3="$(command -v python3)"
+PATH="$T/nogit" "$PY3" -B "$MUTATE" --config "$T/cache/cfg.json" --changed-since HEAD >"$T/out" 2>&1
+RC=$?
+[ "$RC" -eq 2 ] && grep -q "needs git" "$T/out" || fail "--changed-since without git: exit $RC"
+ok "--changed-since without git exits 2"
+
 # --- every config validates against the one schema; unknown and missing keys are errors
 for c in "$HERE"/*.json; do
   case "$c" in *.cache.json | *.report.json) continue ;; esac
