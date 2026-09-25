@@ -57,9 +57,9 @@ the run exits 2). Killed, timeout, stillborn and not_compiled results are cached
 <config>.cache.json (key: file, source hash, hash of the config commands and of mutate.py, hash
 of every file the workers copy (tests, headers, build files, sources), position, operator,
 replacement), so an interrupted run resumes and a change of the tests or of this tool
-invalidates the results; survivors always run again. The
-checkout is never written: every worker is a copy under --workdir. The mean s/mutant covers
-the mutants built in this run; a re-run timeout counts with both runs.
+invalidates the results; the file keeps the results of the current tree only, and survivors
+always run again. The checkout is never written: every worker is a copy under --workdir. The
+mean s/mutant covers the mutants built in this run; a re-run timeout counts with both runs.
 
 Exit code: 0 when the score >= threshold, every file >= file_threshold and no mutant has the
 status error; 1 when a threshold is missed; 2 on a configuration error, a failing unmutated
@@ -890,8 +890,8 @@ def evaluate(m: Mutant, w: Worker, cfg: dict, budgets: dict, quick: bool, runner
 
 def mutant_key(m: Mutant, src_hash: str, run_hash: str) -> str:
     """Cache key; run_hash covers this tool, the config commands and every file of the worker
-    copies."""
-    return f"{m.file}|{src_hash}|{run_hash}|{m.line}:{m.col}|{m.op}|{m.original}|{m.replacement}"
+    copies. It comes first: load_cache() keeps the keys of one run hash."""
+    return f"{run_hash}|{m.file}|{src_hash}|{m.line}:{m.col}|{m.op}|{m.original}|{m.replacement}"
 
 
 def config_hash(cfg: dict) -> str:
@@ -905,13 +905,18 @@ def config_hash(cfg: dict) -> str:
     return hashlib.sha1(blob.encode() + tool).hexdigest()[:12]
 
 
-def load_cache(path: str) -> dict:
+def load_cache(path: str, run_hash: str) -> dict:
+    """The cached results of run_hash. Results of another tree, config or tool version are never
+    reused, so they are dropped: the file holds one run hash instead of growing with every edit,
+    and an interrupted run on the same tree still resumes."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k.startswith(run_hash + "|")}
 
 
 def save_cache(path: str, cache: dict) -> None:
@@ -1136,7 +1141,7 @@ def run(args: argparse.Namespace) -> int:
 
     run_hash = f"{config_hash(cfg)}|{inputs_hash(repo, cfg)}"
     cache_path = os.path.splitext(cfg_path)[0] + ".cache.json"
-    cache = {} if args.no_cache else load_cache(cache_path)
+    cache = {} if args.no_cache else load_cache(cache_path, run_hash)
     reused = 0
     for m in all_muts:
         if m.status != "pending":

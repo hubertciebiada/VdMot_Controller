@@ -441,7 +441,7 @@ report hog "M[2]['detail']" | grep -q "exceeded 4.0 s under load; alone killed a
 ok "unconfirmed timeout under a CPU hog is an error; killed alone is a kill, timed with both runs"
 
 # --- cached kills belong to the tests and the tool that made them: after a change of the tests or
-# of mutate.py they run again
+# of mutate.py they run again, and the cache file keeps the results of the current tree only
 project cache
 printf 'int c(int a) {\n  return a + 1;\n}\n' >"$T/cache/proj/src/c.cpp"
 printf '#include "src/c.cpp"\nint main() { return c(1) == 2 ? 0 : 1; }\n' >"$T/cache/proj/test_c.cpp"
@@ -458,7 +458,9 @@ printf '#include "src/c.cpp"\nint main() { return c(1) > 0 ? 0 : 1; }\n' >"$T/ca
 mutate cache --jobs 2
 grep -q " 0 from the cache" "$T/out" || fail "cache: kills reused after the test changed"
 [ "$(report cache "sum(m['status'] == 'survived' for m in M)")" -eq 2 ] || fail "cache: the weaker test killed $(report cache "[m['status'] for m in M]")"
-ok "a changed test or mutate.py invalidates the cached kills"
+entries="$(python3 -B -c "import json, sys; print(len(json.load(open(sys.argv[1]))))" "$T/cache/cfg.cache.json")"
+[ "$entries" -eq 2 ] || fail "cache: $entries entries, expected the 2 kills of the current tree"
+ok "a changed test or mutate.py invalidates the cached kills; the cache keeps the current tree only"
 
 # --- --changed-since needs git; without it (the native image) it exits 2 and says so
 mkdir -p "$T/nogit"
