@@ -1,4 +1,4 @@
-// WT32-ETH01 v1.2 board wiring (specs/04 §2, specs/02 §1, specs/06).
+// WT32-ETH01 v1.2 board wiring of the VdMot controller.
 #pragma once
 
 #include <stdint.h>
@@ -22,10 +22,12 @@ constexpr bool kStmResetAssertedLevel = true;  // HIGH
 // otherwise unused.
 constexpr int kStmBoot0Pin = 14;
 
-// Factory reset: GPIO2 (strapping pin), INPUT_PULLUP, held LOW for >= 1 s at
-// boot -> factory defaults incl. network.
+// Factory reset: GPIO2 (strapping pin), INPUT_PULLUP, held LOW for >= 5 s at
+// boot -> factory defaults incl. network; once per fitting of the jumper
+// (latch in NVS), sampled every kFactoryResetSampleMs.
 constexpr int kFactoryResetPin = 2;
-constexpr uint32_t kFactoryResetHoldMs = 1000;
+constexpr uint32_t kFactoryResetHoldMs = 5000;
+constexpr uint32_t kFactoryResetSampleMs = 50;
 
 // LAN8720 PHY (library defaults; spelled out for clarity).
 constexpr int kEthPhyAddr = 1;

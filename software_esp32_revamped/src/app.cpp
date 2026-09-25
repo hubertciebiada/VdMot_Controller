@@ -12,7 +12,9 @@
 
 #include <vdm/config.h>
 #include <vdm/event_log.h>
+#include <vdm/factory_reset.h>
 #include <vdm/json_api.h>
+#include <vdm/sys_health.h>
 
 #include "board.h"
 #include "boot_alloc.h"
@@ -50,19 +52,46 @@ CalibInfo gCalibInfo;
 vdm::Config& gCfg = bootAlloc<vdm::Config>();
 uint32_t gCfgRevision = 0;
 
-constexpr uint32_t kLowHeapBytes = 30 * 1024;
-constexpr uint32_t kLowHeapRepeatMs = 3600000;
+// Tasks whose stack high-water mark is watched: ours, AsyncTCP's (created by
+// the first AsyncServer::begin) and the Arduino event task (runs net's event
+// handler); the library tasks are looked up by name until found.
+struct MonitoredTask {
+  const char* name;
+  uint32_t stackBytes;
+  TaskHandle_t handle;
+};
+constexpr size_t kMonitoredTasks = 5;
+MonitoredTask gTasks[kMonitoredTasks] = {{kStmTask.name, kStmTask.stackBytes, nullptr},
+                                         {kAppTask.name, kAppTask.stackBytes, nullptr},
+                                         {kMqttTask.name, kMqttTask.stackBytes, nullptr},
+                                         {"async_tcp", 16384, nullptr},
+                                         {"arduino_events", 4096, nullptr}};
+portMUX_TYPE gHealthMux = portMUX_INITIALIZER_UNLOCKED;  // gTasks handles, gMinLargest
+uint32_t gMinLargest = 0;
+vdm::ResourceMonitor gResources;  // app task
+bool gFactoryLatched = false;     // app task after setup
 
-// Factory reset pin: held LOW for kFactoryResetHoldMs at boot.
-bool factoryResetRequested() {
+// Factory reset pin at boot: the first sample, and (only when it is LOW and
+// no latch is set) whether it stays LOW for kFactoryResetHoldMs.
+vdm::FactoryPinDecision checkFactoryPin(bool latched) {
   pinMode(board::kFactoryResetPin, INPUT_PULLUP);
   delay(2);  // let the pull-up settle
-  if (digitalRead(board::kFactoryResetPin) != LOW) return false;
-  delay(board::kFactoryResetHoldMs);
-  return digitalRead(board::kFactoryResetPin) == LOW;
+  const bool low = digitalRead(board::kFactoryResetPin) == LOW;
+  bool held = false;
+  if (low && !latched) {
+    vdm::PinHold hold(board::kFactoryResetHoldMs);
+    hold.begin(millis());
+    vdm::PinHold::State st = vdm::PinHold::State::Holding;
+    while (st == vdm::PinHold::State::Holding) {
+      delay(board::kFactoryResetSampleMs);
+      st = hold.sample(digitalRead(board::kFactoryResetPin) == LOW, millis());
+    }
+    held = st == vdm::PinHold::State::Held;
+  }
+  return vdm::factoryPinAtBoot(low, held, latched);
 }
 
-void startTask(const TaskSpec& spec, TaskFunction_t fn) {
+void startTask(const TaskSpec& spec, TaskFunction_t fn, size_t slot) {
   TaskHandle_t handle = nullptr;
   if (xTaskCreatePinnedToCore(fn, spec.name, spec.stackBytes, nullptr, spec.priority, &handle,
                               spec.core) != pdPASS) {
@@ -70,20 +99,9 @@ void startTask(const TaskSpec& spec, TaskFunction_t fn) {
     // recovery (logged as panic reason on the next boot).
     abort();
   }
-}
-
-// Boot reasons that point at a crash or a power problem (Boot is a Warning).
-bool abnormalReset(esp_reset_reason_t r) {
-  switch (r) {
-    case ESP_RST_PANIC:
-    case ESP_RST_INT_WDT:
-    case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT:
-    case ESP_RST_BROWNOUT:
-      return true;
-    default:
-      return false;
-  }
+  portENTER_CRITICAL(&gHealthMux);
+  gTasks[slot].handle = handle;
+  portEXIT_CRITICAL(&gHealthMux);
 }
 
 // Live effects of a config change (DESIGN.md "Config schema", apply
@@ -96,21 +114,44 @@ void applyConfigChange() {
   net::reconfigure(gCfg);
 }
 
-void checkHeap(uint32_t now) {
-  static bool reported = false;
-  static uint32_t lastReportMs = 0;
-  const uint32_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap >= kLowHeapBytes) return;
-  if (reported && vdm::elapsedMs(now, lastReportMs) < kLowHeapRepeatMs) return;
-  reported = true;
-  lastReportMs = now;
-  logger::log(vdm::EventCode::LowHeap, vdm::kNoValve, static_cast<int32_t>(freeHeap),
-              static_cast<int32_t>(ESP.getMinFreeHeap()));
+// Every 10 s: heap, fragmentation and stack alarms (vdm::ResourceMonitor).
+void sampleResources(uint32_t now) {
+  vdm::Event ev[2];
+  size_t n = gResources.onHeap(ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(),
+                               now, ev, 2);
+  for (size_t i = 0; i < n; ++i) logger::log(ev[i]);
+  for (size_t i = 0; i < kMonitoredTasks; ++i) {
+    MonitoredTask& t = gTasks[i];
+    if (t.handle == nullptr) {
+      TaskHandle_t h = xTaskGetHandle(t.name);
+      if (h == nullptr) continue;
+      portENTER_CRITICAL(&gHealthMux);
+      t.handle = h;
+      portEXIT_CRITICAL(&gHealthMux);
+    }
+    n = gResources.onStack(static_cast<uint8_t>(i), t.name, t.stackBytes,
+                           uxTaskGetStackHighWaterMark(t.handle), ev, 1);
+    if (n != 0) logger::log(ev[0]);
+  }
+  portENTER_CRITICAL(&gHealthMux);
+  gMinLargest = gResources.minLargestBlock();
+  portEXIT_CRITICAL(&gHealthMux);
+}
+
+// Every second while latched: the jumper was removed, so the next fitting
+// resets again.
+void checkFactoryLatch() {
+  if (!vdm::factoryPinRuntimeClear(digitalRead(board::kFactoryResetPin) == LOW, gFactoryLatched)) {
+    return;
+  }
+  gFactoryLatched = false;
+  storage::setFactoryLatched(false);
 }
 
 void appTask(void*) {
   esp_task_wdt_add(nullptr);
   uint32_t lastSecond = 0;
+  uint32_t lastResources = nowMs();
   for (;;) {
     esp_task_wdt_reset();
     const uint32_t now = nowMs();
@@ -123,8 +164,12 @@ void appTask(void*) {
       net::service(now, mqtt::status().state == vdm::MqttState::Connected);
       if (net::isUp() && !web::started()) web::begin();
       ota::service(now, net::otaNetOk(), linkUp, web::started());
-      checkHeap(now);
+      checkFactoryLatch();
       stm_service::service(now);
+    }
+    if (vdm::elapsedMs(now, lastResources) >= 10000) {
+      lastResources = now;
+      sampleResources(now);
     }
     logger::service(net::isUp());
     storage::service();
@@ -203,12 +248,28 @@ void setCalibInfo(const CalibInfo& c) {
 }
 
 void readHealth(vdm::HealthSnapshot& out) {
+  const uint32_t now = nowMs();
   out = vdm::HealthSnapshot{};
   out.version = vdm::firmwareVersion();
   out.uptimeS = uptimeS();
   out.freeHeap = ESP.getFreeHeap();
   out.minFreeHeap = ESP.getMinFreeHeap();
   out.largestFreeBlock = ESP.getMaxAllocHeap();
+  MonitoredTask tasks[kMonitoredTasks];
+  portENTER_CRITICAL(&gHealthMux);
+  out.minLargestFreeBlock = gMinLargest;
+  memcpy(tasks, gTasks, sizeof tasks);
+  portEXIT_CRITICAL(&gHealthMux);
+  for (const MonitoredTask& t : tasks) {
+    if (t.handle == nullptr) continue;
+    vdm::TaskStackInfo& i = out.tasks[out.taskCount++];
+    i.name = t.name;
+    i.stackBytes = t.stackBytes;
+    i.minFreeBytes = uxTaskGetStackHighWaterMark(t.handle);
+  }
+  out.net = net::health(now);
+  out.ota = ota::health(now);
+  out.log = logger::stats(now);
 }
 
 void setup() {
@@ -220,12 +281,17 @@ void setup() {
   gSnapMutex = xSemaphoreCreateMutexStatic(&gSnapMutexStorage);
 
   logger::begin();
-  const bool factoryReset = factoryResetRequested();
+  // GPIO2 jumper: once per fitting (latch in NVS), not at every restart.
+  const vdm::FactoryPinDecision pin = checkFactoryPin(storage::factoryLatched());
 
   bool formatted = false;
   const bool fsOk = storage::beginFs(formatted);
 
+  const bool factoryReset = pin == vdm::FactoryPinDecision::Reset;
   const bool resetOk = factoryReset && storage::factoryReset();
+  if (factoryReset) storage::setFactoryLatched(true);
+  if (pin == vdm::FactoryPinDecision::ClearLatch) storage::setFactoryLatched(false);
+  gFactoryLatched = factoryReset || pin == vdm::FactoryPinDecision::KeepLatched;
   vdm::ImportReport report;
   storage::LoadDetails loadDetails;
   storage::loadConfig(gCfg, report, loadDetails);
@@ -235,7 +301,7 @@ void setup() {
   const uint32_t boots = storage::incrementBootCount();
   const esp_reset_reason_t reason = esp_reset_reason();
   logger::logSev(vdm::EventCode::Boot,
-                 abnormalReset(reason) ? vdm::Severity::Warning : vdm::Severity::Info,
+                 vdm::isAbnormalReset(reason) ? vdm::Severity::Warning : vdm::Severity::Info,
                  vdm::kNoValve, static_cast<int32_t>(reason), static_cast<int32_t>(boots),
                  vdm::firmwareVersion());
   if (formatted) logger::log(vdm::EventCode::FsFormatted);
@@ -244,6 +310,7 @@ void setup() {
     logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve, static_cast<int32_t>(gCfgRevision),
                 resetOk ? 0 : -1, "factory");
   }
+  if (pin == vdm::FactoryPinDecision::KeepLatched) logger::log(vdm::EventCode::FactoryResetSkipped);
   logger::configure(gCfg.syslog.level, gCfg.syslog.server, gCfg.syslog.port, gCfg.persistLog,
                     gCfg.station);
 
@@ -254,9 +321,9 @@ void setup() {
   mqtt::begin();
 
   esp_task_wdt_init(kTaskWdtTimeoutS, true);
-  startTask(kStmTask, stmTaskEntry);
-  startTask(kAppTask, appTask);
-  startTask(kMqttTask, mqttTaskEntry);
+  startTask(kStmTask, stmTaskEntry, 0);
+  startTask(kAppTask, appTask, 1);
+  startTask(kMqttTask, mqttTaskEntry, 2);
 }
 
 }  // namespace app
