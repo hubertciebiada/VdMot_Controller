@@ -34,6 +34,20 @@ inline constexpr const char* kStmGolden[] = {
     "scalx ok",
     "gcalx 1 10 40",
     "gstat 3600 2 4 17 5 1",
+    // protocol 3 (STM 2.1)
+    "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0",
+    "gstax 86400 3 2 0 2 0 1 3540 1 60 0 0 0 0 0 0 0 0 0 12 2 3600 0",
+    "slhbt 1 3540",
+    "slhbt err",
+    "slcfg ok",
+    "sfspo 255 ok",
+    "sfspo -1 err 1",
+    "glcfg 60 50 50 50 50 50 50 50 50 50 50 50 50",
+    "sstop 3 ok",
+    "gtlnt 604800",
+    "ssafe ok",
+    "stlnt",
+    "svmov -1 err 1",
 };
 inline constexpr size_t kStmGoldenCount = sizeof kStmGolden / sizeof kStmGolden[0];
 

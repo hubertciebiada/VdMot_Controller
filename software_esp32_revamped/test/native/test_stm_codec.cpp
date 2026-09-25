@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <initializer_list>
 #include <string>
+#include <utility>
 
 #include "doctest.h"
 #include "support/stm_golden.h"
@@ -63,14 +65,17 @@ std::string idList(const char* one, size_t n, bool trailingComma) {
 // ================================================================ commands
 
 TEST_CASE("codec: command names round trip and are exact") {
-  CHECK(kCmdCount == 31);
+  CHECK(kCmdCount == 41);
   CHECK(std::string(cmdName(Cmd::None)) == "");
   CHECK(std::string(cmdName(static_cast<Cmd>(kCmdCount))) == "");
   CHECK(std::string(cmdName(static_cast<Cmd>(200))) == "");
   const char* expected[] = {"",      "stgtp", "gtgtp", "gvlvd", "gvlst", "gonec",  "goned", "gvlon",
                             "gowvc", "gowvd", "stons", "stvls", "masns", "staop",  "staln", "stdet",
                             "stlnm", "gtlnm", "smotc", "gmotc", "gvers", "ghwin",  "eepst", "reset",
-                            "gproto", "gvlvx", "gprof", "svmov", "scalx", "gcalx", "gstat"};
+                            "gproto", "gvlvx", "gprof", "svmov", "scalx", "gcalx", "gstat", "gvlvy",
+                            "gstax", "slhbt", "slcfg", "sfspo", "glcfg", "sstop",  "gtlnt", "ssafe",
+                            "stlnt"};
+  static_assert(sizeof expected / sizeof *expected == kCmdCount, "one name per command");
   for (uint8_t i = 0; i < kCmdCount; ++i) {
     const Cmd c = static_cast<Cmd>(i);
     CHECK(std::string(cmdName(c)) == expected[i]);
@@ -89,8 +94,25 @@ TEST_CASE("codec: command names round trip and are exact") {
 TEST_CASE("codec: v2 and idempotent classification") {
   for (uint8_t i = 0; i < kCmdCount; ++i) {
     const Cmd c = static_cast<Cmd>(i);
-    CHECK(cmdIsV2(c) == (i >= static_cast<uint8_t>(Cmd::Gproto)));
+    CAPTURE(cmdName(c));
+    uint8_t proto = 1;
+    if (c == Cmd::None) proto = 0;
+    if (i >= static_cast<uint8_t>(Cmd::Gproto)) proto = 2;
+    if (i >= static_cast<uint8_t>(Cmd::Gvlvy)) proto = 3;
+    if (c == Cmd::Stlnt) proto = 1;
+    CHECK(cmdMinProtocol(c) == proto);
+    CHECK(cmdIsV2(c) == (proto >= 2));
   }
+  CHECK(cmdMinProtocol(Cmd::Stgtp) == 1);
+  CHECK(cmdMinProtocol(Cmd::Reset) == 1);
+  CHECK(cmdMinProtocol(Cmd::Gproto) == 2);
+  CHECK(cmdMinProtocol(Cmd::Gstat) == 2);
+  CHECK(cmdMinProtocol(Cmd::Gvlvy) == 3);
+  CHECK(cmdMinProtocol(Cmd::Ssafe) == 3);
+  CHECK(cmdMinProtocol(Cmd::Stlnt) == 1);
+  CHECK_FALSE(cmdIsV2(Cmd::Stlnt));
+  CHECK(cmdMinProtocol(static_cast<Cmd>(kCmdCount)) == 0);
+  CHECK(cmdMinProtocol(static_cast<Cmd>(255)) == 0);
   CHECK_FALSE(cmdIsV2(static_cast<Cmd>(kCmdCount)));
   CHECK_FALSE(cmdIsV2(static_cast<Cmd>(255)));
 
@@ -203,6 +225,8 @@ void checkRejected(bool ok, const RequestLine& r) {
   CHECK(r.valve == kNoValve);
   CHECK(r.arg == 0);
   CHECK(r.text[0] == '\0');
+  CHECK_FALSE(r.probe);
+  CHECK(isZero(r.expect));
 }
 
 RequestLine garbage() {
@@ -212,6 +236,8 @@ RequestLine garbage() {
   r.cmd = Cmd::Gstat;
   r.valve = 3;
   r.arg = 9;
+  r.probe = true;
+  r.expect.b[0] = 0x28;
   return r;
 }
 
@@ -236,6 +262,55 @@ TEST_CASE("codec: builders without arguments (golden lines)") {
   checkLine(buildGetProto(r), r, "gproto \r\n", Cmd::Gproto, kNoValve, 0);
   checkLine(buildGetBreakaway(r), r, "gcalx \r\n", Cmd::Gcalx, kNoValve, 0);
   checkLine(buildGetStatus(r), r, "gstat \r\n", Cmd::Gstat, kNoValve, 0);
+  checkLine(buildGetStatusV3(r), r, "gstax \r\n", Cmd::Gstax, kNoValve, 0);
+  checkLine(buildGetLeaseConfig(r), r, "glcfg \r\n", Cmd::Glcfg, kNoValve, 0);
+  checkLine(buildGetLearnTime(r), r, "gtlnt \r\n", Cmd::Gtlnt, kNoValve, 0);
+  checkLine(buildLeaveSafeMode(r), r, "ssafe 0 \r\n", Cmd::Ssafe, kNoValve, 0);
+}
+
+TEST_CASE("codec: buildHeartbeat and buildSetLeaseTimeout") {
+  RequestLine r = garbage();
+  checkLine(buildHeartbeat(true, r), r, "slhbt 1 \r\n", Cmd::Slhbt, kNoValve, 1);
+  checkLine(buildHeartbeat(false, r), r, "slhbt 0 \r\n", Cmd::Slhbt, kNoValve, 0);
+  checkLine(buildSetLeaseTimeout(60, r), r, "slcfg 60 \r\n", Cmd::Slcfg, kNoValve, 60);
+  checkLine(buildSetLeaseTimeout(0, r), r, "slcfg 0 \r\n", Cmd::Slcfg, kNoValve, 0);
+  checkLine(buildSetLeaseTimeout(5, r), r, "slcfg 5 \r\n", Cmd::Slcfg, kNoValve, 5);
+  checkLine(buildSetLeaseTimeout(1440, r), r, "slcfg 1440 \r\n", Cmd::Slcfg, kNoValve, 1440);
+  for (uint32_t bad : {1u, 4u, 1441u, 65541u, 0xFFFFFFFFu}) {
+    CAPTURE(bad);
+    r = garbage();
+    checkRejected(buildSetLeaseTimeout(bad, r), r);
+  }
+}
+
+TEST_CASE("codec: buildSetFailsafe") {
+  RequestLine r = garbage();
+  checkLine(buildSetFailsafe(2, 50, r), r, "sfspo 2 50 \r\n", Cmd::Sfspo, 2, 50);
+  checkLine(buildSetFailsafe(0, 0, r), r, "sfspo 0 0 \r\n", Cmd::Sfspo, 0, 0);
+  checkLine(buildSetFailsafe(11, 100, r), r, "sfspo 11 100 \r\n", Cmd::Sfspo, 11, 100);
+  checkLine(buildSetFailsafe(7, 255, r), r, "sfspo 7 255 \r\n", Cmd::Sfspo, 7, 255);
+  checkLine(buildSetFailsafe(kAllValves, 40, r), r, "sfspo 255 40 \r\n", Cmd::Sfspo, kAllValves,
+            40);
+  const uint8_t badValves[] = {12, 254, kNoValve};
+  for (uint8_t v : badValves) {
+    CAPTURE(v);
+    r = garbage();
+    checkRejected(buildSetFailsafe(v, 50, r), r);
+  }
+  const uint8_t badPct[] = {101, 200, 254};
+  for (uint8_t p : badPct) {
+    CAPTURE(p);
+    r = garbage();
+    checkRejected(buildSetFailsafe(3, p, r), r);
+  }
+}
+
+TEST_CASE("codec: buildSetLearnTime") {
+  RequestLine r = garbage();
+  checkLine(buildSetLearnTime(0, r), r, "stlnt 0 \r\n", Cmd::Stlnt, kNoValve, 0);
+  checkLine(buildSetLearnTime(604800, r), r, "stlnt 604800 \r\n", Cmd::Stlnt, kNoValve, 0);
+  checkLine(buildSetLearnTime(0xFFFFFFFFu, r), r, "stlnt 4294967295 \r\n", Cmd::Stlnt, kNoValve,
+            0);
 }
 
 TEST_CASE("codec: buildSetTarget") {
@@ -261,6 +336,7 @@ TEST_CASE("codec: single-valve builders") {
       {buildValveData, "gvlvd", Cmd::Gvlvd},
       {buildValveEx, "gvlvx", Cmd::Gvlvx},
       {buildProfile, "gprof", Cmd::Gprof},
+      {buildValveExV3, "gvlvy", Cmd::Gvlvy},
   };
   for (const Case& c : cases) {
     CAPTURE(c.name);
@@ -287,6 +363,7 @@ TEST_CASE("codec: valve-or-all builders") {
       {buildValveSensors, "gvlon", Cmd::Gvlon},
       {buildAssembly, "staop", Cmd::Staop},
       {buildCalibrate, "staln", Cmd::Staln},
+      {buildStop, "sstop", Cmd::Sstop},
   };
   for (const Case& c : cases) {
     CAPTURE(c.name);
@@ -409,7 +486,7 @@ TEST_CASE("codec: buildSetBreakaway") {
 
 TEST_CASE("codec: every built request honours the wire rules") {
   // Build one of each and check: ends with " \r\n", single spaces, <= 63.
-  RequestLine lines[40];
+  RequestLine lines[48];
   size_t n = 0;
   MotorChars m;
   Breakaway b;
@@ -445,10 +522,24 @@ TEST_CASE("codec: every built request honours the wire rules") {
   REQUIRE(buildSetBreakaway(b, lines[n++]));
   REQUIRE(buildGetBreakaway(lines[n++]));
   REQUIRE(buildGetStatus(lines[n++]));
-  CHECK(n == 32);
+  REQUIRE(buildValveExV3(11, lines[n++]));
+  REQUIRE(buildGetStatusV3(lines[n++]));
+  REQUIRE(buildHeartbeat(true, lines[n++]));
+  REQUIRE(buildSetLeaseTimeout(1440, lines[n++]));
+  REQUIRE(buildSetFailsafe(255, 255, lines[n++]));
+  REQUIRE(buildGetLeaseConfig(lines[n++]));
+  REQUIRE(buildStop(255, lines[n++]));
+  REQUIRE(buildGetLearnTime(lines[n++]));
+  REQUIRE(buildLeaveSafeMode(lines[n++]));
+  REQUIRE(buildSetLearnTime(0xFFFFFFFFu, lines[n++]));
+  CHECK(n == 42);
   for (size_t i = 0; i < n; ++i) {
     const std::string t = text(lines[i]);
     CAPTURE(t);
+    // Only gproto may stay unanswered (a v1 STM does not know it); no
+    // builder sets an expected sensor id.
+    CHECK(lines[i].probe == (lines[i].cmd == Cmd::Gproto));
+    CHECK(isZero(lines[i].expect));
     CHECK(t.size() <= kRequestMaxLen);
     CHECK(t.size() >= 8);
     CHECK(t.substr(t.size() - 3) == " \r\n");
@@ -516,7 +607,7 @@ TEST_CASE("codec: empty, blank, null and too long lines") {
 
 TEST_CASE("codec: unknown commands") {
   Reply r;
-  const char* unknown[] = {"stsnx", "stlnt", "gactp", "ESPalive", "gvlvdd 1", "gvl", "123456",
+  const char* unknown[] = {"stsnx", "gvlvz", "gactp", "ESPalive", "gvlvdd 1", "gvl", "123456",
                            "GVLVD 1", "gprot 2", ",", "gvlvd,1"};
   for (const char* s : unknown) {
     CAPTURE(s);
@@ -1213,11 +1304,11 @@ TEST_CASE("codec: svmov") {
   Reply r;
   REQUIRE(parse("svmov 3 ok", r) == ParseStatus::Ok);
   CHECK(r.cmd == Cmd::Svmov);
-  CHECK(r.serviceMove.valve == 3);
+  CHECK(r.serviceMove.index == 3);
   CHECK(r.serviceMove.ok);
   CHECK(r.serviceMove.errorCode == 0);
   REQUIRE(parse("svmov 11 err 2 ", r) == ParseStatus::Ok);
-  CHECK(r.serviceMove.valve == 11);
+  CHECK(r.serviceMove.index == 11);
   CHECK_FALSE(r.serviceMove.ok);
   CHECK(r.serviceMove.errorCode == 2);
   REQUIRE(parse("svmov 0 err 65535", r) == ParseStatus::Ok);
@@ -1272,6 +1363,433 @@ TEST_CASE("codec: gstat") {
   CHECK(parse("gstat 4294967296 2 3 4 5 6", r) == ParseStatus::OutOfRange);
   CHECK(parse("gstat 1 2 3 4 5", r) == ParseStatus::BadArgCount);
   CHECK(parse("gstat 1 2 3 4 5 6 7", r) == ParseStatus::BadArgCount);
+  REQUIRE(parse("gstat 3600 2 4 17 5 1", r) == ParseStatus::Ok);
+  CHECK_FALSE(r.status.v3);
+  CHECK(r.status.lease == LeaseState::Off);
+  CHECK(r.status.sysFlags == 0);
+}
+
+// ================================================================ replies: protocol 3
+
+namespace {
+
+const char* const kGvlvyGolden =
+    "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0";
+const char* const kGstaxGolden = "gstax 86400 3 2 0 2 0 1 3540 1 60 0 0 0 0 0 0 0 0 0 12 2 3600 0";
+
+// The gvlvy golden with field `field` (1-based, after the command) replaced.
+std::string gvlvyWith(size_t field, const std::string& value) {
+  std::string line = kGvlvyGolden;
+  size_t pos = 0;
+  for (size_t i = 0; i < field; ++i) pos = line.find(' ', pos) + 1;
+  const size_t end = line.find(' ', pos);
+  return line.substr(0, pos) + value + (end == std::string::npos ? "" : line.substr(end));
+}
+
+// A valid "gstax" line: field i = i, except lease (7), leaseClient (9) and
+// safeMode (12) = 0, then the given replacements.
+std::string gstaxLine(std::initializer_list<std::pair<size_t, const char*>> repl,
+                      size_t count = 23) {
+  std::string line = "gstax";
+  for (size_t i = 1; i <= count; ++i) {
+    std::string v = (i == 7 || i == 9 || i == 12) ? "0" : std::to_string(i);
+    for (const auto& p : repl) {
+      if (p.first == i) v = p.second;
+    }
+    line += " " + v;
+  }
+  return line;
+}
+
+}  // namespace
+
+TEST_CASE("codec: gvlvy golden (K2.1)") {
+  Reply r;
+  dirty(r);
+  REQUIRE(parse(kGvlvyGolden, r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Gvlvy);
+  const ValveEx& x = r.valveEx;
+  CHECK(x.v3);
+  CHECK(x.valve == 3);
+  CHECK(x.status == 9);
+  CHECK_FALSE(x.calibrating);
+  CHECK(x.position == 50);
+  CHECK(x.target == 30);
+  CHECK(x.meanCurrent == 17);
+  CHECK(x.openCount == 3567);
+  CHECK(x.closeCount == 3610);
+  CHECK(x.deadZone == 43);
+  CHECK(x.calibRetries == 2);
+  CHECK(x.moves == 0);
+  CHECK(x.calState == kCalStateIdle);
+  CHECK(x.calFlags == kCalFlagLastFailed);
+  CHECK(x.earlyStops == 1);
+  CHECK(x.cmdRejected == 4);
+  CHECK(x.lastMove.dir == MoveDir::Open);
+  CHECK(x.lastMove.requestedCounts == 1750);
+  CHECK(x.lastMove.countedCounts == 1750);
+  CHECK(x.lastMove.stop == StopReason::Target);
+  CHECK(x.lastMove.peakCurrent == 262);
+  CHECK(x.lastMove.durationMs == 6120);
+  CHECK(x.flags == 66);
+  CHECK(x.flags == (kStmFlagFsBlocked | kStmFlagRetry));
+  CHECK(x.fault == static_cast<uint8_t>(ValveFault::StrokesTooShort));
+  CHECK(x.fsPct == 50);
+  CHECK(x.drive == 50);
+  CHECK(x.retryS == 3540);
+  CHECK(x.retries == 0);
+
+  // Every v3 field at its upper limit, distinct values.
+  REQUIRE(parse("gvlvy 11 2 1 2 3 4 5 -6 7 8 2 9 10 1 11 12 7 13 14 65535 255 255 100 4294967295 "
+                "255 ",
+                r) == ParseStatus::Ok);
+  CHECK(r.valveEx.flags == 65535);
+  CHECK(r.valveEx.fault == 255);
+  CHECK(r.valveEx.fsPct == kFailsafeHold);
+  CHECK(r.valveEx.drive == 100);
+  CHECK(r.valveEx.retryS == 4294967295u);
+  CHECK(r.valveEx.retries == 255);
+  CHECK(r.valveEx.calibrating);  // calState running
+  REQUIRE(parse(gvlvyWith(22, "0"), r) == ParseStatus::Ok);
+  CHECK(r.valveEx.fsPct == 0);
+  REQUIRE(parse(gvlvyWith(22, "100"), r) == ParseStatus::Ok);
+  CHECK(r.valveEx.fsPct == 100);
+  REQUIRE(parse(gvlvyWith(23, "0"), r) == ParseStatus::Ok);
+  CHECK(r.valveEx.drive == 0);
+
+  // Field count: at least 25; numeric extras are ignored.
+  const std::string golden = kGvlvyGolden;
+  CHECK(parse(golden.substr(0, golden.rfind(' ')), r) == ParseStatus::BadArgCount);
+  CHECK(isEmptyReply(r));
+  REQUIRE(parse(golden + " 7", r) == ParseStatus::Ok);
+  CHECK(r.valveEx.retryS == 3540);
+  CHECK(r.valveEx.retries == 0);
+  REQUIRE(parse(golden + " 0 4294967295", r) == ParseStatus::Ok);
+  CHECK(parse(golden + " x", r) == ParseStatus::BadNumber);
+  CHECK(parse(golden + " 7 -1", r) == ParseStatus::BadNumber);
+  CHECK(parse(golden + " 4294967296", r) == ParseStatus::OutOfRange);
+
+  // Ranges of the v3 fields.
+  CHECK(parse(gvlvyWith(20, "65536"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(21, "256"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(22, "101"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(22, "254"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(22, "256"), r) == ParseStatus::OutOfRange);
+  REQUIRE(parse(gvlvyWith(22, "255"), r) == ParseStatus::Ok);
+  CHECK(r.valveEx.fsPct == 255);
+  CHECK(parse(gvlvyWith(23, "101"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(24, "4294967296"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(25, "256"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(20, "x"), r) == ParseStatus::BadNumber);
+  CHECK(parse(gvlvyWith(22, "-1"), r) == ParseStatus::BadNumber);
+  // The 19 gvlvx fields keep their rules.
+  CHECK(parse(gvlvyWith(1, "12"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(3, "101"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(11, "16"), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gvlvyWith(19, "x"), r) == ParseStatus::BadNumber);
+}
+
+TEST_CASE("codec: gvlvx stays at exactly 19 fields without v3 values") {
+  Reply r;
+  const std::string gvlvx = "gvlvx 4 130 42 60 21 3120 3350 -230 1 57 2 7 3 1 3000 1450 3 412 8123";
+  REQUIRE(parse(gvlvx, r) == ParseStatus::Ok);
+  CHECK_FALSE(r.valveEx.v3);
+  CHECK(r.valveEx.flags == 0);
+  CHECK(r.valveEx.fault == 0);
+  CHECK(r.valveEx.fsPct == kFailsafeHold);
+  CHECK(r.valveEx.drive == 0);
+  CHECK(r.valveEx.retryS == 0);
+  CHECK(r.valveEx.retries == 0);
+  CHECK(parse(gvlvx + " 1", r) == ParseStatus::BadArgCount);
+  CHECK(parse(std::string(kGvlvyGolden).replace(0, 5, "gvlvx"), r) == ParseStatus::BadArgCount);
+}
+
+TEST_CASE("codec: gstax golden (K2.2)") {
+  Reply r;
+  dirty(r);
+  REQUIRE(parse(kGstaxGolden, r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Gstax);
+  const StmStatus& s = r.status;
+  CHECK(s.v3);
+  CHECK(s.uptimeS == 86400);
+  CHECK(s.resets == 3);
+  CHECK(s.bootReason == 2);
+  CHECK(s.rxOverflow == 0);
+  CHECK(s.parseErrors == 2);
+  CHECK(s.eepState == 0);
+  CHECK(s.lease == LeaseState::Running);
+  CHECK(s.leaseRemainS == 3540);
+  CHECK(s.leaseClient);
+  CHECK(s.leaseTimeoutMin == 60);
+  CHECK(s.failsafeMask == 0);
+  CHECK_FALSE(s.safeMode);
+  CHECK(s.wdgResets == 0);
+  CHECK(s.uartOre == 0);
+  CHECK(s.uartFe == 0);
+  CHECK(s.uartNe == 0);
+  CHECK(s.rxDropped == 0);
+  CHECK(s.cfgFlags == 0);
+  CHECK(s.cfgEvents == 0);
+  CHECK(s.eepWrites == 12);
+  CHECK(s.tempAgeS == 2);
+  CHECK(s.owScanAgeS == 3600);
+  CHECK(s.sysFlags == 0);
+
+  // Distinct values in every field (catches swapped fields).
+  REQUIRE(parse(gstaxLine({{6, "6"}, {7, "2"}, {9, "1"}, {10, "1440"}, {11, "4095"}, {12, "1"},
+                           {18, "255"}, {23, "255"}}),
+                r) == ParseStatus::Ok);
+  CHECK(r.status.uptimeS == 1);
+  CHECK(r.status.resets == 2);
+  CHECK(r.status.bootReason == 3);
+  CHECK(r.status.rxOverflow == 4);
+  CHECK(r.status.parseErrors == 5);
+  CHECK(r.status.eepState == 6);
+  CHECK(r.status.lease == LeaseState::Expired);
+  CHECK(r.status.leaseRemainS == 8);
+  CHECK(r.status.leaseClient);
+  CHECK(r.status.leaseTimeoutMin == 1440);
+  CHECK(r.status.failsafeMask == 4095);
+  CHECK(r.status.safeMode);
+  CHECK(r.status.wdgResets == 13);
+  CHECK(r.status.uartOre == 14);
+  CHECK(r.status.uartFe == 15);
+  CHECK(r.status.uartNe == 16);
+  CHECK(r.status.rxDropped == 17);
+  CHECK(r.status.cfgFlags == 255);
+  CHECK(r.status.cfgEvents == 19);
+  CHECK(r.status.eepWrites == 20);
+  CHECK(r.status.tempAgeS == 21);
+  CHECK(r.status.owScanAgeS == 22);
+  CHECK(r.status.sysFlags == 255);
+  REQUIRE(parse(gstaxLine({}), r) == ParseStatus::Ok);
+  CHECK(r.status.lease == LeaseState::Off);
+  CHECK_FALSE(r.status.leaseClient);
+  CHECK_FALSE(r.status.safeMode);
+  CHECK(r.status.wdgResets == 13);
+  REQUIRE(parse(gstaxLine({{13, "255"}, {10, "5"}, {11, "0"}}), r) == ParseStatus::Ok);
+  CHECK(r.status.wdgResets == 255);
+  CHECK(r.status.leaseTimeoutMin == 5);
+  CHECK(r.status.failsafeMask == 0);
+  REQUIRE(parse(gstaxLine({{7, "1"}}), r) == ParseStatus::Ok);
+  CHECK(r.status.lease == LeaseState::Running);
+
+  // Field ranges (every other field valid).
+  CHECK(parse(gstaxLine({{7, "3"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{9, "2"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{10, "1441"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{11, "4096"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{12, "2"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{13, "256"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{18, "256"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{23, "256"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{8, "4294967296"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{14, "4294967296"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{17, "4294967296"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{19, "4294967296"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{22, "4294967296"}}), r) == ParseStatus::OutOfRange);
+  CHECK(parse(gstaxLine({{22, "x"}}), r) == ParseStatus::BadNumber);
+  CHECK(parse(gstaxLine({{6, "256"}}), r) == ParseStatus::OutOfRange);  // gstat field 6
+  CHECK(isEmptyReply(r));
+
+  // Field count: at least 23; numeric extras are ignored.
+  const std::string golden = kGstaxGolden;
+  CHECK(parse(golden.substr(0, golden.rfind(' ')), r) == ParseStatus::BadArgCount);  // 22
+  CHECK(parse("gstax 86400 3 2 0 2 0 1 3540 1 60 0 0 0 0 0 0 0 0 0 12 2", r) ==
+        ParseStatus::BadArgCount);  // 21
+  REQUIRE(parse(golden + " 99", r) == ParseStatus::Ok);
+  CHECK(r.status.sysFlags == 0);
+  CHECK(parse(golden + " x", r) == ParseStatus::BadNumber);
+  CHECK(parse(golden + " 4294967296", r) == ParseStatus::OutOfRange);
+  // gstat stays at exactly 6.
+  CHECK(parse("gstat 86400 3 2 0 2 0 1", r) == ParseStatus::BadArgCount);
+}
+
+TEST_CASE("codec: glcfg") {
+  Reply r;
+  dirty(r);
+  REQUIRE(parse("glcfg 1440 0 1 2 3 4 5 6 7 8 9 100 255", r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Glcfg);
+  CHECK(r.leaseConfig.timeoutMin == 1440);
+  for (uint8_t i = 0; i < 10; ++i) CHECK(r.leaseConfig.failsafePct[i] == i);
+  CHECK(r.leaseConfig.failsafePct[10] == 100);
+  CHECK(r.leaseConfig.failsafePct[11] == kFailsafeHold);
+  REQUIRE(parse("glcfg 0 50 50 50 50 50 50 50 50 50 50 50 50 ", r) == ParseStatus::Ok);
+  CHECK(r.leaseConfig.timeoutMin == 0);
+  CHECK(r.leaseConfig.failsafePct[0] == 50);
+  REQUIRE(parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 50 50 1 2", r) == ParseStatus::Ok);
+  CHECK(r.leaseConfig.timeoutMin == 60);
+  CHECK(parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 50", r) == ParseStatus::BadArgCount);
+  CHECK(parse("glcfg", r) == ParseStatus::BadArgCount);
+  CHECK(parse("glcfg 1441 50 50 50 50 50 50 50 50 50 50 50 50", r) == ParseStatus::OutOfRange);
+  CHECK(parse("glcfg 60 101 50 50 50 50 50 50 50 50 50 50 50", r) == ParseStatus::OutOfRange);
+  CHECK(parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 50 254", r) == ParseStatus::OutOfRange);
+  CHECK(parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 50 256", r) == ParseStatus::OutOfRange);
+  CHECK(parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 50 x", r) == ParseStatus::BadNumber);
+  CHECK(parse("glcfg x 50 50 50 50 50 50 50 50 50 50 50 50", r) == ParseStatus::BadNumber);
+  CHECK(parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 50 50 x", r) == ParseStatus::BadNumber);
+  CHECK(isEmptyReply(r));
+}
+
+TEST_CASE("codec: slhbt ok and error forms") {
+  Reply r;
+  dirty(r);
+  REQUIRE(parse("slhbt 1 3540", r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Slhbt);
+  CHECK(r.heartbeat.lease == LeaseState::Running);
+  CHECK(r.heartbeat.remainS == 3540);
+  CHECK_FALSE(r.ack.error);
+  REQUIRE(parse("slhbt 2 0 ", r) == ParseStatus::Ok);
+  CHECK(r.heartbeat.lease == LeaseState::Expired);
+  REQUIRE(parse("slhbt 0 4294967295", r) == ParseStatus::Ok);
+  CHECK(r.heartbeat.lease == LeaseState::Off);
+  CHECK(r.heartbeat.remainS == 4294967295u);
+  REQUIRE(parse("slhbt 1 5 7", r) == ParseStatus::Ok);  // extra field
+  CHECK(r.heartbeat.remainS == 5);
+  REQUIRE(parse("slhbt err", r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Slhbt);
+  CHECK(r.ack.error);
+  CHECK(r.heartbeat.lease == LeaseState::Off);
+  CHECK(parse("slhbt ok", r) == ParseStatus::BadFormat);
+  CHECK(parse("slhbt 1", r) == ParseStatus::BadFormat);
+  CHECK(parse("slhbt", r) == ParseStatus::BadArgCount);
+  CHECK(parse("slhbt 3 0", r) == ParseStatus::OutOfRange);
+  CHECK(parse("slhbt 1 4294967296", r) == ParseStatus::OutOfRange);
+  CHECK(parse("slhbt 1 5 x", r) == ParseStatus::BadNumber);
+  CHECK(parse("slhbt err 1", r) == ParseStatus::BadNumber);
+}
+
+TEST_CASE("codec: slcfg and ssafe ok/err forms") {
+  for (const char* cmd : {"slcfg", "ssafe"}) {
+    CAPTURE(cmd);
+    const std::string c = cmd;
+    Reply r;
+    REQUIRE(parse(c + " ok", r) == ParseStatus::Ok);
+    CHECK(r.cmd == cmdFromName(cmd, 5));
+    CHECK_FALSE(r.ack.error);
+    REQUIRE(parse(c + " err ", r) == ParseStatus::Ok);
+    CHECK(r.ack.error);
+    CHECK(parse(c, r) == ParseStatus::BadArgCount);
+    CHECK(parse(c + " ok 1", r) == ParseStatus::BadArgCount);
+    CHECK(parse(c + " fine", r) == ParseStatus::BadFormat);
+  }
+}
+
+TEST_CASE("codec: sfspo and sstop indexed results") {
+  for (const char* cmd : {"sfspo", "sstop"}) {
+    CAPTURE(cmd);
+    const std::string c = cmd;
+    const bool isStop = c == "sstop";
+    Reply r;
+    auto res = [&]() -> const IndexedResult& { return isStop ? r.stop : r.failsafe; };
+    REQUIRE(parse(c + " 3 ok", r) == ParseStatus::Ok);
+    CHECK(r.cmd == cmdFromName(cmd, 5));
+    CHECK(res().index == 3);
+    CHECK(res().ok);
+    CHECK(res().errorCode == 0);
+    REQUIRE(parse(c + " 0 ok", r) == ParseStatus::Ok);
+    CHECK(res().index == 0);
+    REQUIRE(parse(c + " 11 ok", r) == ParseStatus::Ok);
+    CHECK(res().index == 11);
+    REQUIRE(parse(c + " 255 ok ", r) == ParseStatus::Ok);
+    CHECK(res().index == 255);
+    CHECK(res().ok);
+    REQUIRE(parse(c + " -1 err 1", r) == ParseStatus::Ok);
+    CHECK(res().index == -1);
+    CHECK_FALSE(res().ok);
+    CHECK(res().errorCode == 1);
+    REQUIRE(parse(c + " 7 err 65535", r) == ParseStatus::Ok);
+    CHECK(res().index == 7);
+    CHECK(res().errorCode == 65535);
+    CHECK(parse(c + " -1 ok", r) == ParseStatus::BadFormat);
+    CHECK(parse(c + " 12 ok", r) == ParseStatus::OutOfRange);
+    CHECK(parse(c + " 254 ok", r) == ParseStatus::OutOfRange);
+    CHECK(parse(c + " 256 ok", r) == ParseStatus::OutOfRange);
+    CHECK(parse(c + " -2 err 1", r) == ParseStatus::OutOfRange);
+    CHECK(parse(c + " 3 err 65536", r) == ParseStatus::OutOfRange);
+    CHECK(parse(c + " 3 err", r) == ParseStatus::BadFormat);
+    CHECK(parse(c + " 3 ok 1", r) == ParseStatus::BadFormat);
+    CHECK(parse(c + " 3", r) == ParseStatus::BadArgCount);
+    CHECK(parse(c + " 3 err 1 2", r) == ParseStatus::BadArgCount);
+    CHECK(parse(c + " x ok", r) == ParseStatus::BadNumber);
+    CHECK(isEmptyReply(r));
+  }
+}
+
+TEST_CASE("codec: svmov signed index (E11.1)") {
+  Reply r;
+  REQUIRE(parse("svmov -1 err 1", r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Svmov);
+  CHECK(r.serviceMove.index == -1);
+  CHECK_FALSE(r.serviceMove.ok);
+  CHECK(r.serviceMove.errorCode == 1);
+  REQUIRE(parse("svmov 3 ok", r) == ParseStatus::Ok);
+  CHECK(r.serviceMove.index == 3);
+  REQUIRE(parse("svmov 0 ok", r) == ParseStatus::Ok);
+  CHECK(r.serviceMove.index == 0);
+  CHECK(r.serviceMove.ok);
+  CHECK(parse("svmov -2 err 1", r) == ParseStatus::OutOfRange);
+  CHECK(parse("svmov 12 ok", r) == ParseStatus::OutOfRange);
+  CHECK(parse("svmov 255 ok", r) == ParseStatus::OutOfRange);
+  CHECK(parse("svmov -1 ok", r) == ParseStatus::BadFormat);
+  CHECK(parse("sfspo 255 ok", r) == ParseStatus::Ok);
+  CHECK(r.failsafe.index == 255);
+  CHECK(parse("sfspo 12 ok", r) == ParseStatus::OutOfRange);
+}
+
+TEST_CASE("codec: gtlnt and stlnt") {
+  Reply r;
+  dirty(r);
+  REQUIRE(parse("gtlnt 604800", r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Gtlnt);
+  CHECK(r.learnTime == 604800);
+  REQUIRE(parse("gtlnt 0 ", r) == ParseStatus::Ok);
+  CHECK(r.learnTime == 0);
+  REQUIRE(parse("gtlnt 4294967295", r) == ParseStatus::Ok);
+  CHECK(r.learnTime == 4294967295u);
+  CHECK(parse("gtlnt 4294967296", r) == ParseStatus::OutOfRange);
+  CHECK(parse("gtlnt", r) == ParseStatus::BadArgCount);
+  CHECK(parse("gtlnt 1 2", r) == ParseStatus::BadArgCount);
+  REQUIRE(parse("stlnt", r) == ParseStatus::Ok);
+  CHECK(r.cmd == Cmd::Stlnt);
+  CHECK_FALSE(r.ack.error);
+  REQUIRE(parse("stlnt ", r) == ParseStatus::Ok);
+  CHECK(parse("stlnt 5", r) == ParseStatus::BadArgCount);
+}
+
+TEST_CASE("codec: v3 flag, fault and configuration flag names") {
+  const uint16_t flags[] = {kStmFlagFsLease,    kStmFlagFsBlocked,   kStmFlagUncalibrated,
+                            kStmFlagNeedsRef,   kStmFlagRecal,       kStmFlagCalRestored,
+                            kStmFlagRetry,      kStmFlagEarlyPending, kStmFlagAssembly,
+                            kStmFlagSvcHold};
+  const char* flagNames[] = {"fsLease", "fsBlocked",    "uncalibrated", "needsRef", "recal",
+                             "calRestored", "retry",    "earlyPending", "assembly", "svcHold"};
+  for (uint8_t b = 0; b < 10; ++b) {
+    CAPTURE(b);
+    CHECK(flags[b] == (1u << b));
+    CHECK(std::string(stmFlagName(b)) == flagNames[b]);
+  }
+  for (uint8_t b : {10, 11, 15, 16, 255}) CHECK(std::string(stmFlagName(b)) == "");
+
+  const char* faults[] = {"none", "move_timeout", "stroke_timeout", "short", "strokes_too_short",
+                          "inrush_trip"};
+  for (uint8_t f = 0; f < 6; ++f) CHECK(std::string(valveFaultName(f)) == faults[f]);
+  CHECK(static_cast<uint8_t>(ValveFault::InrushTrip) == 5);
+  CHECK(static_cast<uint8_t>(ValveFault::StrokesTooShort) == 4);
+  for (uint8_t f : {6, 7, 255}) CHECK(std::string(valveFaultName(f)) == "unknown");
+
+  const uint8_t cfg[] = {kStmCfgLayoutCrc,    kStmCfgShadowMissing, kStmCfgSettingsCorrupt,
+                         kStmCfgSafetyCorrupt, kStmCfgSensorSlot,   kStmCfgCalib,
+                         kStmCfgUnverified,   kStmCfgReadFailed};
+  const char* cfgNames[] = {"layoutCrc",  "shadowMissing", "settingsCorrupt", "safetyCorrupt",
+                            "sensorSlot", "calib",         "unverified",      "readFailed"};
+  for (uint8_t b = 0; b < 8; ++b) {
+    CAPTURE(b);
+    CHECK(cfg[b] == (1u << b));
+    CHECK(std::string(stmCfgFlagName(b)) == cfgNames[b]);
+  }
+  for (uint8_t b : {8, 9, 255}) CHECK(std::string(stmCfgFlagName(b)) == "");
+  CHECK(kStmSysProtectSuspended == 0x01);
 }
 
 // ================================================================ matching
@@ -1376,6 +1894,82 @@ TEST_CASE("codec: replyMatches for sensor count/list/data") {
   CHECK(replyMatches(vdata, parsed(std::string("gowvd ") + kId3 + " 12")));
 }
 
+TEST_CASE("codec: replyMatches with an expected sensor id (E9.1)") {
+  RequestLine data, vdata;
+  REQUIRE(buildTempData(4, data));
+  REQUIRE(buildVoltData(4, vdata));
+  const Reply x = parsed(std::string("goned ") + kId1 + " 215");
+  const Reply y = parsed(std::string("goned ") + kId2 + " 215");
+  const Reply vx = parsed(std::string("gowvd ") + kId3 + " 12");
+  const Reply vy = parsed(std::string("gowvd ") + kId1 + " 12");
+  // Expect zero (unknown id at that bus index): any reading matches.
+  CHECK(replyMatches(data, x));
+  CHECK(replyMatches(data, y));
+  CHECK(replyMatches(vdata, vx));
+  CHECK(replyMatches(vdata, vy));
+  data.expect = id(kId1);
+  vdata.expect = id(kId3);
+  CHECK(replyMatches(data, x));
+  CHECK_FALSE(replyMatches(data, y));       // a late reply for another bus index
+  CHECK(replyMatches(data, parsed("goned 0")));  // the invalid form: completes as rejected
+  CHECK(replyMatches(vdata, vx));
+  CHECK_FALSE(replyMatches(vdata, vy));
+  CHECK(replyMatches(vdata, parsed("gowvd 0")));
+  CHECK_FALSE(replyMatches(data, vx));      // other command
+}
+
+TEST_CASE("codec: replyMatches for v3 and indexed replies") {
+  RequestLine q;
+  REQUIRE(buildValveExV3(3, q));
+  CHECK(replyMatches(q, parsed(kGvlvyGolden)));
+  REQUIRE(buildValveExV3(4, q));
+  CHECK_FALSE(replyMatches(q, parsed(kGvlvyGolden)));
+  REQUIRE(buildValveEx(3, q));
+  CHECK_FALSE(replyMatches(q, parsed(kGvlvyGolden)));  // gvlvx request, gvlvy reply
+
+  REQUIRE(buildServiceMove(3, MoveDir::Open, 10, 10, q));
+  CHECK(replyMatches(q, parsed("svmov -1 err 1")));  // the STM could not read the index
+  CHECK_FALSE(replyMatches(q, parsed("svmov 4 ok")));
+  CHECK_FALSE(replyMatches(q, parsed("svmov 0 ok")));
+
+  REQUIRE(buildSetFailsafe(2, 50, q));
+  CHECK(replyMatches(q, parsed("sfspo 2 ok")));
+  CHECK(replyMatches(q, parsed("sfspo 2 err 1")));
+  CHECK(replyMatches(q, parsed("sfspo -1 err 1")));
+  CHECK_FALSE(replyMatches(q, parsed("sfspo 3 ok")));
+  CHECK_FALSE(replyMatches(q, parsed("sfspo 0 ok")));
+  CHECK_FALSE(replyMatches(q, parsed("sfspo 255 ok")));
+  CHECK_FALSE(replyMatches(q, parsed("sstop 2 ok")));
+  REQUIRE(buildSetFailsafe(kAllValves, 50, q));
+  CHECK(replyMatches(q, parsed("sfspo 255 ok")));
+  CHECK_FALSE(replyMatches(q, parsed("sfspo 2 ok")));
+
+  REQUIRE(buildStop(5, q));
+  CHECK(replyMatches(q, parsed("sstop 5 ok")));
+  CHECK(replyMatches(q, parsed("sstop -1 err 1")));
+  CHECK_FALSE(replyMatches(q, parsed("sstop 6 ok")));
+  CHECK_FALSE(replyMatches(q, parsed("sstop 0 ok")));
+  REQUIRE(buildStop(kAllValves, q));
+  CHECK(replyMatches(q, parsed("sstop 255 ok")));
+
+  REQUIRE(buildGetStatusV3(q));
+  CHECK(replyMatches(q, parsed(kGstaxGolden)));
+  CHECK_FALSE(replyMatches(q, parsed("gstat 1 2 3 4 5 6")));
+  REQUIRE(buildHeartbeat(true, q));
+  CHECK(replyMatches(q, parsed("slhbt 1 3540")));
+  CHECK(replyMatches(q, parsed("slhbt err")));
+  REQUIRE(buildGetLeaseConfig(q));
+  CHECK(replyMatches(q, parsed("glcfg 60 50 50 50 50 50 50 50 50 50 50 50 50")));
+  REQUIRE(buildSetLeaseTimeout(60, q));
+  CHECK(replyMatches(q, parsed("slcfg ok")));
+  REQUIRE(buildGetLearnTime(q));
+  CHECK(replyMatches(q, parsed("gtlnt 0")));
+  REQUIRE(buildLeaveSafeMode(q));
+  CHECK(replyMatches(q, parsed("ssafe err")));
+  REQUIRE(buildSetLearnTime(0, q));
+  CHECK(replyMatches(q, parsed("stlnt")));
+}
+
 TEST_CASE("codec: replyMatches rejects empty requests and replies") {
   RequestLine none;
   Reply empty;
@@ -1390,8 +1984,8 @@ TEST_CASE("codec: replyMatches rejects empty requests and replies") {
 }
 
 TEST_CASE("codec: every request built has a matching golden reply") {
-  RequestLine q[20];
-  const char* replies[20];
+  RequestLine q[32];
+  const char* replies[32];
   size_t n = 0;
   auto add = [&](bool ok, const char* rep) {
     REQUIRE(ok);
@@ -1413,6 +2007,16 @@ TEST_CASE("codec: every request built has a matching golden reply") {
   add(buildGetBreakaway(q[n]), "gcalx 1 10 40");
   Breakaway b;
   add(buildSetBreakaway(b, q[n]), "scalx ok");
+  add(buildValveExV3(3, q[n]), kGvlvyGolden);
+  add(buildGetStatusV3(q[n]), kGstaxGolden);
+  add(buildHeartbeat(false, q[n]), "slhbt 2 0");
+  add(buildSetLeaseTimeout(60, q[n]), "slcfg ok");
+  add(buildSetFailsafe(3, 50, q[n]), "sfspo 3 ok");
+  add(buildGetLeaseConfig(q[n]), "glcfg 60 50 50 50 50 50 50 50 50 50 50 50 50");
+  add(buildStop(255, q[n]), "sstop 255 ok");
+  add(buildGetLearnTime(q[n]), "gtlnt 604800");
+  add(buildLeaveSafeMode(q[n]), "ssafe ok");
+  add(buildSetLearnTime(0, q[n]), "stlnt");
   for (size_t i = 0; i < n; ++i) {
     CAPTURE(replies[i]);
     CHECK(replyMatches(q[i], parsed(replies[i])));
@@ -1489,7 +2093,23 @@ void checkInvariants(const std::string& line, ParseStatus st, const Reply& r) {
   REQUIRE(r.oneWireList.count <= kTempSlotCount);
   REQUIRE(r.profile.count <= kProfileMaxSamples);
   REQUIRE(r.profile.valve < kValveCount);
-  REQUIRE(r.serviceMove.valve < kValveCount);
+  REQUIRE(r.serviceMove.index >= -1);
+  REQUIRE(r.serviceMove.index < kValveCount);
+  REQUIRE(!(r.serviceMove.ok && r.serviceMove.index < 0));
+  for (const IndexedResult* x : {&r.failsafe, &r.stop}) {
+    REQUIRE((x->index >= -1 && (x->index < kValveCount || x->index == kAllValves)));
+    REQUIRE(!(x->ok && x->index < 0));
+  }
+  REQUIRE(failsafePctValid(r.valveEx.fsPct));
+  REQUIRE(r.valveEx.drive <= 100);
+  REQUIRE(static_cast<uint8_t>(r.status.lease) <= 2);
+  REQUIRE(r.status.leaseTimeoutMin <= 1440);
+  REQUIRE(r.status.failsafeMask <= 0x0FFF);
+  REQUIRE(static_cast<uint8_t>(r.heartbeat.lease) <= 2);
+  REQUIRE(r.leaseConfig.timeoutMin <= 1440);
+  for (uint8_t pct : r.leaseConfig.failsafePct) REQUIRE(failsafePctValid(pct));
+  if (r.valveEx.v3) REQUIRE(r.cmd == Cmd::Gvlvy);
+  if (r.status.v3) REQUIRE(r.cmd == Cmd::Gstax);
   REQUIRE(r.valveSensors.valve < kValveCount);
   REQUIRE(r.hwId <= 0xFFF);
   REQUIRE(r.breakaway.stepPct <= 100);
