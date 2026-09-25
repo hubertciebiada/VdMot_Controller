@@ -1,0 +1,25 @@
+{
+  "repo": "../..",
+  "root": "software_stm32",
+  "shared": ["tools/native/testkit"],
+  "files": ["src/app.cpp", "src/communication.cpp", "src/eeprom.cpp", "src/i2c_bus.cpp", "src/main.cpp",
+            "src/motor.cpp", "src/otasupport.cpp", "src/owDevices.cpp", "src/sysstat.cpp", "src/terminal.cpp"],
+  "scope": "src/*.cpp",
+  "excluded": {
+    "src/DS2438.cpp": "vendored RobTillaart/DS2438 0.1.1 (MIT); our patches only call vdm::isValidScratchpad and vdm::crc8 of the STM core suite, the glue tests use a link-seam stub",
+    "src/rs485.cpp": "not built: build_src_filter of platformio.ini removes it (no env defines useRS485)",
+    "src/boot_jump.cpp": "hardware only: loads MSP and PC of the ROM bootloader at 0x1FFF0000 and jumps; exercised by every ESP-driven STM update"
+  },
+  "equivalents_dir": "tools/mutation/equivalents/stm32-glue",
+  "setup": "cmake -S test/native -B {build} -G Ninja -DCMAKE_BUILD_TYPE=Mutation -DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+  "build": "cmake --build {build} --target glue_{stem}",
+  "test_file": "VDM_FAIL_FAST=1 {build}/glue/glue_{stem}",
+  "test": "cmake --build {build} --target glue_system >/dev/null && VDM_FAIL_FAST=1 {build}/glue/glue_system",
+  "timeout_min": 10,
+  "timeout_factor": 10,
+  "timeout_build": 900,
+  "threshold": 95,
+  "file_threshold": 95,
+  "deadcode": true,
+  "stillborn": "exclude"
+}
