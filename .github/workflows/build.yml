@@ -4,8 +4,8 @@ name: Build firmware
 #   native     : host unit tests of the pure-logic cores (STM + new ESP), ASan/UBSan, -Werror
 #   mutation   : mutation testing of the cores and the glue (stm32, stm32-glue, esp32,
 #                esp32-glue). PR/push: changed files only; weekly + manual: everything.
-#                Kill cache is kept between runs. Informational (does not block a release);
-#                the release gate is tools/native/docker.sh mutate-all.
+#                Informational (does not block a release); the release gate is
+#                tools/native/docker.sh mutate-all.
 #   stm32      : all release envs (F401 + F411, HW C1 + C2)
 #   esp32      : new firmware (software_esp32_revamped) + legacy firmware (software_esp32)
 #   release    : tag v*-revamped -> packaged VdMot Revamped release (tools/release/package.py)
@@ -80,12 +80,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Restore kill cache
-        uses: actions/cache@v4
-        with:
-          path: tools/mutation/${{ matrix.target }}.cache.json
-          key: mutation-${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: mutation-${{ matrix.target }}-
       - name: Select files
         id: sel
         run: |
