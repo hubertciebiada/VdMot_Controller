@@ -1,0 +1,21 @@
+{
+  "repo": "../..",
+  "root": "software_esp32_revamped",
+  "shared": ["tools/native/testkit"],
+  "files": ["src/app.cpp", "src/logger.cpp", "src/main.cpp", "src/mqtt_client.cpp", "src/net.cpp",
+            "src/ota.cpp", "src/stm_link.cpp", "src/stm_service.cpp", "src/storage.cpp",
+            "src/web_server.cpp"],
+  "scope": "src/*.cpp",
+  "excluded": {},
+  "equivalents_dir": "tools/mutation/equivalents/esp32-glue",
+  "setup": "cmake -S test/native -B {build} -G Ninja -DCMAKE_BUILD_TYPE=Mutation -DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+  "build": "cmake --build {build} --target glue_{stem}",
+  "test_file": "VDM_FAIL_FAST=1 {build}/glue/glue_{stem}",
+  "timeout_min": 10,
+  "timeout_factor": 10,
+  "timeout_build": 900,
+  "threshold": 95,
+  "file_threshold": 95,
+  "deadcode": true,
+  "stillborn": "exclude"
+}
