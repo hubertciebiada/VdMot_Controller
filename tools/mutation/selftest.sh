@@ -118,15 +118,38 @@ int d(char *p, const char* q, int a, int b) {
 }
 	#endif
 CPP
+# rvalue references and template brackets are not mutated; the logical and after an enum value
+# and a comparison after a cast are
+cat >"$T/decl/proj/src/r.cpp" <<'CPP'
+#include <array>
+#include <cstdint>
+enum class State { Idle, Busy };
+struct Foo { int v; };
+int r1(int&& i, uint8_t&& u, const Foo&& f, Foo const&& g, std::array<int, 2>&& v) {
+  auto&& t = i;
+  return t + u + f.v + g.v + v[0];
+}
+int r2(State s, bool x, int a, int b) {
+  if (s == State::Idle && x) return 1;
+  if (static_cast<int>(a) < b) return 2;
+  return 0;
+}
+CPP
 config decl '{}'
 mutate decl --list
 [ "$RC" -eq 0 ] || fail "--list: exit $RC"
 grep -qE '^src/d\.cpp:(1|2|3|4|5|14):' "$T/out" && fail "a directive line was mutated"
 [ "$(grep -c "'\*' -> '/'" "$T/out")" -eq 1 ] || fail "pointer declarators were mutated"
 grep -q "^src/d.cpp:11:.* '\*' -> '/'" "$T/out" || fail "the product a * b was not mutated"
+[ "$(grep -c "^src/r.cpp:.* '&&' -> '||'" "$T/out")" -eq 1 ] || fail "rvalue references were mutated"
+grep -q "^src/r.cpp:10:24 log '&&' -> '||'" "$T/out" || fail "the '&&' after State::Idle was not mutated"
+grep -q "^src/r.cpp:5:.* rel " "$T/out" && fail "the brackets of std::array<int, 2> were mutated"
+[ "$(grep -c "^src/r.cpp:11:.* rel " "$T/out")" -eq 2 ] || fail "the brackets of static_cast<int> were mutated"
+grep -q "^src/r.cpp:11:27 rel '<' -> '<='" "$T/out" && grep -q "^src/r.cpp:11:27 rel '<' -> '>='" "$T/out" ||
+  fail "the comparison after static_cast<int>(a) was not mutated"
 mutate decl --list --files src/d.cpp --lines 11-11
 grep -vq '^src/d.cpp:11:\|mutants$' "$T/out" && fail "--lines kept other lines"
-ok "directives and pointer declarators not generated, --lines"
+ok "directives, pointer and rvalue declarators and template brackets not generated, --lines"
 
 # --- not_compiled: inactive #if and a dropped macro argument
 project dead

@@ -103,13 +103,23 @@ INT_LITERAL = re.compile(r"(?<![\w.])(\d+)(?![\w.])")
 NEGATE_IF = re.compile(r"\b(if|while)\s*\(")
 RETURN_EXPR = re.compile(r"\breturn\s+([^;]+);")
 
-# Pointer and reference declarators ("char *p", "(uint16_t*)x", "Foo&& f") are not mutated:
+# Pointer and reference declarators ("char *p", "(uint16_t*)x", "int&& r") are not mutated:
 # swapping their '*' or '&&' only gives compile errors.
 TYPE_WORD = re.compile(r"(?:char|int|void|bool|float|double|auto|unsigned|signed|long|short|const|"
                        r"volatile|\w+_t|[A-Z]\w*[a-z]\w*)$")
 DECL_PREFIX = re.compile(r"\b(?:struct|class|enum|union|const|volatile|static|extern|inline|"
                          r"constexpr|mutable|typename)\s+$")
 DECLARED_NAME = re.compile(r"\s*[A-Za-z_)&*>,\[]")
+# '&&' is a declarator only after a type: a builtin or *_t word, auto or const, a word after
+# const/typename/..., or a template's closing '>'. A CamelCase word is no type there: enum values
+# ("s == State::Idle && x") and members are operands of a logical and.
+RVALUE_TYPE_WORD = re.compile(r"(?:char|int|void|bool|float|double|auto|unsigned|signed|long|short|"
+                              r"const|volatile|\w+_t)$")
+OPERAND_PREFIX = re.compile(r"(?:::|\.|->|==|!=|<=|>=|<|>)\s*$")
+# '<' after a cast or template name opens a template argument list; that '<' and its matching '>'
+# are not comparisons (a '<<' after std::cout is no template).
+TEMPLATE_OPEN = re.compile(r"\b(?:template|static_cast|reinterpret_cast|const_cast|dynamic_cast|"
+                           r"std::\w+|array|vector)\s*<(?![<=])")
 
 TIMEOUT_RC = -999
 CACHEABLE = ("killed", "timeout", "stillborn", "not_compiled")
@@ -254,19 +264,56 @@ def nomutate_lines(src: str, rel: str) -> tuple[dict[int, str], list[str]]:
     return reasons, errors
 
 
-def in_template_or_include(clean: str, pos: int) -> bool:
-    # skip '<' / '>' of template brackets, e.g. std::array<uint8_t, 4>
-    line_start = clean.rfind("\n", 0, pos) + 1
-    line_end = clean.find("\n", pos)
-    line = clean[line_start: line_end if line_end != -1 else len(clean)]
-    return bool(re.search(r"\b(template|static_cast|reinterpret_cast|const_cast|std::\w+|array|vector)\s*<", line))
+def template_brackets(clean: str) -> set[int]:
+    """Positions of the template brackets of TEMPLATE_OPEN: each '<' and its matching '>', e.g.
+    both of static_cast<size_t>(n) but not the comparison in 'static_cast<size_t>(n) < cap'."""
+    result: set[int] = set()
+    for m in TEMPLATE_OPEN.finditer(clean):
+        result.add(m.end() - 1)
+        close = matching_angle(clean, m.end() - 1)
+        if close != -1:
+            result.add(close)
+    return result
+
+
+def matching_angle(clean: str, open_pos: int) -> int:
+    """The '>' that closes the template argument list opened at open_pos, or -1. Brackets inside
+    parentheses and '<<', '<=', '>=', '->' do not count; ';' ends the search."""
+    depth = parens = 0
+    j = open_pos
+    while j < min(len(clean), open_pos + 2000):
+        c = clean[j]
+        two = clean[j:j + 2]
+        if c in "([{":
+            parens += 1
+        elif c in ")]}":
+            if parens == 0:
+                return -1
+            parens -= 1
+        elif c == ";":
+            return -1
+        elif parens == 0 and two in ("<<", "<=", ">=", "->"):
+            j += 2
+            continue
+        elif parens == 0 and c == "<":
+            depth += 1
+        elif parens == 0 and c == ">":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
 
 
 def pointer_declarator(clean: str, start: int, end: int) -> bool:
     """True when the '*' or '&&' at clean[start:end] declares a pointer or reference."""
     before = clean[max(0, start - 200):start]
     m = re.search(r"(\w+)\s*$", before)
-    if m is None or DECLARED_NAME.match(clean, end) is None:
+    if DECLARED_NAME.match(clean, end) is None:
+        return False
+    if clean[start:end] == "&&":
+        return rvalue_declarator(before, m)
+    if m is None:
         return False
     if TYPE_WORD.match(m.group(1)):
         return True
@@ -278,6 +325,18 @@ def pointer_declarator(clean: str, start: int, end: int) -> bool:
         (start <= 200 and not prefix.strip())
     return clean[start:end] == "*" and statement_start and \
         re.match(r"\s*\w+\s*(?:[=;,\[)(]|$)", clean[end:end + 200]) is not None
+
+
+def rvalue_declarator(before: str, word: re.Match | None) -> bool:
+    """True when '&&' after `before` declares an rvalue reference ("int&& r", "auto&& a",
+    "const Foo&& f", "Foo const&& g", "std::array<int, 2>&& v"); `word` is the word that ends
+    `before`, if any."""
+    if word is None:
+        return re.search(r"(?<!-)>\s*$", before) is not None
+    prefix = before[:word.start(1)]
+    if OPERAND_PREFIX.search(prefix):
+        return False
+    return RVALUE_TYPE_WORD.match(word.group(1)) is not None or DECL_PREFIX.search(prefix) is not None
 
 
 def generate(src: str, rel: str, skip_lines: set[int]) -> list[Mutant]:
@@ -292,10 +351,11 @@ def generate(src: str, rel: str, skip_lines: set[int]) -> list[Mutant]:
         seen.add((pos, orig, rep))
         muts.append(Mutant(rel, line, col, pos, op, orig, rep, close=close))
 
+    brackets = template_brackets(clean)
     for op, pattern, reps in BINARY_SWAPS:
         for m in re.finditer(pattern, clean):
             tok = m.group(0)
-            if op == "rel" and tok in "<>" and in_template_or_include(clean, m.start()):
+            if op == "rel" and m.start() in brackets:
                 continue
             if op == "arith" and tok == "-" and re.match(r"\s*[\d(]", clean[m.end():]) \
                     and re.search(r"[=(,\[{?:]\s*$|return\s*$", clean[max(0, m.start() - 200):m.start()]):
