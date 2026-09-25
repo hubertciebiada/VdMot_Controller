@@ -76,6 +76,8 @@ enum class FlashError : uint8_t {
   AppNotResponding,    // no gvers after flashing
   AppVersionMismatch,  // gvers differs from the version found in the image
   Aborted,
+  BoardMismatch,       // image built for another board revision
+  BoardRequired,       // tagged image, board revision unknown (blank mode)
 };
 const char* flashErrorName(FlashError e);
 
@@ -89,7 +91,19 @@ struct ImageInfo {
   uint32_t crc = 0;              // CRC32 of the unpadded image
   char version[32] = {0};        // first NUL-terminated string that parses as a
                                  // Version and contains no spaces, "" if none
+  char hwTag[4] = {0};           // board revision of a "VDM-HW:C<n>" marker, "" untagged
+  bool hwConflict = false;       // two different markers found
 };
+
+// Board revision check before flashing (the STM images of the C1 and C2
+// boards are not interchangeable).
+enum class BoardCheck : uint8_t { Ok = 0, Untagged = 1, Mismatch = 2, BoardRequired = 3 };
+const char* boardCheckName(BoardCheck c);  // "ok","untagged","mismatch","board_required"
+// "C" followed by 1 or 2 digits ("C1", "C12"); false for nullptr.
+bool boardTagValid(const char* s);
+// imageHw "" -> Untagged; boardHw "" -> BoardRequired; equal -> Ok; else
+// Mismatch. nullptr counts as "". At most 4 chars of each are read.
+BoardCheck checkBoard(const char* imageHw, const char* boardHw);
 
 // Pure image checks (spec 02 R3). chipPid 0 = not known yet (then only the
 // family-independent checks run: size 1..512 KiB, SP in (0x20000000,
@@ -139,7 +153,12 @@ struct FlashOptions {
   uint8_t sessionRetries = 2;          // whole erase+write+verify again, same ROM session
   uint16_t appBootMs = 4000;           // after the final reset, before the first gvers
   uint16_t appPollMs = 1000;           // gvers period
-  uint16_t appTimeoutMs = 15000;       // total wait for gvers, from NRST release
+  uint16_t appTimeoutMs = 60000;       // total wait for gvers, from NRST release
+  // Revision of this controller: the running STM's gvers tag, else the
+  // user's choice; "" unknown.
+  char boardHw[4] = {0};
+  // One more session at this baud after SyncFailed or a silent GetId (0 = off).
+  uint32_t fallbackBaud = 57600;
 };
 
 struct FlashStatus {
@@ -157,6 +176,10 @@ struct FlashStatus {
   uint32_t finishedMs = 0;
   ImageInfo image;
   Version appVersion;             // gvers after flashing
+  BoardCheck board = BoardCheck::Ok;  // result of checkBoard(image.hwTag, boardHw)
+  char boardHw[4] = {0};          // FlashOptions::boardHw of this run
+  bool manualReset = false;       // blank mode: flashed and verified, BOOT0 still set
+  uint32_t baud = 0;              // baud of the current/last session
 };
 
 class StmFlasher {

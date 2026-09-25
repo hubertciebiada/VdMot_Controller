@@ -245,10 +245,70 @@ TEST_CASE("flasher: phase names, legacy status codes and error names") {
       {FlashError::AppNotResponding, "app_not_responding"},
       {FlashError::AppVersionMismatch, "app_version_mismatch"},
       {FlashError::Aborted, "aborted"},
+      {FlashError::BoardMismatch, "board_mismatch"},
+      {FlashError::BoardRequired, "board_required"},
   };
-  CHECK(sizeof errors / sizeof errors[0] == static_cast<size_t>(FlashError::Aborted) + 1);
+  CHECK(sizeof errors / sizeof errors[0] == static_cast<size_t>(FlashError::BoardRequired) + 1);
   for (const auto& e : errors) CHECK(std::string(flashErrorName(e.e)) == e.name);
   CHECK(std::string(flashErrorName(static_cast<FlashError>(200))) == "unknown");
+}
+
+// ================================================================ board check
+
+TEST_CASE("flasher: board check table and tag rule (W8.2)") {
+  CHECK(checkBoard("", "C2") == BoardCheck::Untagged);
+  CHECK(checkBoard("", "") == BoardCheck::Untagged);
+  CHECK(checkBoard(nullptr, "C2") == BoardCheck::Untagged);
+  CHECK(checkBoard("C2", "") == BoardCheck::BoardRequired);
+  CHECK(checkBoard("C2", nullptr) == BoardCheck::BoardRequired);
+  CHECK(checkBoard("C2", "C2") == BoardCheck::Ok);
+  CHECK(checkBoard("C12", "C12") == BoardCheck::Ok);
+  CHECK(checkBoard("C1", "C2") == BoardCheck::Mismatch);
+  CHECK(checkBoard("C1", "C12") == BoardCheck::Mismatch);
+  CHECK(checkBoard("C12", "C1") == BoardCheck::Mismatch);
+  // Tag arrays without a NUL: at most their 4 bytes are read.
+  const char full[4] = {'C', '1', '2', '3'};
+  const char fullToo[4] = {'C', '1', '2', '3'};
+  CHECK(checkBoard(full, fullToo) == BoardCheck::Ok);
+  CHECK(checkBoard(full, "C12") == BoardCheck::Mismatch);
+
+  CHECK(boardTagValid("C1"));
+  CHECK(boardTagValid("C0"));
+  CHECK(boardTagValid("C9"));
+  CHECK(boardTagValid("C12"));
+  CHECK(boardTagValid("C99"));
+  CHECK_FALSE(boardTagValid("C"));
+  CHECK_FALSE(boardTagValid("C123"));
+  CHECK_FALSE(boardTagValid("c1"));
+  CHECK_FALSE(boardTagValid("X1"));
+  CHECK_FALSE(boardTagValid("C1x"));
+  CHECK_FALSE(boardTagValid("Cx"));
+  CHECK_FALSE(boardTagValid("C/"));
+  CHECK_FALSE(boardTagValid("C:"));
+  CHECK_FALSE(boardTagValid(""));
+  CHECK_FALSE(boardTagValid(nullptr));
+  CHECK_FALSE(boardTagValid(full));  // 3 digits, no NUL inside the 4 bytes
+
+  CHECK(std::string(boardCheckName(BoardCheck::Ok)) == "ok");
+  CHECK(std::string(boardCheckName(BoardCheck::Untagged)) == "untagged");
+  CHECK(std::string(boardCheckName(BoardCheck::Mismatch)) == "mismatch");
+  CHECK(std::string(boardCheckName(BoardCheck::BoardRequired)) == "board_required");
+  CHECK(std::string(boardCheckName(static_cast<BoardCheck>(4))) == "unknown");
+}
+
+TEST_CASE("flasher: option and status defaults of the board check") {
+  const FlashOptions opt;
+  CHECK(opt.appTimeoutMs == 60000);
+  CHECK(opt.fallbackBaud == 57600);
+  CHECK(opt.boardHw[0] == '\0');
+  const FlashStatus st;
+  CHECK(st.board == BoardCheck::Ok);
+  CHECK(st.boardHw[0] == '\0');
+  CHECK_FALSE(st.manualReset);
+  CHECK(st.baud == 0);
+  const ImageInfo info;
+  CHECK(info.hwTag[0] == '\0');
+  CHECK_FALSE(info.hwConflict);
 }
 
 // ================================================================ sectors
@@ -1583,6 +1643,7 @@ TEST_CASE("flasher: waiting for the new application") {
   SUBCASE("no answer: gvers at 4 s then every 1 s until 15 s") {
     Rig rig(makeImage(1024));
     rig.sim.appAnswers = false;
+    rig.opt.appTimeoutMs = 15000;
     CHECK(rig.beginAndRun() == FlashPhase::Failed);
     CHECK(rig.f.status().error == FlashError::AppNotResponding);
     CHECK(rig.f.status().errorPhase == FlashPhase::WaitingApp);
@@ -1723,6 +1784,7 @@ TEST_CASE("flasher: exact timing with 1 ms steps") {
   SUBCASE("application polling") {
     Rig rig(makeImage(1024));
     rig.sim.appAnswers = false;
+    rig.opt.appTimeoutMs = 15000;
     REQUIRE(rig.begin());
     CHECK(rig.run([](Rig&) {}, 60000, 1) == FlashPhase::Failed);
     const uint32_t release = rig.sim.resets.back().first;
