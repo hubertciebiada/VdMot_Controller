@@ -1,0 +1,4131 @@
+{
+ "suite": "esp32",
+ "config": "tools/mutation/esp32.json",
+ "score": 94.84,
+ "threshold": 95,
+ "file_threshold": 95,
+ "jobs": 3,
+ "wall_s": 2343.3,
+ "mean_s": 0.61,
+ "vm": "6 CPUs shared with other agents' containers, load average 1.6 at the start",
+ "note": "Baseline of the new tool semantics on software_esp32_revamped/lib/core as of 58632d6 (the sources are unchanged in this branch), measured on 2026-09-25 with `tools/mutation/esp32.json` (--jobs 3 --no-cache) at 3bc8832 on a container copy of the checkout in which the 8 NOMUTATE markers without a reason (config.cpp lines 193, 194, 198, 199, 201 and 969-970, version.cpp line 22; owned by C-ESP) got a reason, text only: those lines stay excluded as before, but the new rules reject a marker without a reason, so `docker.sh mutate esp32` exits 2 on the tree until the reasons are added. The randomized and slow cases of test_stm_flasher.cpp, test_config.cpp, test_event_log.cpp, test_stm_codec.cpp, test_json_api.cpp and test_version.cpp are not tagged yet, so they still run in stage 1. Files changed by later packages are compared against these numbers (PLAN.md rule 5).",
+ "totals": {
+  "counted": 8340,
+  "killed": 7865,
+  "timeout": 45,
+  "survived": 430,
+  "stillborn": 509,
+  "not_compiled": 0,
+  "equivalent": 0,
+  "error": 0,
+  "gap": 13
+ },
+ "files": {
+  "lib/core/src/auth.cpp": {
+   "counted": 289,
+   "killed": 272,
+   "timeout": 0,
+   "survived": 17,
+   "stillborn": 1,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 94.12,
+   "gap": 3,
+   "mean_s": 0.147
+  },
+  "lib/core/src/calib_schedule.cpp": {
+   "counted": 419,
+   "killed": 415,
+   "timeout": 0,
+   "survived": 4,
+   "stillborn": 5,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 99.05,
+   "gap": 0,
+   "mean_s": 0.192
+  },
+  "lib/core/src/common.cpp": {
+   "counted": 648,
+   "killed": 620,
+   "timeout": 6,
+   "survived": 22,
+   "stillborn": 2,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 96.6,
+   "gap": 0,
+   "mean_s": 0.238
+  },
+  "lib/core/src/config.cpp": {
+   "counted": 1478,
+   "killed": 1387,
+   "timeout": 2,
+   "survived": 89,
+   "stillborn": 110,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 93.98,
+   "gap": 16,
+   "mean_s": 1.062
+  },
+  "lib/core/src/event_log.cpp": {
+   "counted": 387,
+   "killed": 380,
+   "timeout": 1,
+   "survived": 6,
+   "stillborn": 3,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 98.45,
+   "gap": 0,
+   "mean_s": 0.436
+  },
+  "lib/core/src/ha_discovery.cpp": {
+   "counted": 330,
+   "killed": 265,
+   "timeout": 0,
+   "survived": 65,
+   "stillborn": 79,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 80.3,
+   "gap": 49,
+   "mean_s": 0.679
+  },
+  "lib/core/src/health_monitor.cpp": {
+   "counted": 289,
+   "killed": 281,
+   "timeout": 0,
+   "survived": 8,
+   "stillborn": 7,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 97.23,
+   "gap": 0,
+   "mean_s": 0.201
+  },
+  "lib/core/src/json_api.cpp": {
+   "counted": 293,
+   "killed": 274,
+   "timeout": 0,
+   "survived": 19,
+   "stillborn": 13,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 93.52,
+   "gap": 5,
+   "mean_s": 0.385
+  },
+  "lib/core/src/json_writer.cpp": {
+   "counted": 273,
+   "killed": 262,
+   "timeout": 0,
+   "survived": 11,
+   "stillborn": 2,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 95.97,
+   "gap": 0,
+   "mean_s": 0.374
+  },
+  "lib/core/src/legacy_import.cpp": {
+   "counted": 438,
+   "killed": 401,
+   "timeout": 4,
+   "survived": 33,
+   "stillborn": 21,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 92.47,
+   "gap": 12,
+   "mean_s": 0.312
+  },
+  "lib/core/src/line_assembler.cpp": {
+   "counted": 63,
+   "killed": 54,
+   "timeout": 9,
+   "survived": 0,
+   "stillborn": 0,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 100.0,
+   "gap": 0,
+   "mean_s": 0.836
+  },
+  "lib/core/src/link_policy.cpp": {
+   "counted": 268,
+   "killed": 264,
+   "timeout": 1,
+   "survived": 3,
+   "stillborn": 16,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 98.88,
+   "gap": 0,
+   "mean_s": 0.215
+  },
+  "lib/core/src/mqtt_topics.cpp": {
+   "counted": 474,
+   "killed": 450,
+   "timeout": 1,
+   "survived": 23,
+   "stillborn": 21,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 95.15,
+   "gap": 0,
+   "mean_s": 0.474
+  },
+  "lib/core/src/poll_planner.cpp": {
+   "counted": 237,
+   "killed": 223,
+   "timeout": 13,
+   "survived": 1,
+   "stillborn": 0,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 99.58,
+   "gap": 0,
+   "mean_s": 0.543
+  },
+  "lib/core/src/stm_codec.cpp": {
+   "counted": 794,
+   "killed": 794,
+   "timeout": 0,
+   "survived": 0,
+   "stillborn": 140,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 100.0,
+   "gap": 0,
+   "mean_s": 0.298
+  },
+  "lib/core/src/stm_flasher.cpp": {
+   "counted": 989,
+   "killed": 872,
+   "timeout": 8,
+   "survived": 109,
+   "stillborn": 68,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 88.98,
+   "gap": 60,
+   "mean_s": 1.555
+  },
+  "lib/core/src/valve_model.cpp": {
+   "counted": 466,
+   "killed": 453,
+   "timeout": 0,
+   "survived": 13,
+   "stillborn": 18,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 97.21,
+   "gap": 0,
+   "mean_s": 0.273
+  },
+  "lib/core/src/version.cpp": {
+   "counted": 205,
+   "killed": 198,
+   "timeout": 0,
+   "survived": 7,
+   "stillborn": 3,
+   "not_compiled": 0,
+   "equivalent": 0,
+   "error": 0,
+   "score": 96.59,
+   "gap": 0,
+   "mean_s": 0.139
+  }
+ },
+ "survivors": [
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 12,
+   "col": 47,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "constexpr size_t kMaxEncoded = (kMaxDecoded + 2) / 3 * 4;  // 176"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 12,
+   "col": 50,
+   "op": "arith",
+   "original": "/",
+   "replacement": "*",
+   "text": "constexpr size_t kMaxEncoded = (kMaxDecoded + 2) / 3 * 4;  // 176"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 12,
+   "col": 52,
+   "op": "const",
+   "original": "3",
+   "replacement": "2",
+   "text": "constexpr size_t kMaxEncoded = (kMaxDecoded + 2) / 3 * 4;  // 176"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 12,
+   "col": 56,
+   "op": "const",
+   "original": "4",
+   "replacement": "5",
+   "text": "constexpr size_t kMaxEncoded = (kMaxDecoded + 2) / 3 * 4;  // 176"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 21,
+   "col": 11,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "return -1;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 29,
+   "col": 14,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (len == 0 || len % 4 != 0) return false;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 29,
+   "col": 40,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (len == 0 || len % 4 != 0) return false;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 32,
+   "col": 39,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (len / 4 * 3 - pad > cap) return false;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 35,
+   "col": 22,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint32_t group = 0;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 53,
+   "col": 31,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "uint8_t diff = (la != lb) ? 1 : 0;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 54,
+   "col": 24,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (size_t i = 0; i < lb; ++i) {"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 55,
+   "col": 42,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "const uint8_t ca = (i < la) ? a[i] : 0;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 72,
+   "col": 11,
+   "op": "rel",
+   "original": "<=",
+   "replacement": "<",
+   "text": "if (len <= kSchemeLen || len - kSchemeLen > kMaxEncoded) return false;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 72,
+   "col": 25,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (len <= kSchemeLen || len - kSchemeLen > kMaxEncoded) return false;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 75,
+   "col": 23,
+   "op": "rel",
+   "original": "<=",
+   "replacement": "<",
+   "text": "if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 79,
+   "col": 14,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "size_t n = 0;"
+  },
+  {
+   "file": "lib/core/src/auth.cpp",
+   "line": 101,
+   "col": 32,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (!lockedOut_ && failures_ > 0 && elapsedMs(nowMs, windowStartMs_) >= windowMs_) failures_ = 0;"
+  },
+  {
+   "file": "lib/core/src/calib_schedule.cpp",
+   "line": 37,
+   "col": 36,
+   "op": "const",
+   "original": "1460",
+   "replacement": "1459",
+   "text": "const int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/calib_schedule.cpp",
+   "line": 37,
+   "col": 49,
+   "op": "const",
+   "original": "36524",
+   "replacement": "36523",
+   "text": "const int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/calib_schedule.cpp",
+   "line": 37,
+   "col": 63,
+   "op": "const",
+   "original": "146096",
+   "replacement": "146095",
+   "text": "const int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/calib_schedule.cpp",
+   "line": 97,
+   "col": 20,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (lastSlot_ != 0 && daysFromKey(lastSlot_) - today > 2) lastSlot_ = 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 15,
+   "col": 18,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": ": min_(minMs > 0 ? minMs : 1), max_(maxMs > min_ ? maxMs : min_), delay_(min_) {}"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 15,
+   "col": 20,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": ": min_(minMs > 0 ? minMs : 1), max_(maxMs > min_ ? maxMs : min_), delay_(min_) {}"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 15,
+   "col": 32,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": ": min_(minMs > 0 ? minMs : 1), max_(maxMs > min_ ? maxMs : min_), delay_(min_) {}"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 15,
+   "col": 32,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": ": min_(minMs > 0 ? minMs : 1), max_(maxMs > min_ ? maxMs : min_), delay_(min_) {}"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 15,
+   "col": 47,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": ": min_(minMs > 0 ? minMs : 1), max_(maxMs > min_ ? maxMs : min_), delay_(min_) {}"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 56,
+   "col": 20,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (s == nullptr || avail == 0) return 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 56,
+   "col": 32,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (s == nullptr || avail == 0) return 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 101,
+   "col": 28,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (s == nullptr) return false;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 102,
+   "col": 48,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "const size_t len = boundedLength(s, maxLen + 1);"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 105,
+   "col": 24,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (size_t i = 0; i < len; ++i) {"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 114,
+   "col": 22,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (out == nullptr || cap == 0) return 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 114,
+   "col": 32,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (out == nullptr || cap == 0) return 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 114,
+   "col": 42,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (out == nullptr || cap == 0) return 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 136,
+   "col": 14,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "while (n > 0 && out[n - 1] == '-') --n;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 139,
+   "col": 13,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (first > 0) {"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 153,
+   "col": 48,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "const size_t len = boundedLength(s, maxLen + 1);"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 182,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint64_t v = 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 191,
+   "col": 18,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint64_t mag = 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 206,
+   "col": 18,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint32_t v = 0;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 210,
+   "col": 15,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (pos >= len) return false;"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 225,
+   "col": 11,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (n < 0 || static_cast<size_t>(n) >= cap) {"
+  },
+  {
+   "file": "lib/core/src/common.cpp",
+   "line": 262,
+   "col": 11,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "return -1;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 203,
+   "col": 33,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 203,
+   "col": 55,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 203,
+   "col": 78,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "static_assert(allFit(kRootHead) && allFit(kNetFields) && allFit(kTimeFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 204,
+   "col": 41,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kSyslogFields) && allFit(kWebFields) && allFit(kMqttFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 204,
+   "col": 63,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kSyslogFields) && allFit(kWebFields) && allFit(kMqttFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 204,
+   "col": 86,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kSyslogFields) && allFit(kWebFields) && allFit(kMqttFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 205,
+   "col": 40,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kValveFields) && allFit(kTempFields) && allFit(kVoltFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 205,
+   "col": 63,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kValveFields) && allFit(kTempFields) && allFit(kVoltFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 205,
+   "col": 86,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kValveFields) && allFit(kTempFields) && allFit(kVoltFields) &&"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 206,
+   "col": 40,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "allFit(kCalibFields) && allFit(kRootTail),"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 224,
+   "col": 49,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "{nullptr, kRootHead, countOf(kRootHead), 0, 0, sizeof(Config)},"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 239,
+   "col": 49,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "{nullptr, kRootTail, countOf(kRootTail), 0, 0, sizeof(Config)},"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 344,
+   "col": 18,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "return len < f.cap && stringRuleOk(f, s, len);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 358,
+   "col": 10,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 420,
+   "col": 13,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "po.set(g, 0, field);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 480,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t i = 0; i < kTempSlotCount; ++i) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 539,
+   "col": 11,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (i < len && (s[i] == '+' || s[i] == '-')) ++i;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 557,
+   "col": 29,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char tmp[kNumberTextMax + 1];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 582,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (!isfinite(d) || d < -2147483648.0 || d > 4294967295.0) return Conv::OutOfRange;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 582,
+   "col": 41,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!isfinite(d) || d < -2147483648.0 || d > 4294967295.0) return Conv::OutOfRange;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 582,
+   "col": 46,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (!isfinite(d) || d < -2147483648.0 || d > 4294967295.0) return Conv::OutOfRange;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 636,
+   "col": 22,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "const double r = t >= 0 ? floor(t + 0.5 + eps) : -floor(-t + 0.5 + eps);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 679,
+   "col": 27,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char tmp[kHostMax + 1];  // the largest field (64 chars) incl. NUL"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 728,
+   "col": 11,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (pos > len) return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 728,
+   "col": 25,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (pos > len) return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 735,
+   "col": 17,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return segLen > 0;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 746,
+   "col": 33,
+   "op": "const",
+   "original": "3",
+   "replacement": "4",
+   "text": "memcmp(seg + n, \"Set\", 3) == 0;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 765,
+   "col": 51,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "const size_t len = boundedLength(path, kPathMax + 1);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 765,
+   "col": 53,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const size_t len = boundedLength(path, kPathMax + 1);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 765,
+   "col": 53,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "const size_t len = boundedLength(path, kPathMax + 1);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 766,
+   "col": 14,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (len == 0 || len > kPathMax) return SetResult::UnknownKey;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 766,
+   "col": 16,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (len == 0 || len > kPathMax) return SetResult::UnknownKey;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 766,
+   "col": 23,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (len == 0 || len > kPathMax) return SetResult::UnknownKey;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 788,
+   "col": 20,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "for (size_t gi = 0; gi < kGroupCount; ++gi) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 796,
+   "col": 59,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!nextSegment(path, len, pos, idx, idxLen, last) || last || idx[0] == '0' ||"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 822,
+   "col": 12,
+   "op": "const",
+   "original": "64",
+   "replacement": "63",
+   "text": "char tmp[64];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 822,
+   "col": 12,
+   "op": "const",
+   "original": "64",
+   "replacement": "65",
+   "text": "char tmp[64];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 832,
+   "col": 15,
+   "op": "const",
+   "original": "32",
+   "replacement": "31",
+   "text": "char name[32];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 832,
+   "col": 15,
+   "op": "const",
+   "original": "32",
+   "replacement": "33",
+   "text": "char name[32];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 856,
+   "col": 16,
+   "op": "const",
+   "original": "16",
+   "replacement": "17",
+   "text": "char tmp[16];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 870,
+   "col": 36,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char tmp[kOneWireIdTextLen + 1] = {0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 955,
+   "col": 14,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (pos_ >= len_ || s_[pos_] != '{') return syntaxError();"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 991,
+   "col": 68,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (len_ - pos_ < n || memcmp(s_ + pos_, word, n) != 0) return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1000,
+   "col": 13,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "return -1;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1023,
+   "col": 47,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (len_ - pos_ < 2 || s_[pos_] != '\\\\' || s_[pos_ + 1] != 'u') return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1026,
+   "col": 28,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1035,
+   "col": 15,
+   "op": "const",
+   "original": "4",
+   "replacement": "5",
+   "text": "uint8_t b[4];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1037,
+   "col": 12,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (ch < 0x80) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1075,
+   "col": 34,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (pos_ >= len_) return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1096,
+   "col": 20,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "} else if (n < cap) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1100,
+   "col": 12,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "return false;  // unterminated"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1117,
+   "col": 14,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1170,
+   "col": 38,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "} else if (c == '-' || (c >= '0' && c <= '9')) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1207,
+   "col": 18,
+   "op": "const",
+   "original": "12",
+   "replacement": "11",
+   "text": "char num[12];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1207,
+   "col": 18,
+   "op": "const",
+   "original": "12",
+   "replacement": "13",
+   "text": "char num[12];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1233,
+   "col": 23,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char path_[kPathMax + 1] = {0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1233,
+   "col": 25,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char path_[kPathMax + 1] = {0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1233,
+   "col": 25,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char path_[kPathMax + 1] = {0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1236,
+   "col": 21,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char str_[kStrMax + 1] = {0};  // current string value"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1236,
+   "col": 23,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char str_[kStrMax + 1] = {0};  // current string value"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1236,
+   "col": 23,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char str_[kStrMax + 1] = {0};  // current string value"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1236,
+   "col": 29,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "char str_[kStrMax + 1] = {0};  // current string value"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1237,
+   "col": 21,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char key_[kStrMax + 1] = {0};  // current object key (copied into path_ at once)"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1237,
+   "col": 23,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char key_[kStrMax + 1] = {0};  // current object key (copied into path_ at once)"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1237,
+   "col": 23,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char key_[kStrMax + 1] = {0};  // current object key (copied into path_ at once)"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1237,
+   "col": 29,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "char key_[kStrMax + 1] = {0};  // current object key (copied into path_ at once)"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1248,
+   "col": 41,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "PatchWalker check(json, len, nullptr, false);"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1251,
+   "col": 15,
+   "op": "const",
+   "original": "24",
+   "replacement": "23",
+   "text": "char at[24];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1251,
+   "col": 15,
+   "op": "const",
+   "original": "24",
+   "replacement": "25",
+   "text": "char at[24];"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1277,
+   "col": 67,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "ByteOut(uint8_t* out, size_t cap) : out_(out), cap_(out ? cap : 0) {}"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1288,
+   "col": 21,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "const uint8_t b[2] = {static_cast<uint8_t>(v), static_cast<uint8_t>(v >> 8)};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1292,
+   "col": 21,
+   "op": "const",
+   "original": "4",
+   "replacement": "5",
+   "text": "const uint8_t b[4] = {static_cast<uint8_t>(v), static_cast<uint8_t>(v >> 8),"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1312,
+   "col": 14,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "return false;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1319,
+   "col": 17,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t v = 0;"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1324,
+   "col": 15,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "uint8_t b[2] = {0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1324,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t b[2] = {0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1324,
+   "col": 24,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t b[2] = {0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1329,
+   "col": 15,
+   "op": "const",
+   "original": "4",
+   "replacement": "5",
+   "text": "uint8_t b[4] = {0, 0, 0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1329,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t b[4] = {0, 0, 0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1329,
+   "col": 24,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t b[4] = {0, 0, 0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1329,
+   "col": 27,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t b[4] = {0, 0, 0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1329,
+   "col": 30,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint8_t b[4] = {0, 0, 0, 0};"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1379,
+   "col": 40,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "if (f.kind == Kind::Bool && *p > 1) in.fail();"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1390,
+   "col": 13,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (n >= f.cap) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1419,
+   "col": 10,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "bo.u16(0);  // payload length, patched below"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1440,
+   "col": 71,
+   "op": "const",
+   "original": "8",
+   "replacement": "7",
+   "text": "const uint16_t schema = static_cast<uint16_t>(data[4] | (data[5] << 8));"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1440,
+   "col": 71,
+   "op": "const",
+   "original": "8",
+   "replacement": "9",
+   "text": "const uint16_t schema = static_cast<uint16_t>(data[4] | (data[5] << 8));"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1465,
+   "col": 64,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (!in.ok() || !in.atEnd() || !validateConfig(out, nullptr, 0)) {"
+  },
+  {
+   "file": "lib/core/src/config.cpp",
+   "line": 1474,
+   "col": 32,
+   "op": "const",
+   "original": "16",
+   "replacement": "17",
+   "text": "static const uint32_t kTable[16] = {"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 104,
+   "col": 13,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (n > 0) len_ += static_cast<size_t>(n) < room ? static_cast<size_t>(n) : room - 1;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 427,
+   "col": 37,
+   "op": "const",
+   "original": "1460",
+   "replacement": "1459",
+   "text": "const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 427,
+   "col": 50,
+   "op": "const",
+   "original": "36524",
+   "replacement": "36523",
+   "text": "const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 427,
+   "col": 64,
+   "op": "const",
+   "original": "146096",
+   "replacement": "146095",
+   "text": "const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 603,
+   "col": 12,
+   "op": "const",
+   "original": "128",
+   "replacement": "127",
+   "text": "char msg[128];"
+  },
+  {
+   "file": "lib/core/src/event_log.cpp",
+   "line": 603,
+   "col": 12,
+   "op": "const",
+   "original": "128",
+   "replacement": "129",
+   "text": "char msg[128];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 27,
+   "col": 27,
+   "op": "const",
+   "original": "47",
+   "replacement": "46",
+   "text": "constexpr size_t kIdMax = 47;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 27,
+   "col": 27,
+   "op": "const",
+   "original": "47",
+   "replacement": "48",
+   "text": "constexpr size_t kIdMax = 47;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 114,
+   "col": 60,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "Str(char* out, size_t cap) : out_(out), cap_(cap) { out_[0] = '\\0'; }"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 117,
+   "col": 14,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!ok_ || n >= cap_ - len_) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 117,
+   "col": 19,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (!ok_ || n >= cap_ - len_) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 117,
+   "col": 27,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "if (!ok_ || n >= cap_ - len_) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 118,
+   "col": 13,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "ok_ = false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 154,
+   "col": 40,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "if (boundedLength(src, kSegmentMax + 1) > kSegmentMax) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 154,
+   "col": 65,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (boundedLength(src, kSegmentMax + 1) > kSegmentMax) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 158,
+   "col": 32,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (*p == '/' || *p == '+' || *p == '#' || *p == ' ' || *p == '\"' || *p == '\\\\') return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 158,
+   "col": 45,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (*p == '/' || *p == '+' || *p == '#' || *p == ' ' || *p == '\"' || *p == '\\\\') return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 158,
+   "col": 58,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (*p == '/' || *p == '+' || *p == '#' || *p == ' ' || *p == '\"' || *p == '\\\\') return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 158,
+   "col": 71,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (*p == '/' || *p == '+' || *p == '#' || *p == ' ' || *p == '\"' || *p == '\\\\') return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 175,
+   "col": 24,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char objectId[kIdMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 175,
+   "col": 26,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char objectId[kIdMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 175,
+   "col": 26,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char objectId[kIdMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 176,
+   "col": 20,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char name[kIdMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 176,
+   "col": 22,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char name[kIdMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 176,
+   "col": 22,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char name[kIdMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 177,
+   "col": 19,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char uid[kIdMax + 1] = {};  // without the \"<station>.\" prefix"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 177,
+   "col": 21,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char uid[kIdMax + 1] = {};  // without the \"<station>.\" prefix"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 177,
+   "col": 21,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char uid[kIdMax + 1] = {};  // without the \"<station>.\" prefix"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 178,
+   "col": 24,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char state[kTopicMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 178,
+   "col": 26,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char state[kTopicMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 178,
+   "col": 26,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char state[kTopicMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 179,
+   "col": 26,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char command[kTopicMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 179,
+   "col": 28,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char command[kTopicMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 179,
+   "col": 28,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char command[kTopicMax + 1] = {};"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 12,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 14,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 19,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 21,
+   "op": "const",
+   "original": "4",
+   "replacement": "0",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 21,
+   "op": "const",
+   "original": "4",
+   "replacement": "3",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 21,
+   "op": "const",
+   "original": "4",
+   "replacement": "5",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 23,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 197,
+   "col": 51,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (n == 0 || n + 4 >= sizeof e.command) return false;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 198,
+   "col": 33,
+   "op": "const",
+   "original": "5",
+   "replacement": "4",
+   "text": "memcpy(e.command + n, \"/set\", 5);"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 203,
+   "col": 70,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "return buildTopic(ctx.topics, t, segment, e.state, sizeof e.state) > 0;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 203,
+   "col": 72,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "return buildTopic(ctx.topics, t, segment, e.state, sizeof e.state) > 0;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 250,
+   "col": 17,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!oid.ok() || !name.ok() || !stateTopic(ctx, d.topic, seg, e)) return Describe::Error;"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 257,
+   "col": 84,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (buildTargetCommandTopic(ctx.topics, seg, e.command, sizeof e.command) == 0) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 300,
+   "col": 17,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!oid.ok() || !name.ok() || !uid.ok() || !stateTopic(ctx, Topic::TempValue, seg, e)) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 300,
+   "col": 31,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!oid.ok() || !name.ok() || !uid.ok() || !stateTopic(ctx, Topic::TempValue, seg, e)) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 322,
+   "col": 17,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!oid.ok() || !name.ok() || !uid.ok() || !stateTopic(ctx, Topic::VoltValue, seg, e)) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 322,
+   "col": 31,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (!oid.ok() || !name.ok() || !uid.ok() || !stateTopic(ctx, Topic::VoltValue, seg, e)) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 379,
+   "col": 28,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char uid[kStationNameMax + 1 + kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 379,
+   "col": 30,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char uid[kStationNameMax + 1 + kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 379,
+   "col": 30,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char uid[kStationNameMax + 1 + kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 379,
+   "col": 41,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char uid[kStationNameMax + 1 + kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 379,
+   "col": 43,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char uid[kStationNameMax + 1 + kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 379,
+   "col": 43,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char uid[kStationNameMax + 1 + kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 384,
+   "col": 25,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char status[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 384,
+   "col": 27,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char status[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 384,
+   "col": 27,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char status[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 395,
+   "col": 17,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (e.command[0] != '\\0') jw.kv(\"command_topic\", static_cast<const char*>(e.command));"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 419,
+   "col": 26,
+   "op": "const",
+   "original": "8",
+   "replacement": "9",
+   "text": "char url[sizeof ip + 8];  // \"http://\" + ip + \"/\" + NUL"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 470,
+   "col": 39,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (!jw.complete() || jw.length() > kDiscoveryPayloadMax) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 492,
+   "col": 15,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "while (pos_ < kDropCount) {"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 504,
+   "col": 17,
+   "op": "const",
+   "original": "4",
+   "replacement": "3",
+   "text": "char number[4];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 504,
+   "col": 17,
+   "op": "const",
+   "original": "4",
+   "replacement": "5",
+   "text": "char number[4];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 514,
+   "col": 26,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char objectId[kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 514,
+   "col": 28,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char objectId[kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 514,
+   "col": 28,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char objectId[kIdMax + 1];"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 530,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "while (len > 0 && (topic[len - 1] == '\\r' || topic[len - 1] == '\\n' || topic[len - 1] == ' ' ||"
+  },
+  {
+   "file": "lib/core/src/ha_discovery.cpp",
+   "line": 537,
+   "col": 30,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint16_t pos = 0; pos < kEntityCount; ++pos) {"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 19,
+   "col": 54,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": ": out_(out), max_(out == nullptr ? 0 : (maxOut < kMaxEventsPerUpdate ? maxOut"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 128,
+   "col": 29,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const uint8_t n = count < kValveCount ? count : kValveCount;"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 181,
+   "col": 29,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (!t.baselined || total < t.total) {"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 230,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "lastRefillMs_(0),"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 243,
+   "col": 24,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "refillRemainder_ = 0;"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 274,
+   "col": 55,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (slot == nullptr || elapsedMs(nowMs, k.lastMs) > elapsedMs(nowMs, slot->lastMs)) slot = &k;"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 329,
+   "col": 44,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t i = 0; i < restarts_ && min < kMaxWaitMin; ++i) min *= kGrowth;"
+  },
+  {
+   "file": "lib/core/src/health_monitor.cpp",
+   "line": 330,
+   "col": 15,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "return (min < kMaxWaitMin ? min : kMaxWaitMin) * 60000u;"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 34,
+   "col": 44,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "return r < sizeof kNames / sizeof kNames[0] ? kNames[r] : \"unknown\";"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 41,
+   "col": 76,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "constexpr uint8_t kHealthCount = sizeof kHealthNames / sizeof kHealthNames[0];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 44,
+   "col": 12,
+   "op": "const",
+   "original": "16",
+   "replacement": "17",
+   "text": "char tmp[16];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 50,
+   "col": 12,
+   "op": "const",
+   "original": "16",
+   "replacement": "15",
+   "text": "char tmp[16];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 50,
+   "col": 12,
+   "op": "const",
+   "original": "16",
+   "replacement": "17",
+   "text": "char tmp[16];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 66,
+   "col": 12,
+   "op": "const",
+   "original": "40",
+   "replacement": "39",
+   "text": "char tmp[40];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 66,
+   "col": 12,
+   "op": "const",
+   "original": "40",
+   "replacement": "41",
+   "text": "char tmp[40];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 68,
+   "col": 43,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (formatVersion(v, tmp, sizeof tmp) > 0) {"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 88,
+   "col": 32,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char tmp[kOneWireIdTextLen + 1] = {0};"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 160,
+   "col": 14,
+   "op": "const",
+   "original": "32",
+   "replacement": "31",
+   "text": "char tmp[32];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 160,
+   "col": 14,
+   "op": "const",
+   "original": "32",
+   "replacement": "33",
+   "text": "char tmp[32];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 310,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t k = 0; k < 2; ++k) {"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 310,
+   "col": 27,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "for (uint8_t k = 0; k < 2; ++k) {"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 356,
+   "col": 29,
+   "op": "rel",
+   "original": "<=",
+   "replacement": "<",
+   "text": "const uint8_t n = p.count <= kProfileMaxSamples ? p.count : kProfileMaxSamples;"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 466,
+   "col": 14,
+   "op": "const",
+   "original": "8",
+   "replacement": "7",
+   "text": "char tmp[8];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 466,
+   "col": 14,
+   "op": "const",
+   "original": "8",
+   "replacement": "9",
+   "text": "char tmp[8];"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 610,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint32_t v = 0;"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 641,
+   "col": 26,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "} else if (pLen == 1 && p[0] == '*') {"
+  },
+  {
+   "file": "lib/core/src/json_api.cpp",
+   "line": 662,
+   "col": 30,
+   "op": "rel",
+   "original": "<=",
+   "replacement": "<",
+   "text": "if (path == nullptr || len <= kPrefixLen || memcmp(path, kPrefix, kPrefixLen) != 0 ||"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 74,
+   "col": 25,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (!put('\"')) return false;"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 82,
+   "col": 12,
+   "op": "const",
+   "original": "6",
+   "replacement": "7",
+   "text": "char tmp[6];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 99,
+   "col": 39,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (!first_[d] && !put(',')) return false;"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 160,
+   "col": 41,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (!first_[d] && !put(',')) return false;"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 191,
+   "col": 14,
+   "op": "const",
+   "original": "24",
+   "replacement": "23",
+   "text": "char tmp[24];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 191,
+   "col": 14,
+   "op": "const",
+   "original": "24",
+   "replacement": "25",
+   "text": "char tmp[24];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 208,
+   "col": 14,
+   "op": "const",
+   "original": "32",
+   "replacement": "31",
+   "text": "char tmp[32];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 208,
+   "col": 14,
+   "op": "const",
+   "original": "32",
+   "replacement": "33",
+   "text": "char tmp[32];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 229,
+   "col": 14,
+   "op": "const",
+   "original": "40",
+   "replacement": "39",
+   "text": "char tmp[40];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 229,
+   "col": 14,
+   "op": "const",
+   "original": "40",
+   "replacement": "41",
+   "text": "char tmp[40];"
+  },
+  {
+   "file": "lib/core/src/json_writer.cpp",
+   "line": 247,
+   "col": 14,
+   "op": "const",
+   "original": "6",
+   "replacement": "7",
+   "text": "char tmp[6];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 18,
+   "col": 35,
+   "op": "const",
+   "original": "11",
+   "replacement": "12",
+   "text": "constexpr size_t kLegacyNameLen = 11;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 19,
+   "col": 35,
+   "op": "const",
+   "original": "9",
+   "replacement": "10",
+   "text": "constexpr size_t kLegacyUnitLen = 9;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 20,
+   "col": 33,
+   "op": "const",
+   "original": "25",
+   "replacement": "24",
+   "text": "constexpr size_t kLegacyIdLen = 25;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 20,
+   "col": 33,
+   "op": "const",
+   "original": "25",
+   "replacement": "26",
+   "text": "constexpr size_t kLegacyIdLen = 25;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 28,
+   "col": 41,
+   "op": "const",
+   "original": "2",
+   "replacement": "1",
+   "text": "constexpr size_t kStrBuf = kSecretMax + 2;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 28,
+   "col": 41,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "constexpr size_t kStrBuf = kSecretMax + 2;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 92,
+   "col": 22,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "bool truncated = false;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 105,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "size_t stored = 0;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 127,
+   "col": 37,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "while (*part != '\\0' && n + 1 < cap) out[n++] = *part++;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 127,
+   "col": 37,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "while (*part != '\\0' && n + 1 < cap) out[n++] = *part++;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 127,
+   "col": 39,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "while (*part != '\\0' && n + 1 < cap) out[n++] = *part++;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 135,
+   "col": 12,
+   "op": "const",
+   "original": "32",
+   "replacement": "31",
+   "text": "char k[32];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 135,
+   "col": 12,
+   "op": "const",
+   "original": "32",
+   "replacement": "33",
+   "text": "char k[32];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 143,
+   "col": 40,
+   "op": "bool",
+   "original": "true",
+   "replacement": "false",
+   "text": "return setConfigValue(c_, path, v, true) == SetResult::Ok;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 171,
+   "col": 13,
+   "op": "const",
+   "original": "16",
+   "replacement": "17",
+   "text": "char ip[16];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 241,
+   "col": 41,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "setInt(\"mqtt.publishIntervalS\", v < 2 ? 2 : (v > 3600 ? 3600 : v));"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 241,
+   "col": 43,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "setInt(\"mqtt.publishIntervalS\", v < 2 ? 2 : (v > 3600 ? 3600 : v));"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 241,
+   "col": 54,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "setInt(\"mqtt.publishIntervalS\", v < 2 ? 2 : (v > 3600 ? 3600 : v));"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 241,
+   "col": 56,
+   "op": "const",
+   "original": "3600",
+   "replacement": "3599",
+   "text": "setInt(\"mqtt.publishIntervalS\", v < 2 ? 2 : (v > 3600 ? 3600 : v));"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 310,
+   "col": 15,
+   "op": "const",
+   "original": "24",
+   "replacement": "23",
+   "text": "char path[24];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 310,
+   "col": 15,
+   "op": "const",
+   "original": "24",
+   "replacement": "25",
+   "text": "char path[24];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 322,
+   "col": 15,
+   "op": "const",
+   "original": "24",
+   "replacement": "23",
+   "text": "char path[24];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 322,
+   "col": 15,
+   "op": "const",
+   "original": "24",
+   "replacement": "25",
+   "text": "char path[24];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 364,
+   "col": 19,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "off = off < 0 ? -100 : 100;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 364,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "off = off < 0 ? -100 : 100;"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 377,
+   "col": 17,
+   "op": "const",
+   "original": "24",
+   "replacement": "23",
+   "text": "char path[24];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 377,
+   "col": 17,
+   "op": "const",
+   "original": "24",
+   "replacement": "25",
+   "text": "char path[24];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 409,
+   "col": 17,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "uint8_t b[1];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 409,
+   "col": 17,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "uint8_t b[1];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 450,
+   "col": 43,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (m.mode != MqttMode::Off && m.host[0] == '\\0') {"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 466,
+   "col": 15,
+   "op": "const",
+   "original": "40",
+   "replacement": "0",
+   "text": "char path[40];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 466,
+   "col": 15,
+   "op": "const",
+   "original": "40",
+   "replacement": "39",
+   "text": "char path[40];"
+  },
+  {
+   "file": "lib/core/src/legacy_import.cpp",
+   "line": 466,
+   "col": 15,
+   "op": "const",
+   "original": "40",
+   "replacement": "41",
+   "text": "char path[40];"
+  },
+  {
+   "file": "lib/core/src/link_policy.cpp",
+   "line": 63,
+   "col": 30,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (size_t i = pos + 1; i < count_; ++i) queue_[i - 1] = queue_[i];"
+  },
+  {
+   "file": "lib/core/src/link_policy.cpp",
+   "line": 156,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (current_.attempts < 0xFF) ++current_.attempts;"
+  },
+  {
+   "file": "lib/core/src/link_policy.cpp",
+   "line": 278,
+   "col": 9,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (n > 0 && n >= params_.downAfter) return LinkState::Down;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 21,
+   "col": 68,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "Builder(char* out, size_t cap) : out_(out), cap_(cap), ok_(cap > 0) {"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 40,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (cap_ > 0) out_[0] = '\\0';"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 53,
+   "col": 11,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (cap > 0) out[0] = '\\0';"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 74,
+   "col": 42,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "len = boundedLength(seg, kSegmentMax + 1);"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 76,
+   "col": 24,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (size_t i = 0; i < len; ++i) {"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 134,
+   "col": 23,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char main[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 134,
+   "col": 25,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char main[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 134,
+   "col": 25,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char main[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 141,
+   "col": 17,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "size_t sl = 0;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 162,
+   "col": 58,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (named && !isSafeName(ctx.station, kStationNameMax, false)) b.fail();"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 180,
+   "col": 38,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "if (!isSafeName(name, kSegmentMax, false)) return emptyOut(out, cap);"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 183,
+   "col": 24,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (size_t i = 0; i < len; ++i) out[i] = name[i] == ' ' ? '_' : name[i];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 222,
+   "col": 34,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (topic == nullptr || len == 0) return -1;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 228,
+   "col": 23,
+   "op": "arith",
+   "original": "+",
+   "replacement": "-",
+   "text": "char main[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 228,
+   "col": 25,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "char main[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 228,
+   "col": 25,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "char main[kTopicMax + 1];"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 238,
+   "col": 11,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (len < ml + vl || memcmp(topic, mp, ml) != 0 || memcmp(topic + ml, kValves, vl) != 0) {"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 259,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "uint32_t n = 0;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 260,
+   "col": 64,
+   "op": "log",
+   "original": "||",
+   "replacement": "&&",
+   "text": "if (seg[0] == '0' || !parseUint(seg, segLen, kValveCount, n) || n == 0) return -1;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 285,
+   "col": 14,
+   "op": "const",
+   "original": "100",
+   "replacement": "101",
+   "text": "if (v <= 100) v = v * 10 + static_cast<uint32_t>(s[i] - '0');"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 367,
+   "col": 28,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (p_.publishIntervalMs < 2000) p_.publishIntervalMs = 2000;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 367,
+   "col": 30,
+   "op": "const",
+   "original": "2000",
+   "replacement": "2001",
+   "text": "if (p_.publishIntervalMs < 2000) p_.publishIntervalMs = 2000;"
+  },
+  {
+   "file": "lib/core/src/mqtt_topics.cpp",
+   "line": 368,
+   "col": 21,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (p_.minDelayMs > p_.publishIntervalMs) p_.minDelayMs = p_.publishIntervalMs;"
+  },
+  {
+   "file": "lib/core/src/poll_planner.cpp",
+   "line": 36,
+   "col": 13,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (valve >= kValveCount) return;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 31,
+   "col": 36,
+   "op": "const",
+   "original": "256",
+   "replacement": "255",
+   "text": "constexpr size_t kAppReadPerStep = 256;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 31,
+   "col": 36,
+   "op": "const",
+   "original": "256",
+   "replacement": "257",
+   "text": "constexpr size_t kAppReadPerStep = 256;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 58,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "default: return 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 69,
+   "col": 33,
+   "op": "const",
+   "original": "16",
+   "replacement": "17",
+   "text": "static const uint32_t kNibble[16] = {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 90,
+   "col": 41,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (!sc.versionFound && sc.runLen > 0 && sc.runLen < sizeof sc.run) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 90,
+   "col": 43,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (!sc.versionFound && sc.runLen > 0 && sc.runLen < sizeof sc.run) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 90,
+   "col": 58,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (!sc.versionFound && sc.runLen > 0 && sc.runLen < sizeof sc.run) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 100,
+   "col": 37,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "if (sc.runLen < sizeof sc.run - 1) sc.run[sc.runLen] = static_cast<char>(c);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 100,
+   "col": 39,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "if (sc.runLen < sizeof sc.run - 1) sc.run[sc.runLen] = static_cast<char>(c);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 101,
+   "col": 21,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (sc.runLen < sizeof sc.run) ++sc.runLen;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 130,
+   "col": 28,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if ((pc & 1u) == 0 || pc < kFlashBase || pc >= kFlashBase + size) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 149,
+   "col": 20,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "(image.hw[0] == '\\0' || strcmp(image.hw, app.hw) == 0);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 154,
+   "col": 60,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "return static_cast<uint32_t>((bytes * 11u * 1000u + baud - 1u) / baud);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 243,
+   "col": 27,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const size_t n = left < kBlockSize ? left : kBlockSize;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 255,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t i = 0; i < sizeof kSectorSize / sizeof kSectorSize[0]; ++i) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 255,
+   "col": 46,
+   "op": "arith",
+   "original": "/",
+   "replacement": "*",
+   "text": "for (uint8_t i = 0; i < sizeof kSectorSize / sizeof kSectorSize[0]; ++i) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 255,
+   "col": 67,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "for (uint8_t i = 0; i < sizeof kSectorSize / sizeof kSectorSize[0]; ++i) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 259,
+   "col": 10,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "return 0;  // unreachable: the sectors add up to kMaxImage"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 274,
+   "col": 18,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "waitLimitMs_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 275,
+   "col": 12,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "block_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 276,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "verifyCrc_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 277,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "syncTries_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 279,
+   "col": 12,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "rxLen_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 296,
+   "col": 23,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "abortRequested_ = false;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 352,
+   "col": 14,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "touched_ = false;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 353,
+   "col": 14,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "cleanup_ = false;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 386,
+   "col": 9,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 386,
+   "col": 11,
+   "op": "const",
+   "original": "100",
+   "replacement": "101",
+   "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 386,
+   "col": 11,
+   "op": "const",
+   "original": "100",
+   "replacement": "99",
+   "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 386,
+   "col": 20,
+   "op": "const",
+   "original": "100",
+   "replacement": "0",
+   "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 386,
+   "col": 20,
+   "op": "const",
+   "original": "100",
+   "replacement": "101",
+   "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 386,
+   "col": 20,
+   "op": "const",
+   "original": "100",
+   "replacement": "99",
+   "text": "if (p > 100) p = 100;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 409,
+   "col": 14,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (rxLen_ >= sizeof rx_) return;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 410,
+   "col": 33,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "const size_t cap = sizeof rx_ - rxLen_;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 412,
+   "col": 15,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "rxLen_ += n < cap ? n : cap;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 422,
+   "col": 12,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (skip > 0) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 423,
+   "col": 37,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "memmove(rx_, rx_ + skip, rxLen_ - skip);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 424,
+   "col": 12,
+   "op": "asgn",
+   "original": "-=",
+   "replacement": "+=",
+   "text": "rxLen_ -= skip;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 427,
+   "col": 14,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (rxLen_ > 0 && rxLen_ >= need) return Resp::Ack;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 433,
+   "col": 47,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "return (st_.image.paddedSize + kBlockSize - 1) / kBlockSize;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 438,
+   "col": 15,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "return left < kBlockSize ? left : kBlockSize;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 446,
+   "col": 30,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "const uint32_t avail = off >= size ? 0 : (size - off < len ? size - off : len);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 446,
+   "col": 40,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "const uint32_t avail = off >= size ? 0 : (size - off < len ? size - off : len);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 446,
+   "col": 56,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const uint32_t avail = off >= size ? 0 : (size - off < len ? size - off : len);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 447,
+   "col": 13,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (avail > 0 && (img_ == nullptr || !img_->read(off, tx_ + 1, avail))) return false;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 464,
+   "col": 12,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "sub_ = 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 468,
+   "col": 67,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint32_t i = 0; i < kValidateChunksPerStep && scan_.offset < size; ++i) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 470,
+   "col": 27,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const size_t n = left < kBlockSize ? left : kBlockSize;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 500,
+   "col": 14,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "rxLen_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 503,
+   "col": 12,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "sub_ = 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 504,
+   "col": 8,
+   "op": "negcond",
+   "original": "(",
+   "replacement": "(!",
+   "text": "if (boot) setPercent(2);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 504,
+   "col": 26,
+   "op": "const",
+   "original": "2",
+   "replacement": "0",
+   "text": "if (boot) setPercent(2);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 504,
+   "col": 26,
+   "op": "const",
+   "original": "2",
+   "replacement": "1",
+   "text": "if (boot) setPercent(2);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 518,
+   "col": 17,
+   "op": "bool",
+   "original": "false",
+   "replacement": "true",
+   "text": "lineDrop_ = false;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 529,
+   "col": 14,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "rxLen_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 537,
+   "col": 12,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "sub_ = 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 543,
+   "col": 16,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "rxLen_ = 0;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 553,
+   "col": 38,
+   "op": "arith",
+   "original": "-",
+   "replacement": "+",
+   "text": "const size_t keep = sizeof kBeefit - 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 553,
+   "col": 40,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const size_t keep = sizeof kBeefit - 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 554,
+   "col": 6,
+   "op": "negcond",
+   "original": "(",
+   "replacement": "(!",
+   "text": "if (rxLen_ > keep) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 554,
+   "col": 14,
+   "op": "rel",
+   "original": ">",
+   "replacement": "<=",
+   "text": "if (rxLen_ > keep) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 554,
+   "col": 14,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (rxLen_ > keep) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 570,
+   "col": 46,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "const uint8_t attempts = opt_.syncAttempts > 0 ? opt_.syncAttempts : 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 570,
+   "col": 48,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "const uint8_t attempts = opt_.syncAttempts > 0 ? opt_.syncAttempts : 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 570,
+   "col": 72,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const uint8_t attempts = opt_.syncAttempts > 0 ? opt_.syncAttempts : 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 575,
+   "col": 12,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "sub_ = 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 578,
+   "col": 35,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const Resp r = waitReply(nowMs, 1);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 603,
+   "col": 17,
+   "op": "const",
+   "original": "2",
+   "replacement": "0",
+   "text": "size_t need = 2;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 603,
+   "col": 17,
+   "op": "const",
+   "original": "2",
+   "replacement": "1",
+   "text": "size_t need = 2;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 603,
+   "col": 17,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "size_t need = 2;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 619,
+   "col": 14,
+   "op": "const",
+   "original": "2",
+   "replacement": "0",
+   "text": "sub_ = 2;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 619,
+   "col": 14,
+   "op": "const",
+   "original": "2",
+   "replacement": "1",
+   "text": "sub_ = 2;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 645,
+   "col": 35,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const Resp r = waitReply(nowMs, 1);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 653,
+   "col": 19,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "uint8_t frame[2 + 2 * 8 + 1];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 653,
+   "col": 23,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "uint8_t frame[2 + 2 * 8 + 1];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 653,
+   "col": 27,
+   "op": "const",
+   "original": "8",
+   "replacement": "9",
+   "text": "uint8_t frame[2 + 2 * 8 + 1];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 653,
+   "col": 31,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "uint8_t frame[2 + 2 * 8 + 1];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 662,
+   "col": 21,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "for (size_t i = 0; i < len; ++i) cs ^= frame[i];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 665,
+   "col": 12,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "sub_ = 2;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 689,
+   "col": 35,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const Resp r = waitReply(nowMs, 1);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 705,
+   "col": 12,
+   "op": "const",
+   "original": "3",
+   "replacement": "4",
+   "text": "sub_ = 3;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 718,
+   "col": 16,
+   "op": "const",
+   "original": "75",
+   "replacement": "0",
+   "text": "setPercent(75);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 718,
+   "col": 16,
+   "op": "const",
+   "original": "75",
+   "replacement": "74",
+   "text": "setPercent(75);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 736,
+   "col": 57,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "const Resp r = waitReply(nowMs, sub_ == 3 ? len + 1 : 1);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 765,
+   "col": 35,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "const uint32_t imageBytes = off >= size ? 0 : (size - off < len ? size - off : len);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 765,
+   "col": 45,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "const uint32_t imageBytes = off >= size ? 0 : (size - off < len ? size - off : len);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 765,
+   "col": 61,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const uint32_t imageBytes = off >= size ? 0 : (size - off < len ? size - off : len);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 778,
+   "col": 14,
+   "op": "const",
+   "original": "95",
+   "replacement": "0",
+   "text": "setPercent(95);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 778,
+   "col": 14,
+   "op": "const",
+   "original": "95",
+   "replacement": "94",
+   "text": "setPercent(95);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 782,
+   "col": 15,
+   "op": "const",
+   "original": "64",
+   "replacement": "63",
+   "text": "uint8_t buf[64];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 782,
+   "col": 15,
+   "op": "const",
+   "original": "64",
+   "replacement": "65",
+   "text": "uint8_t buf[64];"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 784,
+   "col": 17,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "while (budget > 0 && active()) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 784,
+   "col": 19,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "while (budget > 0 && active()) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 784,
+   "col": 21,
+   "op": "log",
+   "original": "&&",
+   "replacement": "||",
+   "text": "while (budget > 0 && active()) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 785,
+   "col": 32,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "const size_t want = budget < sizeof buf ? budget : sizeof buf;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 788,
+   "col": 13,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (got > want) got = want;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 789,
+   "col": 12,
+   "op": "asgn",
+   "original": "-=",
+   "replacement": "+=",
+   "text": "budget -= got;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 793,
+   "col": 34,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (!lineDrop_ && rxLen_ > 0) onAppLine(nowMs);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 793,
+   "col": 36,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (!lineDrop_ && rxLen_ > 0) onAppLine(nowMs);"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 796,
+   "col": 51,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "} else if (c >= 0x20 && c <= 0x7E && rxLen_ < sizeof rx_) {"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 820,
+   "col": 10,
+   "op": "const",
+   "original": "1",
+   "replacement": "2",
+   "text": "sub_ = 1;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 828,
+   "col": 9,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (n < 6 || memcmp(s, \"gvers \", 6) != 0) return;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 828,
+   "col": 11,
+   "op": "const",
+   "original": "6",
+   "replacement": "0",
+   "text": "if (n < 6 || memcmp(s, \"gvers \", 6) != 0) return;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 828,
+   "col": 11,
+   "op": "const",
+   "original": "6",
+   "replacement": "5",
+   "text": "if (n < 6 || memcmp(s, \"gvers \", 6) != 0) return;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 828,
+   "col": 11,
+   "op": "const",
+   "original": "6",
+   "replacement": "7",
+   "text": "if (n < 6 || memcmp(s, \"gvers \", 6) != 0) return;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 829,
+   "col": 14,
+   "op": "const",
+   "original": "6",
+   "replacement": "5",
+   "text": "size_t p = 6;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 830,
+   "col": 12,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "while (p < n && s[p] == ' ') ++p;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 832,
+   "col": 12,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "while (q < n && s[q] != ' ') ++q;"
+  },
+  {
+   "file": "lib/core/src/stm_flasher.cpp",
+   "line": 836,
+   "col": 40,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "if (!opt_.force && st_.image.version[0] != '\\0') {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 111,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t i = 0; i < kValveCount; ++i) {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 125,
+   "col": 13,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (valve >= kValveCount || pos > 100 || !isActive(valve)) return false;"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 289,
+   "col": 17,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "int16_t raw[2] = {kTempUnassigned, kTempUnassigned};"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 290,
+   "col": 27,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t k = 0; k < 2; ++k) {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 290,
+   "col": 29,
+   "op": "const",
+   "original": "2",
+   "replacement": "3",
+   "text": "for (uint8_t k = 0; k < 2; ++k) {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 305,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t n = 0; n < kValveCount; ++n) {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 324,
+   "col": 24,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (v.pushAttempts < UINT8_MAX) ++v.pushAttempts;"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 339,
+   "col": 13,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (valve >= kValveCount || v_[valve].sync != TargetSync::AwaitAck) return;"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 343,
+   "col": 22,
+   "op": "rel",
+   "original": ">",
+   "replacement": ">=",
+   "text": "if (v.pushAttempts > 0) --v.pushAttempts;"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 349,
+   "col": 13,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (valve >= kValveCount || v_[valve].sync != TargetSync::AwaitAck) return;"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 357,
+   "col": 13,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (valve >= kValveCount || v_[valve].sync != TargetSync::AwaitAck) return;"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 365,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t i = 0; i < kValveCount; ++i) {"
+  },
+  {
+   "file": "lib/core/src/valve_model.cpp",
+   "line": 390,
+   "col": 25,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "for (uint8_t i = 0; i < kValveCount; ++i) {"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 55,
+   "col": 51,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (!readComponent(s, len, pos, v.major) || pos >= len || s[pos++] != '.') return false;"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 56,
+   "col": 51,
+   "op": "rel",
+   "original": ">=",
+   "replacement": ">",
+   "text": "if (!readComponent(s, len, pos, v.minor) || pos >= len || s[pos++] != '.') return false;"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 77,
+   "col": 23,
+   "op": "const",
+   "original": "1",
+   "replacement": "0",
+   "text": "for (size_t i = 1; i < hwLen; ++i) v.hw[i - 1] = lastUnderscore[i];"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 90,
+   "col": 42,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (a.major != b.major) return a.major < b.major ? -1 : 1;"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 91,
+   "col": 42,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (a.minor != b.minor) return a.minor < b.minor ? -1 : 1;"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 92,
+   "col": 42,
+   "op": "rel",
+   "original": "<",
+   "replacement": "<=",
+   "text": "if (a.patch != b.patch) return a.patch < b.patch ? -1 : 1;"
+  },
+  {
+   "file": "lib/core/src/version.cpp",
+   "line": 104,
+   "col": 31,
+   "op": "const",
+   "original": "0",
+   "replacement": "1",
+   "text": "v.hw[0] ? \"_\" : \"\", v.hw);"
+  }
+ ]
+}
