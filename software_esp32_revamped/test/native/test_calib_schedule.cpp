@@ -219,6 +219,7 @@ TEST_CASE("calib: fires once in the window on a selected day") {
   CHECK(s.lastSlot() == 0);
   CHECK(s.evaluate(c, at(2026, 9, 23, 3, 14, 59), kUp) == CalibDecision::None);
   CHECK(s.evaluate(c, at(2026, 9, 23, 3, 15, 0), kUp) == CalibDecision::Fire);
+  REQUIRE(s.onResult(true, kUp));
   CHECK(s.lateMinutes() == 0);
   CHECK(s.lastSlot() == 20260923u);
   CHECK(s.evaluate(c, at(2026, 9, 23, 3, 15, 10), kUp) == CalibDecision::None);
@@ -229,6 +230,7 @@ TEST_CASE("calib: fires once in the window on a selected day") {
   CHECK(s.lastSlot() == 20260923u);
   // Sunday is.
   CHECK(s.evaluate(c, at(2026, 9, 27, 3, 16), kUp) == CalibDecision::Fire);
+  REQUIRE(s.onResult(true, kUp));
   CHECK(s.lateMinutes() == 1);
   CHECK(s.lastSlot() == 20260927u);
 }
@@ -238,6 +240,7 @@ TEST_CASE("calib: grace window boundaries") {
   {
     CalibScheduler s;
     CHECK(s.evaluate(c, at(2026, 9, 23, 5, 14, 59), kUp) == CalibDecision::Fire);  // +119
+    REQUIRE(s.onResult(true, kUp));
     CHECK(s.lateMinutes() == 119);
   }
   {
@@ -249,6 +252,7 @@ TEST_CASE("calib: grace window boundaries") {
     CalibScheduler s(10);
     CHECK(s.evaluate(c, at(2026, 9, 23, 3, 25), kUp) == CalibDecision::None);
     CHECK(s.evaluate(c, at(2026, 9, 23, 3, 24), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
     CHECK(s.lateMinutes() == 9);
   }
   {
@@ -256,10 +260,12 @@ TEST_CASE("calib: grace window boundaries") {
     CHECK(s.evaluate(c, at(2026, 9, 23, 3, 16), kUp) == CalibDecision::None);
     CHECK(s.evaluate(c, at(2026, 9, 23, 3, 14), kUp) == CalibDecision::None);
     CHECK(s.evaluate(c, at(2026, 9, 23, 3, 15, 59), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
   }
   {
     CalibScheduler s(1440);
     CHECK(s.evaluate(c, at(2026, 9, 23, 23, 59), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
     CHECK(s.lateMinutes() == 20 * 60 + 44);
   }
   {
@@ -268,6 +274,7 @@ TEST_CASE("calib: grace window boundaries") {
     const CalibScheduleConfig late = cfg(kWed, 23, 30);
     CHECK(s.evaluate(late, at(2026, 9, 24, 0, 10), kUp) == CalibDecision::None);
     CHECK(s.evaluate(late, at(2026, 9, 23, 23, 59), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
     CHECK(s.lateMinutes() == 29);
   }
 }
@@ -305,20 +312,24 @@ TEST_CASE("calib: disabled schedules never fire") {
   // Bit 7 is ignored, the other bits still count.
   CalibScheduler s;
   CHECK(s.evaluate(cfg(0x80 | kWed, 1), at(2026, 9, 23, 1, 0), kUp) == CalibDecision::Fire);
+  REQUIRE(s.onResult(true, kUp));
   // Boundaries that are still enabled.
   CalibScheduler s2;
   CHECK(s2.evaluate(cfg(kAll, 23, 59), at(2026, 9, 23, 23, 59), kUp) == CalibDecision::Fire);
+  REQUIRE(s2.onResult(true, kUp));
 }
 
 TEST_CASE("calib: reboot inside the window does not fire again") {
   const CalibScheduleConfig c = cfg(kWed, 3);
   CalibScheduler a;
   CHECK(a.evaluate(c, at(2026, 9, 23, 3, 1), kUp) == CalibDecision::Fire);
+  REQUIRE(a.onResult(true, kUp));
   CalibScheduler b;  // after reboot
   b.restoreLastSlot(a.lastSlot());
   CHECK(b.lastSlot() == 20260923u);
   CHECK(b.evaluate(c, at(2026, 9, 23, 3, 30), kUp) == CalibDecision::None);
   CHECK(b.evaluate(c, at(2026, 9, 30, 3, 30), kUp) == CalibDecision::Fire);
+  REQUIRE(b.onResult(true, kUp));
 }
 
 TEST_CASE("calib: restoring an invalid key is ignored") {
@@ -344,10 +355,12 @@ TEST_CASE("calib: DST spring forward fires after the gap, fall back fires once")
   CalibScheduler s;
   CHECK(s.evaluate(c, at(2026, 3, 29, 1, 59, 50), kUp) == CalibDecision::None);
   CHECK(s.evaluate(c, at(2026, 3, 29, 3, 0, 0), kUp) == CalibDecision::Fire);
+  REQUIRE(s.onResult(true, kUp));
   CHECK(s.lateMinutes() == 30);
 
   CalibScheduler f;
   CHECK(f.evaluate(c, at(2026, 10, 25, 2, 30), kUp) == CalibDecision::Fire);
+  REQUIRE(f.onResult(true, kUp));
   CHECK(f.evaluate(c, at(2026, 10, 25, 2, 59), kUp) == CalibDecision::None);
   // Clock goes back to 02:00 and passes 02:30 a second time.
   for (int m = 0; m < 60; ++m) {
@@ -361,16 +374,19 @@ TEST_CASE("calib: NTP steps and stale bookings") {
   SUBCASE("a step back to an earlier date never re-fires a booked date") {
     CalibScheduler s;
     CHECK(s.evaluate(c, at(2026, 9, 23, 3, 0), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
     CHECK(s.evaluate(c, at(2026, 9, 22, 3, 0), kUp) == CalibDecision::None);  // 1 day back
     CHECK(s.lastSlot() == 20260923u);
     CHECK(s.evaluate(c, at(2026, 9, 21, 3, 0), kUp) == CalibDecision::None);  // 2 days back
     CHECK(s.lastSlot() == 20260923u);
     CHECK(s.evaluate(c, at(2026, 9, 24, 3, 0), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
   }
   SUBCASE("a booking more than 2 days in the future is discarded") {
     CalibScheduler s;
     s.restoreLastSlot(20260930);  // written while the clock was wrong
     CHECK(s.evaluate(c, at(2026, 9, 27, 3, 0), kUp) == CalibDecision::Fire);
+    REQUIRE(s.onResult(true, kUp));
     CHECK(s.lastSlot() == 20260927u);
   }
   SUBCASE("exactly 2 days ahead is kept") {
@@ -416,6 +432,7 @@ TEST_CASE("calib: missing time is reported once per boot after the delay") {
   CHECK(s.lastSlot() == 0);
   // Once time is valid the schedule works normally.
   CHECK(s.evaluate(c, at(2026, 9, 23, 3, 0), 99999999) == CalibDecision::Fire);
+  REQUIRE(s.onResult(true, 99999999));
 
   CalibScheduler g(120, 3600000);
   CHECK(g.evaluate(c, garbage, 3600001) == CalibDecision::SkippedNoTime);
@@ -430,18 +447,17 @@ TEST_CASE("calib: missing time is reported once per boot after the delay") {
   CHECK(off.evaluate(c, none, 20) == CalibDecision::SkippedNoTime);
 }
 
-TEST_CASE("calib: lateMinutes is only meaningful after Fire") {
+TEST_CASE("calib: lateMinutes stays the one of the last firing") {
   CalibScheduler s;
   const CalibScheduleConfig c = cfg(kAll, 3);
+  CHECK(s.lateMinutes() == 0);
   CHECK(s.evaluate(c, at(2026, 9, 23, 4, 5), kUp) == CalibDecision::Fire);
   CHECK(s.lateMinutes() == 65);
+  REQUIRE(s.onResult(true, kUp));
   CHECK(s.evaluate(c, at(2026, 9, 23, 4, 6), kUp) == CalibDecision::None);
-  CHECK(s.lateMinutes() == 0);
+  CHECK(s.lateMinutes() == 65);
   CHECK(s.evaluate(c, at(2026, 9, 24, 3, 7), kUp) == CalibDecision::Fire);
   CHECK(s.lateMinutes() == 7);
-  LocalTime none;
-  CHECK(s.evaluate(c, none, kUp) == CalibDecision::None);
-  CHECK(s.lateMinutes() == 0);
 }
 
 TEST_CASE("calib: next slot") {
@@ -452,6 +468,7 @@ TEST_CASE("calib: next slot") {
   CHECK(s.nextSlot(c, at(2026, 9, 23, 2, 0)) == 20260927u);
   CHECK(s.nextSlot(c, at(2026, 9, 22, 23, 0)) == 20260923u);
   CHECK(s.evaluate(c, at(2026, 9, 23, 0, 30), kUp) == CalibDecision::Fire);
+  REQUIRE(s.onResult(true, kUp));
   CHECK(s.nextSlot(c, at(2026, 9, 23, 0, 31)) == 20260927u);
   // Month and year roll-over.
   CalibScheduler t;
@@ -501,6 +518,7 @@ TEST_CASE("calib: a long run fires exactly once per selected date" * doctest::te
       }
       const CalibDecision dec = s.evaluate(c, at(y, m, d, minute / 60, minute % 60), kUp);
       if (dec == CalibDecision::Fire) {
+        REQUIRE(s.onResult(true, kUp));
         ++fires;
         ++firedToday;
         persisted = s.lastSlot();

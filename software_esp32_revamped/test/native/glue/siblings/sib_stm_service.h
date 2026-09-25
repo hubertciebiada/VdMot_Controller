@@ -7,14 +7,32 @@
 
 #include <vector>
 
+#include <vdm/calib_schedule.h>
+#include <vdm/lease_client.h>
+#include <vdm/target_store.h>
+
 #include "stm_service.h"
 
 namespace sib {
 
 struct StmService {
+  // scripted
+  vdm::PersistedTargets bootTargets;
+  vdm::RestoreSource bootSource = vdm::RestoreSource::None;
+  bool bootLeaseValid = false;
+  vdm::LeaseClient::Snapshot bootLease;
+  // recorded
   int begins = 0;
   std::vector<uint32_t> services;
   int restartFlushes = 0;
+  std::vector<vdm::PersistedTargets> storedTargets;
+  std::vector<vdm::LeaseClient::Snapshot> leaseRecords;
+  struct CalibResult {
+    uint16_t attempt;
+    bool ok;
+    vdm::CalibFailure reason;
+  };
+  std::vector<CalibResult> calibResults;
 };
 StmService& stmService();
 
