@@ -77,7 +77,8 @@ struct StatusSnapshot {
   LeaseStatus lease;                // stm.lease; null while lease.mode is None
   bool haveLearnTime = false;       // stm.learnTime seconds, else null
   uint32_t learnTimeS = 0;
-  int64_t nextCalibEpoch = 0;       // calibration.next local ISO time, 0 = null
+  int64_t nextCalibEpoch = 0;       // calibration.next, 0 = null
+  LocalTime nextCalibLocal;         // nextCalibEpoch as local time (glue: localtime_r)
   uint8_t configSource = 0;         // config.source: stored, imported, defaults,
                                     // defaults_after_error, backup (storage LoadSource)
   uint32_t configRepairs = 0;       // config.repairs (RepairBit mask)
@@ -95,6 +96,14 @@ struct StatusSnapshot {
 //         "espRx":{"overflow":..,"malformed":..}},
 //  "calibration":{"active":..,"lastScheduled":..,"nextSlot":..},
 //  "auth":..,"lastEventSeq":..}
+// 2.1 members: root "station" first; net.trial null|{"remainS":n};
+// mqtt.clientId, mqtt.haStatus; stm.support, stm.lease null (mode none)|
+// {"mode","state","remainS","timeoutMin","failsafeMask","regulator",
+// "regulatorLostS","configSynced","configFailed","configTrusted"},
+// stm.learnTime s|null, stm.status v3 members (gstax) when status.v3;
+// calibration.next local ISO time|null (nextCalibEpoch > 0 and
+// nextCalibLocal.valid); root "config":{"source":..,"repairs":..,
+// "newerSchema":..} and "importReport" last.
 // Unknown values are null: esp.build and stm.build 0, time.epoch/local
 // while !timeValid, lastSync 0, net.rssi unless on WiFi, stm.proto 0, an
 // invalid stm.version, hwId/chip for hwId 0, lastScheduled <= 0, nextSlot 0.
@@ -126,8 +135,12 @@ struct ValveView {
 // One entry per view (the glue passes all 12), idx = array position + 1.
 // "health" lists HealthFlag names in bit order: "blocked","failed","noValve",
 // "calibRetries","earlyStop","cmdRejected","stale","targetUnconfirmed",
-// "tempFailed","failsafe","strokeShort". "sensors" lists only assigned slots (slot != 0). "peak" is
-// in mA with one decimal. A null state/config pointer renders as empty.
+// "tempFailed","failsafe","strokeShort". "sensors" lists only assigned slots (slot != 0), each
+// with "sensor":1|2 (its temp1/temp2 position) first. "peak" is in mA with one decimal.
+// 2.1 members: ext."v3" null|{"flags":[stmFlagName..],"fault":"<valveFaultName>","drive":..,
+// "retryS":..,"retries":..} (state.hasV3), then after "ext": "failsafe":{"state":
+// failsafeKindName,"pct":fsPct|null (hold)}, "calibrationEnd":"YYYY-MM-DDTHH:MM:SS"|null.
+// A null state/config pointer renders as empty.
 bool writeValvesJson(JsonWriter& jw, const ValveView* views, uint8_t count, uint32_t nowMs);
 
 // {"valve":n,"count":k,"samples":[[count,current_mA_x10],...]}
@@ -164,11 +177,14 @@ bool writeEventsJson(JsonWriter& jw, const Event* events, size_t count, uint32_t
 //  "chipId":"0x431","chipName":"..","bootloaderVersion":"3.1","attempt":..,
 //  "error":null|{"code":"nack","phase":"writing","addr":"0x08000100"},
 //  "startedMs":..,"finishedMs":..,"image":{"name":..,"size":..,"crc32":"0x..","version":".."},
-//  "appVersion":".."|null}
+//  "appVersion":".."|null,"board":"ok","boardHw":"C2"|null,"manualReset":..,"baud":..,
+//  "pending":..}; image gains "hw":"C2"|null (image.hwTag).
 // chipId/chipName null before GetId; bootloaderVersion "<hi>.<lo>" nibbles
 // of the GET byte (0x31 -> "3.1"), null when 0; "image" null when neither a
 // name nor a validated image is known; image.version null when empty.
-bool writeFlashStatusJson(JsonWriter& jw, const FlashStatus& s, const char* imageName);
+// `pending`: a flash waits for the STM EEPROM (StmSnapshot::flashPending).
+bool writeFlashStatusJson(JsonWriter& jw, const FlashStatus& s, const char* imageName,
+                          bool pending = false);
 
 // Motor/STM parameters: {"motor":{"lowC":..,"highC":..,"startOnPower":..,
 // "noOfMinCount":..,"maxCalReps":..},"learnMovements":..,

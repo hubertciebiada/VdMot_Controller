@@ -68,20 +68,24 @@ TEST_CASE("api: status of an empty snapshot") {
   StatusSnapshot s;
   const std::string j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
   const std::string expected =
-      "{\"esp\":{\"version\":\"\",\"build\":null,\"uptime\":0,\"resetReason\":\"unknown\","
+      "{\"station\":\"\",\"esp\":{\"version\":\"\",\"build\":null,\"uptime\":0,\"resetReason\":\"unknown\","
       "\"boots\":0,\"heap\":{\"free\":0,\"min\":0,\"largest\":0},\"flash\":{\"used\":0,\"size\":0}},"
       "\"time\":{\"valid\":false,\"epoch\":null,\"local\":null,\"lastSync\":null},"
       "\"net\":{\"state\":\"down\",\"ip\":\"0.0.0.0\",\"mask\":\"0.0.0.0\",\"gw\":\"0.0.0.0\","
-      "\"dns\":\"0.0.0.0\",\"mac\":\"\",\"rssi\":null,\"hostname\":\"\"},"
-      "\"mqtt\":{\"state\":\"disabled\",\"rc\":0,\"reconnects\":0,\"publishFailures\":0},"
+      "\"dns\":\"0.0.0.0\",\"mac\":\"\",\"rssi\":null,\"hostname\":\"\",\"trial\":null},"
+      "\"mqtt\":{\"state\":\"disabled\",\"rc\":0,\"reconnects\":0,\"publishFailures\":0,"
+      "\"clientId\":\"\",\"haStatus\":\"unknown\"},"
       "\"stm\":{\"link\":" + q(linkStateName(LinkState::Unknown)) +
       ",\"proto\":null,\"version\":null,\"build\":null,\"hwId\":null,\"chip\":null,"
       "\"compatible\":true,\"minVersion\":\"1.4.0\",\"stats\":{\"sent\":0,\"answered\":0,"
       "\"timeouts\":0,\"failedRequests\":0,\"strayLines\":0,\"parseErrors\":0,\"queueFull\":0,"
       "\"evictions\":0,\"policyResets\":0,\"userResets\":0,\"consecutiveTimeouts\":0,"
-      "\"lastReplyMs\":0},\"status\":null,\"espRx\":{\"overflow\":0,\"malformed\":0}},"
-      "\"calibration\":{\"active\":false,\"lastScheduled\":null,\"nextSlot\":null},"
-      "\"auth\":false,\"lastEventSeq\":0}";
+      "\"lastReplyMs\":0},\"status\":null,\"espRx\":{\"overflow\":0,\"malformed\":0},"
+      "\"support\":\"unknown\",\"lease\":null,\"learnTime\":null},"
+      "\"calibration\":{\"active\":false,\"lastScheduled\":null,\"nextSlot\":null,"
+      "\"next\":null},\"auth\":false,\"lastEventSeq\":0,"
+      "\"config\":{\"source\":\"stored\",\"repairs\":0,\"newerSchema\":false},"
+      "\"importReport\":false}";
   CHECK(j == expected);
 }
 
@@ -151,17 +155,49 @@ TEST_CASE("api: status of a populated snapshot") {
   s.nextCalibSlot = 20260927;
   s.authEnabled = true;
   s.lastEventSeq = 999;
+  s.station = "Dom P\xc3\xb3\xc5\x82noc";  // "Dom Północ"
+  s.netTrialActive = true;
+  s.netTrialRemainS = 87;
+  strcpy(s.mqttClientId, "vdmot-a1b2c3");
+  s.mqttHaStatus = HaStatus::Offline;
+  s.stmSupport = StmSupport::TooOld;
+  s.lease.mode = LeaseMode::Stm;
+  s.lease.state = LeaseState::Expired;
+  s.lease.remainS = 0;
+  s.lease.timeoutMin = 60;
+  s.lease.failsafeMask = 0x0805;
+  s.lease.regulator = RegulatorCause::HaOffline;
+  s.lease.regulatorLostS = 3700;
+  s.lease.configSynced = true;
+  s.lease.configFailed = false;
+  s.lease.configTrusted = true;
+  s.haveLearnTime = true;
+  s.learnTimeS = 7200;
+  s.nextCalibEpoch = 1790100000;
+  s.nextCalibLocal.valid = true;
+  s.nextCalibLocal.year = 2026;
+  s.nextCalibLocal.month = 9;
+  s.nextCalibLocal.mday = 27;
+  s.nextCalibLocal.hour = 3;
+  s.nextCalibLocal.minute = 30;
+  s.nextCalibLocal.second = 0;
+  s.configSource = 4;
+  s.configRepairs = 0x8002;
+  s.configNewerSchema = true;
+  s.importReport = true;
   const std::string j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
   const std::string expected =
-      "{\"esp\":{\"version\":\"2.0.0-revamped\",\"build\":1790000000,\"uptime\":3600,"
+      "{\"station\":\"Dom P\xc3\xb3\xc5\x82noc\",\"esp\":{\"version\":\"2.0.0-revamped\","
+      "\"build\":1790000000,\"uptime\":3600,"
       "\"resetReason\":\"task_wdt\",\"boots\":17,\"heap\":{\"free\":150000,\"min\":90000,"
       "\"largest\":110000},\"flash\":{\"used\":987654,\"size\":1310720}},"
       "\"time\":{\"valid\":true,\"epoch\":1790000123,\"local\":\"2026-09-03T04:05:06\","
       "\"lastSync\":1790000000},"
       "\"net\":{\"state\":\"wifi\",\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
       "\"gw\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"mac\":\"AA:BB:CC:DD:EE:FF\",\"rssi\":-67,"
-      "\"hostname\":\"VdMot \\\"OG\\\"\"},"
-      "\"mqtt\":{\"state\":\"connected\",\"rc\":-2,\"reconnects\":3,\"publishFailures\":4},"
+      "\"hostname\":\"VdMot \\\"OG\\\"\",\"trial\":{\"remainS\":87}},"
+      "\"mqtt\":{\"state\":\"connected\",\"rc\":-2,\"reconnects\":3,\"publishFailures\":4,"
+      "\"clientId\":\"vdmot-a1b2c3\",\"haStatus\":\"offline\"},"
       "\"stm\":{\"link\":" + q(linkStateName(LinkState::Up)) +
       ",\"proto\":2,\"version\":\"2.0.0-revamped_C2\",\"build\":20260901,\"hwId\":\"0x431\","
       "\"chip\":" + q(stmChipName(0x431)) +
@@ -170,9 +206,14 @@ TEST_CASE("api: status of a populated snapshot") {
       "\"evictions\":8,\"policyResets\":9,\"userResets\":10,\"consecutiveTimeouts\":11,"
       "\"lastReplyMs\":12},\"status\":{\"uptime\":100,\"resets\":2,\"bootReason\":3,"
       "\"rxOverflow\":4,\"parseErr\":5,\"eepState\":1},\"espRx\":{\"overflow\":13,"
-      "\"malformed\":14}},"
-      "\"calibration\":{\"active\":true,\"lastScheduled\":1789990000,\"nextSlot\":20260927},"
-      "\"auth\":true,\"lastEventSeq\":999}";
+      "\"malformed\":14},\"support\":\"too_old\",\"lease\":{\"mode\":\"stm\","
+      "\"state\":\"expired\",\"remainS\":0,\"timeoutMin\":60,\"failsafeMask\":2053,"
+      "\"regulator\":\"ha_offline\",\"regulatorLostS\":3700,\"configSynced\":true,"
+      "\"configFailed\":false,\"configTrusted\":true},\"learnTime\":7200},"
+      "\"calibration\":{\"active\":true,\"lastScheduled\":1789990000,\"nextSlot\":20260927,"
+      "\"next\":\"2026-09-27T03:30:00\"},"
+      "\"auth\":true,\"lastEventSeq\":999,\"config\":{\"source\":\"backup\","
+      "\"repairs\":32770,\"newerSchema\":true},\"importReport\":true}";
   CHECK(j == expected);
   checkOverflow([&](JsonWriter& jw) { return writeStatusJson(jw, s); }, j.size());
 }
@@ -298,18 +339,21 @@ TEST_CASE("api: valves document") {
       q(targetSourceName(TargetSource::Web)) + ",\"sync\":" + q(targetSyncName(TargetSync::Pending)) +
       ",\"stmTarget\":50,\"meanCur\":12,\"moves\":100,\"oc\":20,\"cc\":21,\"dc\":-3,\"cr\":1,"
       "\"health\":[\"blocked\",\"stale\",\"tempFailed\"],\"age\":5,"
-      "\"sensors\":[{\"slot\":3,\"name\":\"Flur\",\"temp\":21.5},{\"slot\":7,\"name\":\"\","
-      "\"temp\":null}],\"ext\":{\"calState\":2,\"calEarlyStop\":false,"
+      "\"sensors\":[{\"sensor\":1,\"slot\":3,\"name\":\"Flur\",\"temp\":21.5},"
+      "{\"sensor\":2,\"slot\":7,\"name\":\"\",\"temp\":null}],"
+      "\"ext\":{\"calState\":2,\"calEarlyStop\":false,"
       "\"calLastFailed\":true,\"earlyStops\":3,\"cmdRejected\":4,"
       "\"lastMove\":{\"dir\":\"close\",\"req\":3000,\"cnt\":1500,\"stop\":" +
       q(stopReasonName(StopReason::EarlyEndStop)) +
-      ",\"peak\":12.3,\"ms\":4567},\"moveSeq\":9}},"
+      ",\"peak\":12.3,\"ms\":4567},\"moveSeq\":9,\"v3\":null},"
+      "\"failsafe\":{\"state\":\"off\",\"pct\":null},\"calibrationEnd\":null},"
       "{\"idx\":2,\"name\":\"\",\"active\":false,\"known\":false,\"state\":0,\"stateKey\":" +
       q(valveStatusKey(0)) + ",\"calibrating\":false,\"pos\":0,\"target\":null,\"targetSource\":" +
       q(targetSourceName(TargetSource::None)) + ",\"sync\":" +
       q(targetSyncName(TargetSync::Unknown)) +
       ",\"stmTarget\":null,\"meanCur\":0,\"moves\":0,\"oc\":0,\"cc\":0,\"dc\":0,\"cr\":0,"
-      "\"health\":[],\"age\":null,\"sensors\":[],\"ext\":null},"
+      "\"health\":[],\"age\":null,\"sensors\":[],\"ext\":null,"
+      "\"failsafe\":{\"state\":\"off\",\"pct\":null},\"calibrationEnd\":null},"
       "{\"idx\":3,\"name\":\"\",\"active\":false,\"known\":true,\"state\":9,\"stateKey\":" +
       q(valveStatusKey(9)) + ",\"calibrating\":false,\"pos\":0,\"target\":null,\"targetSource\":" +
       q(targetSourceName(TargetSource::None)) + ",\"sync\":" +
@@ -321,7 +365,8 @@ TEST_CASE("api: valves document") {
       "\"ext\":{\"calState\":0,\"calEarlyStop\":false,\"calLastFailed\":false,"
       "\"earlyStops\":0,\"cmdRejected\":0,\"lastMove\":{\"dir\":\"open\","
       "\"req\":0,\"cnt\":0,\"stop\":" + q(stopReasonName(StopReason::None)) +
-      ",\"peak\":0.0,\"ms\":0},\"moveSeq\":0}}]}";
+      ",\"peak\":0.0,\"ms\":0},\"moveSeq\":0,\"v3\":null},"
+      "\"failsafe\":{\"state\":\"off\",\"pct\":null},\"calibrationEnd\":null}]}";
   CHECK(j == expected);
   checkOverflow([&](JsonWriter& jw) { return writeValvesJson(jw, views, 3, 6500); }, j.size());
 
@@ -516,7 +561,8 @@ TEST_CASE("api: flash status document") {
       ",\"status\":" + std::to_string(legacyFlashStatus(FlashPhase::Idle)) +
       ",\"percent\":0,\"bytesDone\":0,\"bytesTotal\":0,\"chipId\":null,\"chipName\":null,"
       "\"bootloaderVersion\":null,\"attempt\":0,\"error\":null,\"startedMs\":0,\"finishedMs\":0,"
-      "\"image\":null,\"appVersion\":null}";
+      "\"image\":null,\"appVersion\":null,\"board\":\"ok\",\"boardHw\":null,"
+      "\"manualReset\":false,\"baud\":0,\"pending\":false}";
   CHECK(j == expected);
 
   FlashStatus s;
@@ -536,8 +582,13 @@ TEST_CASE("api: flash status document") {
   s.image.crc = 0xDEADBEEF;
   strcpy(s.image.version, "2.0.0-revamped_C2");
   REQUIRE(parseVersion("1.4.9_Dev_C2", 12, s.appVersion));
+  strcpy(s.image.hwTag, "C2");
+  s.board = BoardCheck::Mismatch;
+  strcpy(s.boardHw, "C1");
+  s.manualReset = true;
+  s.baud = 57600;
   const std::string f =
-      build([&](JsonWriter& jw) { return writeFlashStatusJson(jw, s, "fw \"1\".bin"); });
+      build([&](JsonWriter& jw) { return writeFlashStatusJson(jw, s, "fw \"1\".bin", true); });
   const std::string fe =
       "{\"phase\":" + q(flashPhaseName(FlashPhase::Failed)) +
       ",\"status\":" + std::to_string(legacyFlashStatus(FlashPhase::Failed)) +
@@ -547,23 +598,32 @@ TEST_CASE("api: flash status document") {
       q(flashErrorName(FlashError::Nack)) + ",\"phase\":" + q(flashPhaseName(FlashPhase::Writing)) +
       ",\"addr\":\"0x08000100\"},\"startedMs\":1000,\"finishedMs\":4294967295,"
       "\"image\":{\"name\":\"fw \\\"1\\\".bin\",\"size\":65533,\"crc32\":\"0xdeadbeef\","
-      "\"version\":\"2.0.0-revamped_C2\"},\"appVersion\":\"1.4.9_Dev_C2\"}";
+      "\"version\":\"2.0.0-revamped_C2\",\"hw\":\"C2\"},\"appVersion\":\"1.4.9_Dev_C2\","
+      "\"board\":\"mismatch\",\"boardHw\":\"C1\",\"manualReset\":true,\"baud\":57600,"
+      "\"pending\":true}";
   CHECK(f == fe);
-  checkOverflow([&](JsonWriter& jw) { return writeFlashStatusJson(jw, s, "fw \"1\".bin"); },
-                f.size());
+  checkOverflow(
+      [&](JsonWriter& jw) { return writeFlashStatusJson(jw, s, "fw \"1\".bin", true); }, f.size());
+  // unterminated tags are cut at their array size
+  memset(s.image.hwTag, 'H', sizeof s.image.hwTag);
+  memset(s.boardHw, 'B', sizeof s.boardHw);
+  const std::string cut = build([&](JsonWriter& jw) { return writeFlashStatusJson(jw, s, "x"); });
+  CHECK(cut.find("\"hw\":\"HHH\"}") != std::string::npos);
+  CHECK(cut.find("\"boardHw\":\"BBB\",") != std::string::npos);
+  CHECK(cut.find("\"pending\":false}") != std::string::npos);
 
   // Image without a name, name without an image, unterminated version.
   FlashStatus a;
   a.image.size = 1;
   a.image.crc = 0x1;
   std::string k = build([&](JsonWriter& jw) { return writeFlashStatusJson(jw, a, nullptr); });
-  CHECK(k.find("\"image\":{\"name\":null,\"size\":1,\"crc32\":\"0x00000001\",\"version\":null}") !=
-        std::string::npos);
+  CHECK(k.find("\"image\":{\"name\":null,\"size\":1,\"crc32\":\"0x00000001\",\"version\":null,"
+               "\"hw\":null}") != std::string::npos);
   FlashStatus b;
   b.bootloaderVersion = 0x10;
   k = build([&](JsonWriter& jw) { return writeFlashStatusJson(jw, b, "a.bin"); });
   CHECK(k.find("\"image\":{\"name\":\"a.bin\",\"size\":0,\"crc32\":\"0x00000000\","
-               "\"version\":null}") != std::string::npos);
+               "\"version\":null,\"hw\":null}") != std::string::npos);
   CHECK(k.find("\"bootloaderVersion\":\"1.0\"") != std::string::npos);
   memset(b.image.version, 'v', sizeof b.image.version);
   k = build([&](JsonWriter& jw) { return writeFlashStatusJson(jw, b, "a.bin"); });
@@ -820,4 +880,264 @@ TEST_CASE("status JSON: all-ones addresses are written in full") {
   const std::string j(buf, jw.length());
   CHECK(j.find("\"ip\":\"255.255.255.255\",\"mask\":\"255.255.255.255\","
                "\"gw\":\"255.255.255.254\",\"dns\":\"254.255.255.255\"") != std::string::npos);
+}
+
+// ---------------------------------------------------------------- 2.1 members
+
+TEST_CASE("status: stm.status gstax members and field rules of the 2.1 members") {
+  StatusSnapshot s;
+  s.haveStmStatus = true;
+  s.stmStatus.v3 = true;
+  s.stmStatus.lease = LeaseState::Running;
+  s.stmStatus.leaseRemainS = 1800;
+  s.stmStatus.leaseClient = true;
+  s.stmStatus.leaseTimeoutMin = 60;
+  s.stmStatus.failsafeMask = 0x0003;
+  s.stmStatus.safeMode = true;
+  s.stmStatus.wdgResets = 3;
+  s.stmStatus.uartOre = 1;
+  s.stmStatus.uartFe = 2;
+  s.stmStatus.uartNe = 3;
+  s.stmStatus.rxDropped = 4;
+  s.stmStatus.cfgFlags = kStmCfgLayoutCrc | kStmCfgReadFailed;
+  s.stmStatus.cfgEvents = 5;
+  s.stmStatus.eepWrites = 6;
+  s.stmStatus.tempAgeS = 7;
+  s.stmStatus.owScanAgeS = 8;
+  s.stmStatus.sysFlags = kStmSysProtectSuspended;
+  std::string j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  const std::string status =
+      "\"status\":{\"uptime\":0,\"resets\":0,\"bootReason\":0,\"rxOverflow\":0,\"parseErr\":0,"
+      "\"eepState\":0,\"lease\":\"running\",\"leaseRemainS\":1800,\"leaseClient\":true,"
+      "\"leaseTimeoutMin\":60,\"failsafeMask\":3,\"safeMode\":true,\"wdgResets\":3,\"uartOre\":1,"
+      "\"uartFe\":2,\"uartNe\":3,\"rxDropped\":4,\"cfgFlags\":[" +
+      q(stmCfgFlagName(0)) + "," + q(stmCfgFlagName(7)) +
+      "],\"cfgEvents\":5,\"eepWrites\":6,\"tempAgeS\":7,\"owScanAgeS\":8,\"protectSuspended\":true},";
+  CHECK(j.find(status) != std::string::npos);
+  s.stmStatus.sysFlags = 0xFE;
+  s.stmStatus.cfgFlags = 0;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"cfgFlags\":[],") != std::string::npos);
+  CHECK(j.find("\"protectSuspended\":false}") != std::string::npos);
+  s.stmStatus.cfgFlags = 0xFF;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  std::string all = "\"cfgFlags\":[";
+  for (uint8_t b = 0; b < 8; ++b) all += (b ? "," : "") + q(stmCfgFlagName(b));
+  CHECK(j.find(all + "],") != std::string::npos);
+  // gstat (v2) keeps its six members
+  s.stmStatus.v3 = false;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"eepState\":0},\"espRx\"") != std::string::npos);
+
+  // lease modes, trial and next calibration rules
+  s.lease.mode = LeaseMode::Emulated;
+  s.lease.state = LeaseState::Running;
+  s.lease.remainS = 5;
+  s.lease.regulator = RegulatorCause::Alive;
+  s.lease.configTrusted = false;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"lease\":{\"mode\":\"esp\",\"state\":\"running\",\"remainS\":5,\"timeoutMin\":0,"
+               "\"failsafeMask\":0,\"regulator\":\"alive\",\"regulatorLostS\":0,"
+               "\"configSynced\":false,\"configFailed\":false,\"configTrusted\":false},"
+               "\"learnTime\":null}") != std::string::npos);
+  s.netTrialActive = true;
+  s.netTrialRemainS = 0;
+  s.nextCalibEpoch = 1;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"trial\":{\"remainS\":0}}") != std::string::npos);
+  CHECK(j.find("\"next\":null}") != std::string::npos);  // local time not valid
+  s.nextCalibLocal.valid = true;
+  s.nextCalibLocal.year = 2027;
+  s.nextCalibLocal.month = 1;
+  s.nextCalibLocal.mday = 2;
+  s.nextCalibLocal.hour = 23;
+  s.nextCalibLocal.minute = 59;
+  s.nextCalibLocal.second = 58;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"next\":\"2027-01-02T23:59:58\"}") != std::string::npos);
+  s.nextCalibEpoch = 0;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"next\":null}") != std::string::npos);
+  s.nextCalibEpoch = -1;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"next\":null}") != std::string::npos);
+  // station null, client id unterminated
+  s.station = nullptr;
+  memset(s.mqttClientId, 'c', sizeof s.mqttClientId);
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.rfind("{\"station\":\"\",\"esp\":", 0) == 0);
+  CHECK(j.find("\"clientId\":\"" + std::string(sizeof s.mqttClientId - 1, 'c') + "\",") !=
+        std::string::npos);
+  // config source names; out of range -> stored
+  const char* const sources[] = {"stored", "imported", "defaults", "defaults_after_error",
+                                 "backup", "stored", "stored"};
+  for (uint8_t i = 0; i < 7; ++i) {
+    s.configSource = i == 6 ? 255 : i;
+    j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+    CHECK(j.find(std::string("\"config\":{\"source\":\"") + sources[i] + "\"") !=
+          std::string::npos);
+  }
+  // support names
+  s.stmSupport = StmSupport::Supported;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"support\":\"ok\"") != std::string::npos);
+  s.mqttHaStatus = HaStatus::Online;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"haStatus\":\"online\"") != std::string::npos);
+}
+
+TEST_CASE("valves: v3 fields, failsafe and calibration end") {
+  ValveState st;
+  st.known = true;
+  st.status = 1;
+  st.hasExtended = true;
+  st.hasV3 = true;
+  st.stmFlags = kStmFlagFsLease | kStmFlagSvcHold;
+  st.fault = 5;
+  st.drive = 40;
+  st.retryS = 1200;
+  st.retries = 3;
+  st.fsPct = 30;
+  ValveConfig cfg;
+  ValveView v;
+  v.state = &st;
+  v.config = &cfg;
+  v.sensorSlot[1] = 9;  // only sensor 2 assigned
+  v.sensorName[1] = "Wall";
+  v.sensorValid[1] = true;
+  v.sensorTenths[1] = 199;
+  v.calibrationEnd.valid = true;
+  v.calibrationEnd.year = 2026;
+  v.calibrationEnd.month = 9;
+  v.calibrationEnd.mday = 21;
+  v.calibrationEnd.hour = 4;
+  v.calibrationEnd.minute = 7;
+  v.calibrationEnd.second = 9;
+  std::string j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  CHECK(j.find("\"sensors\":[{\"sensor\":2,\"slot\":9,\"name\":\"Wall\",\"temp\":19.9}],") !=
+        std::string::npos);
+  const std::string tail = "\"moveSeq\":0,\"v3\":{\"flags\":[" + q(stmFlagName(0)) + "," +
+                           q(stmFlagName(9)) + "],\"fault\":" + q(valveFaultName(5)) +
+                           ",\"drive\":40,\"retryS\":1200,\"retries\":3}},"
+                           "\"failsafe\":{\"state\":\"lease\",\"pct\":30},"
+                           "\"calibrationEnd\":\"2026-09-21T04:07:09\"}]}";
+  CHECK(j.size() >= tail.size());
+  CHECK(j.substr(j.size() - tail.size()) == tail);
+  checkOverflow([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); }, j.size());
+  // blocked, pct 100 and 0, hold -> null, invalid pct above 100 -> null
+  st.stmFlags = kStmFlagFsBlocked;
+  st.fsPct = 100;
+  j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  CHECK(j.find("\"failsafe\":{\"state\":\"blocked\",\"pct\":100}") != std::string::npos);
+  st.stmFlags = 0xFFFF;
+  j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  std::string flags = "\"flags\":[";
+  for (uint8_t b = 0; b < 16; ++b) flags += (b ? "," : "") + q(stmFlagName(b));
+  CHECK(j.find(flags + "],") != std::string::npos);
+  st.stmFlags = 0;
+  st.fsPct = 0;
+  j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  CHECK(j.find("\"flags\":[],") != std::string::npos);
+  CHECK(j.find("\"failsafe\":{\"state\":\"off\",\"pct\":0}") != std::string::npos);
+  st.fsPct = 101;
+  j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  CHECK(j.find("\"pct\":null}") != std::string::npos);
+  st.fsPct = kFailsafeHold;
+  st.fsOverride = true;  // ESP emulation
+  j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  CHECK(j.find("\"failsafe\":{\"state\":\"lease\",\"pct\":null}") != std::string::npos);
+  // v3 null without hasV3; calibrationEnd null when not valid
+  st.hasV3 = false;
+  v.calibrationEnd.valid = false;
+  j = build([&](JsonWriter& jw) { return writeValvesJson(jw, &v, 1, 0); });
+  CHECK(j.find("\"v3\":null},") != std::string::npos);
+  CHECK(j.find("\"calibrationEnd\":null}") != std::string::npos);
+}
+
+TEST_CASE("health document") {
+  HealthSnapshot h;
+  std::string j = build([&](JsonWriter& jw) { return writeHealthJson(jw, h); });
+  CHECK(j ==
+        "{\"ok\":true,\"version\":\"\",\"uptime\":0,\"heap\":{\"free\":0,\"min\":0,\"largest\":0,"
+        "\"minLargest\":0},\"tasks\":[],\"net\":{\"ip\":false,\"reachable\":false,"
+        "\"proven\":false,\"pingArmed\":false,\"evidence\":null,\"evidenceAgeS\":null,"
+        "\"ifaceRestarts\":0,\"trial\":null},\"ota\":null,\"log\":{\"persist\":false,"
+        "\"backlog\":0,\"flushes\":0,\"lastFlushAgeS\":null,\"lost\":0,\"failures\":0}}");
+  h.version = "2.1.0-revamped";
+  h.uptimeS = 1234;
+  h.freeHeap = 142336;
+  h.minFreeHeap = 118420;
+  h.largestFreeBlock = 90100;
+  h.minLargestFreeBlock = 65536;
+  h.tasks[0].name = "stm";
+  h.tasks[0].stackBytes = 6144;
+  h.tasks[0].minFreeBytes = 2100;
+  h.tasks[1].name = "app";
+  h.tasks[1].stackBytes = 8192;
+  h.tasks[1].minFreeBytes = 3200;
+  h.taskCount = 2;
+  h.net.ipUp = true;
+  h.net.reachable = true;
+  h.net.proven = true;
+  h.net.pingArmed = true;
+  h.net.evidence = NetEvidence::GatewayPing;
+  h.net.evidenceAgeS = 12;
+  h.net.ifaceRestarts = 3;
+  h.net.trialActive = true;
+  h.net.trialRemainingS = 44;
+  h.ota.pending = true;
+  h.ota.stmRequired = true;
+  h.ota.netOk = true;
+  h.ota.httpOk = false;
+  h.ota.stmOk = true;
+  h.ota.healthyForS = 20;
+  h.ota.remainingS = 280;
+  h.log.persist = true;
+  h.log.backlog = 3;
+  h.log.flushes = 12;
+  h.log.flushed = true;
+  h.log.lastFlushAgeS = 40;
+  h.log.lost = 1;
+  h.log.failures = 2;
+  j = build([&](JsonWriter& jw) { return writeHealthJson(jw, h); });
+  const std::string expected =
+      "{\"ok\":true,\"version\":\"2.1.0-revamped\",\"uptime\":1234,"
+      "\"heap\":{\"free\":142336,\"min\":118420,\"largest\":90100,\"minLargest\":65536},"
+      "\"tasks\":[{\"name\":\"stm\",\"stack\":6144,\"minFree\":2100},"
+      "{\"name\":\"app\",\"stack\":8192,\"minFree\":3200}],"
+      "\"net\":{\"ip\":true,\"reachable\":true,\"proven\":true,\"pingArmed\":true,"
+      "\"evidence\":\"ping\",\"evidenceAgeS\":12,\"ifaceRestarts\":3,\"trial\":{\"remainS\":44}},"
+      "\"ota\":{\"stmRequired\":true,\"checks\":{\"net\":true,\"http\":false,\"stm\":true},"
+      "\"healthyForS\":20,\"remainS\":280},"
+      "\"log\":{\"persist\":true,\"backlog\":3,\"flushes\":12,\"lastFlushAgeS\":40,\"lost\":1,"
+      "\"failures\":2}}";
+  CHECK(j == expected);
+  checkOverflow([&](JsonWriter& jw) { return writeHealthJson(jw, h); }, j.size());
+  // evidence age unknown, too many tasks, a task without a name
+  h.net.evidenceAgeS = UINT32_MAX;
+  h.taskCount = 200;
+  for (uint8_t i = 2; i < kHealthTaskMax; ++i) h.tasks[i].name = "t";
+  h.tasks[7].name = nullptr;
+  h.version = nullptr;
+  j = build([&](JsonWriter& jw) { return writeHealthJson(jw, h); });
+  CHECK(j.find("\"evidence\":\"ping\",\"evidenceAgeS\":null,") != std::string::npos);
+  size_t tasks = 0;
+  for (size_t at = j.find("\"stack\":"); at != std::string::npos; at = j.find("\"stack\":", at + 1))
+    ++tasks;
+  CHECK(tasks == kHealthTaskMax);
+  CHECK(j.find("{\"name\":\"\",\"stack\":0,\"minFree\":0}]") != std::string::npos);
+  CHECK(j.find("\"version\":\"\",") != std::string::npos);
+  // no evidence: age is null even when known
+  h.net.evidence = NetEvidence::None;
+  h.net.evidenceAgeS = 5;
+  j = build([&](JsonWriter& jw) { return writeHealthJson(jw, h); });
+  CHECK(j.find("\"evidence\":null,\"evidenceAgeS\":null,") != std::string::npos);
+  // one task exactly
+  h.taskCount = 1;
+  j = build([&](JsonWriter& jw) { return writeHealthJson(jw, h); });
+  CHECK(j.find("\"tasks\":[{\"name\":\"stm\",\"stack\":6144,\"minFree\":2100}],") !=
+        std::string::npos);
+  h.taskCount = kHealthTaskMax;
+  j = build([&](JsonWriter& jw) { return writeHealthJson(jw, h); });
+  CHECK(j.find("{\"name\":\"\",\"stack\":0,\"minFree\":0}]") != std::string::npos);
 }

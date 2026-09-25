@@ -93,6 +93,69 @@ void oneWireIdValue(JsonWriter& jw, const char* k, const OneWireId& id) {
 
 void stringOrEmpty(JsonWriter& jw, const char* k, const char* s) { jw.kv(k, s ? s : ""); }
 
+// "YYYY-MM-DDTHH:MM:SS" or null.
+void localTimeValue(JsonWriter& jw, const char* k, const LocalTime& t, bool known) {
+  jw.key(k);
+  if (!known || !t.valid) {
+    jw.nullValue();
+    return;
+  }
+  char tmp[32];
+  snprintf(tmp, sizeof tmp, "%04u-%02u-%02uT%02u:%02u:%02u", static_cast<unsigned>(t.year),
+           static_cast<unsigned>(t.month), static_cast<unsigned>(t.mday),
+           static_cast<unsigned>(t.hour), static_cast<unsigned>(t.minute),
+           static_cast<unsigned>(t.second));
+  jw.value(tmp);
+}
+
+// Board revision tag ("C2") or null when untagged.
+void hwTagValue(JsonWriter& jw, const char* k, const char* tag, size_t cap) {
+  jw.key(k);
+  const size_t n = boundedLength(tag, cap - 1);
+  if (n) {
+    jw.value(tag, n);
+  } else {
+    jw.nullValue();
+  }
+}
+
+// Names of the set bits (bit order) of a mask.
+template <typename NameFn>
+void flagNames(JsonWriter& jw, const char* k, uint32_t mask, uint8_t bits, NameFn name) {
+  jw.key(k);
+  jw.beginArray();
+  for (uint8_t b = 0; b < bits; ++b) {
+    if (mask & (1u << b)) jw.value(name(b));
+  }
+  jw.endArray();
+}
+
+const char* configSourceName(uint8_t s) {
+  static const char* const kNames[] = {"stored", "imported", "defaults", "defaults_after_error",
+                                       "backup"};
+  return s < sizeof kNames / sizeof kNames[0] ? kNames[s] : "stored";
+}
+
+void writeLease(JsonWriter& jw, const LeaseStatus& l) {
+  jw.key("lease");
+  if (l.mode == LeaseMode::None) {
+    jw.nullValue();
+    return;
+  }
+  jw.beginObject();
+  jw.kv("mode", leaseModeName(l.mode));
+  jw.kv("state", leaseStateName(l.state));
+  jw.kv("remainS", l.remainS);
+  jw.kv("timeoutMin", static_cast<uint32_t>(l.timeoutMin));
+  jw.kv("failsafeMask", static_cast<uint32_t>(l.failsafeMask));
+  jw.kv("regulator", regulatorCauseName(l.regulator));
+  jw.kv("regulatorLostS", l.regulatorLostS);
+  jw.kv("configSynced", l.configSynced);
+  jw.kv("configFailed", l.configFailed);
+  jw.kv("configTrusted", l.configTrusted);
+  jw.endObject();
+}
+
 void writeLinkStats(JsonWriter& jw, const LinkStats& st) {
   jw.beginObject();
   jw.kv("sent", st.sent);
@@ -118,6 +181,25 @@ void writeStmStatus(JsonWriter& jw, const StmStatus& st) {
   jw.kv("rxOverflow", st.rxOverflow);
   jw.kv("parseErr", st.parseErrors);
   jw.kv("eepState", static_cast<uint32_t>(st.eepState));
+  if (st.v3) {
+    jw.kv("lease", leaseStateName(st.lease));
+    jw.kv("leaseRemainS", st.leaseRemainS);
+    jw.kv("leaseClient", st.leaseClient);
+    jw.kv("leaseTimeoutMin", static_cast<uint32_t>(st.leaseTimeoutMin));
+    jw.kv("failsafeMask", static_cast<uint32_t>(st.failsafeMask));
+    jw.kv("safeMode", st.safeMode);
+    jw.kv("wdgResets", static_cast<uint32_t>(st.wdgResets));
+    jw.kv("uartOre", st.uartOre);
+    jw.kv("uartFe", st.uartFe);
+    jw.kv("uartNe", st.uartNe);
+    jw.kv("rxDropped", st.rxDropped);
+    flagNames(jw, "cfgFlags", st.cfgFlags, 8, stmCfgFlagName);
+    jw.kv("cfgEvents", st.cfgEvents);
+    jw.kv("eepWrites", st.eepWrites);
+    jw.kv("tempAgeS", st.tempAgeS);
+    jw.kv("owScanAgeS", st.owScanAgeS);
+    jw.kv("protectSuspended", (st.sysFlags & kStmSysProtectSuspended) != 0);
+  }
   jw.endObject();
 }
 
@@ -125,6 +207,7 @@ void writeStmStatus(JsonWriter& jw, const StmStatus& st) {
 
 bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
   jw.beginObject();
+  stringOrEmpty(jw, "station", s.station);
 
   jw.key("esp");
   jw.beginObject();
@@ -187,6 +270,14 @@ bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
   }
   jw.key("hostname");
   jw.value(s.hostname, boundedLength(s.hostname, sizeof s.hostname - 1));
+  jw.key("trial");
+  if (s.netTrialActive) {
+    jw.beginObject();
+    jw.kv("remainS", s.netTrialRemainS);
+    jw.endObject();
+  } else {
+    jw.nullValue();
+  }
   jw.endObject();
 
   jw.key("mqtt");
@@ -195,6 +286,9 @@ bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
   jw.kv("rc", static_cast<int32_t>(s.mqttRc));
   jw.kv("reconnects", s.mqttReconnects);
   jw.kv("publishFailures", s.mqttPublishFailures);
+  jw.key("clientId");
+  jw.value(s.mqttClientId, boundedLength(s.mqttClientId, sizeof s.mqttClientId - 1));
+  jw.kv("haStatus", haStatusName(s.mqttHaStatus));
   jw.endObject();
 
   jw.key("stm");
@@ -224,6 +318,14 @@ bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
   jw.kv("overflow", s.espLineOverflows);
   jw.kv("malformed", s.espLineMalformed);
   jw.endObject();
+  jw.kv("support", stmSupportName(s.stmSupport));
+  writeLease(jw, s.lease);
+  jw.key("learnTime");
+  if (s.haveLearnTime) {
+    jw.value(s.learnTimeS);
+  } else {
+    jw.nullValue();
+  }
   jw.endObject();
 
   jw.key("calibration");
@@ -236,10 +338,18 @@ bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
     jw.nullValue();
   }
   u32OrNull(jw, "nextSlot", s.nextCalibSlot);
+  localTimeValue(jw, "next", s.nextCalibLocal, s.nextCalibEpoch > 0);
   jw.endObject();
 
   jw.kv("auth", s.authEnabled);
   jw.kv("lastEventSeq", s.lastEventSeq);
+  jw.key("config");
+  jw.beginObject();
+  jw.kv("source", configSourceName(s.configSource));
+  jw.kv("repairs", s.configRepairs);
+  jw.kv("newerSchema", s.configNewerSchema);
+  jw.endObject();
+  jw.kv("importReport", s.importReport);
   jw.endObject();
   return jw.ok();
 }
@@ -311,6 +421,7 @@ void writeValve(JsonWriter& jw, uint8_t index, const ValveView& v, uint32_t nowM
   for (uint8_t k = 0; k < 2; ++k) {
     if (v.sensorSlot[k] == 0) continue;
     jw.beginObject();
+    jw.kv("sensor", static_cast<uint32_t>(k) + 1u);
     jw.kv("slot", static_cast<uint32_t>(v.sensorSlot[k]));
     stringOrEmpty(jw, "name", v.sensorName[k]);
     jw.key("temp");
@@ -333,10 +444,33 @@ void writeValve(JsonWriter& jw, uint8_t index, const ValveView& v, uint32_t nowM
     jw.key("lastMove");
     writeLastMove(jw, st.lastMove);
     jw.kv("moveSeq", st.moveSeq);
+    jw.key("v3");
+    if (st.hasV3) {
+      jw.beginObject();
+      flagNames(jw, "flags", st.stmFlags, 16, stmFlagName);
+      jw.kv("fault", valveFaultName(st.fault));
+      jw.kv("drive", static_cast<uint32_t>(st.drive));
+      jw.kv("retryS", st.retryS);
+      jw.kv("retries", static_cast<uint32_t>(st.retries));
+      jw.endObject();
+    } else {
+      jw.nullValue();
+    }
     jw.endObject();
   } else {
     jw.nullValue();
   }
+  jw.key("failsafe");
+  jw.beginObject();
+  jw.kv("state", failsafeKindName(failsafeKind(st)));
+  jw.key("pct");
+  if (st.fsPct <= 100) {
+    jw.value(static_cast<uint32_t>(st.fsPct));
+  } else {
+    jw.nullValue();
+  }
+  jw.endObject();
+  localTimeValue(jw, "calibrationEnd", v.calibrationEnd, true);
   jw.endObject();
 }
 
@@ -454,7 +588,8 @@ bool writeEventsJson(JsonWriter& jw, const Event* events, size_t count, uint32_t
   return jw.ok();
 }
 
-bool writeFlashStatusJson(JsonWriter& jw, const FlashStatus& s, const char* imageName) {
+bool writeFlashStatusJson(JsonWriter& jw, const FlashStatus& s, const char* imageName,
+                          bool pending) {
   jw.beginObject();
   jw.kv("phase", flashPhaseName(s.phase));
   jw.kv("status", static_cast<uint32_t>(legacyFlashStatus(s.phase)));
@@ -498,11 +633,17 @@ bool writeFlashStatusJson(JsonWriter& jw, const FlashStatus& s, const char* imag
     } else {
       jw.nullValue();
     }
+    hwTagValue(jw, "hw", s.image.hwTag, sizeof s.image.hwTag);
     jw.endObject();
   } else {
     jw.nullValue();
   }
   versionValue(jw, "appVersion", s.appVersion);
+  jw.kv("board", boardCheckName(s.board));
+  hwTagValue(jw, "boardHw", s.boardHw, sizeof s.boardHw);
+  jw.kv("manualReset", s.manualReset);
+  jw.kv("baud", s.baud);
+  jw.kv("pending", pending);
   jw.endObject();
   return jw.ok();
 }
@@ -538,6 +679,98 @@ bool writeErrorJson(JsonWriter& jw, const char* code, const char* detail) {
   jw.beginObject();
   jw.kv("error", code);
   jw.kv("detail", detail);
+  jw.endObject();
+  return jw.complete();
+}
+
+// ---------------------------------------------------------------- health
+
+bool writeHealthJson(JsonWriter& jw, const HealthSnapshot& s) {
+  jw.beginObject();
+  jw.kv("ok", true);
+  stringOrEmpty(jw, "version", s.version);
+  jw.kv("uptime", s.uptimeS);
+  jw.key("heap");
+  jw.beginObject();
+  jw.kv("free", s.freeHeap);
+  jw.kv("min", s.minFreeHeap);
+  jw.kv("largest", s.largestFreeBlock);
+  jw.kv("minLargest", s.minLargestFreeBlock);
+  jw.endObject();
+  jw.key("tasks");
+  jw.beginArray();
+  const uint8_t n = s.taskCount <= kHealthTaskMax ? s.taskCount : kHealthTaskMax;
+  for (uint8_t i = 0; i < n; ++i) {
+    const TaskStackInfo& t = s.tasks[i];
+    jw.beginObject();
+    stringOrEmpty(jw, "name", t.name);
+    jw.kv("stack", t.stackBytes);
+    jw.kv("minFree", t.minFreeBytes);
+    jw.endObject();
+  }
+  jw.endArray();
+  const NetHealthInfo& net = s.net;
+  jw.key("net");
+  jw.beginObject();
+  jw.kv("ip", net.ipUp);
+  jw.kv("reachable", net.reachable);
+  jw.kv("proven", net.proven);
+  jw.kv("pingArmed", net.pingArmed);
+  const bool evidence = net.evidence != NetEvidence::None;
+  jw.key("evidence");
+  if (evidence) {
+    jw.value(netEvidenceName(net.evidence));
+  } else {
+    jw.nullValue();
+  }
+  jw.key("evidenceAgeS");
+  if (evidence && net.evidenceAgeS != UINT32_MAX) {
+    jw.value(net.evidenceAgeS);
+  } else {
+    jw.nullValue();
+  }
+  jw.kv("ifaceRestarts", static_cast<uint32_t>(net.ifaceRestarts));
+  jw.key("trial");
+  if (net.trialActive) {
+    jw.beginObject();
+    jw.kv("remainS", net.trialRemainingS);
+    jw.endObject();
+  } else {
+    jw.nullValue();
+  }
+  jw.endObject();
+  const OtaHealthInfo& ota = s.ota;
+  jw.key("ota");
+  if (ota.pending) {
+    jw.beginObject();
+    jw.kv("stmRequired", ota.stmRequired);
+    jw.key("checks");
+    jw.beginObject();
+    jw.kv("net", ota.netOk);
+    jw.kv("http", ota.httpOk);
+    jw.kv("stm", ota.stmOk);
+    jw.endObject();
+    jw.kv("healthyForS", ota.healthyForS);
+    jw.kv("remainS", ota.remainingS);
+    jw.endObject();
+  } else {
+    jw.nullValue();
+  }
+  const LogHealthInfo& log = s.log;
+  jw.key("log");
+  jw.beginObject();
+  jw.kv("persist", log.persist);
+  jw.kv("backlog", log.backlog);
+  jw.kv("flushes", log.flushes);
+  jw.key("lastFlushAgeS");
+  if (log.flushed) {
+    jw.value(log.lastFlushAgeS);
+  } else {
+    jw.nullValue();
+  }
+  jw.kv("lost", log.lost);
+  jw.kv("failures", log.failures);
+  jw.endObject();
   jw.endObject();
   return jw.complete();
 }
