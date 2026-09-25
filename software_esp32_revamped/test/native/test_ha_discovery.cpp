@@ -630,7 +630,8 @@ TEST_CASE("stale-topic check keeps valve temp configs while the sensors are unkn
   CHECK(n > 0);
 }
 
-TEST_CASE("stale-topic check fuzz: only exact current topics match") {
+TEST_CASE("stale-topic check fuzz: only exact current topics match" *
+          doctest::test_suite("fuzz")) {
   static DiscoveryContext c;
   c = DiscoveryContext{};
   base(c);
@@ -673,7 +674,8 @@ TEST_CASE("stale-topic check fuzz: only exact current topics match") {
   CHECK(hits > 3000);
 }
 
-TEST_CASE("discovery fuzz: random context bytes never overflow or emit bad JSON framing") {
+TEST_CASE("discovery fuzz: random context bytes never overflow or emit bad JSON framing" *
+          doctest::test_suite("fuzz")) {
   static DiscoveryContext c;
   uint32_t seed = 0x5EED0003u;
   auto rnd = [&seed]() {

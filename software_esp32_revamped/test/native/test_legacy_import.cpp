@@ -1254,7 +1254,7 @@ TEST_CASE("legacy: first rejected key is kept, counting continues") {
   CHECK(first(r) == "sysCfg/stName");
 }
 
-TEST_CASE("legacy: fuzz - the result always validates") {
+TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(97531);
   const char* intKeys[][2] = {
       {"netCfg", "ethwifi"},       {"netCfg", "dhcp"},         {"netCfg", "staticIp"},

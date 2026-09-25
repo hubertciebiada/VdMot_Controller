@@ -482,7 +482,7 @@ TEST_CASE("calib: next slot") {
   CHECK(w.nextSlot(cfg(kAll, 5, 30), at(2026, 12, 23, 5, 29)) == 20261223u);
 }
 
-TEST_CASE("calib: a long run fires exactly once per selected date") {
+TEST_CASE("calib: a long run fires exactly once per selected date" * doctest::test_suite("fuzz")) {
   // Every minute for 3 years (incl. a leap day), with random reboots.
   std::mt19937 rng(8080);
   const CalibScheduleConfig c = cfg(kSun | kWed, 3, 45);

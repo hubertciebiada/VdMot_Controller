@@ -76,7 +76,8 @@ Reference referenceSplit(const std::string& input, size_t capacity) {
 
 }  // namespace
 
-TEST_CASE("fuzz: LineAssembler matches a reference splitter on random bytes") {
+TEST_CASE("fuzz: LineAssembler matches a reference splitter on random bytes" *
+          doctest::test_suite("fuzz")) {
   std::mt19937 rng(0x5eed1234u);
   for (int round = 0; round < 2000; ++round) {
     const size_t capacity = 2 + round % 40;
@@ -112,7 +113,7 @@ TEST_CASE("fuzz: LineAssembler matches a reference splitter on random bytes") {
   }
 }
 
-TEST_CASE("fuzz: Tokenizer invariants on random lines") {
+TEST_CASE("fuzz: Tokenizer invariants on random lines" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(0xC0FFEEu);
   for (int round = 0; round < 5000; ++round) {
     std::string text = randomProtocolText(rng, 80);
@@ -162,7 +163,8 @@ TEST_CASE("fuzz: Tokenizer invariants on random lines") {
   }
 }
 
-TEST_CASE("fuzz: parseU32/parseI32 agree with strtoll on random text") {
+TEST_CASE("fuzz: parseU32/parseI32 agree with strtoll on random text" *
+          doctest::test_suite("fuzz")) {
   std::mt19937 rng(0xDEADBEEFu);
   static const char kChars[] = "0123456789+- x";
   std::uniform_int_distribution<size_t> lenDist(0, 12);
@@ -211,7 +213,8 @@ TEST_CASE("fuzz: parseU32/parseI32 agree with strtoll on random text") {
   }
 }
 
-TEST_CASE("fuzz: parseOneWireAddress round-trips and rejects random text") {
+TEST_CASE("fuzz: parseOneWireAddress round-trips and rejects random text" *
+          doctest::test_suite("fuzz")) {
   std::mt19937 rng(0x1111u);
   std::uniform_int_distribution<int> byteDist(0, 255);
   for (int round = 0; round < 5000; ++round) {
@@ -247,7 +250,7 @@ TEST_CASE("fuzz: parseOneWireAddress round-trips and rejects random text") {
   }
 }
 
-TEST_CASE("fuzz: BufWriter never exceeds its capacity") {
+TEST_CASE("fuzz: BufWriter never exceeds its capacity" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(0xBADC0DEu);
   std::uniform_int_distribution<int> op(0, 5);
   std::uniform_int_distribution<uint32_t> num;
@@ -294,7 +297,7 @@ TEST_CASE("fuzz: BufWriter never exceeds its capacity") {
   }
 }
 
-TEST_CASE("fuzz: formatValveData matches the v1 itoa format") {
+TEST_CASE("fuzz: formatValveData matches the v1 itoa format" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(0x7777u);
   std::uniform_int_distribution<int32_t> any(INT32_MIN, INT32_MAX);
   std::uniform_int_distribution<int32_t> small(-2000, 70000);
