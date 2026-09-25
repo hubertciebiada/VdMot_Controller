@@ -89,6 +89,7 @@
 
 void set_motor (int smvalvenr, int dir);
 void ena_motor (int emvalvenr, int state);
+static void ena_all_off ();
 void isr_count ();
 void callback_motorstop ();
 byte motorcycle (int mvalvenr, byte cmd);
@@ -110,69 +111,68 @@ static byte position_sub (byte position, byte delta) {
 }
 
 volatile enum ASTATE valvestate;
-volatile uint32_t valve_loop_ticks = 0;
-volatile bool valve_loop_stalled = false;
+volatile uint32_t valve_loop_ticks;
+volatile bool valve_loop_stalled;
 static vdm::StallDetector valve_stall(TIMEOUT_VALVESTATE);
 
 volatile bool temp_refresh_request = false;
-volatile bool temp_gap_timeout = false;
+volatile bool temp_gap_timeout;
 volatile bool protect_suspended = false;
 volatile bool protect_enforce = vdm::kProtectEnforce;
 // sstop of the valve in work; cleared when the valve state machine is back in A_IDLE
-static volatile bool stop_request = false;
+static volatile bool stop_request;
 
 // Init STM32 timer TIM1
 STM32Timer ITimer0(TIM1);
 
 //int counter;
 //unsigned long time;
-volatile int current_mA = 0;                     // current valve motor in 1/10 mA for normal mode
+volatile int current_mA;                         // current valve motor in 1/10 mA for normal mode
 
-volatile int analog_current = 0;                 // current valve motor in 1/10 mA for test mode
-volatile int analog_current_old = 0;             // filter memory
+volatile int analog_current;                     // current valve motor in 1/10 mA for test mode
+volatile int analog_current_old;                 // filter memory
 
 
 
 // unsigned int idlecurrent = 2048;        // idle current adc value (digits)
 // unsigned int idlecurrent_old = 2048;    // filter
 
-volatile unsigned int isr_counter = 0;      // ISR var for counting revolutions
-volatile byte         isr_turning = 0;      // ISR var for state of motor
-volatile unsigned int isr_target = 0;       // ISR var for valve target count
-volatile int          isr_valvenr = 0;      // ISR var for valve nr
-volatile byte         isr_timer_go = 0;     // ISR var for timer pwm start
-volatile byte         isr_timer_fin = 0;    // ISR var for timer pwm finished
+volatile unsigned int isr_counter;          // ISR var for counting revolutions
+volatile byte         isr_turning;          // ISR var for state of motor
+volatile unsigned int isr_target;           // ISR var for valve target count
+volatile int          isr_valvenr;          // ISR var for valve nr
+volatile byte         isr_timer_go;         // ISR var for timer pwm start
+volatile byte         isr_timer_fin;        // ISR var for timer pwm finished
 
-volatile byte         isr_overcurrentevent = 0;
-volatile byte         isr_stop_request = 0;     // set by EXTI when the target count is reached
+volatile byte         isr_overcurrentevent;
+volatile byte         isr_stop_request;         // set by EXTI when the target count is reached
 
 volatile valvemotor myvalvemots[ACTUATOR_COUNT];
 
 
 // handoff main loop -> valve_loop (TIM2), written by appsetaction() with interrupts disabled
 volatile char command = '\0';
-volatile int valvenr = 0;
-volatile byte poschangecmd = 0;
-volatile uint8_t moveflagscmd = 0;       // MOVE_KEEP_STATUS, MOVE_REFERENCE
-volatile uint8_t svc_dir = 0;             // service move parameters, see appsetservice()
-volatile uint16_t svc_counts = 0;
-volatile uint8_t svc_maxmA = 0;
+volatile int valvenr;
+volatile byte poschangecmd;
+volatile uint8_t moveflagscmd;           // MOVE_KEEP_STATUS, MOVE_REFERENCE
+volatile uint8_t svc_dir;                 // service move parameters, see appsetservice()
+volatile uint16_t svc_counts;
+volatile uint8_t svc_maxmA;
 
 uint8_t currentbound_low_fac = 17;        // lower current limit factor for detection of end stop
 uint8_t currentbound_high_fac = 17;       // upper current limit factor for detection of end stop
 
 uint8_t startOnPower = 50;
 uint16_t noOfMinCounts = NO_OF_MIN_COUNTS;
-uint8_t maxCalibRetries = 0;
-uint8_t calibRetries = 0;
+uint8_t maxCalibRetries;
+uint8_t calibRetries;
 
 // written by the main loop with interrupts disabled, read by valve_loop (TIM2)
 static vdm::EscalationConfig calib_escalation = vdm::kEscalationDefault;
 
 //volatile uint32_t revcounter;
 
-static int undercurrcnt = 0;
-static int overcurrcnt = 0;
+static int undercurrcnt;
 
 // end-stop detection, fed by TimerHandler0 (TIM1); armed and read by the motor state machine
 // (TIM2). Both interrupts have the same priority and cannot preempt each other.
@@ -185,18 +185,18 @@ static vdm::EndStopDetector endstop;
 
 static vdm::MoveRequest move_req;
 static uint8_t move_kind = MOVE_NORMAL;
-static int32_t move_bound_low = 0;        // end-stop bounds for the next motor start, 1/10 mA
-static int32_t move_bound_high = 0;
-static uint32_t move_start_ms = 0;
+static int32_t move_bound_low;            // end-stop bounds for the next motor start, 1/10 mA
+static int32_t move_bound_high;
+static uint32_t move_start_ms;
 static vdm::MotorStop motor_stop_cause = vdm::MotorStop::None;
-static int last_turning_current = 0;      // current_mA at the last M_TURNING tick
-static uint16_t stroke_mean_mA = 0;       // mean current of the last stroke that ended at an end stop
-static uint16_t stroke_mean_samples = 0;
+static int last_turning_current;          // current_mA at the last M_TURNING tick
+static uint16_t stroke_mean_mA;           // mean current of the last stroke that ended at an end stop
+static uint16_t stroke_mean_samples;
 static vdm::ProfileRecorder move_profile;
-static uint8_t move_flags = 0;            // flags of the normal move in progress
-static byte keep_status = 0;              // status a MOVE_KEEP_STATUS move restores
-static byte pos_change = 0;               // requested change of the normal move in %, 255: to the end stop
-static int waittimer = 0;
+static uint8_t move_flags;                // flags of the normal move in progress
+static byte keep_status;                  // status a MOVE_KEEP_STATUS move restores
+static byte pos_change;                   // requested change of the normal move in %, 255: to the end stop
+static int waittimer;
 static vdm::PresenceTest test_presence;   // M_TEST
 
 #ifdef inrushDebug
@@ -230,7 +230,7 @@ void valve_pins_safe () {
   pinMode(CTRL_ENA3, OUTPUT);
   pinMode(CTRL_ENA4, OUTPUT);
   pinMode(CTRL_ENA5, OUTPUT);
-  ena_motor(0, 0);
+  ena_all_off();
 }
 
 
@@ -563,7 +563,6 @@ static bool end_normal_move (int v, byte result) {
     finish_move(v);
     lost_contact(v);
     myvalvemots[v].actual_position = myvalvemots[v].target_position;
-    isr_counter = 0;
   }
   else if (result == M_RES_ENDSTOP) {
     finish_move(v);
@@ -596,7 +595,6 @@ static bool end_normal_move (int v, byte result) {
 
 // starts a full calibration stroke (the valve stands at the opposite end stop)
 static void start_learn_stroke (int v, uint8_t dir) {
-  isr_counter = 0;
   myvalvemots[v].status = dir == DIR_OPEN ? VLV_STATE_OPENING : VLV_STATE_CLOSING;
   prepare_learn_stroke(v, dir, true);
   motorcycle(v, dir == DIR_OPEN ? CMD_M_OPEN : CMD_M_CLOSE);
@@ -614,23 +612,23 @@ static void refuse_move (int v) {
 void valve_loop () {
   byte temp = 0;
 
-  static unsigned int closing_count = 0;
-  static unsigned int opening_count = 0;
-  static uint16_t open_mean_mA = 0;
-  static uint16_t open_mean_samples = 0;
+  static unsigned int closing_count;
+  static unsigned int opening_count;
+  static uint16_t open_mean_mA;
+  static uint16_t open_mean_samples;
 
-  static int valveindex = 0;
+  static int valveindex;
 
-  static int psuofftimer = 0;
-  static int locktimer = 0;
-  static int gaptimer = 0;
+  static int psuofftimer;
+  static int locktimer;
+  static int gaptimer;
   static uint8_t gap_dir = DIR_OPEN;          // stroke after the temperature gap
   static enum ASTATE gap_next = A_LEARN3;
 
-  static uint8_t svc_move_dir = 0;
-  static uint16_t svc_move_counts = 0;
-  static uint8_t svc_move_maxmA = 0;
-  static byte svc_prev_status = 0;
+  static uint8_t svc_move_dir;
+  static uint16_t svc_move_counts;
+  static uint8_t svc_move_maxmA;
+  static byte svc_prev_status;
 
   valve_loop_ticks++;
 
@@ -756,7 +754,6 @@ void valve_loop () {
                         // a failed or blocked valve keeps its status also while it moves
                         if ((move_flags & MOVE_KEEP_STATUS) == 0) myvalvemots[valveindex].status = open ? VLV_STATE_OPENING : VLV_STATE_CLOSING;
                         valvestate = open ? A_OPEN2 : A_CLOSE2;
-                        isr_counter=0;
                       }
                       else {
                         #ifdef motDebug
@@ -783,8 +780,6 @@ void valve_loop () {
                     break;
                   }
                   // first: closing completely
-                  undercurrcnt = 0;
-                  overcurrcnt = 0;
                   prepare_learn_stroke(valveindex, DIR_CLOSE, false);
                   motorcycle (valveindex, CMD_M_CLOSE);
                   myvalvemots[valveindex].status = VLV_STATE_CLOSING;
@@ -913,7 +908,6 @@ void valve_loop () {
                       myvalvemots[valveindex].actual_position = myvalvemots[valveindex].target_position;
                       learn_end(valveindex, false);
                       valvestate = A_IDLE;
-                      isr_counter=0;
                     }
                     // stop: the counter ran out (isr_target 65535) without an end stop, idle: motor machine not running
                     else if (temp == M_RES_ERROR || temp == M_RES_STOP || temp == M_RES_IDLE) {
@@ -992,7 +986,6 @@ void valve_loop () {
                       #endif
                       myvalvemots[valveindex].status = VLV_STATE_OPENING;
                       valvestate = A_SET2;
-                      isr_counter=0;
                     }
                     else {
                       #ifdef motDebug
@@ -1056,7 +1049,6 @@ void valve_loop () {
                         (svc_move_dir == DIR_OPEN ? M_RES_OPENS : M_RES_CLOSES)) {
                       myvalvemots[valveindex].status = svc_move_dir == DIR_OPEN ? VLV_STATE_OPENING : VLV_STATE_CLOSING;
                       valvestate = A_SVC2;
-                      isr_counter = 0;
                     }
                     else {
                       record_refused_move(valveindex);
@@ -1085,7 +1077,6 @@ void valve_loop () {
                     // the inrush limit stopped the motor at its start (fault 5, set by finish_move)
                     if (temp == M_RES_ENDSTOP && endstop.inrushTrip()) myvalvemots[valveindex].status = VLV_STATE_FAILED;
                     valvestate = A_IDLE;
-                    isr_counter = 0;
                   }
                   break;
 
@@ -1119,16 +1110,16 @@ byte motorcycle (int mvalvenr, byte cmd) {
   static byte motorstate = M_INIT;
   static byte settle_next = M_IDLE;
   static byte settle_result = M_RES_TURNING;
-  static int settlecnt = 0;
-  static int turnoncnt = 0;
+  static int settlecnt;
+  static int turnoncnt;
 
-  static int cyclecnt = 0;
-  static int debouncecnt = 0;
+  static int cyclecnt;
+  static int debouncecnt;
 
-  static int normalcurrcnt = 0;
+  static int normalcurrcnt;
 
-  static uint16_t meancurrent_cnt = 0;          // counts meancurrent values
-  static long meancurrent_mem = 0;              // memory for meancurrent values
+  static uint16_t meancurrent_cnt;              // counts meancurrent values
+  static long meancurrent_mem;                  // memory for meancurrent values
   byte result = 0;
 
   // target count reached (flag set by the EXTI handler, which must not run this state machine itself)
@@ -1142,16 +1133,12 @@ byte motorcycle (int mvalvenr, byte cmd) {
 
     switch (motorstate) {
       case M_INIT:  MUX_OFF();         // relay MUX off
-                    ena_motor(0, 0);
+                    ena_all_off();
                     DIR_OFF();         // direction off
   
                     motorstate = M_IDLE;
                     isr_turning = 0;
-                    isr_counter = 0;
-                    isr_target = 0;
                     result = M_RES_INIT;
-                    isr_timer_go = 0;
-                    isr_timer_fin = 0;
   
                     break;
   
@@ -1183,8 +1170,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                       result = M_RES_IDLE;
                     }
 
-                    undercurrcnt = 0;
-                    overcurrcnt = 0;
                     
                     break;
       
@@ -1219,8 +1204,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     break;
 
       case M_START:
-                    undercurrcnt = 0;
-                    overcurrcnt = 0;
                     motorstate = M_TURNON;
                     isr_valvenr = mvalvenr;
                     isr_counter=0;
@@ -1242,8 +1225,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                     move_profile.reset();
                     motor_stop_cause = vdm::MotorStop::None;
                     last_turning_current = 0;
-                    stroke_mean_mA = 0;
-                    stroke_mean_samples = 0;
                     move_start_ms = millis();
                     result = M_RES_TURNING;
                     attachInterrupt(digitalPinToInterrupt(REVINPIN), isr_count, RISING);
@@ -1259,7 +1240,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
 
                     analog_current_old = 0;
                     undercurrcnt = 0;
-                    overcurrcnt = 0;
                     normalcurrcnt = 0;
 
                     // check if pwm is finished
@@ -1333,7 +1313,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                             COMM_DBG.print(" current=");
                             COMM_DBG.print(current_mA/10,10); COMM_DBG.println(" mA. set motorstate to  M_UNDERCURR");
                           #endif
-                          undercurrcnt = 0;
                           motorstate = M_UNDERCURR;
                         }                        
                       }
@@ -1346,7 +1325,6 @@ byte motorcycle (int mvalvenr, byte cmd) {
                             COMM_DBG.println("M: normal turning timeout");            
                           #endif
                           motor_halt();
-                          normalcurrcnt = 0;
                           motor_stop_cause = vdm::MotorStop::Timeout;
                           motorstate = M_IDLE;
                           result = M_RES_ERROR;
@@ -1445,7 +1423,7 @@ byte motorcycle (int mvalvenr, byte cmd) {
                         COMM_DBG.print("test: result "); COMM_DBG.println(result);
                       #endif
                       motorstate = M_IDLE;
-                      ena_motor(0, 0);
+                      ena_all_off();
                     }
                     break;
 
@@ -1470,11 +1448,17 @@ void set_motor (int smvalvenr, int dir) {
 }
 
 
+// all motor enables off
+static void ena_all_off () {
+  ENA0_OFF(); ENA1_OFF(); ENA2_OFF(); ENA3_OFF(); ENA4_OFF(); ENA5_OFF();
+}
+
+
 // enables motor 
 void ena_motor (int emvalvenr, int state) {
 
   if (state == 0) { 
-    ENA0_OFF(); ENA1_OFF(); ENA2_OFF(); ENA3_OFF(); ENA4_OFF(); ENA5_OFF(); 
+    ena_all_off();
   }
   else {
     if (emvalvenr == 0 || emvalvenr == 1) { ENA0_ON(); }
@@ -1501,7 +1485,7 @@ static void motor_halt () {
   isr_turning = 0;
   isr_timer_go = 0;       // before fin: TimerHandler0 enables the motor on go && !fin
   isr_timer_fin = 0;
-  ena_motor(0, 0);
+  ena_all_off();
 }
 
 
@@ -1510,7 +1494,7 @@ static void motor_halt () {
 void callback_motorstop () {
   detachInterrupt(digitalPinToInterrupt(REVINPIN));
   isr_turning = 0;
-  ena_motor(0, 0);  
+  ena_all_off();
   isr_stop_request = 1;
 }
 
@@ -1644,7 +1628,7 @@ void TimerHandler0()        // called every 1 ms
     if (trip) {
       // stop motor immediately
       detachInterrupt(digitalPinToInterrupt(REVINPIN));                           
-      ena_motor(0, 0);
+      ena_all_off();
       isr_turning = 0;
       isr_overcurrentevent = 1;
     }
