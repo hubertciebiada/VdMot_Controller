@@ -1,5 +1,6 @@
 // HealthMonitor events.
 #include <initializer_list>
+#include <string>
 
 #include "doctest.h"
 #include "vdm/health_monitor.h"
@@ -58,10 +59,10 @@ TEST_CASE("onValve: first snapshot is silent except bad states") {
   blocked.calibRetries = 2;
   Events r = onValve(hm, unknown, blocked);
   REQUIRE(r.n == 1);
-  checkEvent(r.e[0], EventCode::ValveBlocked, 3, 2);
+  checkEvent(r.e[0], EventCode::ValveBlocked, 3, 2, -1);
   r = onValve(hm, unknown, known(4));
   REQUIRE(r.n == 1);
-  checkEvent(r.e[0], EventCode::ValveFailed, 3);
+  checkEvent(r.e[0], EventCode::ValveFailed, 3, 0, -1);
   r = onValve(hm, unknown, known(6));
   REQUIRE(r.n == 1);
   checkEvent(r.e[0], EventCode::ValveNoValve, 3);
@@ -99,17 +100,17 @@ TEST_CASE("onValve: bad status transitions and recovery") {
   b.calibRetries = 1;
   Events r = onValve(hm, known(1), b);
   REQUIRE(r.n == 1);
-  checkEvent(r.e[0], EventCode::ValveBlocked, 3, 1);
+  checkEvent(r.e[0], EventCode::ValveBlocked, 3, 1, -1);
   CHECK(r.e[0].severity == Severity::Error);
   r = onValve(hm, known(9), known(1));
   REQUIRE(r.n == 1);
   checkEvent(r.e[0], EventCode::ValveRecovered, 3, 9, 0);
   r = onValve(hm, known(4), known(9));
   REQUIRE(r.n == 1);
-  checkEvent(r.e[0], EventCode::ValveBlocked, 3, 0);
+  checkEvent(r.e[0], EventCode::ValveBlocked, 3, 0, -1);
   r = onValve(hm, known(1), known(4));
   REQUIRE(r.n == 1);
-  checkEvent(r.e[0], EventCode::ValveFailed, 3);
+  checkEvent(r.e[0], EventCode::ValveFailed, 3, 0, -1);
   r = onValve(hm, known(6), known(8));
   REQUIRE(r.n == 1);
   checkEvent(r.e[0], EventCode::ValveRecovered, 3, 6);
@@ -153,7 +154,7 @@ TEST_CASE("onValve: calibration outcomes") {
   calRetry.calibRetries = 1;
   r = onValve(hm, calRetry, failed);
   REQUIRE(r.n == 1);
-  checkEvent(r.e[0], EventCode::CalibFailed, 3, 2);
+  checkEvent(r.e[0], EventCode::CalibFailed, 3, 2, -1);
 
   // Blocked valve recalibrated fine: CalibOk replaces ValveRecovered.
   ValveState calFromBlocked = known(9);
@@ -206,6 +207,28 @@ TEST_CASE("onValve: calibration outcomes") {
   CHECK(onValve(hm, idle, idleRetry).n == 0);
   // A drop is not a retry.
   CHECK(onValve(hm, calRetry, cal).n == 0);
+}
+
+TEST_CASE("onValve: blocked and failed messages claim no failsafe position or fault") {
+  HealthMonitor hm;
+  auto message = [](const Event& e) {
+    char buf[160];
+    formatEventMessage(e, buf, sizeof buf);
+    return std::string(buf);
+  };
+  ValveState blocked = known(9);
+  blocked.calibRetries = 3;
+  Events r = onValve(hm, known(1), blocked, true, 2);
+  REQUIRE(r.n == 1);
+  CHECK(message(r.e[0]) == "valve 3: blocked (calibration retries 3)");
+  r = onValve(hm, known(1), known(4), true, 2);
+  REQUIRE(r.n == 1);
+  CHECK(message(r.e[0]) == "valve 3: failed");
+  ValveState cal = known(1);
+  cal.calibrating = true;
+  r = onValve(hm, cal, blocked, true, 2);
+  REQUIRE(r.n == 1);
+  CHECK(message(r.e[0]) == "valve 3: calibration failed after 3 retries");
 }
 
 TEST_CASE("onValve: v2 reports a failed calibration with calState bit 3") {

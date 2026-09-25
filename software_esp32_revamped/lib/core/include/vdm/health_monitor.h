@@ -24,6 +24,8 @@ class HealthMonitor {
   //  - calibrating false->true: CalibStarted; true->false: CalibOk when the
   //    new status is Idle, CalibFailed when Blocked; calibRetries increase
   //    during calibration: CalibRetry;
+  //  - ValveBlocked, ValveFailed and CalibFailed carry arg2 -1 (no failsafe
+  //    position, no fault);
   //  - earlyStops / cmdRejected increase: EarlyStop / CmdRejected;
   //  - kHealthTargetUnconfirmed set (sync -> Failed): TargetNotConfirmed;
   //    kHealthStale set: ValveStale (arg1 = the model's default staleness

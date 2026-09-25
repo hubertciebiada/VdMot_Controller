@@ -10,6 +10,9 @@ constexpr uint8_t kStatusNoValve = static_cast<uint8_t>(ValveStatus::NoValve);
 constexpr uint8_t kStatusBlocked = static_cast<uint8_t>(ValveStatus::Blocked);
 constexpr uint32_t kCounterEventIntervalMs = 600000;
 constexpr uint16_t kRecoverableFlags = kHealthStale | kHealthTargetUnconfirmed;
+// arg2 of ValveBlocked/CalibFailed (failsafe position) and ValveFailed
+// (fault) when the snapshot has neither: the message leaves it out.
+constexpr int32_t kArgNone = -1;
 
 // Bounded event sink for one call.
 class Sink {
@@ -36,11 +39,12 @@ uint8_t badStatus(const ValveState& v, bool active) {
   return 0;
 }
 
-EventCode badEvent(uint8_t status) {
+// The event of a bad status (badStatus() != 0).
+void addBad(Sink& sink, uint8_t valve, uint8_t status, uint8_t calibRetries) {
   switch (status) {
-    case kStatusBlocked: return EventCode::ValveBlocked;
-    case kStatusFailed: return EventCode::ValveFailed;
-    default: return EventCode::ValveNoValve;
+    case kStatusBlocked: sink.add(EventCode::ValveBlocked, valve, calibRetries, kArgNone); break;
+    case kStatusFailed: sink.add(EventCode::ValveFailed, valve, calibRetries, kArgNone); break;
+    default: sink.add(EventCode::ValveNoValve, valve, calibRetries); break;
   }
 }
 
@@ -73,7 +77,7 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
     const bool failed = after.status == kStatusBlocked ||
                         (after.hasExtended && (after.calFlags & kCalFlagLastFailed) != 0);
     if (failed) {
-      sink.add(EventCode::CalibFailed, valve, after.calibRetries);
+      sink.add(EventCode::CalibFailed, valve, after.calibRetries, kArgNone);
       calibFailed = true;
     } else if (after.status == kStatusIdle) {
       sink.add(EventCode::CalibOk, valve, static_cast<int32_t>(after.openCount),
@@ -90,7 +94,7 @@ bool addTransitions(Sink& sink, uint8_t valve, const ValveState& before, const V
   if (curBad != prevBad) {
     if (curBad != 0) {
       if (!(calibFailed && curBad == kStatusBlocked)) {
-        sink.add(badEvent(curBad), valve, after.calibRetries);
+        addBad(sink, valve, curBad, after.calibRetries);
       }
     } else if (!covered) {
       sink.add(EventCode::ValveRecovered, valve, prevBad, 0);
@@ -129,7 +133,7 @@ size_t HealthMonitor::onValve(uint8_t valve, const ValveState& before, const Val
   bool statusChanged = false;
   if (!before.known && after.known) {
     const uint8_t bad = badStatus(after, active);
-    if (bad != 0) sink.add(badEvent(bad), valve, after.calibRetries);
+    if (bad != 0) addBad(sink, valve, bad, after.calibRetries);
   } else if (after.known) {
     statusChanged = !addTransitions(sink, valve, before, after, active) &&
                     before.status != after.status;
