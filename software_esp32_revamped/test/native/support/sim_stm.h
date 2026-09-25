@@ -77,6 +77,7 @@ class SimStm : public vdm::FlashTransport {
   std::set<uint32_t> stuck;          // flash addresses that program wrong
   int noiseReplies = 0;              // next N replies get a 0x55 byte in front
   bool instantReplies = false;       // bootloader answers within the same millisecond
+  uint32_t bootMaxBaud = 115200;     // the ROM bootloader ignores bytes sent faster than this
   std::multiset<uint32_t> corruptReadAt;  // one corrupted read-back per entry (block address)
   std::deque<std::string> echoes;    // sent once each, on every 8E1 '\n' received
   std::string echoRepeat;            // sent on every 8E1 '\n' once `echoes` is empty
@@ -253,7 +254,7 @@ class SimStm : public vdm::FlashTransport {
   }
 
   void bootByte(uint8_t b) {
-    if (!even) return;
+    if (!even || baud > bootMaxBaud) return;
     switch (bs_) {
       case Bs::Unsynced:
         if (b != 0x7F) return;

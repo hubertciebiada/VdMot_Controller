@@ -78,6 +78,24 @@ uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len) {
   return crc;
 }
 
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+// A run that ends with "VDM-HW:C" + 1..2 digits (contracts: STM image
+// revision marker); writes "C<digits>" to tag.
+bool hwMarker(const char* run, size_t len, char (&tag)[4]) {
+  static const char kMarker[] = "VDM-HW:C";
+  constexpr size_t kMarkerLen = sizeof kMarker - 1;
+  if (len < kMarkerLen + 1 || !isDigit(run[len - 1])) return false;
+  const size_t digits = len >= kMarkerLen + 2 && isDigit(run[len - 2]) ? 2 : 1;
+  if (len < kMarkerLen + digits || memcmp(run + len - digits - kMarkerLen, kMarker, kMarkerLen) != 0) {
+    return false;
+  }
+  tag[0] = 'C';
+  memcpy(tag + 1, run + len - digits, digits);
+  tag[1 + digits] = '\0';
+  return true;
+}
+
 void scanBytes(detail::ImageScan& sc, const uint8_t* data, size_t len, ImageInfo& info) {
   sc.crc = crc32Update(sc.crc, data, len);
   for (size_t i = 0; i < len; ++i) {
@@ -93,6 +111,14 @@ void scanBytes(detail::ImageScan& sc, const uint8_t* data, size_t len, ImageInfo
           memcpy(info.version, sc.run, sc.runLen);
           info.version[sc.runLen] = '\0';
           sc.versionFound = true;
+        }
+      }
+      char tag[4];
+      if (sc.runLen < sizeof sc.run && hwMarker(sc.run, sc.runLen, tag)) {
+        if (info.hwTag[0] == '\0') {
+          memcpy(info.hwTag, tag, sizeof tag);
+        } else if (strcmp(info.hwTag, tag) != 0) {
+          info.hwConflict = true;
         }
       }
       sc.runLen = 0;
@@ -142,7 +168,8 @@ FlashError checkChip(const ImageInfo& info, uint16_t pid) {
 }
 
 // Same numbers and suffix; the image's hw tag (usually a separate string in
-// the binary, so empty) must match only when present.
+// the binary, so empty) must match only when present. The board marker of
+// the image is checked separately.
 bool sameVersion(const Version& image, const Version& app) {
   return image.major == app.major && image.minor == app.minor && image.patch == app.patch &&
          strcmp(image.suffix, app.suffix) == 0 &&
@@ -300,6 +327,10 @@ bool StmFlasher::begin(FlashImage& image, const FlashOptions& opt, uint32_t nowM
   opt_ = opt;
   st_ = FlashStatus{};
   st_.startedMs = nowMs;
+  sessionBaud_ = opt.baud;
+  st_.baud = opt.baud;
+  memcpy(st_.boardHw, opt.boardHw, sizeof st_.boardHw);
+  st_.boardHw[sizeof st_.boardHw - 1] = '\0';
   scan_ = detail::ImageScan{};
   releaseMs_ = lastSendMs_ = waitStartMs_ = nowMs;
   waitLimitMs_ = 0;
@@ -432,7 +463,7 @@ bool StmFlasher::send(const uint8_t* data, size_t len, uint32_t nowMs, uint32_t 
   if (!put(data, len, nowMs)) return false;
   // write() only queues: the reply cannot start before the frame has left.
   waitStartMs_ = nowMs;
-  waitLimitMs_ = timeoutMs + wireMs(len, opt_.baud);
+  waitLimitMs_ = timeoutMs + wireMs(len, sessionBaud_);
   return true;
 }
 
@@ -512,6 +543,16 @@ void StmFlasher::stepValidating(uint32_t nowMs) {
     fail(FlashError::ImageNoHandshake, 0, nowMs);
     return;
   }
+  // The board check comes before anything touches the STM.
+  st_.board = checkBoard(st_.image.hwTag, st_.boardHw);
+  if (!opt_.force && (st_.image.hwConflict || st_.board == BoardCheck::Mismatch)) {
+    fail(FlashError::BoardMismatch, 0, nowMs);
+    return;
+  }
+  if (!opt_.force && st_.board == BoardCheck::BoardRequired) {
+    fail(FlashError::BoardRequired, 0, nowMs);
+    return;
+  }
   enter(FlashPhase::Resetting, nowMs);
 }
 
@@ -523,7 +564,7 @@ void StmFlasher::stepPulse(uint32_t nowMs) {
   if (sub_ == 0) {
     t_.setReset(true);
     if (boot) {
-      t_.configure(opt_.blank ? opt_.baud : kHandshakeBaud, true);
+      t_.configure(opt_.blank ? sessionBaud_ : kHandshakeBaud, true);
     } else {
       t_.configure(kAppBaud, false);
     }
@@ -574,7 +615,7 @@ void StmFlasher::stepHandshake(uint32_t nowMs) {
       rxLen_ = 0;
       // The ROM bootloader autobauds on 0x7F, so it may run slower than the
       // boot window.
-      if (opt_.baud != kHandshakeBaud) t_.configure(opt_.baud, true);
+      if (sessionBaud_ != kHandshakeBaud) t_.configure(sessionBaud_, true);
       enter(FlashPhase::Sync, nowMs);
       setPercent(4);
       return;
@@ -614,7 +655,7 @@ void StmFlasher::stepSync(uint32_t nowMs) {
     return;
   }
   if (syncTries_ >= attempts) {
-    fail(FlashError::SyncFailed, 0, nowMs);
+    if (!fallbackSession(nowMs)) fail(FlashError::SyncFailed, 0, nowMs);
     return;
   }
   ++syncTries_;
@@ -650,7 +691,10 @@ void StmFlasher::stepGetId(uint32_t nowMs) {
       sub_ = 2;
       return;
     }
-    fail(r == Resp::Nack ? FlashError::Nack : FlashError::Timeout, 0, nowMs);
+    // A silent GetId (not a NACK) may be a bootloader at another baud.
+    if (r == Resp::Nack || !fallbackSession(nowMs)) {
+      fail(r == Resp::Nack ? FlashError::Nack : FlashError::Timeout, 0, nowMs);
+    }
     return;
   }
   const uint16_t pid =
@@ -780,7 +824,7 @@ void StmFlasher::stepVerifying(uint32_t nowMs) {
   if (sub_ == 2) {
     const uint8_t n[2] = {static_cast<uint8_t>(len - 1), static_cast<uint8_t>((len - 1) ^ 0xFF)};
     // ACK + N+1 data bytes at 11 bits each, plus 200 ms (spec 02 R5).
-    const uint32_t dataMs = wireMs(len + 1, opt_.baud) + 200u;
+    const uint32_t dataMs = wireMs(len + 1, sessionBaud_) + 200u;
     if (!send(n, sizeof n, nowMs, opt_.ackTimeoutMs + dataMs)) return;
     sub_ = 3;
     return;
@@ -805,8 +849,27 @@ void StmFlasher::stepVerifying(uint32_t nowMs) {
     fail(FlashError::ImageRead, 0, nowMs);  // the file changed during the run
     return;
   }
+  if (opt_.blank) {
+    // BOOT0 is still set: a reset would start the ROM bootloader again. The
+    // user removes the jumper and resets the STM.
+    t_.configure(kAppBaud, false);
+    st_.manualReset = true;
+    finish(FlashPhase::Done, nowMs);
+    return;
+  }
   enter(FlashPhase::Starting, nowMs);
   setPercent(95);
+}
+
+// One more session at fallbackBaud: new NRST pulse, then the handshake at
+// 115200 (normal mode) or 0x7F at the fallback baud (blank mode).
+bool StmFlasher::fallbackSession(uint32_t nowMs) {
+  if (opt_.fallbackBaud == 0 || sessionBaud_ == opt_.fallbackBaud) return false;
+  sessionBaud_ = opt_.fallbackBaud;
+  st_.baud = sessionBaud_;
+  syncTries_ = 0;
+  enter(FlashPhase::Resetting, nowMs);
+  return true;
 }
 
 void StmFlasher::stepWaitingApp(uint32_t nowMs) {
@@ -871,6 +934,11 @@ void StmFlasher::onAppLine(uint32_t nowMs) {
       fail(FlashError::AppVersionMismatch, 0, nowMs);
       return;
     }
+  }
+  if (!opt_.force && st_.image.hwTag[0] != '\0' && app.hw[0] != '\0' &&
+      strcmp(st_.image.hwTag, app.hw) != 0) {
+    fail(FlashError::AppVersionMismatch, 0, nowMs);
+    return;
   }
   finish(FlashPhase::Done, nowMs);
 }

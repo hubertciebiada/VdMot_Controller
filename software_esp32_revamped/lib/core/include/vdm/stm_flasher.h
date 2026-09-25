@@ -199,8 +199,20 @@ class StmFlasher {
   //    boot window listens only there) and switches to opt.baud when BEEFIT
   //    arrives; blank mode opens it at opt.baud directly.
   //  - Every ACK timeout starts when the frame is queued and includes the
-  //    frame's wire time at opt.baud (11 bits per byte), so slow bauds do not
-  //    time out a 258-byte data frame that is still being sent.
+  //    frame's wire time at the session baud (11 bits per byte), so slow
+  //    bauds do not time out a 258-byte data frame that is still being sent.
+  //  - Validating ends with the board check (checkBoard(image hwTag,
+  //    opt.boardHw)): a mismatch or two different markers fail with
+  //    BoardMismatch, an unknown board with a tagged image with
+  //    BoardRequired, both unless force; an untagged image flashes
+  //    (status().board Untagged). Nothing is touched before.
+  //  - SyncFailed or a GetId without any answer start one more session at
+  //    opt.fallbackBaud (new NRST pulse) unless it is 0 or the session ran at
+  //    it already; status().baud is the session baud.
+  //  - Blank mode ends Done after the verify with manualReset (BOOT0 still
+  //    set: no reset, no gvers); the UART is back at 115200 8N1.
+  //  - After the flash a gvers board tag other than the image's marker fails
+  //    with AppVersionMismatch unless force.
   //  - GetId first sends GET (0x00) for the bootloader version; a failed GET
   //    is not fatal (the byte stays 0).
   //  - The verify pass recomputes the image CRC32; a difference from the
@@ -245,10 +257,12 @@ class StmFlasher {
   void stepVerifying(uint32_t nowMs);
   void stepWaitingApp(uint32_t nowMs);
   void onAppLine(uint32_t nowMs);
+  bool fallbackSession(uint32_t nowMs);
 
   FlashTransport& t_;
   FlashImage* img_ = nullptr;
   FlashOptions opt_;
+  uint32_t sessionBaud_ = 0;   // opt_.baud, or opt_.fallbackBaud in the fallback session
   FlashStatus st_;
   detail::ImageScan scan_;
   uint32_t phaseStartMs_ = 0;
