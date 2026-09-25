@@ -432,6 +432,7 @@ struct Mqtt {
   long failPublishAt = -1;   // index (0-based, over all publish calls) of a publish that fails
   bool failSubscribe = false;
   std::deque<MqttMessage> inbox;  // delivered by loop(), one per call
+  bool burst = false;             // loop() delivers the whole inbox at once
   // recorded
   std::string host;
   uint16_t port = 0;

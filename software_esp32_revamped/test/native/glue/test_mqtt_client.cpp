@@ -333,6 +333,28 @@ TEST_CASE("mqtt inbound: rejections are counted, logged once per 10 s (E28-3)") 
   CHECK(mqtt::status().commandsRejected == 103);
 }
 
+TEST_CASE("mqtt inbound: messages beyond the 4 inbound slots of one loop are rejected as queue full") {
+  glue::begin();
+  vdm::Config& c = useMqtt();
+  for (int v = 0; v < 6; ++v) c.valves[v].active = true;
+  settle(2);
+  fakes::mqtt().burst = true;
+  for (int v = 1; v <= 6; ++v) deliver("VdMot/valves/" + std::to_string(v) + "/target/set", "30");
+  runTask(1);
+  REQUIRE(sib::app().submitted.size() == 4);
+  for (size_t i = 0; i < 4; ++i) CHECK(sib::app().submitted[i].valve == i);
+  const std::vector<vdm::Event> ev = rejected();
+  REQUIRE(ev.size() == 1);  // the second loss is counted, its log is rate-limited
+  CHECK(std::string(ev[0].text) == "queue full");
+  CHECK(ev[0].arg1 == 0);
+  CHECK(mqtt::status().commandsRejected == 2);
+  // The overflow is drained: the next loop starts clean.
+  deliver("VdMot/valves/5/target/set", "30");
+  runTask(1);
+  CHECK(sib::app().submitted.size() == 5);
+  CHECK(mqtt::status().commandsRejected == 2);
+}
+
 TEST_CASE("mqtt inbound: a button acts only after the broker echoed its clear (H13)") {
   glue::begin();
   useMqtt();
