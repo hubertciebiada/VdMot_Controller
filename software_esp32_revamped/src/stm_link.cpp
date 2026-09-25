@@ -313,6 +313,9 @@ void handleCommand(const app::Command& c, uint32_t now) {
     case app::CommandType::ConfigChanged:
       reloadConfig();
       break;
+    case app::CommandType::StopValve:
+    case app::CommandType::LeaveSafeMode:
+      break;  // protocol 3 only: not handled by this firmware yet
   }
 }
 

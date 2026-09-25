@@ -5,6 +5,7 @@
 #include <initializer_list>
 
 #include "doctest.h"
+#include "vdm/stm_types.h"
 #include "vdm/valve_model.h"
 
 using namespace vdm;
@@ -103,7 +104,11 @@ TEST_CASE("target source and sync names") {
   CHECK(strcmp(targetSourceName(TargetSource::Stm), "stm") == 0);
   CHECK(strcmp(targetSourceName(TargetSource::Web), "web") == 0);
   CHECK(strcmp(targetSourceName(TargetSource::Mqtt), "mqtt") == 0);
-  CHECK(strcmp(targetSourceName(static_cast<TargetSource>(4)), "unknown") == 0);
+  CHECK(strcmp(targetSourceName(TargetSource::Restored), "restored") == 0);
+  CHECK(strcmp(targetSourceName(TargetSource::Assembly), "assembly") == 0);
+  CHECK(static_cast<uint8_t>(TargetSource::Restored) == 4);
+  CHECK(static_cast<uint8_t>(TargetSource::Assembly) == 5);
+  CHECK(strcmp(targetSourceName(static_cast<TargetSource>(6)), "unknown") == 0);
   CHECK(strcmp(targetSyncName(TargetSync::Unknown), "unknown") == 0);
   CHECK(strcmp(targetSyncName(TargetSync::Synced), "synced") == 0);
   CHECK(strcmp(targetSyncName(TargetSync::Pending), "pending") == 0);
@@ -111,6 +116,87 @@ TEST_CASE("target source and sync names") {
   CHECK(strcmp(targetSyncName(TargetSync::AwaitVerify), "await_verify") == 0);
   CHECK(strcmp(targetSyncName(TargetSync::Failed), "failed") == 0);
   CHECK(strcmp(targetSyncName(static_cast<TargetSync>(6)), "invalid") == 0);
+}
+
+TEST_CASE("failsafeKind and valveAtFailsafe") {
+  struct Row {
+    bool hasV3;
+    uint16_t flags;
+    bool fsOverride;
+    FailsafeKind kind;
+  };
+  const uint16_t both = kStmFlagFsLease | kStmFlagFsBlocked;
+  const uint16_t others = static_cast<uint16_t>(0xFFFF & ~both);
+  const Row rows[] = {
+      {false, 0, false, FailsafeKind::None},
+      {false, kStmFlagFsLease, false, FailsafeKind::None},    // gvlvx: no v3 flags
+      {false, kStmFlagFsBlocked, false, FailsafeKind::None},
+      {false, both, false, FailsafeKind::None},
+      {false, 0, true, FailsafeKind::Lease},                  // ESP emulation
+      {false, kStmFlagFsBlocked, true, FailsafeKind::Lease},
+      {true, 0, false, FailsafeKind::None},
+      {true, others, false, FailsafeKind::None},
+      {true, kStmFlagFsLease, false, FailsafeKind::Lease},
+      {true, kStmFlagFsBlocked, false, FailsafeKind::Blocked},
+      {true, both, false, FailsafeKind::Blocked},             // blocked wins
+      {true, 0, true, FailsafeKind::Lease},
+      {true, kStmFlagFsBlocked, true, FailsafeKind::Blocked},
+  };
+  for (const Row& r : rows) {
+    CAPTURE(r.hasV3);
+    CAPTURE(r.flags);
+    CAPTURE(r.fsOverride);
+    ValveState v;
+    v.hasV3 = r.hasV3;
+    v.stmFlags = r.flags;
+    v.fsOverride = r.fsOverride;
+    CHECK(failsafeKind(v) == r.kind);
+    CHECK(valveAtFailsafe(v) == (r.kind == FailsafeKind::Lease));
+  }
+}
+
+TEST_CASE("defaults of the protocol 3 and failsafe fields") {
+  const ValveState v;
+  CHECK_FALSE(v.hasV3);
+  CHECK(v.stmFlags == 0);
+  CHECK(v.fault == 0);
+  CHECK(v.fsPct == kFailsafeHold);
+  CHECK(v.drive == 0);
+  CHECK(v.retryS == 0);
+  CHECK(v.retries == 0);
+  CHECK_FALSE(v.autoRetry);
+  CHECK_FALSE(v.fsOverride);
+  CHECK(v.fsTarget == 0);
+  CHECK_FALSE(v.forcePush);
+  CHECK(failsafeKind(v) == FailsafeKind::None);
+  CHECK(kHealthFailsafe == (1u << 9));
+  CHECK(kHealthStrokeShort == (1u << 10));
+  CHECK(kChangeFailsafe == (1u << 14));
+  CHECK(TempReading{}.failStreak == 0);
+  CHECK(VoltReading{}.failStreak == 0);
+}
+
+TEST_CASE("stm types: command numbers and defaults") {
+  // Command type numbers are external (StmQueueFull arg1): appended only.
+  CHECK(static_cast<uint8_t>(StmCommandType::SetTarget) == 0);
+  CHECK(static_cast<uint8_t>(StmCommandType::ConfigChanged) == 12);
+  CHECK(static_cast<uint8_t>(StmCommandType::StopValve) == 13);
+  CHECK(static_cast<uint8_t>(StmCommandType::LeaveSafeMode) == 14);
+  const StmCommand c;
+  CHECK(c.type == StmCommandType::ConfigChanged);
+  CHECK(c.board[0] == '\0');
+  CHECK(c.attempt == 0);
+  CHECK(static_cast<uint8_t>(StmSaveState::Idle) == 0);
+  CHECK(static_cast<uint8_t>(StmSaveState::Waiting) == 1);
+  CHECK(static_cast<uint8_t>(StmSaveState::Saved) == 2);
+  CHECK(static_cast<uint8_t>(StmSaveState::Unavailable) == 3);
+  CHECK(static_cast<uint8_t>(StmSaveState::TimedOut) == 4);
+  static StmSnapshot s;  // large: not on the stack
+  CHECK(s.support == StmSupport::Unknown);
+  CHECK(s.lease.mode == LeaseMode::None);
+  CHECK_FALSE(s.haveLearnTime);
+  CHECK(s.learnTimeS == 0);
+  CHECK_FALSE(s.flashPending);
 }
 
 TEST_CASE("diffValve reports exactly the changed groups") {

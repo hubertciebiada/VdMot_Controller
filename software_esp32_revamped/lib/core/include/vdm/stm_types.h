@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "vdm/common.h"
+#include "vdm/failsafe.h"
 #include "vdm/link_policy.h"
 #include "vdm/stm_codec.h"
 #include "vdm/stm_flasher.h"
@@ -31,9 +32,11 @@ enum class StmCommandType : uint8_t {
   ServiceMove,        // valve, dir, counts, maxmA (v2)
   RequestProfile,     // valve (v2)
   ResetStm,           // NRST pulse by the user
-  StartFlash,         // image, blank, force
+  StartFlash,         // image, blank, force, board
   AbortFlash,
   ConfigChanged,      // active mask / sensor slots changed: re-read config
+  StopValve,          // valve or kAllValves: sstop (protocol 3)
+  LeaveSafeMode,      // ssafe 0 (protocol 3)
 };
 
 struct StmCommand {
@@ -57,6 +60,18 @@ struct StmCommand {
   bool blank = false;
   bool force = false;
   bool scheduled = false;  // Calibrate: fired by the calibration schedule
+  char board[4] = {0};     // StartFlash: board revision chosen by the user ("C1", "C2"), "" none
+  uint16_t attempt = 0;    // Calibrate (scheduled): attempt number of the slot
+};
+
+// State of the STM EEPROM save before an ESP restart (the restart also
+// resets the STM when jumper X20 is fitted).
+enum class StmSaveState : uint8_t {
+  Idle = 0,
+  Waiting = 1,      // a restart asked for the save
+  Saved = 2,        // the STM reported no pending EEPROM write
+  Unavailable = 3,  // link not up or flashing: nothing to wait for
+  TimedOut = 4,
 };
 
 // ---------------------------------------------------------------- snapshot
@@ -93,6 +108,11 @@ struct StmSnapshot {
   FlashStatus flash;
   char flashImage[32] = {0};
   Profile profiles[kValveCount];  // last gprof per valve (count 0 = none)
+  StmSupport support = StmSupport::Unknown;
+  LeaseStatus lease;
+  bool haveLearnTime = false;     // gtlnt (protocol 3) read
+  uint32_t learnTimeS = 0;
+  bool flashPending = false;      // a flash waits for the STM EEPROM
 };
 
 }  // namespace vdm
