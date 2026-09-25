@@ -1,8 +1,9 @@
-// Valve control of the whole STM glue with the valve sim (glue_system): a blocked valve at its
-// failsafe position and its automatic retry (K2, C-1), targets before calibrations (S8), the stop
-// of a calibration series (S8), warm resets with an expired lease and in a hand-over (K1-8, W2, C-8).
-// The protocol-3 requests are dispatched by communication.cpp; here their app_* functions are called.
+// Valve control of the whole STM glue with the valve sim (glue_system): a blocked or jammed valve at
+// its failsafe position and its automatic retry (K2, C-1), the failsafe after a cold boot with a
+// silent ESP (C-2), targets before calibrations (S8), the stop of a calibration series (S8), warm
+// resets with an expired lease and in a hand-over (K1-8, W2, C-8). The 3 h of C-1 are time jumps.
 #include <functional>
+#include <string>
 
 #include "eeprom.h"
 #include "glue_test.h"
@@ -114,6 +115,121 @@ TEST_CASE("system K2/C-1: a blocked valve makes one failsafe move and waits for 
   CHECK(rig.conflicts == 0);
 }
 
+TEST_CASE("system C-1: a valve jammed at 25 % makes one calibration series and one failsafe move per retry") {
+  sim::Rig rig;
+  bootController(rig, 0x0FFF & ~(1u << 5));
+  rig.valve[5].position = 600;
+  rig.valve[5].jamFrom = 900;
+  rig.valve[5].jamTo = 3600;
+  runMain(40000);
+  REQUIRE(+myvalvemots[5].status == VLV_STATE_PRESENT);
+  app_set_failsafe(5, 50);
+  CHECK(exchange("stgtp 5 30\n") == "stgtp\r\n");
+  REQUIRE(runMainUntil([] { return myvalvemots[5].status == VLV_STATE_BLOCKS && valve_idle(); }, 60000));
+  CHECK(+myvalvemots[5].calibSeq == 1);
+  const uint32_t blocked = rig.valve[5].enables;
+  runMain(60000);
+  // at most one failsafe move, then the valve stays
+  CHECK(rig.valve[5].enables <= blocked + 1);
+  const uint32_t enables = rig.valve[5].enables;
+  CHECK(+myvalvemots[5].status == VLV_STATE_BLOCKS);
+  valve_v3_info info;
+  app_get_valve_v3(5, info);
+  CHECK(info.retries == 0);
+  REQUIRE(info.retryS > 60);
+  CHECK(info.retryS <= 3600);
+  // nothing until retryS reaches 0
+  jumpS(info.retryS - 60);
+  CHECK(rig.valve[5].enables == enables);
+  CHECK(+myvalvemots[5].calibSeq == 1);
+  jumpS(60);
+  REQUIRE(runMainUntil([] { return myvalvemots[5].calibActive != 0; }, 20000));
+  REQUIRE(runMainUntil([] { return myvalvemots[5].status == VLV_STATE_BLOCKS && valve_idle(); }, 60000));
+  CHECK(+myvalvemots[5].calibSeq == 2);
+  const uint32_t again = rig.valve[5].enables;
+  runMain(60000);
+  CHECK(rig.valve[5].enables <= again + 1);
+  app_get_valve_v3(5, info);
+  CHECK(info.retries == 1);
+  CHECK(info.retryS > 21000);
+  CHECK(rig.conflicts == 0);
+}
+
+namespace {
+
+// C-2: boot 0 stores startOnPower = failsafe = pct, the lease timeout 5 min and the calibration of
+// valve 0; after a power cycle the ESP stays silent and the lease expires
+void coldBootFailsafe(uint8_t pct) {
+  sim::Rig rig;
+  bootController(rig, 0x0FF0);
+  if (testkit::boot() == 0) {
+    runMain(40000);
+    const vdm::MotorParams p = motor_get_params();
+    const std::string sop = std::to_string(pct);
+    CHECK(exchange("smotc " + std::to_string(p.lowFac) + " " + std::to_string(p.highFac) + " " + sop + "\n") ==
+          "smotc\r\n");
+    exchange("sfspo 255 " + sop + "\n");
+    CHECK(exchange("slcfg 5\n") == "slcfg ok\r\n");
+    CHECK(exchange("staln 0\n") == "staln\r\n");
+    REQUIRE(runMainUntil([] { return myvalvemots[0].calibSeq != 0 && myvalvemots[0].calibActive == 0 && valve_idle(); },
+                         60000));
+    REQUIRE(+myvalvemots[0].calibrated == 1);
+    runMain(10000);
+    testkit::reboot(testkit::Reset::PowerOn);
+  }
+  CHECK(app_lease_timeout() == 5);
+  runMain(40000);
+  uint32_t enables[4];
+  bool calibrated[4];
+  for (unsigned v = 0; v < 4; v++) {
+    CAPTURE(v);
+    CHECK(app_failsafe_pct(v) == pct);
+    CHECK(+myvalvemots[v].actual_position == pct);
+    // every present valve is unreferenced after a cold boot
+    if (myvalvemots[v].calibrated) {
+      CHECK(+myvalvemots[v].needsReference == 1);
+    } else {
+      CHECK(+myvalvemots[v].status == VLV_STATE_PRESENT);
+    }
+    enables[v] = rig.valve[v].enables;
+    calibrated[v] = myvalvemots[v].calibrated != 0;
+  }
+  CHECK(calibrated[0]);
+  // nothing moves while the lease runs
+  jumpS(200);
+  CHECK(app_lease_state() != 2);
+  for (unsigned v = 0; v < 4; v++) CHECK(rig.valve[v].enables == enables[v]);
+  jumpS(60);
+  REQUIRE(app_lease_state() == 2);
+  REQUIRE(runMainUntil(
+    [] {
+      for (unsigned v = 0; v < 4; v++) {
+        if (myvalvemots[v].status != VLV_STATE_IDLE || myvalvemots[v].needsReference) return false;
+      }
+      return valve_idle();
+    },
+    300000));
+  for (unsigned v = 0; v < 4; v++) {
+    CAPTURE(v);
+    CHECK(rig.valve[v].enables > enables[v]);
+    // a reference move (needsReference ends at an end stop) or a calibration
+    CHECK((calibrated[v] ? myvalvemots[v].calibSeq == 0 : myvalvemots[v].calibSeq >= 1));
+    CHECK(+myvalvemots[v].calibrated == 1);
+    CHECK(+myvalvemots[v].actual_position == pct);
+  }
+  CHECK(rig.conflicts == 0);
+}
+
+}  // namespace
+
+TEST_CASE("system C-2: failsafe 50 after a power cycle with a silent ESP, reference or calibration") {
+  coldBootFailsafe(50);
+}
+
+TEST_CASE("system C-2: failsafe 30 after a power cycle with a silent ESP, reference or calibration") {
+  coldBootFailsafe(30);
+}
+
 TEST_CASE("system S8-4: a target change of another valve goes between two calibrations") {
   sim::Rig rig;
   bootController(rig, 0x0FF0);
@@ -169,7 +285,10 @@ TEST_CASE("system K1-8/W2: a warm reset keeps the expired lease and the valve st
     runMain(40000);
     REQUIRE(+myvalvemots[0].status == VLV_STATE_PRESENT);
     REQUIRE(+myvalvemots[8].status == VLV_STATE_OPENCIR);
-    app_lease_configure(5);
+    // stored like the ESP does it, the EEPROM values win over the defaults after the reset; the
+    // failsafe holds every valve where it is
+    CHECK(exchange("sfspo 255 255\n") == "sfspo 255 ok\r\n");
+    CHECK(exchange("slcfg 5\n") == "slcfg ok\r\n");
     jumpS(300);
     REQUIRE(app_lease_state() == 2);
     runMain(1000);
