@@ -1,4 +1,4 @@
-// Logging: structured events (vdm::EventLog in RAM, 512 entries), mirrored
+// Logging: structured events (vdm::EventLog in RAM, kEventCapacity), mirrored
 // to the debug serial port, a rotating file log on LittleFS and optional UDP
 // syslog (RFC 5424). Thread-safe entry points; slow I/O (file, UDP) happens
 // only in service(), called from the app task.
@@ -12,8 +12,16 @@
 
 namespace logger {
 
-// The RAM ring is also the buffer of the file sink (vdm::LogFlushPolicy).
-constexpr size_t kEventCapacity = 512;
+// The RAM ring is also the buffer of the file sink (vdm::LogFlushPolicy),
+// which writes when half of it waits. 48 B per event: the firmware build sets
+// 128 (platformio.ini), because on the WT32-ETH01 the heap left 2 KB once the
+// network was up with 512 (24 KB) and Ethernet dropped every received frame.
+// The file keeps the history; the native tests use 512.
+#ifndef VDM_EVENT_CAPACITY
+#define VDM_EVENT_CAPACITY 512
+#endif
+constexpr size_t kEventCapacity = VDM_EVENT_CAPACITY;
+static_assert(kEventCapacity >= 64, "the file sink needs a backlog of at least 32 events");
 // File rotation (binding): /log/events.log up to 64 KB, then renamed to
 // /log/events.1.log (replacing it) -> at most 2 x 64 KB on flash.
 constexpr const char* kLogFile = "/log/events.log";

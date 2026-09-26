@@ -14,7 +14,7 @@ struct LogFlushParams {
   uint32_t periodMs = 300000;          // every 5 min
   uint32_t urgentGapMs = 10000;        // Warning+ waits at most this long after the last
                                        // attempt; also the back-off after a failed attempt
-  uint32_t backlogHigh = 256;          // half the RAM ring (logger::kEventCapacity 512)
+  uint32_t backlogHigh = 256;          // the logger sets half its RAM ring (kEventCapacity)
   uint32_t failureReportMs = 3600000;  // LogWriteFailed at most hourly
 };
 

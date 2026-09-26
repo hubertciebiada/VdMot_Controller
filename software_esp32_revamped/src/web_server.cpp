@@ -136,10 +136,13 @@ bool authEnabled() { return gCfg.web.user[0] != '\0' && gCfg.web.password[0] != 
 
 int acquireSlot() {
   for (size_t i = 0; i < kResponseSlots; ++i) {
-    if (gSlots[i].buf != nullptr && !gSlots[i].busy) {
-      gSlots[i].busy = true;
-      return static_cast<int>(i);
-    }
+    Slot& s = gSlots[i];
+    if (s.busy) continue;
+    // First use: the buffer is kept from now on (web_server.h).
+    if (s.buf == nullptr) s.buf = new (std::nothrow) char[kResponseSlotSize];
+    if (s.buf == nullptr) continue;
+    s.busy = true;
+    return static_cast<int>(i);
   }
   return -1;
 }
@@ -1732,10 +1735,6 @@ ApiHandler gApi;
 
 void begin() {
   if (gStarted) return;
-  for (Slot& s : gSlots) {
-    s.buf = new (std::nothrow) char[kResponseSlotSize];
-    s.busy = false;
-  }
   refreshConfig();
   gServer.addHandler(&gGuard);
   gServer.addHandler(&gApi);

@@ -32,7 +32,12 @@ vdm::EventLog* gLogPtr = nullptr;
 // App task only.
 uint32_t gSyslogCursor = 0;  // syslog: every event is looked at once
 uint32_t gFileCursor = 0;    // file: moved per line, only after it was written
-vdm::LogFlushPolicy gPolicy;
+vdm::LogFlushParams flushParams() {
+  vdm::LogFlushParams p;
+  p.backlogHigh = kEventCapacity / 2;
+  return p;
+}
+vdm::LogFlushPolicy gPolicy(flushParams());
 
 // Guarded by the log mutex.
 uint8_t gSyslogLevel = 0;

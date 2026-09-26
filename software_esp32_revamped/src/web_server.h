@@ -15,8 +15,12 @@
 namespace web {
 
 // Response buffers: a fixed pool, one slot per in-flight JSON response
-// (released when the client disconnects, i.e. after the response). No
-// per-request heap growth; when every slot is busy the handler answers 503.
+// (released when the client disconnects, i.e. after the response). A slot's
+// buffer is allocated at its first use and kept, so there is no per-request
+// heap growth, and without a web client (Home Assistant uses MQTT) the 24 KB
+// stay in the heap: allocated at the start of the web server they left the
+// WT32-ETH01 about 20 KB once the network was up. When every slot is busy or
+// a buffer cannot be allocated the handler answers 503.
 constexpr size_t kResponseSlots = 2;
 constexpr size_t kResponseSlotSize = 12 * 1024;
 // JSON POST bodies are collected in one static buffer (one body at a time,
