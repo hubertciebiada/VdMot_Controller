@@ -104,9 +104,13 @@ at its failsafe position, an unconfirmed target, stale data and the legacy impor
   the host against fakes of the hardware and libraries (`tools/native/testkit`)
   and tested there, including multi-boot scenarios.
 - **Mutation testing** (`tools/mutation/mutate.py`): target **95 %** overall and
-  for every file, for the four suites `stm32`, `stm32-glue`, `esp32`,
-  `esp32-glue` (mutants that are stillborn are not counted). Reports:
-  [mutation-stm32.md](mutation-stm32.md), [mutation-esp32.md](mutation-esp32.md).
+  for every file, for the four suites (stillborn mutants and equivalent mutants,
+  each listed with its reason, are not counted). Results: `stm32` 99.0 %,
+  `stm32-glue` 97.9 %, `esp32` 97.7 %, `esp32-glue` 99.7 %, every file >= 95 %.
+  Reports: [mutation-stm32.md](mutation-stm32.md),
+  [mutation-stm32-glue.md](mutation-stm32-glue.md),
+  [mutation-esp32.md](mutation-esp32.md),
+  [mutation-esp32-glue.md](mutation-esp32-glue.md).
 - All suites run the same everywhere in a container:
   `bash tools/native/docker.sh test stm32|esp32`,
   `bash tools/native/docker.sh mutate <suite>`.
@@ -146,4 +150,5 @@ Fixes for the legacy `software_esp32` (no features) are kept apart on
 - [CHANGELOG.md](CHANGELOG.md)
 - [software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md): UART protocol 2 and 3
 - [software_esp32_revamped/DESIGN.md](../../software_esp32_revamped/DESIGN.md): ESP design (internals)
-- [mutation-stm32.md](mutation-stm32.md), [mutation-esp32.md](mutation-esp32.md)
+- [mutation-stm32.md](mutation-stm32.md), [mutation-stm32-glue.md](mutation-stm32-glue.md),
+  [mutation-esp32.md](mutation-esp32.md), [mutation-esp32-glue.md](mutation-esp32-glue.md)
