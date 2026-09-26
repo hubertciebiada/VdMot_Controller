@@ -1,6 +1,7 @@
 // Tests of src/mqtt_client.cpp for inputs that are rare but real: a publish that fails as the
-// last one of the full publish, and valve profiles whose CRC-32 hits the values the diag
-// comparison stores for "no profile" (every CRC value is reachable: the samples are STM data).
+// last one of the full publish, valve profiles whose CRC-32 hits the values the diag comparison
+// stores for "no profile" (every CRC value is reachable: the samples are STM data), and a valve
+// whose first diag pass after the connect runs out of budget.
 #include <stddef.h>
 #include <string.h>
 
@@ -193,7 +194,7 @@ TEST_CASE("mqtt diag: an empty profile is stored as CRC 0, not as the CRC of its
         std::vector<std::string>{profileJson(s.profiles[0])});
 }
 
-TEST_CASE("mqtt diag: a valve whose first pass ran out of budget compares its profile with 0") {
+TEST_CASE("mqtt diag: a valve whose first pass ran out of budget keeps its known profile back") {
   glue::begin();
   vdm::Config& c = useMqtt();
   c.valves[1].active = true;
@@ -205,8 +206,12 @@ TEST_CASE("mqtt diag: a valve whose first pass ran out of budget compares its pr
   publishSnap();
   settle();
   // First diag pass: protocol and link take two of the four messages, the last-move checks of
-  // valves 1 and 2 the others, so valve 2 stores no CRC. The next pass compares its profile
-  // with the default 0.
+  // valves 1 and 2 the others. Valve 2 stores the CRC of its profile all the same, so no later
+  // pass takes that profile for a new one.
+  CHECK(payloads("VdMot/diag/valves/2/profile").empty());
+  setProfile(s.profiles[1], 1, 2);
+  publishSnap();
+  runTask(5);
   CHECK(payloads("VdMot/diag/valves/2/profile") ==
         std::vector<std::string>{profileJson(s.profiles[1])});
 }

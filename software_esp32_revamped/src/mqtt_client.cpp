@@ -975,8 +975,9 @@ void serviceDiag(uint32_t now) {
     }
     const vdm::Profile& p = gSnap.profiles[i];
     const uint32_t crc = p.count > 0 ? profileCrc(p) : 0;
-    if (crc != d.profileCrc && budget > 0) {
-      // Not retained: only new profiles go out (not the one known at connect).
+    // Not retained: only new profiles go out, not the one known at connect, whose CRC the first
+    // pass of the valve stores whatever the budget.
+    if (crc != d.profileCrc && (budget > 0 || !d.valid)) {
       if (d.valid && p.count > 0) {
         // Shares the discovery buffer: both run in this task, one at a time.
         vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
