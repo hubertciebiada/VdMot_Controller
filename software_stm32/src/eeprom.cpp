@@ -251,6 +251,8 @@ static void eeprom_reread () {
 	const vdm::ChangeSet changes = {eep_store.dirty(), eep_changed_slots, eep_changed_calib};
 	vdm::mergeChanges(eep_loaded.image, eep_content, changes);
 	*static_cast<vdm::ConfigImage *>(&eep_content) = eep_loaded.image;
+	// the failed read left the default source: the stored timeout (or one set by slcfg since) applies now
+	eep_lease_source = (changes.fields & EEP_CHANGED_LEASE) ? vdm::kLeaseSourceSettings : eep_loaded.leaseSource;
 	if (eep_loaded.rewrite != 0) eeprom_changed(eep_loaded.rewrite);
 	app_load_config();
 }

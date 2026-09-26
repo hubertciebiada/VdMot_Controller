@@ -607,7 +607,7 @@ void handleStatus(AsyncWebServerRequest* req) {
   const net::TrialInfo trial = net::trialInfo();
   s.netTrialActive = trial.active;
   s.netTrialRemainS = trial.remainS;
-  memcpy(s.mqttClientId, ms.clientId, sizeof s.mqttClientId);
+  vdm::copyString(s.mqttClientId, sizeof s.mqttClientId, ms.clientId);
   s.mqttHaStatus = ms.haStatus;
   s.stmSupport = gSnap.support;
   s.lease = gSnap.lease;
@@ -1350,7 +1350,7 @@ void handleDiscovery(AsyncWebServerRequest* req, bool hasBody) {
     return sendError(req, 400, "bad_request", "action publish|delete|republish");
   }
   if (a != mqtt::DiscoveryAction::Delete && !gCfg.mqtt.separate) {
-    return sendError(req, 409, "separate_required", "enable mqtt.separate first");
+    return sendError(req, 409, "separate_required", "HA discovery needs separate topics");
   }
   mqtt::requestDiscovery(a);
   sendAccepted(req);

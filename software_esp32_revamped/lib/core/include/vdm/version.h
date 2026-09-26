@@ -50,8 +50,8 @@ bool isRevamped(const Version& v);
 // number of chars written, 0 if the version is invalid or does not fit.
 size_t formatVersion(const Version& v, char* out, size_t cap);
 
-// Version of this ESP build: the VDM_VERSION build flag ("2.0.0-revamped" or
-// "2.0.0-revamped-dev"). Native builds without the flag report
+// Version of this ESP build: the VDM_VERSION build flag ("2.1.0-revamped" or
+// "2.1.0-revamped-dev"). Native builds without the flag report
 // "0.0.0-native". Never null.
 const char* firmwareVersion();
 

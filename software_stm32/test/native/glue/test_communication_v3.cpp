@@ -72,7 +72,7 @@ void goldenValve3() {
 TEST_CASE("gproto answers 3, gvers carries the board revision of the marker") {
   begin();
   CHECK(request("gproto\n") == "gproto 3\r\n");
-  CHECK(request("gvers\n") == "gvers 2.0.0-revamped_C2 1 \r\n");
+  CHECK(request("gvers\n") == "gvers 2.1.0-revamped_C2 1 \r\n");
   CHECK(std::string(kHardwareMarker) == "VDM-HW:C2");
 }
 

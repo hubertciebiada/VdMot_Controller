@@ -43,7 +43,7 @@ TEST_CASE("system: a new controller answers gvers, gproto, gtgtp, gvlvd, gstat a
   sim::Rig rig;
   bootController(rig);
   CHECK(millis() == 3511);
-  CHECK(exchange("gvers\n") == "gvers 2.0.0-revamped_C2 1 \r\n");
+  CHECK(exchange("gvers\n") == "gvers 2.1.0-revamped_C2 1 \r\n");
   CHECK(exchange("gproto\n") == "gproto 3\r\n");
   // erased EEPROM: startOnPower loads its default 30
   CHECK(exchange("gtgtp 0\n") == "gtgtp 0 30 \r\n");

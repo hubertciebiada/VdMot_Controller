@@ -3,6 +3,7 @@
 // silent ESP (C-2), targets before calibrations (S8), the stop of a calibration series (S8), warm
 // resets with an expired lease and in a hand-over (K1-8, W2, C-8). The 3 h of C-1 are time jumps.
 #include <functional>
+#include <sstream>
 #include <string>
 
 #include "eeprom.h"
@@ -267,15 +268,23 @@ TEST_CASE("system S8-3: sstop 255 ends the running calibration and the requested
   }
   CHECK(exchange("staln 255\n") == "staln\r\n");
   REQUIRE(runMainUntil([] { return myvalvemots[0].calibActive != 0 || myvalvemots[1].calibActive != 0; }, 10000));
-  CHECK(app_stop(255) == 0);
+  CHECK(exchange("sstop 255\n") == "sstop 255 ok\r\n");
   runMain(20000);
   for (unsigned v = 0; v < 4; v++) {
     CAPTURE(v);
     CHECK(+myvalvemots[v].calibActive == 0);
     CHECK_FALSE(app_learn_pending(v, myvalvemots[v].status, myvalvemots[v].calibration != 0));
     CHECK(+myvalvemots[v].status == VLV_STATE_IDLE);
+    // calState bits 0/1 (requested, running) of gvlvx
+    const std::string reply = exchange("gvlvx " + std::to_string(v) + "\n");
+    std::istringstream in(reply);
+    std::string word;
+    long calState = -1;
+    in >> word;
+    for (int i = 0; i < 11; i++) in >> calState;
+    CHECK((calState & 3) == 0);
   }
-  CHECK(app_stop(20) == -1);
+  CHECK(exchange("sstop 20\n") == "sstop -1 err 1\r\n");
 }
 
 TEST_CASE("system K1-8/W2: a warm reset keeps the expired lease and the valve states, no presence test") {

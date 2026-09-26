@@ -524,6 +524,64 @@ TEST_CASE("app_restore: a power-on or an EEPROM lease source ignores the warm co
   CHECK(app_failsafe_pct(0) == 30);
 }
 
+TEST_CASE("app_load_config C-5: after a warm reset the copies stand in for what the EEPROM re-read lacks") {
+  begin();
+  app_set_failsafe(255, 30);
+  app_lease_configure(5);
+  app_warm_save();
+  app_set_failsafe(255, 50);
+  app_lease_configure(60);
+  stub::sysstat.reason = vdm::BootReason::Software;
+  stub::eeprom.cfgFlags = vdm::kCfgReadFailed;
+  app_restore();
+  CHECK(app_lease_timeout() == 5);
+  CHECK(app_failsafe_pct(0) == 30);
+  // the re-read after the failed read finds neither a lease timeout nor block B
+  for (unsigned v = 0; v < ACTUATOR_COUNT; v++) eep_content.failsafePct[v] = 50;
+  eep_content.leaseTimeoutMin = 60;
+  stub::eeprom.cfgFlags = vdm::kCfgSafetyCorrupt;
+  stub::calls.clear();
+  app_load_config();
+  CHECK(app_lease_timeout() == 5);
+  CHECK(app_failsafe_pct(0) == 30);
+  CHECK(app_failsafe_pct(11) == 30);
+  CHECK(stub::callsOf("eeprom_cfg_flags").size() == 1);
+  // it finds both: the EEPROM wins
+  stub::eeprom.leaseSource = vdm::kLeaseSourceSafety;
+  stub::eeprom.cfgFlags = 0;
+  eep_content.leaseTimeoutMin = 90;
+  eep_content.failsafePct[11] = 70;
+  app_load_config();
+  CHECK(app_lease_timeout() == 90);
+  CHECK(app_failsafe_pct(0) == 50);
+  CHECK(app_failsafe_pct(11) == 70);
+  // a failed read again: the copies of the positions, the lease timeout of the source
+  stub::eeprom.cfgFlags = vdm::kCfgReadFailed;
+  app_load_config();
+  CHECK(app_lease_timeout() == 90);
+  CHECK(app_failsafe_pct(11) == 30);
+  stub::eeprom.leaseSource = vdm::kLeaseSourceDefault;
+  app_load_config();
+  CHECK(app_lease_timeout() == 5);
+}
+
+TEST_CASE("app_load_config C-5: after a power-on the defaults stand in, 60 min and block B as loaded") {
+  begin();
+  app_set_failsafe(255, 30);
+  app_lease_configure(5);
+  app_warm_save();
+  stub::sysstat.reason = vdm::BootReason::PowerOn;
+  stub::eeprom.cfgFlags = vdm::kCfgReadFailed;
+  app_restore();
+  for (unsigned v = 0; v < ACTUATOR_COUNT; v++) eep_content.failsafePct[v] = 50;
+  eep_content.leaseTimeoutMin = 0;
+  stub::calls.clear();
+  app_load_config();
+  CHECK(app_lease_timeout() == 60);
+  CHECK(app_failsafe_pct(0) == 50);
+  CHECK(stub::callsOf("eeprom_cfg_flags").empty());  // no copies: the flags are not needed
+}
+
 TEST_CASE("app_warm_moving C-8: a valve handed a command restores unreferenced") {
   begin();
   eep_content.calib[3] = vdm::CalibRecord{3600, 3600, 20, vdm::kCalibValid};

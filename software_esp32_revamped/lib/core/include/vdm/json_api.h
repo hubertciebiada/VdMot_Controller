@@ -71,7 +71,7 @@ struct StatusSnapshot {
   const char* station = "";         // config station name (root "station", first member)
   bool netTrialActive = false;      // net.trial: {"remainS":n} or null
   uint32_t netTrialRemainS = 0;
-  char mqttClientId[24] = {0};      // mqtt.clientId (mqtt::status())
+  char mqttClientId[kClientIdMax + 1] = {0};  // mqtt.clientId (mqtt::status())
   HaStatus mqttHaStatus = HaStatus::Unknown;
   StmSupport stmSupport = StmSupport::Unknown;  // stm.support
   LeaseStatus lease;                // stm.lease; null while lease.mode is None

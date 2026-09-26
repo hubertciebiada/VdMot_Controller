@@ -28,7 +28,7 @@ on:
         type: boolean
         default: false
       release_tag:
-        description: "Publish a VdMot Revamped release from this ref, e.g. v2.0.0-revamped (creates the tag)"
+        description: "Publish a VdMot Revamped release from this ref, e.g. v2.1.0-revamped (creates the tag)"
         type: string
         default: ""
 

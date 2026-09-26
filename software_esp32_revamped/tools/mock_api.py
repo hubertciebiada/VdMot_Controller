@@ -1468,7 +1468,7 @@ class Handler(BaseHTTPRequestHandler):
             if action not in ("publish", "delete", "republish"):
                 return self.error(400, "bad_request", "action publish|delete|republish")
             if action != "delete" and not mq["separate"]:
-                return self.error(409, "separate_required", "enable mqtt.separate first")
+                return self.error(409, "separate_required", "HA discovery needs separate topics")
             d.event(205, a1=0 if action == "delete" else 58, a2=58 if action == "delete" else 0)
             return self.accepted()
         if path == "/api/stm/motor":
