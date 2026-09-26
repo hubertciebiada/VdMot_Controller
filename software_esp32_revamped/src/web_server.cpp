@@ -1,6 +1,7 @@
 #include "web_server.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <ArduinoJson.h>
 #include <AsyncTCP.h>
 #include <AsyncWebServer_WT32_ETH01.h>
@@ -53,9 +54,52 @@ struct Slot {
 };
 Slot gSlots[kResponseSlots];
 
-// JSON body (one at a time).
-using BodyBuf = ObjArray<char, kMaxBodySize + 1>;
-char* const gBody = bootAlloc<BodyBuf>().data();
+// Working set of the request handlers (async_tcp task only), about 32 KB.
+// Each part gets its buffer in the first request (refreshConfig()) and keeps
+// it, like the response slots (web_server.h): without a web client the heap
+// keeps these bytes. Separate allocations, none larger than the body buffer.
+using BodyBuf = ObjArray<char, kMaxBodySize + 1>;  // JSON body, one at a time
+using ValveViews = ObjArray<vdm::ValveView, vdm::kValveCount>;
+using TempViews = ObjArray<vdm::SensorView, 2 * vdm::kTempSlotCount>;  // slots + unconfigured
+using VoltViews = ObjArray<vdm::SensorView, 2 * vdm::kVoltSlotCount>;
+using Events = ObjArray<vdm::Event, kMaxEventsPerResponse>;
+using Images = ObjArray<storage::ImageEntry, storage::kImageSlots>;
+using Files = ObjArray<vdm::FileEntry, kMaxFilesPerResponse>;
+BodyBuf* gBodyBuf = nullptr;
+app::StmSnapshot* gSnapPtr = nullptr;
+vdm::Config* gCfgPtr = nullptr;
+vdm::Config* gPatchPtr = nullptr;
+StaticJsonDocument<512>* gDocPtr = nullptr;
+ValveViews* gValveViewsPtr = nullptr;
+TempViews* gTempViewsPtr = nullptr;
+VoltViews* gVoltViewsPtr = nullptr;
+Events* gEventsPtr = nullptr;
+Images* gImagesPtr = nullptr;
+Files* gFilesPtr = nullptr;
+vdm::HealthSnapshot* gHealthPtr = nullptr;
+
+template <typename T>
+bool allocOnce(T*& p) {
+  if (p == nullptr) p = new (std::nothrow) T();
+  return p != nullptr;
+}
+
+// Every part, or false: the request is answered 503.
+bool allocWork() {
+  bool ok = allocOnce(gBodyBuf);
+  ok = allocOnce(gSnapPtr) && ok;
+  ok = allocOnce(gCfgPtr) && ok;
+  ok = allocOnce(gPatchPtr) && ok;
+  ok = allocOnce(gDocPtr) && ok;
+  ok = allocOnce(gValveViewsPtr) && ok;
+  ok = allocOnce(gTempViewsPtr) && ok;
+  ok = allocOnce(gVoltViewsPtr) && ok;
+  ok = allocOnce(gEventsPtr) && ok;
+  ok = allocOnce(gImagesPtr) && ok;
+  ok = allocOnce(gFilesPtr) && ok;
+  return allocOnce(gHealthPtr) && ok;
+}
+
 size_t gBodyLen = 0;
 bool gBodyOverflow = false;
 AsyncWebServerRequest* gBodyOwner = nullptr;
@@ -94,43 +138,30 @@ struct LogStream {
   uint8_t part = 0;  // 0 = events.1.log, 1 = events.log, 2 = done
 } gLog;
 
-app::StmSnapshot& gSnap = bootAlloc<app::StmSnapshot>();
-vdm::Config& gCfg = bootAlloc<vdm::Config>();
 uint32_t gCfgRevision = UINT32_MAX;
-vdm::Config& gPatch = bootAlloc<vdm::Config>();
 vdm::AuthLimiter gAuthLimiter;
 vdm::RepeatLimiter gRefusedLimiter;  // RequestRefused once per verdict per 60 s
-char gHostname[vdm::kStationNameMax + 1] = {};   // buildHostname(gCfg.station)
+char gHostname[vdm::kStationNameMax + 1] = {};   // buildHostname(gCfgPtr->station)
 char gGuardDetail[160] = {};                     // detail of the current guard refusal
 char gHealthBuf[kHealthBufSize] = {};            // GET /api/health, outside the slots
-StaticJsonDocument<512>& gDoc = bootAlloc<StaticJsonDocument<512>>();
-using ValveViews = ObjArray<vdm::ValveView, vdm::kValveCount>;
-using TempViews = ObjArray<vdm::SensorView, 2 * vdm::kTempSlotCount>;  // slots + unconfigured
-using VoltViews = ObjArray<vdm::SensorView, 2 * vdm::kVoltSlotCount>;
-using Events = ObjArray<vdm::Event, kMaxEventsPerResponse>;
-using Images = ObjArray<storage::ImageEntry, storage::kImageSlots>;
-using Files = ObjArray<vdm::FileEntry, kMaxFilesPerResponse>;
-ValveViews& gValveViews = bootAlloc<ValveViews>();
-TempViews& gTempViews = bootAlloc<TempViews>();
-VoltViews& gVoltViews = bootAlloc<VoltViews>();
-Events& gEvents = bootAlloc<Events>();
-Images& gImages = bootAlloc<Images>();
-Files& gFiles = bootAlloc<Files>();
-vdm::HealthSnapshot& gHealth = bootAlloc<vdm::HealthSnapshot>();
 
-void refreshConfig() {
+// First step of every request (GuardHandler::canHandle -> refusal()): the
+// working set, then the config. false: no memory for the working set.
+bool refreshConfig() {
+  if (!allocWork()) return false;
   const uint32_t rev = storage::configRevision();
-  if (rev == gCfgRevision) return;
+  if (rev == gCfgRevision) return true;
   gCfgRevision = rev;
-  storage::getConfig(gCfg);
-  vdm::buildHostname(gCfg.station, gHostname, sizeof gHostname);
+  storage::getConfig(*gCfgPtr);
+  vdm::buildHostname(gCfgPtr->station, gHostname, sizeof gHostname);
+  return true;
 }
 
 uint32_t remoteIp(AsyncWebServerRequest* req) {
   return static_cast<uint32_t>(req->client()->remoteIP());
 }
 
-bool authEnabled() { return gCfg.web.user[0] != '\0' && gCfg.web.password[0] != '\0'; }
+bool authEnabled() { return gCfgPtr->web.user[0] != '\0' && gCfgPtr->web.password[0] != '\0'; }
 
 // ---------------------------------------------------------------- responses
 
@@ -233,7 +264,7 @@ vdm::HttpMethod methodOf(AsyncWebServerRequest* req) {
 
 vdm::RouteMatch route(AsyncWebServerRequest* req) {
   const String& url = req->url();
-  return vdm::matchApiRoute(methodOf(req), url.c_str(), url.length(), gCfg.web.protectRead);
+  return vdm::matchApiRoute(methodOf(req), url.c_str(), url.length(), gCfgPtr->web.protectRead);
 }
 
 enum class AuthResult : uint8_t { Ok, Locked, Missing, Wrong };
@@ -243,8 +274,8 @@ AuthResult checkAuth(AsyncWebServerRequest* req, bool needsAuth, uint32_t* retry
   if (gAuthLimiter.locked(remoteIp(req), app::nowMs(), retryAfterS)) return AuthResult::Locked;
   AsyncWebHeader* h = req->getHeader("Authorization");
   if (h == nullptr) return AuthResult::Missing;
-  return vdm::checkBasicAuth(h->value().c_str(), h->value().length(), gCfg.web.user,
-                             gCfg.web.password)
+  return vdm::checkBasicAuth(h->value().c_str(), h->value().length(), gCfgPtr->web.user,
+                             gCfgPtr->web.password)
              ? AuthResult::Ok
              : AuthResult::Wrong;
 }
@@ -357,7 +388,7 @@ bool guardRefusal(AsyncWebServerRequest* req, vdm::GuardScope scope, bool upload
   p.localIp = static_cast<uint32_t>(req->client()->localIP());
   p.ifaceIp = net::info().ip;
   p.hostname = gHostname;
-  p.allowed = gCfg.web.allowedHosts;
+  p.allowed = gCfgPtr->web.allowedHosts;
   const vdm::GuardVerdict v = vdm::checkRequest(g, p);
   if (v == vdm::GuardVerdict::Allow) return false;
   vdm::guardDetail(v, g, p, gGuardDetail, sizeof gGuardDetail);
@@ -372,7 +403,7 @@ bool legacyRefusal(AsyncWebServerRequest* req, Refusal& out) {
   const String& url = req->url();
   const size_t len = req->contentLength();
   const vdm::LegacyMatch lm =
-      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfg.web.protectRead);
+      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfgPtr->web.protectRead);
   switch (lm.route) {
     case vdm::LegacyRoute::Gone:
       out = Refusal{410, "gone", lm.replacement};
@@ -402,7 +433,10 @@ bool legacyRefusal(AsyncWebServerRequest* req, Refusal& out) {
 
 // Requests that must be answered without buffering their body.
 bool refusal(AsyncWebServerRequest* req, Refusal& out) {
-  refreshConfig();
+  if (!refreshConfig()) {
+    out = Refusal{503, "busy", "out of memory"};
+    return true;
+  }
   const size_t len = req->contentLength();
   const bool multipart = req->contentType().startsWith("multipart/");
   if (!req->url().startsWith("/api/")) return legacyRefusal(req, out);
@@ -479,9 +513,9 @@ bool parseBody(AsyncWebServerRequest* req, bool hasBody) {
     sendError(req, 400, "bad_request", "JSON body required");
     return false;
   }
-  gDoc.clear();
-  const DeserializationError e = deserializeJson(gDoc, gBody, gBodyLen);
-  if (e || !gDoc.is<JsonObject>()) {
+  gDocPtr->clear();
+  const DeserializationError e = deserializeJson(*gDocPtr, gBodyBuf->data(), gBodyLen);
+  if (e || !gDocPtr->is<JsonObject>()) {
     sendError(req, 400, "bad_request", e ? e.c_str() : "object expected");
     return false;
   }
@@ -535,9 +569,9 @@ bool refuseWhileFlashing(AsyncWebServerRequest* req) {
 // are refused.
 bool refuseTooOld(AsyncWebServerRequest* req) {
   if (app::stmSupport() != vdm::StmSupport::TooOld) return false;
-  app::readStmSnapshot(gSnap);
+  app::readStmSnapshot(*gSnapPtr);
   char version[40];
-  if (vdm::formatVersion(gSnap.version, version, sizeof version) == 0) {
+  if (vdm::formatVersion(gSnapPtr->version, version, sizeof version) == 0) {
     vdm::copyString(version, sizeof version, "?");
   }
   char detail[96];
@@ -557,7 +591,7 @@ bool refuseBelowV3(AsyncWebServerRequest* req) {
 // ---------------------------------------------------------------- GET handlers
 
 void handleStatus(AsyncWebServerRequest* req) {
-  app::readStmSnapshot(gSnap);
+  app::readStmSnapshot(*gSnapPtr);
   static vdm::StatusSnapshot s;
   s = vdm::StatusSnapshot{};
   s.espVersion = vdm::firmwareVersion();
@@ -567,9 +601,9 @@ void handleStatus(AsyncWebServerRequest* req) {
   s.uptimeS = app::uptimeS();
   s.resetReason = static_cast<uint8_t>(esp_reset_reason());
   s.bootCount = storage::bootCount();
-  s.freeHeap = ESP.getFreeHeap();
-  s.minFreeHeap = ESP.getMinFreeHeap();
-  s.largestFreeBlock = ESP.getMaxAllocHeap();
+  s.freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+  s.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+  s.largestFreeBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
   s.sketchSize = ESP.getSketchSize();
   const esp_partition_t* running = esp_ota_get_running_partition();
   s.sketchSpace = running != nullptr ? running->size : 0;
@@ -585,40 +619,40 @@ void handleStatus(AsyncWebServerRequest* req) {
   s.dns = ni.dns;
   memcpy(s.mac, ni.mac, sizeof s.mac);
   s.wifiRssi = ni.rssi;
-  vdm::buildHostname(gCfg.station, s.hostname, sizeof s.hostname);
+  vdm::buildHostname(gCfgPtr->station, s.hostname, sizeof s.hostname);
   const mqtt::Status ms = mqtt::status();
   s.mqtt = ms.state;
   s.mqttRc = ms.rc;
   s.mqttReconnects = ms.reconnects;
   s.mqttPublishFailures = ms.publishFailures;
-  s.link = gSnap.link;
-  s.linkStats = gSnap.linkStats;
-  s.stmProto = gSnap.proto;
-  s.stmVersion = gSnap.version;
-  s.stmBuild = gSnap.build;
-  s.stmHwId = gSnap.hwId;
-  s.stmCompatible = gSnap.compatible;
-  s.haveStmStatus = gSnap.haveStatus;
-  s.stmStatus = gSnap.status;
-  s.espLineOverflows = gSnap.lineOverflows;
-  s.espLineMalformed = gSnap.lineMalformed;
-  for (const vdm::ValveState& v : gSnap.valves)
+  s.link = gSnapPtr->link;
+  s.linkStats = gSnapPtr->linkStats;
+  s.stmProto = gSnapPtr->proto;
+  s.stmVersion = gSnapPtr->version;
+  s.stmBuild = gSnapPtr->build;
+  s.stmHwId = gSnapPtr->hwId;
+  s.stmCompatible = gSnapPtr->compatible;
+  s.haveStmStatus = gSnapPtr->haveStatus;
+  s.stmStatus = gSnapPtr->status;
+  s.espLineOverflows = gSnapPtr->lineOverflows;
+  s.espLineMalformed = gSnapPtr->lineMalformed;
+  for (const vdm::ValveState& v : gSnapPtr->valves)
     s.calibrationActive = s.calibrationActive || v.calibrating;
   const app::CalibInfo ci = app::calibInfo();
   s.lastScheduledCalibEpoch = ci.lastScheduledEpoch;
   s.nextCalibSlot = ci.nextSlot;
   s.authEnabled = authEnabled();
   s.lastEventSeq = logger::lastSeq();
-  s.station = gCfg.station;
+  s.station = gCfgPtr->station;
   const net::TrialInfo trial = net::trialInfo();
   s.netTrialActive = trial.active;
   s.netTrialRemainS = trial.remainS;
   vdm::copyString(s.mqttClientId, sizeof s.mqttClientId, ms.clientId);
   s.mqttHaStatus = ms.haStatus;
-  s.stmSupport = gSnap.support;
-  s.lease = gSnap.lease;
-  s.haveLearnTime = gSnap.haveLearnTime;
-  s.learnTimeS = gSnap.learnTimeS;
+  s.stmSupport = gSnapPtr->support;
+  s.lease = gSnapPtr->lease;
+  s.haveLearnTime = gSnapPtr->haveLearnTime;
+  s.learnTimeS = gSnapPtr->learnTimeS;
   s.nextCalibEpoch = ci.nextEpoch;
   if (ci.nextEpoch > 0) {
     const time_t t = static_cast<time_t>(ci.nextEpoch);
@@ -645,28 +679,28 @@ void handleStatus(AsyncWebServerRequest* req) {
 
 // True when a temperature config slot has the (non-zero) id `id`.
 bool tempConfigured(const vdm::OneWireId& id) {
-  for (const vdm::TempSlotConfig& c : gCfg.temps) {
+  for (const vdm::TempSlotConfig& c : gCfgPtr->temps) {
     if (c.id == id) return true;
   }
   return false;
 }
 
 void buildValveViews() {
-  app::readStmSnapshot(gSnap);
+  app::readStmSnapshot(*gSnapPtr);
   for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    vdm::ValveView& v = gValveViews[i];
+    vdm::ValveView& v = (*gValveViewsPtr)[i];
     v = vdm::ValveView{};
-    const vdm::ValveState& st = gSnap.valves[i];
+    const vdm::ValveState& st = gSnapPtr->valves[i];
     v.state = &st;
-    v.config = &gCfg.valves[i];
+    v.config = &gCfgPtr->valves[i];
     const int16_t raw[] = {st.temp1, st.temp2};
     for (uint8_t k = 0; k < 2; ++k) {
       const uint8_t slot = st.sensorSlot[k];
       if (slot == 0 || slot > vdm::kTempSlotCount) continue;
       v.sensorSlot[k] = slot;
-      v.sensorName[k] = gCfg.temps[slot - 1].name;
+      v.sensorName[k] = gCfgPtr->temps[slot - 1].name;
       v.sensorValid[k] = vdm::tempRawValid(raw[k]);
-      v.sensorTenths[k] = static_cast<int32_t>(raw[k]) + gCfg.temps[slot - 1].offset;
+      v.sensorTenths[k] = static_cast<int32_t>(raw[k]) + gCfgPtr->temps[slot - 1].offset;
     }
     v.calibrationEnd.valid = mqtt::calibrationEnd(i, v.calibrationEnd);
   }
@@ -676,29 +710,29 @@ void handleValves(AsyncWebServerRequest* req) {
   buildValveViews();
   const uint32_t now = app::nowMs();
   sendDocument(req, 200, [now](vdm::JsonWriter& jw) {
-    return vdm::writeValvesJson(jw, gValveViews.data(), vdm::kValveCount, now);
+    return vdm::writeValvesJson(jw, gValveViewsPtr->data(), vdm::kValveCount, now);
   });
 }
 
-// Fills gTempViews/gVoltViews; returns the counts.
+// Fills (*gTempViewsPtr)/*gVoltViewsPtr; returns the counts.
 void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
-  app::readStmSnapshot(gSnap);
+  app::readStmSnapshot(*gSnapPtr);
   const uint32_t now = app::nowMs();
-  const uint8_t busTemps = std::min(gSnap.tempCount, vdm::kTempSlotCount);
-  const uint8_t busVolts = std::min(gSnap.voltCount, vdm::kVoltSlotCount);
+  const uint8_t busTemps = std::min(gSnapPtr->tempCount, vdm::kTempSlotCount);
+  const uint8_t busVolts = std::min(gSnapPtr->voltCount, vdm::kVoltSlotCount);
   uint8_t nt = 0;
   // Configured temperature slots.
   for (uint8_t i = 0; i < vdm::kTempSlotCount; ++i) {
-    const vdm::TempSlotConfig& c = gCfg.temps[i];
+    const vdm::TempSlotConfig& c = gCfgPtr->temps[i];
     if (vdm::isZero(c.id) && !c.active && c.name[0] == '\0') continue;
-    vdm::SensorView& v = gTempViews[nt++];
+    vdm::SensorView& v = (*gTempViewsPtr)[nt++];
     v = vdm::SensorView{};
     v.slot = static_cast<uint8_t>(i + 1);
     v.name = c.name;
     v.active = c.active;
     v.id = c.id;
     for (uint8_t b = 0; b < busTemps; ++b) {
-      const vdm::TempReading& r = gSnap.temps[b];
+      const vdm::TempReading& r = gSnapPtr->temps[b];
       if (vdm::isZero(c.id) || r.id != c.id) continue;
       v.onBus = true;
       v.raw = r.raw;
@@ -709,7 +743,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
       break;
     }
     uint8_t k = 0;
-    for (const vdm::ValveState& st : gSnap.valves) {
+    for (const vdm::ValveState& st : gSnapPtr->valves) {
       if (st.sensorSlot[0] == v.slot || st.sensorSlot[1] == v.slot) {
         v.valve = k;
         break;
@@ -719,9 +753,9 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   }
   // Bus sensors without a config slot.
   for (uint8_t b = 0; b < busTemps; ++b) {
-    const vdm::TempReading& r = gSnap.temps[b];
+    const vdm::TempReading& r = gSnapPtr->temps[b];
     if (vdm::isZero(r.id) || tempConfigured(r.id)) continue;
-    vdm::SensorView& v = gTempViews[nt++];
+    vdm::SensorView& v = (*gTempViewsPtr)[nt++];
     v = vdm::SensorView{};
     v.onBus = true;
     v.id = r.id;
@@ -733,9 +767,9 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   }
   uint8_t nv = 0;
   for (uint8_t i = 0; i < vdm::kVoltSlotCount; ++i) {
-    const vdm::VoltSlotConfig& c = gCfg.volts[i];
+    const vdm::VoltSlotConfig& c = gCfgPtr->volts[i];
     if (vdm::isZero(c.id) && !c.active && c.name[0] == '\0') continue;
-    vdm::SensorView& v = gVoltViews[nv++];
+    vdm::SensorView& v = (*gVoltViewsPtr)[nv++];
     v = vdm::SensorView{};
     v.slot = static_cast<uint8_t>(i + 1);
     v.name = c.name;
@@ -743,7 +777,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
     v.id = c.id;
     v.unit = c.unit;
     for (uint8_t b = 0; b < busVolts; ++b) {
-      const vdm::VoltReading& r = gSnap.volts[b];
+      const vdm::VoltReading& r = gSnapPtr->volts[b];
       if (vdm::isZero(c.id) || r.id != c.id) continue;
       v.onBus = true;
       v.raw = r.vad;
@@ -756,12 +790,12 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
     }
   }
   for (uint8_t b = 0; b < busVolts; ++b) {
-    const vdm::VoltReading& r = gSnap.volts[b];
+    const vdm::VoltReading& r = gSnapPtr->volts[b];
     if (vdm::isZero(r.id)) continue;
     bool configured = false;
-    for (const vdm::VoltSlotConfig& c : gCfg.volts) configured = configured || c.id == r.id;
+    for (const vdm::VoltSlotConfig& c : gCfgPtr->volts) configured = configured || c.id == r.id;
     if (configured) continue;
-    vdm::SensorView& v = gVoltViews[nv++];
+    vdm::SensorView& v = (*gVoltViewsPtr)[nv++];
     v = vdm::SensorView{};
     v.onBus = true;
     v.id = r.id;
@@ -777,7 +811,7 @@ void handleSensors(AsyncWebServerRequest* req) {
   uint8_t nt = 0, nv = 0;
   buildSensorViews(nt, nv);
   sendDocument(req, 200, [nt, nv](vdm::JsonWriter& jw) {
-    return vdm::writeSensorsJson(jw, gTempViews.data(), nt, gVoltViews.data(), nv);
+    return vdm::writeSensorsJson(jw, gTempViewsPtr->data(), nt, gVoltViewsPtr->data(), nv);
   });
 }
 
@@ -813,9 +847,9 @@ void handleEvents(AsyncWebServerRequest* req) {
   // The ring may hold more text than one slot: halve the count until it fits.
   for (size_t max = limit; max > 0; max /= 2) {
     uint32_t next = f.sinceSeq, first = 0, last = 0, dropped = 0;
-    const size_t n = logger::read(f, gEvents.data(), max, next, first, last, dropped);
+    const size_t n = logger::read(f, gEventsPtr->data(), max, next, first, last, dropped);
     vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
-    if (vdm::writeEventsJson(jw, gEvents.data(), n, first, last, next, dropped) && jw.complete()) {
+    if (vdm::writeEventsJson(jw, gEventsPtr->data(), n, first, last, next, dropped) && jw.complete()) {
       return sendSlot(req, 200, slot, jw.length());
     }
   }
@@ -824,26 +858,26 @@ void handleEvents(AsyncWebServerRequest* req) {
 }
 
 void handleProfileGet(AsyncWebServerRequest* req, uint8_t valve) {
-  app::readStmSnapshot(gSnap);
-  const vdm::Profile& p = gSnap.profiles[valve];
+  app::readStmSnapshot(*gSnapPtr);
+  const vdm::Profile& p = gSnapPtr->profiles[valve];
   if (p.count == 0) return sendError(req, 404, "not_found", "no profile");
   sendDocument(req, 200, [&p](vdm::JsonWriter& jw) { return vdm::writeProfileJson(jw, p); });
 }
 
 void handleMotorGet(AsyncWebServerRequest* req) {
-  app::readStmSnapshot(gSnap);
+  app::readStmSnapshot(*gSnapPtr);
   sendDocument(req, 200, [](vdm::JsonWriter& jw) {
-    return vdm::writeMotorJson(jw, gSnap.motor, gSnap.learnMovements,
-                               gSnap.haveBreakaway ? &gSnap.breakaway : nullptr, gSnap.haveMotor);
+    return vdm::writeMotorJson(jw, gSnapPtr->motor, gSnapPtr->learnMovements,
+                               gSnapPtr->haveBreakaway ? &gSnapPtr->breakaway : nullptr, gSnapPtr->haveMotor);
   });
 }
 
 void handleFlashStatus(AsyncWebServerRequest* req) {
-  app::readStmSnapshot(gSnap);
+  app::readStmSnapshot(*gSnapPtr);
   sendDocument(req, 200, [](vdm::JsonWriter& jw) {
-    return vdm::writeFlashStatusJson(jw, gSnap.flash,
-                                     gSnap.flashImage[0] ? gSnap.flashImage : nullptr,
-                                     gSnap.flashPending);
+    return vdm::writeFlashStatusJson(jw, gSnapPtr->flash,
+                                     gSnapPtr->flashImage[0] ? gSnapPtr->flashImage : nullptr,
+                                     gSnapPtr->flashPending);
   });
 }
 
@@ -881,17 +915,17 @@ void writeImage(vdm::JsonWriter& jw, const storage::ImageEntry& e, bool crcKnown
 }
 
 void handleImages(AsyncWebServerRequest* req) {
-  const size_t n = storage::listImages(gImages.data(), storage::kImageSlots);
+  const size_t n = storage::listImages(gImagesPtr->data(), storage::kImageSlots);
   sendDocument(req, 200, [n](vdm::JsonWriter& jw) {
     jw.beginArray();
-    for (size_t i = 0; i < n; ++i) writeImage(jw, gImages[i], gImages[i].scanned);
+    for (size_t i = 0; i < n; ++i) writeImage(jw, (*gImagesPtr)[i], (*gImagesPtr)[i].scanned);
     jw.endArray();
     return jw.ok();
   });
 }
 
 void handleConfigGet(AsyncWebServerRequest* req, bool attachment) {
-  sendDocument(req, 200, [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, gCfg); },
+  sendDocument(req, 200, [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, *gCfgPtr); },
                attachment ? "attachment; filename=\"vdmot-config.json\"" : nullptr);
 }
 
@@ -905,7 +939,7 @@ void handleConfigExport(AsyncWebServerRequest* req) {
   }
   sendDocument(
       req, 200,
-      [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, gCfg, vdm::SecretMode::Clear); },
+      [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, *gCfgPtr, vdm::SecretMode::Clear); },
       "attachment; filename=\"vdmot-config-secrets.json\"");
 }
 
@@ -913,11 +947,11 @@ void handleConfigExport(AsyncWebServerRequest* req) {
 
 void handleFiles(AsyncWebServerRequest* req) {
   bool truncated = false;
-  const size_t n = storage::listFiles(gFiles.data(), kMaxFilesPerResponse, truncated);
+  const size_t n = storage::listFiles(gFilesPtr->data(), kMaxFilesPerResponse, truncated);
   const uint32_t total = storage::fsTotal();
   const uint32_t used = storage::fsUsed();
   sendDocument(req, 200, [n, total, used, truncated](vdm::JsonWriter& jw) {
-    return vdm::writeFilesJson(jw, gFiles.data(), n, total, used, truncated);
+    return vdm::writeFilesJson(jw, gFilesPtr->data(), n, total, used, truncated);
   });
 }
 
@@ -961,10 +995,10 @@ void handleImportReport(AsyncWebServerRequest* req) {
 // ---------------------------------------------------------------- health
 
 void handleHealth(AsyncWebServerRequest* req) {
-  gHealth = vdm::HealthSnapshot{};
-  app::readHealth(gHealth);
+  (*gHealthPtr) = vdm::HealthSnapshot{};
+  app::readHealth(*gHealthPtr);
   vdm::JsonWriter jw(gHealthBuf, sizeof gHealthBuf);
-  if (!vdm::writeHealthJson(jw, gHealth)) return sendError(req, 500, "internal", "health");
+  if (!vdm::writeHealthJson(jw, *gHealthPtr)) return sendError(req, 500, "internal", "health");
   AsyncWebServerResponse* res = req->beginResponse(200, kJson, gHealthBuf);
   if (res == nullptr) return req->send(500);
   res->addHeader("Cache-Control", "no-store");
@@ -1027,7 +1061,7 @@ bool targetField(JsonVariantConst v, uint8_t& out) {
 
 // Queues a web target; false when an error was answered.
 bool submitTarget(AsyncWebServerRequest* req, uint8_t valve, uint8_t target) {
-  if (!gCfg.valves[valve].active) {
+  if (!gCfgPtr->valves[valve].active) {
     sendError(req, 409, "inactive", "valve not active");
     return false;
   }
@@ -1041,7 +1075,7 @@ bool submitTarget(AsyncWebServerRequest* req, uint8_t valve, uint8_t target) {
 
 void handleTarget(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   static const char* const kKeys[] = {"target"};
   uint8_t target = 0;
   if (!onlyKeys(o, kKeys, 1) || !targetField(o["target"], target)) {
@@ -1068,7 +1102,7 @@ void handleServiceMove(AsyncWebServerRequest* req, uint8_t valve, bool hasBody) 
   if (refuseTooOld(req)) return;
   if (app::stmProtocol() < 2) return sendError(req, 409, "unsupported", "STM protocol v2 required");
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   static const char* const kKeys[] = {"dir", "counts", "maxmA"};
   const char* dir = o["dir"].is<const char*>() ? o["dir"].as<const char*>() : nullptr;
   int64_t counts = 0, maxmA = 0;
@@ -1090,7 +1124,7 @@ void handleValveSensors(AsyncWebServerRequest* req, uint8_t valve, bool hasBody)
   if (refuseWhileFlashing(req)) return;
   if (refuseTooOld(req)) return;
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   static const char* const kKeys[] = {"slot1", "slot2"};
   int64_t slot[2] = {0, 0};
   if (!onlyKeys(o, kKeys, 2) || !intField(o, "slot1", 0, vdm::kTempSlotCount, slot[0], true) ||
@@ -1103,7 +1137,7 @@ void handleValveSensors(AsyncWebServerRequest* req, uint8_t valve, bool hasBody)
   c.valve = valve;
   for (uint8_t k = 0; k < 2; ++k) {
     if (slot[k] == 0) continue;
-    const vdm::OneWireId& id = gCfg.temps[slot[k] - 1].id;
+    const vdm::OneWireId& id = gCfgPtr->temps[slot[k] - 1].id;
     if (vdm::isZero(id) || !vdm::crcValid(id)) {
       return sendError(req, 400, "invalid", k == 0 ? "slot1 has no valid sensor id"
                                                      : "slot2 has no valid sensor id");
@@ -1132,23 +1166,23 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   if (!hasBody || gBodyLen == 0) return sendError(req, 400, "bad_request", "JSON body required");
   const int slot = dryRun ? -1 : acquireSlot();
   if (!dryRun && slot < 0) return sendError(req, 503, "busy", "response buffers in use");
-  gPatch = gCfg;
+  (*gPatchPtr) = *gCfgPtr;
   char path[72];
-  const vdm::PatchResult r = vdm::applyConfigJson(gPatch, gBody, gBodyLen, path, sizeof path);
+  const vdm::PatchResult r = vdm::applyConfigJson(*gPatchPtr, gBodyBuf->data(), gBodyLen, path, sizeof path);
   if (r != vdm::PatchResult::Ok) {
     releaseSlot(slot);
     return sendError(req, 400, "invalid", path);
   }
   vdm::ApplyInfo info;
-  info.restartRequired = vdm::configRestartReasons(gCfg, gPatch) != 0;
-  info.netTrial = vdm::netTrialRequired(gCfg.net, gPatch.net);
+  info.restartRequired = vdm::configRestartReasons(*gCfgPtr, *gPatchPtr) != 0;
+  info.netTrial = vdm::netTrialRequired(gCfgPtr->net, gPatchPtr->net);
   if (dryRun) {
     char buf[64];
     snprintf(buf, sizeof buf, "{\"restartRequired\":%s,\"netTrial\":%s}",
              info.restartRequired ? "true" : "false", info.netTrial ? "true" : "false");
     return req->send(200, kJson, buf);
   }
-  if (!storage::applyConfig(gPatch, path, sizeof path)) {
+  if (!storage::applyConfig(*gPatchPtr, path, sizeof path)) {
     releaseSlot(slot);
     return sendError(req, strcmp(path, "nvs") == 0 ? 500 : 400, "invalid", path);
   }
@@ -1156,7 +1190,7 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve,
               static_cast<int32_t>(storage::configRevision()), 0, "web");
   vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
-  if (!vdm::writeConfigJson(jw, gCfg, vdm::SecretMode::Flags, &info)) {
+  if (!vdm::writeConfigJson(jw, *gCfgPtr, vdm::SecretMode::Flags, &info)) {
     releaseSlot(slot);
     return sendError(req, 500, "internal", "document too large");
   }
@@ -1167,8 +1201,8 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
   if (refuseWhileFlashing(req)) return;
   if (refuseTooOld(req)) return;
   if (!parseBody(req, hasBody)) return;
-  app::readStmSnapshot(gSnap);
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  app::readStmSnapshot(*gSnapPtr);
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   static const char* const kRoot[] = {"motor", "learnMovements", "breakaway"};
   if (!onlyKeys(o, kRoot, 3))
     return sendError(req, 400, "unknown_key", "motor/learnMovements/breakaway");
@@ -1184,10 +1218,10 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
     }
     JsonObjectConst m = mv.as<JsonObjectConst>();
     const bool complete = m.size() == 5;
-    if (!complete && !gSnap.haveMotor) {
+    if (!complete && !gSnapPtr->haveMotor) {
       return sendError(req, 409, "unknown", "motor parameters not read yet: send all five");
     }
-    vdm::MotorChars mc = gSnap.motor;
+    vdm::MotorChars mc = gSnapPtr->motor;
     int64_t low = mc.lowFactor, high = mc.highFactor, sop = mc.startOnPower,
             minCnt = mc.minCounts, reps = mc.maxCalibRetries;
     if (!intField(m, "lowC", 10, 40, low, false) || !intField(m, "highC", 10, 40, high, false) ||
@@ -1224,10 +1258,10 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
     if (app::stmProtocol() < 2)
       return sendError(req, 409, "unsupported", "STM protocol v2 required");
     JsonObjectConst b = bv.as<JsonObjectConst>();
-    if (b.size() != 3 && !gSnap.haveBreakaway) {
+    if (b.size() != 3 && !gSnapPtr->haveBreakaway) {
       return sendError(req, 409, "unknown", "breakaway not read yet: send all three");
     }
-    vdm::Breakaway ba = gSnap.breakaway;
+    vdm::Breakaway ba = gSnapPtr->breakaway;
     int64_t step = ba.stepPct, maxmA = ba.maxmA;
     if (!boolField(b, "enable", ba.enable, false) || !intField(b, "stepPct", 0, 100, step, false) ||
         !intField(b, "maxmA", 20, 60, maxmA, false)) {
@@ -1249,7 +1283,7 @@ void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
 void handleStmReset(AsyncWebServerRequest* req, bool hasBody) {
   if (refuseWhileFlashing(req)) return;
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   bool confirm = false;
   if (!boolField(o, "confirm", confirm, true) || !confirm) {
     return sendError(req, 400, "confirm_required", "{\"confirm\":true}");
@@ -1273,7 +1307,7 @@ void handleImageDelete(AsyncWebServerRequest* req, const char* rawName) {
 
 void handleFlash(AsyncWebServerRequest* req, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   static const char* const kKeys[] = {"image", "mode", "force", "board"};
   const char* image = o["image"].is<const char*>() ? o["image"].as<const char*>() : nullptr;
   const char* board = o["board"].isNull() ? ""
@@ -1300,8 +1334,8 @@ void handleFlash(AsyncWebServerRequest* req, bool hasBody) {
     return sendError(req, 400, "invalid_image", vdm::flashErrorName(e.check));
   }
   // Board revision: the running STM's tag, else the user's choice.
-  app::readStmSnapshot(gSnap);
-  const char* boardHw = gSnap.version.hw[0] ? gSnap.version.hw : board;
+  app::readStmSnapshot(*gSnapPtr);
+  const char* boardHw = gSnapPtr->version.hw[0] ? gSnapPtr->version.hw : board;
   const vdm::BoardCheck bc = vdm::checkBoard(e.hwTag, boardHw);
   if (!force && bc == vdm::BoardCheck::Mismatch) {
     char detail[40];
@@ -1329,7 +1363,7 @@ void handleFlashAbort(AsyncWebServerRequest* req) {
 
 void handleFactoryReset(AsyncWebServerRequest* req, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   const char* confirm = o["confirm"].is<const char*>() ? o["confirm"].as<const char*>() : "";
   if (strcmp(confirm, "factory-reset") != 0) {
     return sendError(req, 400, "confirm_required", "{\"confirm\":\"factory-reset\"}");
@@ -1342,8 +1376,8 @@ void handleFactoryReset(AsyncWebServerRequest* req, bool hasBody) {
 
 void handleDiscovery(AsyncWebServerRequest* req, bool hasBody) {
   if (!parseBody(req, hasBody)) return;
-  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return sendError(req, 409, "disabled", "MQTT is off");
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  if (gCfgPtr->mqtt.mode == vdm::MqttMode::Off) return sendError(req, 409, "disabled", "MQTT is off");
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   const char* action = o["action"].is<const char*>() ? o["action"].as<const char*>() : "";
   mqtt::DiscoveryAction a;
   if (strcmp(action, "publish") == 0) {
@@ -1355,7 +1389,7 @@ void handleDiscovery(AsyncWebServerRequest* req, bool hasBody) {
   } else {
     return sendError(req, 400, "bad_request", "action publish|delete|republish");
   }
-  if (a != mqtt::DiscoveryAction::Delete && !gCfg.mqtt.separate) {
+  if (a != mqtt::DiscoveryAction::Delete && !gCfgPtr->mqtt.separate) {
     return sendError(req, 409, "separate_required", "HA discovery needs separate topics");
   }
   mqtt::requestDiscovery(a);
@@ -1395,17 +1429,17 @@ void handleImportReportDismiss(AsyncWebServerRequest* req) {
 void handleLegacyValves(AsyncWebServerRequest* req) {
   buildValveViews();
   sendDocument(req, 200, [](vdm::JsonWriter& jw) {
-    return vdm::writeLegacyValvesJson(jw, gValveViews.data(), vdm::kValveCount);
+    return vdm::writeLegacyValvesJson(jw, gValveViewsPtr->data(), vdm::kValveCount);
   });
 }
 
 void handleLegacySensors(AsyncWebServerRequest* req, bool temps) {
   uint8_t nt = 0, nv = 0;
   buildSensorViews(nt, nv);
-  const bool all = gCfg.mqtt.allTemps;
+  const bool all = gCfgPtr->mqtt.allTemps;
   sendDocument(req, 200, [temps, nt, nv, all](vdm::JsonWriter& jw) {
-    return temps ? vdm::writeLegacyTempsJson(jw, gTempViews.data(), nt, all)
-                 : vdm::writeLegacyVoltsJson(jw, gVoltViews.data(), nv);
+    return temps ? vdm::writeLegacyTempsJson(jw, gTempViewsPtr->data(), nt, all)
+                 : vdm::writeLegacyVoltsJson(jw, gVoltViewsPtr->data(), nv);
   });
 }
 
@@ -1414,7 +1448,7 @@ void handleLegacySensors(AsyncWebServerRequest* req, bool temps) {
 void handleSetValve(AsyncWebServerRequest* req, bool hasBody) {
   if (hasBody && gBodyOverflow) return sendError(req, 413, "too_large", "body");
   if (!parseBody(req, hasBody)) return;
-  JsonObjectConst o = gDoc.as<JsonObjectConst>();
+  JsonObjectConst o = gDocPtr->as<JsonObjectConst>();
   int64_t valve = 0;
   uint8_t target = 0;
   if (!intField(o, "valve", 1, vdm::kValveCount, valve, true) || !targetField(o["value"], target)) {
@@ -1647,7 +1681,7 @@ void handleStatic(AsyncWebServerRequest* req) {
 void handleNonApi(AsyncWebServerRequest* req, bool hasBody) {
   const String& url = req->url();
   const vdm::LegacyMatch lm =
-      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfg.web.protectRead);
+      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfgPtr->web.protectRead);
   switch (lm.route) {
     case vdm::LegacyRoute::Valves:
       if (authorised(req, lm.needsAuth)) handleLegacyValves(req);
@@ -1680,7 +1714,10 @@ class ApiHandler : public AsyncWebHandler {
 
   void handleRequest(AsyncWebServerRequest* req) override {
     net::noteInboundHttp(remoteIp(req));
-    refreshConfig();
+    if (!refreshConfig()) {  // the guard answers first; kept for safety
+      if (gBodyOwner == req) gBodyOwner = nullptr;
+      return sendError(req, 503, "busy", "out of memory");
+    }
     const bool hasBody = gBodyOwner == req;
     Mark mk;
     if (req->contentLength() > 0 && !isUploadRoute(route(req).route) && takeMark(req, mk)) {
@@ -1704,7 +1741,7 @@ class ApiHandler : public AsyncWebHandler {
       gBodyOwner = req;
       gBodyLen = 0;
       gBodyOverflow = total > kMaxBodySize;
-      gBody[0] = '\0';
+      gBodyBuf->data()[0] = '\0';
       // Client gone mid-body: free the buffer for the next request.
       req->onDisconnect([req]() {
         if (gBodyOwner == req) gBodyOwner = nullptr;
@@ -1715,9 +1752,9 @@ class ApiHandler : public AsyncWebHandler {
       gBodyOverflow = true;
       return;
     }
-    memcpy(gBody + gBodyLen, data, len);
+    memcpy(gBodyBuf->data() + gBodyLen, data, len);
     gBodyLen += len;
-    gBody[gBodyLen] = '\0';
+    gBodyBuf->data()[gBodyLen] = '\0';
   }
 
   void handleUpload(AsyncWebServerRequest* req, const String& filename, size_t index,
@@ -1735,8 +1772,7 @@ ApiHandler gApi;
 
 void begin() {
   if (gStarted) return;
-  refreshConfig();
-  gServer.addHandler(&gGuard);
+  gServer.addHandler(&gGuard);  // the first request allocates the working set
   gServer.addHandler(&gApi);
   gServer.begin();
   gStarted = true;

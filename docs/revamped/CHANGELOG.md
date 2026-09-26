@@ -135,6 +135,15 @@ recovery steps: see INSTALL.md.
   `initArduino()` released the Bluetooth DRAM, `abort()` in
   `do_global_ctors`, a reboot every 0.5 s. The first `bootAlloc()` now
   releases that DRAM itself.
+- ESP: on a WT32-ETH01 the heap ran out once the network was up (0.6-2.4 KB
+  left, Ethernet dropped received frames, the emac_rx task overflowed its
+  stack). The event log RAM ring holds 32 events in the firmware build (the
+  file keeps the history), the web server allocates its working set and its
+  response slots in the first request, and AsyncTCP's task stack is 10 KB
+  instead of 16 KB.
+- ESP: the heap figures of `/api/health` and the `low_heap` and
+  `heap_fragmented` alarms counted ~45 KB of IRAM that buffers cannot use;
+  they count the 8-bit capable heap now.
 - ESP: `POST /api/config` could answer 503 after it had already applied the
   change.
 - ESP: the dashboard computed the volt value with another formula than MQTT.

@@ -309,7 +309,7 @@ TEST_CASE("app readHealth: our tasks at once, library tasks once found by a reso
   app::readHealth(h);
   REQUIRE(h.taskCount == 5);
   CHECK(std::string(h.tasks[3].name) == "async_tcp");
-  CHECK(h.tasks[3].stackBytes == 16384);
+  CHECK(h.tasks[3].stackBytes == app::kAsyncTcpStackBytes);
   CHECK(h.tasks[3].minFreeBytes == 9000);
   CHECK(std::string(h.tasks[4].name) == "arduino_events");
   CHECK_FALSE(sib::logger().has(vdm::EventCode::StackLow));
@@ -406,7 +406,7 @@ TEST_CASE("app task: a low stack high-water mark is reported once per task") {
   r.stackHighWater["stm"] = 767;
   r.stackHighWater["app"] = 5000;
   r.stackHighWater["mqtt"] = 5000;
-  r.stackHighWater["async_tcp"] = 2047;
+  r.stackHighWater["async_tcp"] = app::kAsyncTcpStackBytes / 8 - 1;  // just below the threshold
   r.extraHandles["async_tcp"] = handle(0x9010);
   runAppTask(101);
   runAppTask(101);
@@ -416,6 +416,6 @@ TEST_CASE("app task: a low stack high-water mark is reported once per task") {
   CHECK(ev[0].arg1 == 767);
   CHECK(ev[0].arg2 == 6144);
   CHECK(std::string(ev[1].text) == "async_tcp");
-  CHECK(ev[1].arg1 == 2047);
-  CHECK(ev[1].arg2 == 16384);
+  CHECK(ev[1].arg1 == static_cast<int32_t>(app::kAsyncTcpStackBytes / 8 - 1));
+  CHECK(ev[1].arg2 == static_cast<int32_t>(app::kAsyncTcpStackBytes));
 }

@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
@@ -64,7 +65,7 @@ constexpr size_t kMonitoredTasks = 5;
 MonitoredTask gTasks[kMonitoredTasks] = {{kStmTask.name, kStmTask.stackBytes, nullptr},
                                          {kAppTask.name, kAppTask.stackBytes, nullptr},
                                          {kMqttTask.name, kMqttTask.stackBytes, nullptr},
-                                         {"async_tcp", 16384, nullptr},
+                                         {"async_tcp", kAsyncTcpStackBytes, nullptr},
                                          {"arduino_events", 4096, nullptr}};
 portMUX_TYPE gHealthMux = portMUX_INITIALIZER_UNLOCKED;  // gTasks handles, gMinLargest
 uint32_t gMinLargest = 0;
@@ -115,10 +116,14 @@ void applyConfigChange() {
 }
 
 // Every 10 s: heap, fragmentation and stack alarms (vdm::ResourceMonitor).
+// The heap figures here and in readHealth() count the 8-bit capable heap:
+// ESP.getFreeHeap() also counts ~45 KB of IRAM that only 32-bit accesses
+// reach, so it still showed 49 KB when buffers could get 1.4 KB.
 void sampleResources(uint32_t now) {
   vdm::Event ev[2];
-  size_t n = gResources.onHeap(ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(),
-                               now, ev, 2);
+  size_t n = gResources.onHeap(heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                               heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+                               heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), now, ev, 2);
   for (size_t i = 0; i < n; ++i) logger::log(ev[i]);
   for (size_t i = 0; i < kMonitoredTasks; ++i) {
     MonitoredTask& t = gTasks[i];
@@ -252,9 +257,9 @@ void readHealth(vdm::HealthSnapshot& out) {
   out = vdm::HealthSnapshot{};
   out.version = vdm::firmwareVersion();
   out.uptimeS = uptimeS();
-  out.freeHeap = ESP.getFreeHeap();
-  out.minFreeHeap = ESP.getMinFreeHeap();
-  out.largestFreeBlock = ESP.getMaxAllocHeap();
+  out.freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+  out.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+  out.largestFreeBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
   MonitoredTask tasks[kMonitoredTasks];
   portENTER_CRITICAL(&gHealthMux);
   out.minLargestFreeBlock = gMinLargest;

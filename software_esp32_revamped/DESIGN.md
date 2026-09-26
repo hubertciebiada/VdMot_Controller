@@ -150,7 +150,7 @@ Rules for module implementers:
 | `stm` | app::setup | 1 | 5 | 6144 B | yes | 2 ms (`vTaskDelay(2)`) | commands in, UART RX, parse, link policy, target delivery, planner, lease client, reset gate, UART TX, flasher, health events, snapshot publish, RTC copies of targets and lease |
 | `app` | app::setup | 1 | 3 | 8192 B | yes | 100 ms | config apply, every 1 s: net service + web start, OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver); every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
 | `mqtt` | app::setup | 1 | 2 | 8192 B | yes | 20 ms connected, 100 ms connecting, 500 ms off | connect/back-off, `loop()`, publishing, discovery (one message per pass), events, inbound commands |
-| `async_tcp` | AsyncTCP lib | 0 | lib default (3) | lib default | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
+| `async_tcp` | AsyncTCP lib | 0 | lib default (3) | 10240 B (patched, `app::kAsyncTcpStackBytes`) | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
 | sys event | ESP-IDF | 0 | IDF | IDF | no | event driven | `net` WiFi/ETH event callback (only sets flags) |
 | `loopTask` | Arduino | 1 | 1 | - | - | - | runs `setup()`, then deletes itself |
 
@@ -605,22 +605,34 @@ mounting fails, which raises `FsFormatted`):
 | `/sys/import.json` | legacy import report | until dismissed |
 | `/HADiscovery.cfg` (+ `.tmp`) | list of the discovery topics this device published (legacy format) | kept, never renamed |
 
-Log file: the RAM ring (512 events) is the buffer; the file is written every
-5 min, within 10 s after a Warning+ event, and at once when 256 events are
-pending or before a restart; Debug events are not written. Lost lines are
+Log file: the RAM ring (32 events in the firmware build, `VDM_EVENT_CAPACITY`;
+512 in the native tests) is the buffer; the file is written every 5 min,
+within 10 s after a Warning+ event, and at once when half the ring is pending
+or before a restart; Debug events are not written. Lost lines are
 recorded as a gap line; failures raise `log_write_failed` (hourly at most).
 
-RAM budget:
-- Allocated once at boot and never freed: event ring 512 x 48 B = 24 KB
-  (`logger::begin`) and web response slots 2 x 12 KB (`web::begin`).
+RAM budget (WT32-ETH01: 263 KB of 8-bit capable heap, measured on the
+hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
+- Allocated once at boot and never freed: the `bootAlloc()` working copies
+  (~62 KB; the first `bootAlloc()` hands the Bluetooth DRAM to the heap, which
+  initArduino() would do only after the constructors) and the event ring
+  32 x 48 B (`logger::begin`).
+- Web server: its working set (~32 KB: snapshot and config copies, views,
+  the POST body buffer) and the response slots 2 x 12 KB get their buffers in
+  the first request and keep them; without a web client (Home Assistant uses
+  MQTT) they stay in the heap. No memory: 503. AsyncTCP's task stack is
+  10 KB (`app::kAsyncTcpStackBytes`, patched in by `tools/patch_libs.py`;
+  deepest handler path ~4.3 KB by the ELF, 3.4 KB measured).
+- Heap figures (`/api/health`, `low_heap`, `heap_fragmented`) count the 8-bit
+  capable heap, not the IRAM that only 32-bit accesses reach.
   Everything else is static or on a task stack.
 - Big objects stay off the stacks: `vdm::Reply` (1 KB), `StmSnapshot`,
   `Config`, `DiscoveryContext`.
 - No per-operation heap: PubSubClient's buffer is set once (2304 B,
   discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;
-  `/api/health` uses its own 1 KB buffer. POST bodies go into one static
-  8 KB buffer. The only per-request allocations are AsyncWebServer's own
+  `/api/health` uses its own 1 KB buffer. POST bodies go into one 8 KB
+  buffer of the web working set. The only per-request allocations are AsyncWebServer's own
   request and response objects, which it frees after each request.
 - Alarms (`ResourceMonitor`, every 10 s): `LowHeap` below 30 KB free,
   `HeapFragmented` when the largest free block is below 8 KB (each at most
@@ -732,7 +744,7 @@ Implementation rules:
   to LittleFS (`.part` file, the write result checked on every chunk, free
   space checked up front) or to the OTA partition, never through the JSON
   buffer. Only one upload or flash runs at a time.
-- Responses: 2 x 12 KB slots; `POST /api/config` reserves its slot before
+- Responses: 2 x 12 KB slots (buffers from their first use); `POST /api/config` reserves its slot before
   applying. `/api/health` is answered outside the pool (1 KB).
 - STM actions: `409 stm_unsupported` while `app::stmSupport()` is TooOld
   (except target, reset and flash) and for stop/safe mode below protocol 3;
