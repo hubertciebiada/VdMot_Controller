@@ -57,6 +57,35 @@ TEST_CASE("system C-5: a new chip and a failed EEPROM read give 60 min and 50 %,
   CHECK(gstax(kLeaseTimeout) == 90);
 }
 
+TEST_CASE("system: slcfg and sfspo of the default values while the EEPROM read fails survive the re-read") {
+  sim::Rig rig;
+  bootController(rig, 0, [] {
+    if (testkit::boot() == 1) fake::eeprom.failReadsFrom = 1;  // every read of this boot fails
+  });
+  if (testkit::boot() == 0) {
+    runMain(5000);  // the first start's configuration write
+    CHECK(exchange("slcfg 90\n") == "slcfg ok\r\n");
+    CHECK(exchange("sfspo 255 30\n") == "sfspo 255 ok\r\n");
+    runMain(5000);
+    testkit::reboot(testkit::Reset::PowerOn);
+  }
+  if (testkit::boot() == 1) {
+    CHECK(gstax(kCfgFlags) == vdm::kCfgReadFailed);
+    // the defaults of the failed read, now requested on purpose: the EEPROM holds 90 and 30
+    CHECK(exchange("slcfg 60\n") == "slcfg ok\r\n");
+    CHECK(exchange("sfspo 255 50\n") == "sfspo 255 ok\r\n");
+    fake::eeprom.failReadsFrom = 0;
+    runMain(31000);  // the re-read 30 s later
+    CHECK(gstax(kCfgFlags) == 0);
+    CHECK(gstax(kLeaseTimeout) == 60);
+    CHECK(exchange("glcfg\n") == glcfg(60, std::vector<uint8_t>(ACTUATOR_COUNT, 50)));
+    runMain(5000);  // and written
+    testkit::reboot(testkit::Reset::PowerOn);
+  }
+  CHECK(testkit::boot() == 2);
+  CHECK(exchange("glcfg\n") == glcfg(60, std::vector<uint8_t>(ACTUATOR_COUNT, 50)));
+}
+
 TEST_CASE("system: sfspo after a warm reset with a failing EEPROM read stays when the re-read finds block B damaged") {
   sim::Rig rig;
   bootController(rig, 0, [] {

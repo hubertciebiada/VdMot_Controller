@@ -129,7 +129,7 @@ TEST_CASE("slcfg: 0 and 5..1440 are stored and configure the lease, the rest is 
   eep_content.leaseTimeoutMin = 60;
   Exchange e = exchange("slcfg 60\n");
   CHECK(e.reply == "slcfg ok\r\n");
-  CHECK(e.calls == stub::Calls{"app_lease_configure(60)", "app_lease_command()"});
+  CHECK(e.calls == stub::Calls{"eeprom_state()", "app_lease_configure(60)", "app_lease_command()"});
   for (uint32_t m : {0u, 5u, 1440u}) {
     CAPTURE(m);
     e = exchange("slcfg " + std::to_string(m) + "\n");
@@ -158,7 +158,7 @@ TEST_CASE("sfspo: one valve or all, 0..100 or 255, stored only when it changes")
   CHECK(eep_content.failsafePct[4] == 50);
   e = exchange("sfspo 3 40\n");
   CHECK(e.reply == "sfspo 3 ok\r\n");
-  CHECK(e.calls == stub::Calls{"app_set_failsafe(3, 40)", "app_lease_command()"});
+  CHECK(e.calls == stub::Calls{"eeprom_state()", "app_set_failsafe(3, 40)", "app_lease_command()"});
   CHECK(exchange("sfspo 0 0\n").reply == "sfspo 0 ok\r\n");
   CHECK(exchange("sfspo 11 100\n").reply == "sfspo 11 ok\r\n");
   CHECK(exchange("sfspo 5 255\n").reply == "sfspo 5 ok\r\n");
@@ -169,7 +169,8 @@ TEST_CASE("sfspo: one valve or all, 0..100 or 255, stored only when it changes")
   CHECK(e.reply == "sfspo 255 ok\r\n");
   CHECK(e.calls == stub::Calls{"eeprom_changed(0x0040)", "app_set_failsafe(255, 40)", "app_lease_command()"});
   for (unsigned v = 0; v < ACTUATOR_COUNT; v++) CHECK(eep_content.failsafePct[v] == 40);
-  CHECK(exchange("sfspo 255 40\n").calls == stub::Calls{"app_set_failsafe(255, 40)", "app_lease_command()"});
+  CHECK(exchange("sfspo 255 40\n").calls ==
+        stub::Calls{"eeprom_state()", "app_set_failsafe(255, 40)", "app_lease_command()"});
   // only one valve differs: still one mark
   eep_content.failsafePct[7] = 41;
   CHECK(exchange("sfspo 255 40\n").calls.front() == "eeprom_changed(0x0040)");
@@ -188,6 +189,38 @@ TEST_CASE("sfspo: one valve or all, 0..100 or 255, stored only when it changes")
   }
   CHECK(exchange("sfspo 255 101\n").reply == "sfspo 255 err 1\r\n");
   CHECK(eep_content.failsafePct[3] == 40);
+}
+
+TEST_CASE("slcfg and sfspo while the EEPROM read has failed: a value equal to the mirror is marked too") {
+  begin();
+  // the defaults of a failed read in the mirror
+  eep_content.leaseTimeoutMin = 60;
+  memset(eep_content.failsafePct, 50, sizeof eep_content.failsafePct);
+  stub::eeprom.state = vdm::kEepStateReadFailed;
+  Exchange e = exchange("slcfg 60\n");
+  CHECK(e.reply == "slcfg ok\r\n");
+  CHECK(e.calls == stub::Calls{"eeprom_state()", "eeprom_changed(0x0020)", "app_lease_configure(60)",
+                               "app_lease_command()"});
+  e = exchange("sfspo 3 50\n");
+  CHECK(e.reply == "sfspo 3 ok\r\n");
+  CHECK(e.calls == stub::Calls{"eeprom_state()", "eeprom_changed(0x0040)", "app_set_failsafe(3, 50)",
+                               "app_lease_command()"});
+  CHECK(exchange("sfspo 255 50\n").calls ==
+        stub::Calls{"eeprom_state()", "eeprom_changed(0x0040)", "app_set_failsafe(255, 50)", "app_lease_command()"});
+  // a changed value is marked without asking
+  CHECK(exchange("slcfg 90\n").calls ==
+        stub::Calls{"eeprom_changed(0x0020)", "app_lease_configure(90)", "app_lease_command()"});
+  CHECK(eep_content.leaseTimeoutMin == 90);
+  // an invalid request marks nothing
+  CHECK(exchange("slcfg 4\n").calls.empty());
+  CHECK(exchange("sfspo 3 101\n").calls.empty());
+  // readable EEPROM: an equal value is not marked, in every other state
+  for (uint8_t state : {vdm::kEepStateOk, vdm::kEepStatePending, vdm::kEepStateWriteFailed}) {
+    CAPTURE(+state);
+    stub::eeprom.state = state;
+    CHECK(exchange("slcfg 90\n").calls == stub::Calls{"eeprom_state()", "app_lease_configure(90)", "app_lease_command()"});
+    CHECK(exchange("sfspo 3 50\n").calls == stub::Calls{"eeprom_state()", "app_set_failsafe(3, 50)", "app_lease_command()"});
+  }
 }
 
 TEST_CASE("glcfg: the lease timeout and the failsafe positions of the valves, extra arguments ignored") {

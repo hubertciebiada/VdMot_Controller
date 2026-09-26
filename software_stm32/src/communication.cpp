@@ -210,7 +210,9 @@ static bool argValveOrAll (const vdm::Tokenizer &req, uint8_t i, uint16_t &x)
 }
 
 
-// stores the failsafe position of one valve or of all (255) and applies it
+// stores the failsafe position of one valve or of all (255) and applies it; while the EEPROM read
+// has failed the mirror holds the default 50, not the stored positions, so every position is
+// marked: the re-read takes over the marked fields only
 static void setFailsafe (uint16_t valve, uint8_t pct)
 {
 	bool changed = false;
@@ -221,7 +223,7 @@ static void setFailsafe (uint16_t valve, uint8_t pct)
 			changed = true;
 		}
 	}
-	if (changed) eeprom_changed(EEP_CHANGED_FAILSAFE);
+	if (changed || eeprom_state() == vdm::kEepStateReadFailed) eeprom_changed(EEP_CHANGED_FAILSAFE);
 	app_set_failsafe(valve, pct);
 }
 
@@ -859,7 +861,9 @@ static void communication_dispatch (const vdm::Tokenizer &req)
 		const bool valid = req.argc() == 1 && req.argU32(0, 0, UINT32_MAX, xu32) && vdm::leaseTimeoutValid(xu32);
 
 		if (valid) {
-			if (eep_content.leaseTimeoutMin != xu32) {
+			// while the EEPROM read has failed the mirror holds the default 60, not the stored
+			// timeout: marked also when equal, the re-read takes over the marked fields only
+			if (eep_content.leaseTimeoutMin != xu32 || eeprom_state() == vdm::kEepStateReadFailed) {
 				eep_content.leaseTimeoutMin = (uint16_t) xu32;
 				eeprom_changed(EEP_CHANGED_LEASE);
 			}
