@@ -1069,6 +1069,35 @@ TEST_CASE("applySensorTemps: v2 valve temperatures from gvlon + goned") {
   CHECK(m.valve(3).temp1 == kTempUnassigned);  // nothing assigned stays unassigned
 }
 
+TEST_CASE("applySensorTemps: a sensor on the bus that was never read is a read error once settled") {
+  SensorModel s;
+  OneWireList l;
+  l.count = 2;
+  l.hasList = true;
+  l.ids[0] = idWithCrc(1);
+  l.ids[1] = idWithCrc(2);
+  s.applyTempList(l, 0);
+  TempData td;
+  td.valid = true;
+  td.id = l.ids[1];
+  td.value = 199;
+  s.applyTempData(1, td, 1000);
+  ValveModel m;
+  m.setActiveMask(0x001);
+  ValveSensors vs;
+  vs.isList = true;
+  vs.ids[0][0] = idWithCrc(1);  // on the bus, never read
+  vs.ids[0][1] = idWithCrc(2);  // on the bus, fresh
+  m.applyValveSensors(vs, nullptr, 0);
+  m.applySensorTemps(s, 2000, 60000, false);
+  CHECK(m.valve(0).temp1 == kTempUnassigned);
+  CHECK(m.valve(0).temp2 == 199);
+  m.applySensorTemps(s, 2000, 60000, true);
+  CHECK(m.valve(0).temp1 == kTempReadError);
+  CHECK(m.valve(0).temp2 == 199);
+  CHECK((m.valve(0).health & kHealthTempFailed) != 0);
+}
+
 TEST_CASE("applySensorTemps: the combined table per sensor") {
   SensorModel s;
   OneWireList l;
