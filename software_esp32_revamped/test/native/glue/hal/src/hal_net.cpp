@@ -500,12 +500,18 @@ size_t WiFiClient::write(const uint8_t* buf, size_t size) {
 }
 
 void WiFiClient::respond() {
-  if (!open_ || answered_) return;
-  answered_ = true;
+  if (!open_) return;
   fakes::Net& n = fakes::net();
-  if (n.tcpResponder) {
-    const fakes::TcpConnect to{ip_, "", port_, 0};
-    reply_ = n.tcpResponder(to, request_);
+  if (!answered_) {
+    answered_ = true;
+    if (n.tcpResponder) {
+      const fakes::TcpConnect to{ip_, "", port_, 0};
+      reply_ = n.tcpResponder(to, request_);
+    }
+  }
+  while (!n.tcpLater.empty() && n.tcpLater.front().first <= fakes::nowMs()) {
+    reply_ += n.tcpLater.front().second;
+    n.tcpLater.pop_front();
   }
 }
 
@@ -548,7 +554,7 @@ void WiFiClient::stop() {
 uint8_t WiFiClient::connected() {
   if (fakes::isMqttSocket(this)) return fakes::mqttSocketConnected() ? 1 : 0;
   if (!open_) return 0;
-  return !answered_ || replyPos_ < reply_.size() ? 1 : 0;
+  return !answered_ || replyPos_ < reply_.size() || !fakes::net().tcpLater.empty() ? 1 : 0;
 }
 
 IPAddress WiFiClient::remoteIP() const { return IPAddress(ip_); }
