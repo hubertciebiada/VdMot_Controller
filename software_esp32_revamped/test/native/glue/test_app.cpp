@@ -101,13 +101,18 @@ TEST_CASE("app setup: GPIO2 held low for 5 s resets the configuration and sets t
   CHECK_FALSE(sib::logger().has(vdm::EventCode::FactoryResetSkipped));
 }
 
-TEST_CASE("app setup: a failed factory reset is logged with -1, the latch is set anyway") {
+TEST_CASE("app setup: a failed factory reset is logged with -1 and sets no latch") {
   glue::begin();
-  fakes::gpio().in[2] = LOW;
+  fakes::gpio().input = [](int pin, uint64_t now) { return pin == 2 && now < 30000 ? LOW : -1; };
   sib::storage().factoryResetResult = false;
   app::setup();
+  CHECK(sib::storage().factoryResets == 1);
   CHECK(sib::logger().withCode(vdm::EventCode::ConfigSaved).at(0).arg2 == -1);
-  CHECK(sib::storage().factoryLatchSets == std::vector<bool>{true});
+  CHECK(sib::storage().factoryLatchSets.empty());  // the next boot with the jumper tries again
+  // not latched: the pin going high at run time clears nothing
+  runAppTask(300);
+  CHECK(fakes::nowMs() > 30000);
+  CHECK(sib::storage().factoryLatchSets.empty());
 }
 
 TEST_CASE("app setup: GPIO2 still set after a pin reset -> settings kept, no wait") {

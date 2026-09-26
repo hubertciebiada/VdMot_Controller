@@ -289,9 +289,11 @@ void setup() {
 
   const bool factoryReset = pin == vdm::FactoryPinDecision::Reset;
   const bool resetOk = factoryReset && storage::factoryReset();
-  if (factoryReset) storage::setFactoryLatched(true);
+  // The latch records a reset done: after a failed one the next boot with the
+  // jumper still fitted tries again.
+  if (resetOk) storage::setFactoryLatched(true);
   if (pin == vdm::FactoryPinDecision::ClearLatch) storage::setFactoryLatched(false);
-  gFactoryLatched = factoryReset || pin == vdm::FactoryPinDecision::KeepLatched;
+  gFactoryLatched = resetOk || pin == vdm::FactoryPinDecision::KeepLatched;
   vdm::ImportReport report;
   storage::LoadDetails loadDetails;
   storage::loadConfig(gCfg, report, loadDetails);

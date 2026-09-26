@@ -979,8 +979,9 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   arg2 1) and starts a new one. Config backups are not written while a trial
   runs.
 - Factory reset: GPIO2 LOW for 5 s at boot, once per fitting of the jumper
-  (NVS latch `frLatch`, cleared when the pin reads HIGH at boot or at run
-  time; a boot with the latch set logs 113 and keeps the settings), or
+  (NVS latch `frLatch`, set after a reset that succeeded, cleared when the
+  pin reads HIGH at boot or at run time; a boot with the latch set logs 113
+  and keeps the settings), or
   `POST /api/system/factory-reset`. It erases `vdmrev` except the latch (the
   legacy namespaces stay, and `imported` is set so they are not imported
   again).
