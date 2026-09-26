@@ -1,0 +1,3 @@
+[
+  {"line": 100, "col": 25, "original": "0", "replacement": "1", "text": "uint32_t gCfgRevision = 0;", "reason": "dead initial value: task() calls reloadConfig(), which assigns gCfgRevision, before its loop reads it"}
+]

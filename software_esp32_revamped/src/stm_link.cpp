@@ -44,11 +44,8 @@ class UartTransport : public vdm::FlashTransport {
   // The flasher writes at most one frame (<= 260 B) per step after the
   // previous one was ACKed, so the 512 B TX ring buffer never blocks here.
   size_t write(const uint8_t* data, size_t len) override { return gUart.write(data, len); }
-  size_t read(uint8_t* out, size_t cap) override {
-    const int avail = gUart.available();
-    if (avail <= 0 || cap == 0) return 0;
-    return gUart.read(out, static_cast<size_t>(avail) < cap ? static_cast<size_t>(avail) : cap);
-  }
+  // HardwareSerial::read() never blocks and returns at most what is buffered.
+  size_t read(uint8_t* out, size_t cap) override { return gUart.read(out, cap); }
   void discardInput() override {
     uint8_t buf[64];
     for (int i = 0; i < 64 && gUart.available() > 0; ++i) gUart.read(buf, sizeof buf);
@@ -116,11 +113,8 @@ void readUart(uint32_t now) {
   char buf[128];
   // Bounded per iteration: at most 4 chunks (512 B) before yielding.
   for (int chunk = 0; chunk < 4; ++chunk) {
-    const int avail = gUart.available();
-    if (avail <= 0) return;
-    const size_t want =
-        static_cast<size_t>(avail) < sizeof buf ? static_cast<size_t>(avail) : sizeof buf;
-    const size_t n = gUart.read(reinterpret_cast<uint8_t*>(buf), want);
+    const size_t n = gUart.read(reinterpret_cast<uint8_t*>(buf), sizeof buf);
+    if (n == 0) return;
     gSession.onRx(buf, n, now);
   }
 }

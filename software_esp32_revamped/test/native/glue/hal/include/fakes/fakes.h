@@ -415,6 +415,9 @@ struct Net {
   std::vector<TcpConnect> tcpConnects;
   // Answer of a connection to the request bytes written to it ("" = connection closed).
   std::function<std::string(const TcpConnect& to, const std::string& request)> tcpResponder;
+  // Reply parts that arrive later: (fake ms, bytes), appended to the answer of the open connection
+  // once the clock reached the time; the server keeps the connection open until the last one.
+  std::deque<std::pair<uint64_t, std::string>> tcpLater;
 };
 Net& net();
 
