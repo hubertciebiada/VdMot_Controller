@@ -35,7 +35,6 @@ constexpr uint32_t kSelfCheckAnswerMs = 3000;
 // App task only.
 vdm::OtaValidator gValidator;
 vdm::RestartGate gGate;
-bool gRollback = false;
 
 // Written by the AsyncTCP task at the upload end, read by the app task.
 volatile bool gUploadStmUp = false;
@@ -135,18 +134,24 @@ void service(uint32_t nowMs, bool netOk, bool linkUp, bool webStarted) {
     markValid();
   } else if (d == vdm::OtaValidator::Decision::Rollback) {
     // Through the common restart path (STM EEPROM wait, log flush, MQTT
-    // offline); a restart already pending becomes the rollback.
-    gRollback = true;
+    // offline); a restart already pending becomes the rollback, except the
+    // restart into an uploaded image: that image is selected already and
+    // the rollback would discard it, while this image is left all the same.
     const int32_t missing = gValidator.missing();
     portENTER_CRITICAL(&gMux);
-    if (!gRestartPending) {
-      gRestartPending = true;
-      gRestartAtMs = nowMs + 1000;
+    const bool upload = gRestartPending && gRestartReason == 1;
+    if (!upload) {
+      if (!gRestartPending) {
+        gRestartPending = true;
+        gRestartAtMs = nowMs + 1000;
+      }
+      gRestartReason = 4;
     }
-    gRestartReason = 4;
     portEXIT_CRITICAL(&gMux);
-    logger::logSev(vdm::EventCode::RebootRequested, vdm::Severity::Warning, vdm::kNoValve, 4,
-                   missing);
+    if (!upload) {
+      logger::logSev(vdm::EventCode::RebootRequested, vdm::Severity::Warning, vdm::kNoValve, 4,
+                     missing);
+    }
   }
   vdm::OtaHealthInfo h;
   h.pending = gValidator.pending();
@@ -262,6 +267,10 @@ void requestRestart(uint8_t reason, uint32_t delayMs, int32_t detail) {
     gRestartAtMs = millis() + delayMs;
     gRestartReason = reason;
     first = true;
+  } else if (reason == 1 && gRestartReason == 4) {
+    // An uploaded image replaces a pending rollback, which would discard it.
+    gRestartReason = reason;
+    first = true;
   }
   portEXIT_CRITICAL(&gMux);
   if (!first) return;
@@ -306,12 +315,11 @@ void serviceRestart(uint32_t nowMs, bool netUp, bool linkUp) {
   if (gValidator.confirmBeforeRestart(reason == 0 || reason == 3, netUp, linkUp)) markValid();
   if (reason == 1) storage::setOtaStmRequired(gUploadStmUp);
   logger::flush();  // the whole backlog, with the reason, before going down
-  if (!gRollback) esp_restart();
+  if (reason != 4) esp_restart();
   esp_ota_mark_app_invalid_rollback_and_reboot();
   // Only returns when there is no other valid image: keep running this one
   // (better than a boot loop).
   logger::log(vdm::EventCode::EspOtaFailed, vdm::kNoValve, -3);
-  gRollback = false;
   gGate.reset();
   portENTER_CRITICAL(&gMux);
   gRestartPending = false;

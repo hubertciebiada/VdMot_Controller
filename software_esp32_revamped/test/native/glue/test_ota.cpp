@@ -528,6 +528,73 @@ TEST_CASE("ota service: a rollback while another restart is pending becomes that
   CHECK(sib::stmService().restartFlushes == 1);
 }
 
+TEST_CASE("ota service: a rollback decided while the restart into an uploaded image waits leaves it") {
+  glue::begin();
+  pendingImage("", false);
+  sib::storage().otaStmSets.clear();  // erased by begin()
+  serviceSeconds(0, 899000, false, false);
+  REQUIRE(ota::uploadBegin(3, nullptr));
+  uint8_t data[3] = {0xE9, 1, 2};
+  REQUIRE(ota::uploadWrite(data, 3));
+  REQUIRE(ota::uploadEnd(true));  // the new image selected, the restart due at 900000
+  REQUIRE(fakes::ota().boot == 1);
+  fakes::setMs(900000);
+  ota::service(900000, false, false, true);  // the rollback is due now
+  const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::RebootRequested);
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].arg1 == 1);
+  ota::serviceRestart(900000, false, false);
+  CHECK(sib::app().saveRequests == 1);
+  sib::app().saveState = vdm::StmSaveState::Saved;
+  CHECK_THROWS_AS(ota::serviceRestart(900100, false, false), fakes::Restarted);
+  CHECK(fakes::ota().markInvalid == 0);
+  CHECK(fakes::ota().boot == 1);
+  CHECK(fakes::ota().state[1] == ESP_OTA_IMG_NEW);
+  CHECK(sib::storage().otaStmSets == std::vector<bool>{false});
+}
+
+TEST_CASE("ota: an image uploaded while a rollback restart waits replaces the rollback, other requests do not") {
+  glue::begin();
+  pendingImage("", false);
+  sib::storage().otaStmSets.clear();  // erased by begin()
+  serviceSeconds(0, 900000, false, false);  // the rollback, due at 901000
+  ota::requestRestart(0, 0);                // a user restart meanwhile: still the rollback
+  ota::serviceRestart(901000, false, false);
+  REQUIRE(sib::app().saveRequests == 1);    // the restart waits for the STM
+  std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::RebootRequested);
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].arg1 == 4);
+  REQUIRE(ota::uploadBegin(3, nullptr));
+  uint8_t data[3] = {0xE9, 1, 2};
+  REQUIRE(ota::uploadWrite(data, 3));
+  REQUIRE(ota::uploadEnd(true));
+  ev = sib::logger().withCode(vdm::EventCode::RebootRequested);
+  REQUIRE(ev.size() == 2);
+  CHECK(ev[1].arg1 == 1);
+  CHECK(ev[1].severity == vdm::Severity::Info);
+  ota::requestRestart(0, 0);  // no new request replaces it
+  CHECK(sib::logger().withCode(vdm::EventCode::RebootRequested).size() == 2);
+  sib::app().saveState = vdm::StmSaveState::Saved;
+  CHECK_THROWS_AS(ota::serviceRestart(901100, false, false), fakes::Restarted);
+  CHECK(fakes::ota().markInvalid == 0);
+  CHECK(fakes::ota().boot == 1);
+  CHECK(sib::storage().otaStmSets == std::vector<bool>{false});
+}
+
+TEST_CASE("ota: a rollback restart stays a rollback when another restart is requested") {
+  glue::begin();
+  pendingImage("", false);
+  serviceSeconds(0, 900000, false, false);
+  ota::requestRestart(2, 0, 5);
+  ota::serviceRestart(901000, false, false);
+  sib::app().saveState = vdm::StmSaveState::Saved;
+  CHECK_THROWS_AS(ota::serviceRestart(901100, false, false), fakes::Restarted);
+  CHECK(fakes::ota().markInvalid == 1);
+  CHECK(fakes::ota().boot == 1);
+  CHECK(fakes::ota().state[0] == ESP_OTA_IMG_INVALID);
+  CHECK(sib::logger().withCode(vdm::EventCode::RebootRequested).size() == 1);
+}
+
 TEST_CASE("ota service: MarkValid with a failing mark call logs nothing") {
   glue::begin();
   pendingImage("HTTP/1.1 200 OK\r\n", false);
