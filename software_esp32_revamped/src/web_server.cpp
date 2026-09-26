@@ -1350,7 +1350,7 @@ void handleDiscovery(AsyncWebServerRequest* req, bool hasBody) {
     return sendError(req, 400, "bad_request", "action publish|delete|republish");
   }
   if (a != mqtt::DiscoveryAction::Delete && !gCfg.mqtt.separate) {
-    return sendError(req, 409, "separate_required", "enable mqtt.separate first");
+    return sendError(req, 409, "separate_required", "HA discovery needs separate topics");
   }
   mqtt::requestDiscovery(a);
   sendAccepted(req);

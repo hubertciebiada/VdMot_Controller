@@ -1065,7 +1065,7 @@ TEST_CASE("web: MQTT discovery rules per mode") {
   ++sib::storage().revision;
   r = fakes::http::perform(apiPost("/api/mqtt/discovery", "{\"action\":\"publish\"}"));
   CHECK(r.code == 409);
-  CHECK(r.body == errorBody("separate_required", "enable mqtt.separate first"));
+  CHECK(r.body == errorBody("separate_required", "HA discovery needs separate topics"));
   r = fakes::http::perform(apiPost("/api/mqtt/discovery", "{\"action\":\"republish\"}"));
   CHECK(r.code == 409);
   r = fakes::http::perform(apiPost("/api/mqtt/discovery", "{\"action\":\"delete\"}"));
