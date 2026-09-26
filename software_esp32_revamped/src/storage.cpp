@@ -112,8 +112,9 @@ class NvsLegacyReader : public vdm::LegacyNvsReader {
   bool readString(const char* ns, const char* key, char* out, size_t cap,
                   bool& truncated) override {
     truncated = false;
+    if (out == nullptr || cap == 0) return false;
     nvs_handle_t h;
-    if (out == nullptr || cap == 0 || nvs_open(ns, NVS_READONLY, &h) != ESP_OK) return false;
+    if (nvs_open(ns, NVS_READONLY, &h) != ESP_OK) return false;
     size_t len = 0;  // stored length including the NUL
     bool ok = nvs_get_str(h, key, nullptr, &len) == ESP_OK && len > 0;
     if (ok) {
