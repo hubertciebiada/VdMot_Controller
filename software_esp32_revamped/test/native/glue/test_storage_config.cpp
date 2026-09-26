@@ -504,6 +504,84 @@ TEST_CASE("storage save: a failed tmp write renames nothing") {
   CHECK_FALSE(fakes::fs().exists("/sys/cfgx.bak.tmp"));
 }
 
+TEST_CASE("storage save: a failed rename of the ext keeps its tmp file, a load pairs it with the new base") {
+  glue::begin();
+  mount();
+  storeBackup(withExt("Old"));  // failsafe timeout 90
+  vdm::Config n = named("New");
+  n.failsafe.timeoutMin = 30;
+  char path[16] = "";
+  REQUIRE(storage::applyConfig(n, path, sizeof path));
+  fakes::fs().fail("rename", "/sys/cfgx.bak.tmp");
+  storage::service();
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(n)));
+  CHECK(fakes::fs().read("/sys/cfgx.bak") == str(extOf(withExt("Old"))));
+  CHECK(fakes::fs().read("/sys/cfgx.bak.tmp") == str(extOf(n)));
+  CHECK_FALSE(fakes::fs().exists("/sys/cfg.bak.tmp"));
+  // NVS lost: the backup gives the pair of the last save
+  fakes::nvs().setBlob("vdmrev", "cfg", corrupt(blobOf(n)));
+  const Load l = load();
+  CHECK(l.src == storage::LoadSource::Backup);
+  CHECK(std::string(l.cfg.station) == "New");
+  CHECK(l.cfg.failsafe.timeoutMin == 30);
+  CHECK(fakes::nvs().getBlob("vdmrev", "cfgx") == extOf(n));
+}
+
+TEST_CASE("storage load: a backup cut between its renames uses cfgx.bak.tmp, one cut before them the old pair") {
+  glue::begin();
+  mount();
+  vdm::Config n = named("New");
+  n.failsafe.timeoutMin = 30;
+  // cut after the rename of the base
+  fakes::fs().put("/sys/cfg.bak", str(blobOf(n)));
+  fakes::fs().put("/sys/cfgx.bak", str(extOf(withExt("Old"))));
+  fakes::fs().put("/sys/cfgx.bak.tmp", str(extOf(n)));
+  fakes::nvs().setBlob("vdmrev", "cfg", corrupt(blobOf(n)));
+  Load l = load();
+  CHECK(l.src == storage::LoadSource::Backup);
+  CHECK(std::string(l.cfg.station) == "New");
+  CHECK(l.cfg.failsafe.timeoutMin == 30);
+  // cut before it: both tmp files next to the old pair
+  storeBackup(withExt("Old"));
+  fakes::fs().put("/sys/cfg.bak.tmp", str(blobOf(n)));
+  fakes::nvs().setBlob("vdmrev", "cfg", corrupt(blobOf(n)));
+  l = load();
+  CHECK(l.src == storage::LoadSource::Backup);
+  CHECK(std::string(l.cfg.station) == "Old");
+  CHECK(l.cfg.failsafe.timeoutMin == 90);
+}
+
+TEST_CASE("storage save: the next backup first finishes one cut between its renames") {
+  glue::begin();
+  mount();
+  vdm::Config first = named("First");
+  first.failsafe.timeoutMin = 30;
+  fakes::fs().put("/sys/cfg.bak", str(blobOf(first)));
+  fakes::fs().put("/sys/cfgx.bak", str(extOf(withExt("Old"))));
+  fakes::fs().put("/sys/cfgx.bak.tmp", str(extOf(first)));
+  vdm::Config second = named("Second");
+  second.failsafe.timeoutMin = 40;
+  char path[16] = "";
+  REQUIRE(storage::applyConfig(second, path, sizeof path));
+  // the rename that finishes the cut backup fails: nothing else is written
+  fakes::fs().fail("rename", "/sys/cfgx.bak.tmp");
+  storage::service();
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(first)));
+  CHECK(fakes::fs().read("/sys/cfgx.bak.tmp") == str(extOf(first)));
+  CHECK_FALSE(fakes::fs().exists("/sys/cfg.bak.tmp"));
+  // the next save finishes it, then writes its own pair
+  REQUIRE(storage::applyConfig(second, path, sizeof path));
+  fakes::journal().clear();
+  storage::service();
+  CHECK(fakes::journalOf("fs.rename") == std::vector<std::string>{
+                                            "fs.rename /sys/cfgx.bak.tmp /sys/cfgx.bak",
+                                            "fs.rename /sys/cfg.bak.tmp /sys/cfg.bak",
+                                            "fs.rename /sys/cfgx.bak.tmp /sys/cfgx.bak"});
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(second)));
+  CHECK(fakes::fs().read("/sys/cfgx.bak") == str(extOf(second)));
+  CHECK_FALSE(fakes::fs().exists("/sys/cfgx.bak.tmp"));
+}
+
 TEST_CASE("storage factoryReset: the backup and report files go, the latch stays") {
   glue::begin();
   mount();

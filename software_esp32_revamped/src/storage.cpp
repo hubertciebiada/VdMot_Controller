@@ -440,23 +440,35 @@ bool encodeLocked(const vdm::Config& c, size_t& n, size_t& x) {
   return n > 0 && x > 0;
 }
 
-// /sys/cfg.bak and /sys/cfgx.bak from the active config: both written to
-// .tmp files first, then renamed over the old ones, so a power cut leaves
-// the previous backup. The base goes first: a cut between the renames pairs
-// the new base with the older ext keys, never the other way round.
+// A backup write cut off between its two renames: /sys/cfg.bak is new and
+// its ext blob is still in cfgx.bak.tmp (see writeBackup()).
+bool backupCut() { return !LittleFS.exists(kBackupBaseTmp) && LittleFS.exists(kBackupExtTmp); }
+
+// /sys/cfg.bak and /sys/cfgx.bak from the active config, a pair that a load
+// takes together. Both are written to .tmp files first (base, then ext) and
+// renamed over the old ones in the same order, so a power cut never leaves
+// a pair of two saves: cfgx.bak.tmp without cfg.bak.tmp is the ext blob of
+// the renamed base (backupCut()), any other .tmp file belongs to a write
+// that renamed nothing and left the old pair.
 void writeBackup() {
   CfgLock lock;
   gBackupPending = false;
+  // New .tmp files must not meet the ext blob of a cut write: it goes first.
+  if (backupCut() && !LittleFS.rename(kBackupExtTmp, kBackupExt)) return;
   size_t n = 0;
   size_t x = 0;
-  const bool ok = encodeLocked(gActive, n, x) && writeFile(kBackupExtTmp, gExt.data(), x) &&
-                  writeFile(kBackupBaseTmp, gBlob.data(), n) &&
-                  LittleFS.rename(kBackupBaseTmp, kBackupBase) &&
-                  LittleFS.rename(kBackupExtTmp, kBackupExt);
+  const bool ok = encodeLocked(gActive, n, x) && writeFile(kBackupBaseTmp, gBlob.data(), n) &&
+                  writeFile(kBackupExtTmp, gExt.data(), x) &&
+                  LittleFS.rename(kBackupBaseTmp, kBackupBase);
   if (!ok) {
+    // The ext first: a cut in between leaves cfg.bak.tmp, still a write
+    // that renamed nothing.
     LittleFS.remove(kBackupExtTmp);
     LittleFS.remove(kBackupBaseTmp);
+    return;
   }
+  // A failure keeps cfgx.bak.tmp as the pair of the new base.
+  LittleFS.rename(kBackupExtTmp, kBackupExt);
 }
 
 }  // namespace
@@ -489,7 +501,8 @@ namespace {
 bool loadBackupLocked(vdm::Config& out, vdm::LoadInfo& info) {
   if (!gFsReady) return false;
   const size_t n = readFile(kBackupBase, gBlob.data(), sizeof gBlob.items);
-  const size_t x = readFile(kBackupExt, gExt.data(), sizeof gExt.items);
+  const size_t x =
+      readFile(backupCut() ? kBackupExtTmp : kBackupExt, gExt.data(), sizeof gExt.items);
   vdm::StoredBlobs b;
   b.base = gBlob.data();
   b.baseLen = n;

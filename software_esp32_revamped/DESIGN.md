@@ -601,7 +601,7 @@ mounting fails, which raises `FsFormatted`):
 | `/stm/<name>.bin` | uploaded STM images, name `[A-Za-z0-9._-]{1,31}` | 512 KiB each, at most 3 plus `last_good.bin` |
 | `/stm/<name>.bin.part` | upload in progress, renamed when complete | |
 | `/log/events.log`, `/log/events.1.log` | event log lines (`formatEventLine`) | 64 KB each + 8 KB slack while a reader blocks the rotation |
-| `/sys/cfg.bak`, `/sys/cfgx.bak` (+ `.tmp`) | byte copies of the last saved config blobs | internal, not deletable |
+| `/sys/cfg.bak`, `/sys/cfgx.bak` (+ `.tmp`) | byte copies of the last saved config blobs, one pair: written as `.tmp` and renamed base first; `cfgx.bak.tmp` without `cfg.bak.tmp` is the ext blob of the renamed base | internal, not deletable |
 | `/sys/import.json` | legacy import report | until dismissed |
 | `/HADiscovery.cfg` (+ `.tmp`) | list of the discovery topics this device published (legacy format) | kept, never renamed |
 
