@@ -850,8 +850,19 @@ void publishLastMove(uint8_t i, const vdm::ValveState& v) {
   if (jw.complete()) publish(vdm::Topic::DiagValveLastMove, gSegments[i], json);
 }
 
+// CRC-32 of the profile's bytes with zeros in the padding (after count and after each sample's
+// current): a copy or a parse may leave anything there, only the fields may make a profile new.
 uint32_t profileCrc(const vdm::Profile& p) {
-  return vdm::crc32(reinterpret_cast<const uint8_t*>(&p), sizeof p);
+  static const uint8_t kZeros[sizeof(vdm::ProfileSample)] = {};
+  uint32_t crc = vdm::crc32(&p.valve, sizeof p.valve);
+  crc = vdm::crc32(&p.count, sizeof p.count, crc);
+  crc = vdm::crc32(kZeros, offsetof(vdm::Profile, samples) - sizeof p.valve - sizeof p.count, crc);
+  for (const vdm::ProfileSample& s : p.samples) {
+    crc = vdm::crc32(reinterpret_cast<const uint8_t*>(&s.count), sizeof s.count, crc);
+    crc = vdm::crc32(reinterpret_cast<const uint8_t*>(&s.current), sizeof s.current, crc);
+    crc = vdm::crc32(kZeros, sizeof s - sizeof s.count - sizeof s.current, crc);
+  }
+  return crc;
 }
 
 // A counter topic of diag/mqtt: on change, at most every kCounterPaceMs.

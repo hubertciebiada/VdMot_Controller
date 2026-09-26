@@ -1,7 +1,8 @@
 // Tests of src/mqtt_client.cpp for inputs that are rare but real: a publish that fails as the
 // last one of the full publish, valve profiles whose CRC-32 hits the values the diag comparison
-// stores for "no profile" (every CRC value is reachable: the samples are STM data), and a valve
-// whose first diag pass after the connect runs out of budget.
+// stores for "no profile" or for the last profile (every CRC value is reachable: the samples are
+// STM data), a profile with other bytes in its padding, and a valve whose first diag pass after
+// the connect runs out of budget.
 #include <stddef.h>
 #include <string.h>
 
@@ -71,14 +72,29 @@ vdm::StmSnapshot& linkUp() {
   return s;
 }
 
-// ---- profiles with a chosen CRC-32 over the whole object (what the diag comparison hashes)
+// ---- profiles with a chosen CRC-32 over the whole object: what the diag comparison hashes when
+// the padding is zero
 
 uint32_t crcOf(const vdm::Profile& p) {
   return vdm::crc32(reinterpret_cast<const uint8_t*>(&p), sizeof p);
 }
 
-// Every byte zero (padding too): the bytes the firmware hashes are the ones set here.
+// Every byte zero, padding too.
 void clearProfile(vdm::Profile& p) { memset(static_cast<void*>(&p), 0, sizeof p); }
+
+// Every padding byte `v`: after the valve and count, and after each sample's current.
+void fillPadding(vdm::Profile& p, uint8_t v) {
+  uint8_t* b = reinterpret_cast<uint8_t*>(&p);
+  for (size_t i = offsetof(vdm::Profile, count) + 1; i < offsetof(vdm::Profile, samples); ++i) {
+    b[i] = v;
+  }
+  for (vdm::ProfileSample& s : p.samples) {
+    uint8_t* sb = reinterpret_cast<uint8_t*>(&s);
+    for (size_t i = offsetof(vdm::ProfileSample, current) + sizeof s.current; i < sizeof s; ++i) {
+      sb[i] = v;
+    }
+  }
+}
 
 // CRC-32 is affine in the message bits, so the 32 bits of one sample count reach every value:
 // solves for them over GF(2).
@@ -120,14 +136,16 @@ void forceCrc(vdm::Profile& p, size_t offset, uint32_t target) {
   REQUIRE(crcOf(p) == target);
 }
 
-// Three samples; the count of the third one is solved for `crc`.
-void setProfile(vdm::Profile& p, uint8_t valve, uint32_t crc) {
+// `n` samples (at least 3), currents from `current`; the count of the third one is solved for
+// `crc`.
+void setProfile(vdm::Profile& p, uint8_t valve, uint32_t crc, uint16_t current = 40,
+                uint8_t n = 3) {
   clearProfile(p);
   p.valve = valve;
-  p.count = 3;
-  for (uint8_t i = 0; i < 3; ++i) {
+  p.count = n;
+  for (uint8_t i = 0; i < n; ++i) {
     p.samples[i].count = 100u * (i + 1u);
-    p.samples[i].current = static_cast<uint16_t>(40 + i);
+    p.samples[i].current = static_cast<uint16_t>(current + i);
   }
   forceCrc(p, offsetof(vdm::Profile, samples) + 2 * sizeof(vdm::ProfileSample) +
                   offsetof(vdm::ProfileSample, count),
@@ -135,9 +153,13 @@ void setProfile(vdm::Profile& p, uint8_t valve, uint32_t crc) {
 }
 
 std::string profileJson(const vdm::Profile& p) {
-  return "{\"valve\":" + std::to_string(p.valve + 1) +
-         ",\"count\":3,\"samples\":[[100,40],[200,41],[" + std::to_string(p.samples[2].count) +
-         ",42]]}";
+  std::string samples;
+  for (uint8_t i = 0; i < p.count; ++i) {
+    samples += std::string(i > 0 ? "," : "") + "[" + std::to_string(p.samples[i].count) + "," +
+               std::to_string(p.samples[i].current) + "]";
+  }
+  return "{\"valve\":" + std::to_string(p.valve + 1) + ",\"count\":" + std::to_string(p.count) +
+         ",\"samples\":[" + samples + "]}";
 }
 
 }  // namespace
@@ -214,4 +236,35 @@ TEST_CASE("mqtt diag: a valve whose first pass ran out of budget keeps its known
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/2/profile") ==
         std::vector<std::string>{profileJson(s.profiles[1])});
+}
+
+TEST_CASE("mqtt diag: the profile CRC-32 takes the padding for zeros, whatever it holds") {
+  glue::begin();
+  useMqtt();
+  vdm::StmSnapshot& s = linkUp();
+  s.valves[0].hasExtended = true;
+  setProfile(s.profiles[0], 0, 0x5eed0001u);  // known at the connect
+  const std::string known = profileJson(s.profiles[0]);
+  publishSnap();
+  settle();
+  // The same fields with other bytes in the padding (a copy may leave anything there): not new.
+  fillPadding(s.profiles[0], 0xa5);
+  REQUIRE(crcOf(s.profiles[0]) != 0x5eed0001u);
+  REQUIRE(profileJson(s.profiles[0]) == known);
+  publishSnap();
+  runTask(5);
+  CHECK(payloads("VdMot/diag/valves/1/profile").empty());
+  // Other fields, the sample count among them, with the CRC-32 of the known profile: the
+  // comparison sees the same profile.
+  setProfile(s.profiles[0], 0, 0x5eed0001u, 50, 4);
+  REQUIRE(profileJson(s.profiles[0]) != known);
+  publishSnap();
+  runTask(5);
+  CHECK(payloads("VdMot/diag/valves/1/profile").empty());
+  // Another CRC-32: a new profile, published once.
+  setProfile(s.profiles[0], 0, 0x5eed0002u, 50, 4);
+  publishSnap();
+  runTask(5);
+  CHECK(payloads("VdMot/diag/valves/1/profile") ==
+        std::vector<std::string>{profileJson(s.profiles[0])});
 }
