@@ -149,6 +149,29 @@ TEST_CASE("storage load: a cfg without cfgx (2.0.0) loads with the new keys at d
   CHECK(sib::logger().events.empty());
 }
 
+TEST_CASE("storage load: a damaged cfgx with a good cfg loads the new keys at defaults, the backup kept") {
+  glue::begin();
+  mount();
+  const vdm::Config c = withExt("Ext");
+  storeBackup(c);
+  fakes::nvs().setBlob("vdmrev", "cfg", blobOf(c));
+  fakes::nvs().setBlob("vdmrev", "cfgx", corrupt(extOf(c)));
+  const Load l = load();
+  CHECK(l.src == storage::LoadSource::Stored);
+  CHECK(l.details.errorCode == 0);
+  CHECK(l.details.info.ext == vdm::ExtResult::BadCrc);
+  CHECK(std::string(l.cfg.station) == "Ext");
+  CHECK(l.cfg.failsafe.timeoutMin == 60);
+  CHECK(l.cfg.valves[1].topic[0] == '\0');
+  CHECK(sib::logger().events.empty());
+  // the backup still holds the new keys: only an explicit save replaces it
+  storage::setActiveConfig(l.cfg);
+  const int writes = fakes::fs().writeOpens;
+  storage::service();
+  CHECK(fakes::fs().writeOpens == writes);
+  CHECK(fakes::fs().read("/sys/cfgx.bak") == str(extOf(c)));
+}
+
 TEST_CASE("storage load: repairs are logged once with the first key path") {
   glue::begin();
   mount();
