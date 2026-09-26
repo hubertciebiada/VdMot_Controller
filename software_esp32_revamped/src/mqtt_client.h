@@ -33,9 +33,7 @@ struct Status {
   uint32_t commandsRejected = 0;
   uint32_t eventsSuppressed = 0;
   bool discoveryRunning = false;
-  char clientId[24] = {0};                         // of the current session
-                                                   // (display only: a longer configured id
-                                                   // is cut here, the broker gets it whole)
+  char clientId[vdm::kClientIdMax + 1] = {0};      // of the current session
   vdm::HaStatus haStatus = vdm::HaStatus::Unknown;  // last homeassistant/status seen
 };
 Status status();

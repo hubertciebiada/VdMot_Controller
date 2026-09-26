@@ -606,7 +606,7 @@ void handleStatus(AsyncWebServerRequest* req) {
   const net::TrialInfo trial = net::trialInfo();
   s.netTrialActive = trial.active;
   s.netTrialRemainS = trial.remainS;
-  memcpy(s.mqttClientId, ms.clientId, sizeof s.mqttClientId);
+  vdm::copyString(s.mqttClientId, sizeof s.mqttClientId, ms.clientId);
   s.mqttHaStatus = ms.haStatus;
   s.stmSupport = gSnap.support;
   s.lease = gSnap.lease;

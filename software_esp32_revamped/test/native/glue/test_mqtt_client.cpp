@@ -146,6 +146,19 @@ TEST_CASE("mqtt task: connects with the MAC client id, LWT, online first, wildca
   CHECK(r.brokerConnected);
 }
 
+TEST_CASE("mqtt task: a configured client id of the longest allowed length is reported whole") {
+  glue::begin();
+  vdm::Config& c = useMqtt(vdm::MqttMode::Mqtt);
+  const std::string id = "vdmot-" + std::string(vdm::kClientIdMax - 7, 'x') + "9";
+  REQUIRE(id.size() == vdm::kClientIdMax);
+  vdm::copyString(c.mqtt.clientId, sizeof c.mqtt.clientId, id.c_str());
+  mqtt::begin();
+  runTask(1);
+  CHECK(fakes::mqtt().clientId == id);
+  CHECK(mqtt::status().state == vdm::MqttState::Connected);
+  CHECK(std::string(mqtt::status().clientId) == id);
+}
+
 TEST_CASE("mqtt task: a configured client id is used verbatim; HA mode subscriptions") {
   glue::begin();
   vdm::Config& c = useMqtt(vdm::MqttMode::MqttHa);

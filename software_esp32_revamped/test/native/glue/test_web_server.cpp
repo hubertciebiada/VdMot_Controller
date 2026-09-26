@@ -872,6 +872,12 @@ TEST_CASE("WG-15: status members of 2.1") {
   CHECK(r.body.find("\"hostname\":\"Dom-P-noc\",\"trial\":{\"remainS\":97}}") !=
         std::string::npos);
   CHECK(r.body.find("\"clientId\":\"vdm-1\",\"haStatus\":\"online\"}") != std::string::npos);
+  // the longest client id the config allows is reported whole
+  const std::string longId(vdm::kClientIdMax, 'c');
+  vdm::copyString(sib::mqtt().status.clientId, sizeof sib::mqtt().status.clientId, longId.c_str());
+  const Response full = fakes::http::perform(host);
+  CHECK(full.code == 200);
+  CHECK(full.body.find("\"clientId\":\"" + longId + "\",\"haStatus\"") != std::string::npos);
   CHECK(r.body.find("\"support\":\"ok\",\"lease\":null,\"learnTime\":600}") != std::string::npos);
   CHECK(r.body.find("\"config\":{\"source\":\"backup\",\"repairs\":6,\"newerSchema\":true},"
                     "\"importReport\":true}") != std::string::npos);
