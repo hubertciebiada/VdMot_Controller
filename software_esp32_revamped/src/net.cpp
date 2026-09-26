@@ -13,6 +13,8 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <algorithm>
+
 #include "ping/ping_sock.h"
 
 #include <vdm/event_log.h>
@@ -197,8 +199,7 @@ void refreshInfo(uint32_t nowMs) {
     i.mask = WiFi.subnetMask();
     i.gateway = WiFi.gatewayIP();
     i.dns = WiFi.dnsIP();
-    const int rssi = WiFi.RSSI();
-    i.rssi = static_cast<int8_t>(rssi < -128 ? -128 : (rssi > 0 ? 0 : rssi));
+    i.rssi = std::min<int8_t>(WiFi.RSSI(), 0);  // a positive RSSI is no valid reading
     snprintf(i.mac, sizeof i.mac, "%s", WiFi.macAddress().c_str());
   }
   if (i.state != vdm::NetState::Down && i.ip == 0) i.state = vdm::NetState::Down;
@@ -349,8 +350,7 @@ void revertTrial(vdm::NetTrialRevert reason) {
   vdm::applyNetTrialFields(gCfg.net, gTrialPrev);
   char addr[16];
   vdm::formatNetAddress(gTrialPrev, addr, sizeof addr);
-  char path[32];
-  const bool ok = storage::applyConfig(gCfg, path, sizeof path);
+  const bool ok = storage::applyConfig(gCfg, nullptr, 0);
   if (ok) storage::clearNetTrial();
   logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve, static_cast<int32_t>(reason),
               ok ? 0 : -1, addr);
@@ -387,7 +387,7 @@ void beginTrial(vdm::Config& cfg, uint32_t nowMs) {
   uint8_t blob[vdm::kNetTrialBlobMax];
   const size_t n = storage::loadNetTrialBlob(blob, sizeof blob);
   vdm::NetTrialRecord rec;
-  const bool have = n != 0 && vdm::decodeNetTrial(blob, n, rec);
+  const bool have = vdm::decodeNetTrial(blob, n, rec);  // false for n == 0
   if (n != 0 && !have) storage::clearNetTrial();
   switch (vdm::netTrialAtBoot(have ? &rec : nullptr, cfg.net)) {
     case vdm::NetTrialBoot::None:
@@ -405,8 +405,7 @@ void beginTrial(vdm::Config& cfg, uint32_t nowMs) {
       vdm::applyNetTrialFields(cfg.net, rec.previous);
       char addr[16];
       vdm::formatNetAddress(rec.previous, addr, sizeof addr);
-      char path[32];
-      const bool ok = storage::applyConfig(cfg, path, sizeof path);
+      const bool ok = storage::applyConfig(cfg, nullptr, 0);
       if (ok) storage::clearNetTrial();
       logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve,
                   static_cast<int32_t>(vdm::NetTrialRevert::Interrupted), ok ? 0 : -1, addr);
