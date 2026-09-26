@@ -86,7 +86,8 @@ static uint8_t trip_seen[ACTUATOR_COUNT];         // myvalvemots[].tripSeq hande
 // valve positions, lease and retry schedule across a warm reset: not cleared by the start-up code
 static vdm::WarmState warm_state __attribute__((noinit));
 // lease timeout and failsafe positions of the run before a warm reset (app_restore): they stand in
-// for what the EEPROM cannot supply, also at a later re-read of the EEPROM (app_load_config)
+// for what the EEPROM cannot supply, also at a later re-read of the EEPROM (app_load_config); a
+// failsafe position set since (sfspo) replaces its copy
 static bool app_warm_copies = false;
 static uint16_t app_warm_lease;
 static uint8_t app_warm_failsafe[ACTUATOR_COUNT];
@@ -877,7 +878,11 @@ uint16_t app_failsafe_mask (void) {
 
 void app_set_failsafe (uint16_t valve, uint8_t pct) {
   for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
-    if (valve == 255 || valve == x) app_failsafe[x] = pct;
+    if (valve == 255 || valve == x) {
+      app_failsafe[x] = pct;
+      // newer than the copy of the last run: a re-read that finds block B damaged keeps it
+      app_warm_failsafe[x] = pct;
+    }
   }
 }
 

@@ -57,6 +57,37 @@ TEST_CASE("system C-5: a new chip and a failed EEPROM read give 60 min and 50 %,
   CHECK(gstax(kLeaseTimeout) == 90);
 }
 
+TEST_CASE("system: sfspo after a warm reset with a failing EEPROM read stays when the re-read finds block B damaged") {
+  sim::Rig rig;
+  bootController(rig, 0, [] {
+    if (testkit::boot() == 1) fake::eeprom.failReadsFrom = 1;
+  });
+  if (testkit::boot() == 0) {
+    runMain(5000);
+    CHECK(exchange("sfspo 255 30\n") == "sfspo 255 ok\r\n");
+    runMain(5000);
+    resetController();
+  }
+  if (testkit::boot() == 1) {
+    CHECK(testkit::lastReset() == testkit::Reset::Software);
+    CHECK(gstax(kCfgFlags) == vdm::kCfgReadFailed);
+    CHECK(exchange("glcfg\n") == glcfg(60, std::vector<uint8_t>(ACTUATOR_COUNT, 30)));  // the warm copies
+    CHECK(exchange("sfspo 3 20\n") == "sfspo 3 ok\r\n");
+    fake::eeprom.bytes[vdm::kSafetyBlockAddress + 3] ^= 1;  // block B damaged
+    fake::eeprom.failReadsFrom = 0;
+    runMain(31000);  // the re-read 30 s later
+    CHECK(gstax(kCfgFlags) == vdm::kCfgSafetyCorrupt);
+    std::vector<uint8_t> fs(ACTUATOR_COUNT, 30);
+    fs[3] = 20;
+    CHECK(exchange("glcfg\n") == glcfg(60, fs));
+    runMain(5000);  // block B written again
+    testkit::reboot(testkit::Reset::PowerOn);
+  }
+  CHECK(testkit::boot() == 2);
+  CHECK(gstax(kCfgFlags) == 0);
+  CHECK(field(exchange("glcfg\n"), 5) == 20);  // valve 3
+}
+
 TEST_CASE("system C-5: a warm reset with the lease expired and the EEPROM read failing: lease 2 at once") {
   sim::Rig rig;
   bootController(rig, 0, [] {

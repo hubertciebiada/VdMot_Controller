@@ -565,6 +565,33 @@ TEST_CASE("app_load_config C-5: after a warm reset the copies stand in for what 
   CHECK(app_lease_timeout() == 5);
 }
 
+TEST_CASE("app_load_config: a failsafe position set after the failed read wins over its warm copy") {
+  begin();
+  app_set_failsafe(255, 30);
+  app_warm_save();
+  app_set_failsafe(255, 50);  // the reset
+  stub::sysstat.reason = vdm::BootReason::Software;
+  stub::eeprom.cfgFlags = vdm::kCfgReadFailed;
+  app_restore();
+  REQUIRE(app_failsafe_pct(3) == 30);
+  // sfspo 3 20 while the EEPROM cannot be read, then the re-read finds block B damaged: the mirror
+  // holds the defaults and the marked position (eeprom.cpp)
+  app_set_failsafe(3, 20);
+  for (unsigned v = 0; v < ACTUATOR_COUNT; v++) eep_content.failsafePct[v] = 50;
+  eep_content.failsafePct[3] = 20;
+  stub::eeprom.cfgFlags = vdm::kCfgSafetyCorrupt;
+  app_load_config();
+  CHECK(app_failsafe_pct(3) == 20);
+  CHECK(app_failsafe_pct(2) == 30);
+  CHECK(app_failsafe_pct(4) == 30);
+  CHECK(v3(3).fsPct == 20);
+  // sfspo 255 replaces every copy
+  app_set_failsafe(255, 70);
+  app_load_config();
+  CHECK(app_failsafe_pct(0) == 70);
+  CHECK(app_failsafe_pct(11) == 70);
+}
+
 TEST_CASE("app_load_config C-5: after a power-on the defaults stand in, 60 min and block B as loaded") {
   begin();
   app_set_failsafe(255, 30);
