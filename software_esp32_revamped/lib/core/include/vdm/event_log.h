@@ -60,7 +60,8 @@ enum class EventCode : uint16_t {
   AuthFailed = 206,         // arg1 failures in the current window; text client IP
   NetTrialStarted = 207,    // arg1 window s; text new address
   NetTrialConfirmed = 208,  // arg1 s since the network came up, arg2 1 = by a newer change
-  NetTrialReverted = 209,   // arg1 reason (1 not confirmed, 2 no network, 3 interrupted, 4 user),
+  NetTrialReverted = 209,   // arg1 reason (1 not confirmed, 2 no network, 3 interrupted, 4 user,
+                            // 5 trial not stored),
                             // arg2 0 ok / -1 revert failed; text previous address
   NetUnreachable = 210,     // arg1 s since the last evidence, arg2 NetEvidence
   NetReachable = 211,       // arg1 outage s

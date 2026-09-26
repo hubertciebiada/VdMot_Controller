@@ -269,7 +269,8 @@ const char* oneBased(const char* const (&names)[N], int32_t v) {
 
 const char* const kLogSteps[] = {"open", "write", "rotate", "size limit"};
 const char* const kImportFeatures[] = {"pi", "window", "messenger", "ds18Timeout", "legacyFailsafe"};
-const char* const kTrialReverts[] = {"not confirmed", "no network", "interrupted", "user"};
+const char* const kTrialReverts[] = {"not confirmed", "no network", "interrupted", "user",
+                                     "trial not stored"};
 const char* const kIfaceSets[] = {"eth", "wifi", "eth+wifi"};
 const char* const kRefusals[] = {"host", "origin", "header", "content type"};
 const char* const kLeaseSources[] = {"STM lease", "ESP"};

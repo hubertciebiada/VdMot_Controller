@@ -48,7 +48,15 @@ void applyNetTrialFields(NetConfig& dst, const NetConfig& prev);
 // Returns the length (NUL-terminated, truncated to cap - 1; 0 for cap 0).
 size_t formatNetAddress(const NetConfig& n, char* out, size_t cap);
 
-enum class NetTrialRevert : uint8_t { NotConfirmed = 1, NoNetwork = 2, Interrupted = 3, User = 4 };
+// NotStored: the trial record could not be stored, so the trial could not be
+// reverted after an interrupted boot; the new settings do not run at all.
+enum class NetTrialRevert : uint8_t {
+  NotConfirmed = 1,
+  NoNetwork = 2,
+  Interrupted = 3,
+  User = 4,
+  NotStored = 5
+};
 
 class NetTrial {
  public:

@@ -433,6 +433,10 @@ TEST_CASE("net reconfigure: a TZ change applies live, a station change restarts 
   CHECK(sib::ota().restartRequests[0].delayMs == 1500);
   CHECK(sib::storage().netTrialSaves == 0);
   CHECK_FALSE(sib::logger().has(vdm::EventCode::NetTrialStarted));
+  // nothing to revert: net stores no config and touches no record
+  CHECK(sib::storage().applied.empty());
+  CHECK(sib::storage().netTrialClears == 0);
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::NetTrialReverted));
 }
 
 TEST_CASE("net reconfigure: unused static fields and reconnectTimeoutMin do not restart") {
@@ -629,6 +633,98 @@ TEST_CASE("net trial: a Running record whose revert cannot be stored stays") {
   CHECK(n.net.ip == kIp);
   CHECK_FALSE(sib::storage().netTrial.empty());
   CHECK(sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0).arg2 == -1);
+}
+
+TEST_CASE("net trial: a change whose record cannot be stored is reverted at once, no restart") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  sib::storage().saveNetTrialResult = false;
+  vdm::Config n = staticConfig(kNewIp);
+  net::reconfigure(n);
+  CHECK(sib::storage().netTrial.empty());
+  CHECK(sib::storage().netTrialClears == 1);
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::NetTrialStarted));
+  REQUIRE(sib::storage().applied.size() == 1);
+  CHECK(sib::storage().applied[0].net.dhcp);
+  CHECK(sib::storage().applied[0].net.iface == vdm::NetInterface::Auto);
+  const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0);
+  CHECK(e.arg1 == 5);
+  CHECK(e.arg2 == 0);
+  CHECK(std::string(e.text) == "dhcp");
+  CHECK(sib::ota().restartRequests.empty());
+  CHECK_FALSE(net::trialInfo().active);
+}
+
+TEST_CASE("net trial: an unstored change keeps the restart of a new station name; a failed revert is -1") {
+  glue::begin();
+  const uint32_t inUse = IPAddress(192, 168, 100, 200);
+  vdm::Config c = staticConfig(inUse);
+  net::begin(c);
+  sib::storage().saveNetTrialResult = false;
+  sib::storage().applyResult = false;
+  vdm::Config n = staticConfig(kNewIp);
+  vdm::copyString(n.station, sizeof n.station, "Other");
+  net::reconfigure(n);
+  REQUIRE(sib::storage().applied.size() == 1);
+  CHECK(sib::storage().applied[0].net.ip == inUse);
+  CHECK(std::string(sib::storage().applied[0].station) == "Other");
+  const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0);
+  CHECK(e.arg1 == 5);
+  CHECK(e.arg2 == -1);
+  CHECK(std::string(e.text) == "192.168.100.200");  // 15 characters
+  REQUIRE(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::ota().restartRequests[0].reason == 0);
+}
+
+TEST_CASE("net trial: a second change whose record cannot be stored goes back to the settings in use") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  vdm::Config a = staticConfig(kNewIp);
+  net::reconfigure(a);  // armed, restart requested
+  REQUIRE(storedRecord().state == vdm::NetTrialState::Armed);
+  sib::storage().saveNetTrialResult = false;
+  vdm::Config b = staticConfig(IPAddress(192, 168, 1, 60));
+  net::reconfigure(b);
+  CHECK(sib::storage().netTrial.empty());  // the first change goes as well
+  REQUIRE(sib::storage().applied.size() == 1);
+  CHECK(sib::storage().applied[0].net.dhcp);
+  CHECK(sib::logger().withCode(vdm::EventCode::NetTrialStarted).size() == 1);
+  CHECK(sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0).arg1 == 5);
+  CHECK(sib::ota().restartRequests.size() == 1);  // the one of the first change
+}
+
+TEST_CASE("net trial: an Armed record that cannot become Running reverts at boot") {
+  glue::begin();
+  vdm::Config old = staticConfig(kIp);
+  vdm::Config n = staticConfig(kNewIp);
+  sib::storage().saveNetTrialResult = false;
+  bootWithRecord(vdm::NetTrialState::Armed, old, n);
+  CHECK(n.net.ip == kIp);  // the caller's config is reverted
+  REQUIRE(fakes::net().ethConfigs.size() == 1);
+  CHECK(fakes::net().ethConfigs[0].ip == kIp);
+  CHECK(sib::storage().applied.back().net.ip == kIp);
+  CHECK(sib::storage().netTrial.empty());
+  const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0);
+  CHECK(e.arg1 == 5);
+  CHECK(e.arg2 == 0);
+  CHECK(std::string(e.text) == "192.168.1.20");
+  CHECK_FALSE(net::trialInfo().active);
+  CHECK(sib::ota().restartRequests.empty());
+}
+
+TEST_CASE("net trial: an Armed record that cannot become Running and a revert that cannot be stored") {
+  glue::begin();
+  vdm::Config old = staticConfig(kIp);
+  vdm::Config n = staticConfig(kNewIp);
+  sib::storage().saveNetTrialResult = false;
+  sib::storage().applyResult = false;
+  bootWithRecord(vdm::NetTrialState::Armed, old, n);
+  CHECK(n.net.ip == kIp);
+  CHECK(storedRecord().state == vdm::NetTrialState::Armed);  // the next boot tries again
+  CHECK(sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0).arg2 == -1);
+  CHECK_FALSE(net::trialInfo().active);
 }
 
 TEST_CASE("net trial: a stale or undecodable record is erased without action") {

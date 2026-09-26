@@ -783,7 +783,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 206 | auth_failed | Warning | W | - | failures in window / - / client IP |
 | 207 | net_trial_started | Info | - | - | window s / - / new address |
 | 208 | net_trial_confirmed | Info | - | - | s since the network came up / 1 = by a newer change |
-| 209 | net_trial_reverted | Warning | W | - | reason 1 not confirmed, 2 no network, 3 interrupted, 4 user / 0 ok, -1 revert failed / previous address |
+| 209 | net_trial_reverted | Warning | W | - | reason 1 not confirmed, 2 no network, 3 interrupted, 4 user, 5 trial not stored / 0 ok, -1 revert failed / previous address |
 | 210 | net_unreachable | Warning | W | - | s since evidence / last NetEvidence |
 | 211 | net_reachable | Info | - | - | outage s |
 | 212 | net_interface_restart | Warning | W | - | outage s / 1 eth, 2 wifi, 3 both |
@@ -976,8 +976,10 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   them, `revert` or the timeout restores the previous fields (event 209,
   restart reason 5). A boot that finds Running reverts at once without an
   extra restart. A network change saved during a trial confirms it (208
-  arg2 1) and starts a new one. Config backups are not written while a trial
-  runs.
+  arg2 1) and starts a new one. A record that cannot be stored (Armed at
+  the save, Running at boot) reverts at once to the settings in use (209
+  reason 5): without it an interrupted trial would not revert. Config
+  backups are not written while a trial runs.
 - Factory reset: GPIO2 LOW for 5 s at boot, once per fitting of the jumper
   (NVS latch `frLatch`, set after a reset that succeeded, cleared when the
   pin reads HIGH at boot or at run time; a boot with the latch set logs 113

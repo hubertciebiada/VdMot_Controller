@@ -380,6 +380,19 @@ bool saveTrialRecord(const vdm::NetTrialRecord& r) {
   return storage::saveNetTrialBlob(blob, n);
 }
 
+// Boot, before the interfaces start: the previous fields go into `cfg` and
+// the stored config; the record is erased only when that was stored (a
+// failed persist reverts again at the next boot).
+void revertAtBoot(vdm::Config& cfg, const vdm::NetConfig& previous, vdm::NetTrialRevert reason) {
+  vdm::applyNetTrialFields(cfg.net, previous);
+  char addr[16];
+  vdm::formatNetAddress(previous, addr, sizeof addr);
+  const bool ok = storage::applyConfig(cfg, nullptr, 0);
+  if (ok) storage::clearNetTrial();
+  logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve, static_cast<int32_t>(reason),
+              ok ? 0 : -1, addr);
+}
+
 // Boot: a record Armed by the previous boot starts the trial; a Running one
 // (that boot ended during the trial) is reverted at once, before the
 // interfaces start.
@@ -397,20 +410,19 @@ void beginTrial(vdm::Config& cfg, uint32_t nowMs) {
       break;
     case vdm::NetTrialBoot::Start:
       rec.state = vdm::NetTrialState::Running;
-      saveTrialRecord(rec);
-      gTrialPrev = rec.previous;
-      gTrial.start(nowMs);
+      if (saveTrialRecord(rec)) {
+        gTrialPrev = rec.previous;
+        gTrial.start(nowMs);
+      } else {
+        // With the record still Armed, a boot that ends during the trial or
+        // a revert that cannot be stored would start the trial again
+        // instead of reverting it: it does not run.
+        revertAtBoot(cfg, rec.previous, vdm::NetTrialRevert::NotStored);
+      }
       break;
-    case vdm::NetTrialBoot::RevertNow: {
-      vdm::applyNetTrialFields(cfg.net, rec.previous);
-      char addr[16];
-      vdm::formatNetAddress(rec.previous, addr, sizeof addr);
-      const bool ok = storage::applyConfig(cfg, nullptr, 0);
-      if (ok) storage::clearNetTrial();
-      logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve,
-                  static_cast<int32_t>(vdm::NetTrialRevert::Interrupted), ok ? 0 : -1, addr);
+    case vdm::NetTrialBoot::RevertNow:
+      revertAtBoot(cfg, rec.previous, vdm::NetTrialRevert::Interrupted);
       break;
-    }
   }
 }
 
@@ -615,7 +627,8 @@ bool timeValid() { return time(nullptr) >= kMinValidEpoch; }
 uint32_t lastSyncEpoch() { return gLastSyncEpoch; }
 
 void reconfigure(const vdm::Config& cfg) {
-  const bool restart = vdm::configRestartReasons(gCfg, cfg) != 0;
+  uint8_t restart = vdm::configRestartReasons(gCfg, cfg);
+  bool unstored = false;
   if (vdm::netTrialRequired(gCfg.net, cfg.net)) {
     vdm::NetTrialRecord r;
     r.trialCrc = vdm::netTrialFieldsCrc(cfg.net);
@@ -633,15 +646,30 @@ void reconfigure(const vdm::Config& cfg) {
     // Two changes before the restart: the first one's previous settings are
     // the proven ones.
     r.previous = gArmedPrev;
-    saveTrialRecord(r);
-    char addr[16];
-    vdm::formatNetAddress(cfg.net, addr, sizeof addr);
-    logger::log(vdm::EventCode::NetTrialStarted, vdm::kNoValve,
-                static_cast<int32_t>(vdm::kNetTrialWindowMs / 1000), 0, addr);
+    unstored = !saveTrialRecord(r);
+    if (!unstored) {
+      char addr[16];
+      vdm::formatNetAddress(cfg.net, addr, sizeof addr);
+      logger::log(vdm::EventCode::NetTrialStarted, vdm::kNoValve,
+                  static_cast<int32_t>(vdm::kNetTrialWindowMs / 1000), 0, addr);
+    }
   }
   const bool timeChanged = strcmp(cfg.time.ntpServer, gCfg.time.ntpServer) != 0 ||
                            strcmp(cfg.time.tzPosix, gCfg.time.tzPosix) != 0;
   gCfg = cfg;
+  if (unstored) {
+    // Without its record the next boot would run the new settings without a
+    // trial: the stored config gets back the settings in use, and no record
+    // of an earlier change of this boot is left either.
+    storage::clearNetTrial();
+    vdm::applyNetTrialFields(gCfg.net, gArmedPrev);
+    char addr[16];
+    vdm::formatNetAddress(gArmedPrev, addr, sizeof addr);
+    const bool ok = storage::applyConfig(gCfg, nullptr, 0);
+    logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve,
+                static_cast<int32_t>(vdm::NetTrialRevert::NotStored), ok ? 0 : -1, addr);
+    restart &= static_cast<uint8_t>(~vdm::kRestartNetwork);
+  }
   gWatchdog.configure(cfg.net.reconnectTimeoutMin);
   if (timeChanged) applyTime(gCfg);
   // Interface/address/hostname changes need a clean start of the network
