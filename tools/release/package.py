@@ -76,8 +76,12 @@ def changelog_section(repo: str, version: str) -> str:
     if not os.path.isfile(path):
         return ""
     text = open(path, encoding="utf-8").read()
-    m = re.search(rf"^## \[?{re.escape(version)}\]?.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
-    return m.group(1).strip() if m else ""
+    # a release candidate (2.1.0-revamped-rc1) ships the changes of its version
+    for v in (version, re.sub(r"-rc\d+$", "", version)):
+        m = re.search(rf"^## \[?{re.escape(v)}\]?.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 def main() -> int:
