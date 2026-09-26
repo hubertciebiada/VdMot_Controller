@@ -5,6 +5,7 @@
 #include <AsyncTCP.h>
 #include <AsyncWebServer_WT32_ETH01.h>
 #include <LittleFS.h>
+#include <algorithm>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <new>
@@ -78,7 +79,7 @@ struct Upload {
   bool started = false;
   bool done = false;
   uint16_t failCode = 0;
-  char error[48] = {0};
+  char error[48] = {};
   storage::ImageEntry info;
 } gUpload;
 
@@ -95,9 +96,9 @@ uint32_t gCfgRevision = UINT32_MAX;
 vdm::Config& gPatch = bootAlloc<vdm::Config>();
 vdm::AuthLimiter gAuthLimiter;
 vdm::RepeatLimiter gRefusedLimiter;  // RequestRefused once per verdict per 60 s
-char gHostname[vdm::kStationNameMax + 1] = {0};  // buildHostname(gCfg.station)
-char gGuardDetail[160] = {0};                    // detail of the current guard refusal
-char gHealthBuf[kHealthBufSize] = {0};           // GET /api/health, outside the slots
+char gHostname[vdm::kStationNameMax + 1] = {};   // buildHostname(gCfg.station)
+char gGuardDetail[160] = {};                     // detail of the current guard refusal
+char gHealthBuf[kHealthBufSize] = {};            // GET /api/health, outside the slots
 StaticJsonDocument<512>& gDoc = bootAlloc<StaticJsonDocument<512>>();
 using ValveViews = ObjArray<vdm::ValveView, vdm::kValveCount>;
 using TempViews = ObjArray<vdm::SensorView, 2 * vdm::kTempSlotCount>;  // slots + unconfigured
@@ -140,7 +141,7 @@ int acquireSlot() {
 }
 
 void releaseSlot(int slot) {
-  if (slot >= 0 && static_cast<size_t>(slot) < kResponseSlots) gSlots[slot].busy = false;
+  if (slot >= 0) gSlots[slot].busy = false;  // -1: a dry run that took no slot
 }
 
 // Sends slot content without copying; the slot is released when the client
@@ -186,7 +187,7 @@ void sendDocument(AsyncWebServerRequest* req, int code, F build,
 
 void clearMark(AsyncWebServerRequest* req) {
   for (Mark& m : gMarks) {
-    if (m.req == req) m = Mark{nullptr, 0, nullptr};
+    if (m.req == req) m = Mark{};
   }
 }
 
@@ -206,7 +207,7 @@ bool takeMark(AsyncWebServerRequest* req, Mark& out) {
   for (Mark& m : gMarks) {
     if (m.req == req && req != nullptr) {
       out = m;
-      m = Mark{nullptr, 0, nullptr};
+      m = Mark{};
       return true;
     }
   }
@@ -636,13 +637,12 @@ void handleStatus(AsyncWebServerRequest* req) {
   sendDocument(req, 200, [](vdm::JsonWriter& jw) { return vdm::writeStatusJson(jw, s); });
 }
 
-// Config slot (1-based) whose id is `id`, 0 if none.
-uint8_t tempSlotOf(const vdm::OneWireId& id) {
-  if (vdm::isZero(id)) return 0;
-  for (uint8_t i = 0; i < vdm::kTempSlotCount; ++i) {
-    if (gCfg.temps[i].id == id) return static_cast<uint8_t>(i + 1);
+// True when a temperature config slot has the (non-zero) id `id`.
+bool tempConfigured(const vdm::OneWireId& id) {
+  for (const vdm::TempSlotConfig& c : gCfg.temps) {
+    if (c.id == id) return true;
   }
-  return 0;
+  return false;
 }
 
 void buildValveViews() {
@@ -653,7 +653,7 @@ void buildValveViews() {
     const vdm::ValveState& st = gSnap.valves[i];
     v.state = &st;
     v.config = &gCfg.valves[i];
-    const int16_t raw[2] = {st.temp1, st.temp2};
+    const int16_t raw[] = {st.temp1, st.temp2};
     for (uint8_t k = 0; k < 2; ++k) {
       const uint8_t slot = st.sensorSlot[k];
       if (slot == 0 || slot > vdm::kTempSlotCount) continue;
@@ -678,6 +678,8 @@ void handleValves(AsyncWebServerRequest* req) {
 void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   app::readStmSnapshot(gSnap);
   const uint32_t now = app::nowMs();
+  const uint8_t busTemps = std::min(gSnap.tempCount, vdm::kTempSlotCount);
+  const uint8_t busVolts = std::min(gSnap.voltCount, vdm::kVoltSlotCount);
   uint8_t nt = 0;
   // Configured temperature slots.
   for (uint8_t i = 0; i < vdm::kTempSlotCount; ++i) {
@@ -689,7 +691,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
     v.name = c.name;
     v.active = c.active;
     v.id = c.id;
-    for (uint8_t b = 0; b < gSnap.tempCount && b < vdm::kTempSlotCount; ++b) {
+    for (uint8_t b = 0; b < busTemps; ++b) {
       const vdm::TempReading& r = gSnap.temps[b];
       if (vdm::isZero(c.id) || r.id != c.id) continue;
       v.onBus = true;
@@ -700,17 +702,19 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
       v.ageS = r.seen ? vdm::elapsedMs(now, r.lastSeenMs) / 1000 : 0;
       break;
     }
-    for (uint8_t k = 0; k < vdm::kValveCount; ++k) {
-      if (gSnap.valves[k].sensorSlot[0] == v.slot || gSnap.valves[k].sensorSlot[1] == v.slot) {
+    uint8_t k = 0;
+    for (const vdm::ValveState& st : gSnap.valves) {
+      if (st.sensorSlot[0] == v.slot || st.sensorSlot[1] == v.slot) {
         v.valve = k;
         break;
       }
+      ++k;
     }
   }
   // Bus sensors without a config slot.
-  for (uint8_t b = 0; b < gSnap.tempCount && b < vdm::kTempSlotCount; ++b) {
+  for (uint8_t b = 0; b < busTemps; ++b) {
     const vdm::TempReading& r = gSnap.temps[b];
-    if (vdm::isZero(r.id) || tempSlotOf(r.id) != 0) continue;
+    if (vdm::isZero(r.id) || tempConfigured(r.id)) continue;
     vdm::SensorView& v = gTempViews[nt++];
     v = vdm::SensorView{};
     v.onBus = true;
@@ -732,22 +736,20 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
     v.active = c.active;
     v.id = c.id;
     v.unit = c.unit;
-    for (uint8_t b = 0; b < gSnap.voltCount && b < vdm::kVoltSlotCount; ++b) {
+    for (uint8_t b = 0; b < busVolts; ++b) {
       const vdm::VoltReading& r = gSnap.volts[b];
       if (vdm::isZero(c.id) || r.id != c.id) continue;
       v.onBus = true;
       v.raw = r.vad;
-      double milli = (static_cast<double>(r.vad) / 100.0 + c.offset) * c.factor * 1000.0;
-      if (milli > 2e9) milli = 2e9;
-      if (milli < -2e9) milli = -2e9;
-      v.value = static_cast<int32_t>(milli);
+      const double milli = (static_cast<double>(r.vad) / 100.0 + c.offset) * c.factor * 1000.0;
+      v.value = static_cast<int32_t>(std::clamp(milli, -2e9, 2e9));
       v.valid = r.seen && vdm::vadValid(r.vad) &&
                 vdm::elapsedMs(now, r.lastSeenMs) <= kSensorStaleMs;
       v.ageS = r.seen ? vdm::elapsedMs(now, r.lastSeenMs) / 1000 : 0;
       break;
     }
   }
-  for (uint8_t b = 0; b < gSnap.voltCount && b < vdm::kVoltSlotCount; ++b) {
+  for (uint8_t b = 0; b < busVolts; ++b) {
     const vdm::VoltReading& r = gSnap.volts[b];
     if (vdm::isZero(r.id)) continue;
     bool configured = false;
