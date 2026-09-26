@@ -216,7 +216,7 @@ bool gConfigLoaded = false;
 
 void onDisconnected();
 
-void setState(vdm::MqttState s, int8_t rc) {
+void setState(vdm::MqttState s, int8_t rc = 0) {
   portENTER_CRITICAL(&gMux);
   gStatus.state = s;
   gStatus.rc = rc;
@@ -1050,7 +1050,7 @@ void resetPublishedState() {
 
 bool connect(uint32_t now) {
   if (gCfg.mqtt.host[0] == '\0' || gLwtTopic[0] == '\0') {
-    setState(vdm::MqttState::Error, 0);
+    setState(vdm::MqttState::Error);
     return false;
   }
   vdm::copyString(gHost, sizeof gHost, gCfg.mqtt.host);
@@ -1059,7 +1059,7 @@ bool connect(uint32_t now) {
   gClient.setSocketTimeout(kSocketTimeoutS);
   gClient.setCallback(onMessage);
   const bool auth = gCfg.mqtt.user[0] != '\0' && gCfg.mqtt.password[0] != '\0';
-  setState(vdm::MqttState::Connecting, 0);
+  setState(vdm::MqttState::Connecting);
   esp_task_wdt_reset();  // connect may take up to 3 s TCP + 5 s CONNACK
   const bool ok = gClient.connect(gClientId, auth ? gCfg.mqtt.user : nullptr,
                                   auth ? gCfg.mqtt.password : nullptr, gLwtTopic, 0, true,
@@ -1086,7 +1086,7 @@ bool connect(uint32_t now) {
   portENTER_CRITICAL(&gMux);
   vdm::copyString(gStatus.clientId, sizeof gStatus.clientId, gClientId);
   portEXIT_CRITICAL(&gMux);
-  setState(vdm::MqttState::Connected, 0);
+  setState(vdm::MqttState::Connected);
   count(&Status::reconnects);
   logger::log(vdm::EventCode::MqttConnected);
   startOnConnect();
@@ -1139,7 +1139,7 @@ void task(void*) {
       if (!gOfflineSent) {
         gOfflineSent = true;
         disconnectClean();
-        setState(vdm::MqttState::Disabled, 0);
+        setState(vdm::MqttState::Disabled);
       }
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
@@ -1147,8 +1147,7 @@ void task(void*) {
     if (gCfg.mqtt.mode == vdm::MqttMode::Off || !net::isUp()) {
       disconnectClean();
       setState(gCfg.mqtt.mode == vdm::MqttMode::Off ? vdm::MqttState::Disabled
-                                                     : vdm::MqttState::Connecting,
-               0);
+                                                     : vdm::MqttState::Connecting);
       serviceEvents(now);  // keep the message tracking and cursor current
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
