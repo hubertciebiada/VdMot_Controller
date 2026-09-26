@@ -9,6 +9,7 @@
 #include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <new>
+#include <sdkconfig.h>
 #include <string.h>
 #include <time.h>
 
@@ -64,12 +65,15 @@ AsyncWebServerRequest* gBodyOwner = nullptr;
 // takes over the upload (both replace the callback of mark()) and when it
 // disconnects (every request ends that way, also one that never reached
 // handleRequest), so a recycled request address never inherits a stale mark.
+// One slot per TCP connection lwIP can hold: every marked request has its own
+// (AsyncTCP runs the disconnect of a closed connection before the data that
+// arrives after it), so the table never runs full.
 struct Mark {
   AsyncWebServerRequest* req;
   uint16_t code;
   const char* error;
 };
-Mark gMarks[4];
+Mark gMarks[CONFIG_LWIP_MAX_ACTIVE_TCP];
 
 // Upload in progress (STM image or ESP firmware).
 enum class UploadKind : uint8_t { None, StmImage, EspOta };
@@ -200,7 +204,6 @@ void mark(AsyncWebServerRequest* req, uint16_t code, const char* error) {
       return;
     }
   }
-  gMarks[0] = Mark{req, code, error};  // table full: the oldest mark is stale
 }
 
 bool takeMark(AsyncWebServerRequest* req, Mark& out) {

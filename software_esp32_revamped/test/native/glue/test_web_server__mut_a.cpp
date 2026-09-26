@@ -1,5 +1,7 @@
 // Tests of src/web_server.cpp, request side: response slots and the error buffer, the marks of
 // refused bodies, the login and its limiter, the request guard, JSON input and the upload limits.
+#include <sdkconfig.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -131,22 +133,19 @@ TEST_CASE("web body: bodies arriving while one is buffered are answered 409, eac
   CHECK(sib::app().submitted[0].pos == 5);
 }
 
-TEST_CASE("web body: with five refused bodies in flight the oldest mark gives way") {
+TEST_CASE("web body: one mark per TCP connection lwIP holds, none gives way") {
   glue::begin();
   start();
   Exchange a(apiPost(kTarget1, "{\"target\":5}"));
   a.sendBody(4);
+  // more than lwIP can hold next to the body owner
   std::vector<std::unique_ptr<Exchange>> others;
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < CONFIG_LWIP_MAX_ACTIVE_TCP; ++i) {
     others.emplace_back(new Exchange(apiPost(kTarget1, "{\"target\":6}")));
     others.back()->sendBody(4);
   }
-  // the first one lost its mark to the fifth: it is handled without a body
-  Response r = others[0]->finish();
-  CHECK(r.code == 400);
-  CHECK(r.body == errorBody("bad_request", "JSON body required"));
-  for (size_t i = 1; i < others.size(); ++i) {
-    r = others[i]->finish();
+  for (std::unique_ptr<Exchange>& e : others) {
+    const Response& r = e->finish();
     CHECK(r.code == 409);
     CHECK(r.body == errorBody("busy", "body"));
   }
