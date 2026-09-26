@@ -368,6 +368,38 @@ TEST_CASE("storage deleteFile: the part of the running upload is protected, othe
   CHECK_FALSE(fakes::fs().exists("/stm/old.bin.part"));
 }
 
+TEST_CASE("storage deleteFile: the part of the running last_good copy is protected") {
+  glue::begin();
+  const std::string img = pattern(20000);
+  fakes::fs().put("/stm/fw.bin", img);
+  mount();
+  // the part of a copy that does not run is a leftover
+  fakes::fs().put("/stm/last_good.bin.part", "x");
+  CHECK(storage::deleteFile("/stm/last_good.bin.part") == storage::FileResult::Ok);
+  storage::requestLastGoodCopy("fw");
+  storage::service();
+  REQUIRE(partSize("/stm/last_good.bin.part") == 8192);
+  CHECK(storage::deleteFile("/stm/last_good.bin.part") == storage::FileResult::Protected);
+  fakes::fs().put("/stm/x.bin.part", "x");
+  CHECK(storage::deleteFile("/stm/x.bin.part") == storage::FileResult::Ok);
+  storage::service();
+  storage::service();
+  CHECK(fakes::fs().read("/stm/last_good.bin") == img);
+  CHECK(storage::deleteFile("/stm/last_good.bin.part") == storage::FileResult::NotFound);
+}
+
+TEST_CASE("storage last_good copy: a part that cannot be created starts no copy") {
+  glue::begin();
+  fakes::fs().put("/stm/fw.bin", pattern(20000));
+  mount();
+  fakes::fs().fail("open", "/stm/last_good.bin.part");
+  storage::requestLastGoodCopy("fw");
+  storage::service();
+  CHECK_FALSE(fakes::fs().exists("/stm/last_good.bin.part"));
+  CHECK(fakes::fs().openHandles == 0);
+  CHECK(storage::deleteImage("fw") == storage::ImageResult::Ok);  // no copy holds it
+}
+
 // ---------------------------------------------------------------- deleteImage
 
 TEST_CASE("storage deleteImage: a vanished file leaves the index, long names") {

@@ -338,13 +338,18 @@ void serviceCopy() {
       logger::log(vdm::EventCode::StmFlashFailed, vdm::kNoValve, 0, 0, "last_good: no space");
       return;
     }
-    gCopy.dst = LittleFS.open(part, FILE_WRITE);
-    if (!gCopy.dst) {
+    {
+      // deleteFile() refuses the .part of a running copy: running is set
+      // with the file created
+      FsLock lock;
+      gCopy.dst = LittleFS.open(part, FILE_WRITE);
+      gCopy.running = static_cast<bool>(gCopy.dst);
+    }
+    if (!gCopy.running) {
       gCopy.src.close();
       return;
     }
     gCopy.done = 0;
-    gCopy.running = true;
   }
   static uint8_t buf[kCopyChunk];
   for (size_t i = 0; i < kCopyChunksPerCall; ++i) {
@@ -840,9 +845,15 @@ FileResult deleteFile(const char* path) {
   if (!gFsReady) return FileResult::Io;
   uint32_t size = 0;
   {
-    FsLock lock;  // the running upload writes its .part under gFsMutex
+    // The running upload writes its .part under gFsMutex; the last_good copy
+    // writes its own outside it and sets running with the file under it.
+    FsLock lock;
     char part[48];
     if (gUpload.active && imagePath(gUpload.name, true, part, sizeof part) &&
+        strcmp(part, path) == 0) {
+      return FileResult::Protected;
+    }
+    if (gCopy.running && imagePath(kLastGoodName, true, part, sizeof part) &&
         strcmp(part, path) == 0) {
       return FileResult::Protected;
     }
