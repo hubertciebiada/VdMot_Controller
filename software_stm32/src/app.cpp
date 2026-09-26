@@ -85,6 +85,11 @@ static uint8_t trip_seen[ACTUATOR_COUNT];         // myvalvemots[].tripSeq hande
 
 // valve positions, lease and retry schedule across a warm reset: not cleared by the start-up code
 static vdm::WarmState warm_state __attribute__((noinit));
+// lease timeout and failsafe positions of the run before a warm reset (app_restore): they stand in
+// for what the EEPROM cannot supply, also at a later re-read of the EEPROM (app_load_config)
+static bool app_warm_copies = false;
+static uint16_t app_warm_lease;
+static uint8_t app_warm_failsafe[ACTUATOR_COUNT];
 
 
 static bool app_faulted (unsigned int valve) {
@@ -227,13 +232,16 @@ void app_load_config (void) {
   // learn time (stlnt): the countdowns start again only when it changed
   if (eep_content.learnTimeS != learning_time) app_set_learntime(eep_content.learnTimeS);
 
-  // lease timeout: block A or its copy in block B, else the default (app_restore takes the copy of
-  // a warm reset instead); the mirror of both is corrected by eeprom.cpp, not here
-  const uint16_t lease = eeprom_lease_source() == vdm::kLeaseSourceDefault
-    ? vdm::kLeaseTimeoutDefaultMin : vdm::sanitizeLeaseTimeout(eep_content.leaseTimeoutMin);
+  // lease timeout: block A or its copy in block B, else the copy of a warm reset, else the default;
+  // failsafe positions: block B, else the copies of a warm reset (app_restore takes them at start-up).
+  // The mirror of both is corrected by eeprom.cpp, not here.
+  uint16_t lease = vdm::kLeaseTimeoutDefaultMin;
+  if (eeprom_lease_source() != vdm::kLeaseSourceDefault) lease = vdm::sanitizeLeaseTimeout(eep_content.leaseTimeoutMin);
+  else if (app_warm_copies) lease = app_warm_lease;
   app_lease.setTimeout(lease);
+  const bool warmFailsafe = app_warm_copies && (eeprom_cfg_flags() & (vdm::kCfgSafetyCorrupt | vdm::kCfgReadFailed));
   for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) {
-    app_failsafe[x] = vdm::sanitizeFailsafePct(eep_content.failsafePct[x]);
+    app_failsafe[x] = warmFailsafe ? app_warm_failsafe[x] : vdm::sanitizeFailsafePct(eep_content.failsafePct[x]);
   }
 }
 
@@ -760,10 +768,12 @@ void app_restore (void) {
 
   if (!warm) return;
   // lease timeout and failsafe positions the EEPROM could not supply: the copies of the last run
-  if (eeprom_lease_source() == vdm::kLeaseSourceDefault)
-    app_lease.setTimeout(vdm::sanitizeLeaseTimeout(kept.leaseTimeoutMin));
+  app_warm_copies = true;
+  app_warm_lease = vdm::sanitizeLeaseTimeout(kept.leaseTimeoutMin);
+  for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) app_warm_failsafe[x] = vdm::sanitizeFailsafePct(kept.failsafePct[x]);
+  if (eeprom_lease_source() == vdm::kLeaseSourceDefault) app_lease.setTimeout(app_warm_lease);
   if (eeprom_cfg_flags() & (vdm::kCfgSafetyCorrupt | vdm::kCfgReadFailed)) {
-    for (unsigned int x = 0; x < ACTUATOR_COUNT; x++) app_failsafe[x] = vdm::sanitizeFailsafePct(kept.failsafePct[x]);
+    memcpy(app_failsafe, app_warm_failsafe, sizeof app_failsafe);
   }
   vdm::Lease::Snapshot lease;
   lease.sinceRenewalS = kept.leaseSinceRenewalS;

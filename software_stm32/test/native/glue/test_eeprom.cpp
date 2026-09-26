@@ -423,6 +423,38 @@ TEST_CASE("a failed re-read keeps the backoff: the next one after 60 s") {
   CHECK(eeprom_state() == vdm::kEepStateOk);
 }
 
+TEST_CASE("re-read after a failed read: the lease source of the blocks read, or of a timeout set meanwhile") {
+  glue::begin();
+  storeConsistent();
+  fake::eeprom.failReadsFrom = 1;
+  boot();
+  CHECK(eeprom_lease_source() == vdm::kLeaseSourceDefault);
+  CHECK(eep_content.leaseTimeoutMin == 60);
+  fake::eeprom.failReadsFrom = 0;
+  for (int i = 0; i < 30; i++) eepromloop();
+  CHECK(eeprom_state() == vdm::kEepStateOk);
+  CHECK(eeprom_lease_source() == vdm::kLeaseSourceSettings);
+  CHECK(eep_content.leaseTimeoutMin == 90);
+  // block A damaged: the copy in B, also after a change of another field
+  fake::eeprom.bytes[vdm::kExtensionAddress + 5] ^= 1;
+  fake::eeprom.failReadsFrom = 1;
+  boot();
+  eeprom_changed(EEP_CHANGED_MOTOR);
+  fake::eeprom.failReadsFrom = 0;
+  for (int i = 0; i < 120; i++) eepromloop();
+  CHECK(eeprom_lease_source() == vdm::kLeaseSourceSafety);
+  CHECK(eep_content.leaseTimeoutMin == 90);
+  // slcfg while the EEPROM could not be read: its timeout counts as configured
+  fake::eeprom.failReadsFrom = 1;
+  boot();
+  eep_content.leaseTimeoutMin = 0;
+  eeprom_changed(EEP_CHANGED_LEASE);
+  fake::eeprom.failReadsFrom = 0;
+  for (int i = 0; i < 120; i++) eepromloop();
+  CHECK(eeprom_lease_source() == vdm::kLeaseSourceSettings);
+  CHECK(eep_content.leaseTimeoutMin == 0);
+}
+
 TEST_CASE("re-read after a failed read: only the changed sensor slot and record are taken from RAM") {
   glue::begin();
   storeConsistent();
