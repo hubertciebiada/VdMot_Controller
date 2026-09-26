@@ -2,8 +2,8 @@
 
 Scope: `software_stm32/src`, STM32 glue (Arduino code on host fakes).
 Target: >= 95 % overall and >= 95 % for every file.
-Result: **97.88 % overall (2634 / 2691 killed), lowest file `src/sysstat.cpp` 95.65 %, gate passed.**
-Measured on commit `74f4d05` (2026-09-26), 6 workers, 11 min.
+Result: **97.92 % overall (2639 / 2695 killed), lowest file `src/sysstat.cpp` 95.65 %, gate passed.**
+Measured on commit `c79fecd` (2026-09-26), 6 workers, 10 min.
 
 Tool: `tools/mutation/mutate.py`, config `tools/mutation/stm32-glue.json`. Every mutant is built
 with the sanitizer build of the native tests (ASan + UBSan, `-Werror`) and runs the tests of its
@@ -25,7 +25,7 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 | file | score | killed | survived | timeout | equivalent | stillborn | not compiled |
 |---|---|---|---|---|---|---|---|
 | `src/app.cpp` | 98.43 % | 565 | 9 | 0 | 7 | 16 | 0 |
-| `src/communication.cpp` | 97.60 % | 647 | 16 | 3 | 26 | 30 | 0 |
+| `src/communication.cpp` | 97.76 % | 652 | 15 | 3 | 26 | 30 | 0 |
 | `src/eeprom.cpp` | 96.00 % | 96 | 4 | 0 | 1 | 1 | 0 |
 | `src/i2c_bus.cpp` | 100.00 % | 9 | 0 | 0 | 0 | 0 | 0 |
 | `src/main.cpp` | 100.00 % | 78 | 0 | 1 | 0 | 0 | 1 |
@@ -34,21 +34,21 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 | `src/owDevices.cpp` | 99.50 % | 198 | 1 | 0 | 14 | 0 | 28 |
 | `src/sysstat.cpp` | 95.65 % | 22 | 1 | 0 | 0 | 1 | 0 |
 | `src/terminal.cpp` | 100.00 % | 282 | 0 | 2 | 11 | 18 | 0 |
-| **total** | **97.88 %** | 2627 | 57 | 7 | 99 | 69 | 104 |
+| **total** | **97.92 %** | 2632 | 56 | 7 | 99 | 69 | 104 |
 
-## Surviving mutants (57)
+## Surviving mutants (56)
 
 <details><summary>list</summary>
 
-- `src/app.cpp:133:10` retval `counted` -> `0`
-- `src/app.cpp:304:10` negcond `(` -> `(!`
-- `src/app.cpp:500:8` const `0` -> `1`
-- `src/app.cpp:651:50` rel `<` -> `<=`
-- `src/app.cpp:717:53` log `||` -> `&&`
-- `src/app.cpp:789:15` const `0` -> `1`
-- `src/app.cpp:813:35` const `1` -> `2`
-- `src/app.cpp:823:13` rel `>=` -> `>`
-- `src/app.cpp:823:31` log `||` -> `&&`
+- `src/app.cpp:134:10` retval `counted` -> `0`
+- `src/app.cpp:305:10` negcond `(` -> `(!`
+- `src/app.cpp:501:8` const `0` -> `1`
+- `src/app.cpp:652:50` rel `<` -> `<=`
+- `src/app.cpp:718:53` log `||` -> `&&`
+- `src/app.cpp:790:15` const `0` -> `1`
+- `src/app.cpp:814:35` const `1` -> `2`
+- `src/app.cpp:824:13` rel `>=` -> `>`
+- `src/app.cpp:824:31` log `||` -> `&&`
 - `src/communication.cpp:76:34` const `0` -> `1`
 - `src/communication.cpp:81:54` arith `+` -> `-`
 - `src/communication.cpp:81:56` const `1` -> `0`
@@ -56,15 +56,14 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 - `src/communication.cpp:185:18` rel `<` -> `<=`
 - `src/communication.cpp:192:12` rel `>=` -> `>`
 - `src/communication.cpp:201:18` rel `<` -> `<=`
-- `src/communication.cpp:218:24` rel `<` -> `<=`
-- `src/communication.cpp:343:52` arith `+` -> `-`
-- `src/communication.cpp:343:54` const `1` -> `0`
-- `src/communication.cpp:343:54` const `1` -> `2`
-- `src/communication.cpp:437:26` rel `<` -> `<=`
-- `src/communication.cpp:627:32` const `3` -> `0`
-- `src/communication.cpp:627:32` const `3` -> `2`
-- `src/communication.cpp:627:34` log `&&` -> `||`
-- `src/communication.cpp:627:51` const `5` -> `6`
+- `src/communication.cpp:345:52` arith `+` -> `-`
+- `src/communication.cpp:345:54` const `1` -> `0`
+- `src/communication.cpp:345:54` const `1` -> `2`
+- `src/communication.cpp:439:26` rel `<` -> `<=`
+- `src/communication.cpp:629:32` const `3` -> `0`
+- `src/communication.cpp:629:32` const `3` -> `2`
+- `src/communication.cpp:629:34` log `&&` -> `||`
+- `src/communication.cpp:629:51` const `5` -> `6`
 - `src/eeprom.cpp:66:37` const `0` -> `1`
 - `src/eeprom.cpp:69:30` bool `false` -> `true`
 - `src/eeprom.cpp:71:36` const `0` -> `1`

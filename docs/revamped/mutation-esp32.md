@@ -3,7 +3,7 @@
 Scope: `software_esp32_revamped/lib/core`, ESP32 core (pure logic).
 Target: >= 95 % overall and >= 95 % for every file.
 Result: **97.68 % overall (13421 / 13740 killed), lowest file `lib/core/src/file_manager.cpp` 95.00 %, gate passed.**
-Measured on commit `74f4d05` (2026-09-26), 6 workers, 51 min.
+Measured on commit `c79fecd` (2026-09-26), 6 workers, 44 min.
 
 Tool: `tools/mutation/mutate.py`, config `tools/mutation/esp32.json`. Every mutant is built
 with the sanitizer build of the native tests (ASan + UBSan, `-Werror`) and runs the tests of its
@@ -92,7 +92,7 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 | `lib/core/src/event_limiter.cpp:36` | start time irrelevant (full bucket) |
 | `lib/core/src/event_limiter.cpp:37` | start time irrelevant (full bucket) |
 | `lib/core/src/event_log.cpp:232` | attribute |
-| `lib/core/src/event_log.cpp:631` | wraps after 2^32 events, not reachable in tests |
+| `lib/core/src/event_log.cpp:632` | wraps after 2^32 events, not reachable in tests |
 | `lib/core/src/mqtt_topics.cpp:59` | attribute |
 | `lib/core/src/stm_codec.cpp:40` | UINT32_MAX has 10 digits; no builder sends that many |
 | `lib/core/src/stm_codec.cpp:50` | exact size; larger is equivalent |
@@ -259,14 +259,14 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 - `lib/core/src/event_limiter.cpp:110:59` rel `>` -> `>=`
 - `lib/core/src/event_limiter.cpp:132:59` rel `>` -> `>=`
 - `lib/core/src/event_log.cpp:238:11` rel `>` -> `>=`
-- `lib/core/src/event_log.cpp:449:37` const `1460` -> `1459`
-- `lib/core/src/event_log.cpp:449:50` const `36524` -> `36523`
-- `lib/core/src/event_log.cpp:449:64` const `146096` -> `146095`
-- `lib/core/src/event_log.cpp:488:27` rel `<` -> `<=`
-- `lib/core/src/event_log.cpp:512:12` const `160` -> `159`
-- `lib/core/src/event_log.cpp:512:12` const `160` -> `161`
-- `lib/core/src/event_log.cpp:536:27` rel `<` -> `<=`
-- `lib/core/src/event_log.cpp:696:15` rel `<` -> `<=`
+- `lib/core/src/event_log.cpp:450:37` const `1460` -> `1459`
+- `lib/core/src/event_log.cpp:450:50` const `36524` -> `36523`
+- `lib/core/src/event_log.cpp:450:64` const `146096` -> `146095`
+- `lib/core/src/event_log.cpp:489:27` rel `<` -> `<=`
+- `lib/core/src/event_log.cpp:513:12` const `160` -> `159`
+- `lib/core/src/event_log.cpp:513:12` const `160` -> `161`
+- `lib/core/src/event_log.cpp:537:27` rel `<` -> `<=`
+- `lib/core/src/event_log.cpp:697:15` rel `<` -> `<=`
 - `lib/core/src/file_manager.cpp:19:14` rel `>=` -> `>`
 - `lib/core/src/file_manager.cpp:22:31` rel `>=` -> `>`
 - `lib/core/src/file_manager.cpp:22:43` rel `<=` -> `<`
