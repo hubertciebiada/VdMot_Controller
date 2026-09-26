@@ -1,6 +1,5 @@
 [
   {"line": 53, "col": 25, "original": "0", "replacement": "1", "text": "uint32_t gCfgRevision = 0;", "reason": "dead initial value: setup() assigns gCfgRevision before the app task that reads it exists"},
-  {"line": 63, "col": 36, "original": "5", "replacement": "6", "text": "constexpr size_t kMonitoredTasks = 5;", "reason": "a sixth slot is zero: no name and no handle, so xTaskGetHandle(nullptr) finds nothing and readHealth() skips it"},
   {"line": 72, "col": 24, "original": "false", "replacement": "true", "text": "bool gFactoryLatched = false;     // app task after setup", "reason": "dead initial value: setup() assigns gFactoryLatched before the app task that reads it exists"},
   {"line": 80, "col": 15, "original": "false", "replacement": "true", "text": "bool held = false;", "reason": "factoryPinAtBoot() reads held only when the pin is low and no latch is set, the branch that assigns it"},
   {"line": 119, "col": 17, "original": "2", "replacement": "3", "text": "vdm::Event ev[2];", "reason": "onHeap() writes at most 2 events (low heap, fragmented) and gets the capacity 2 passed separately"},

@@ -185,6 +185,10 @@ boolean PubSubClient::publishBytes(const char* topic, const uint8_t* payload,
   const size_t topicLen = strnlen(topic, bufferSize_);
   if (bufferSize_ < MQTT_MAX_HEADER_SIZE + 2 + topicLen + plength) return false;
   if (index == m.failPublishAt) return false;
+  if (!m.failPublishTopic.empty() && m.failPublishTopic == topic) {
+    m.failPublishTopic.clear();
+    return false;
+  }
   m.published.push_back(
       {topic, std::string(reinterpret_cast<const char*>(payload), plength), retained != 0});
   return true;

@@ -9,13 +9,22 @@
 //        the fields become POST params and handleBody() is not called;
 //      - multipart: only for a non-trivial handler: fields become POST params, file data goes to
 //        handleUpload() in pieces of at most 1460 bytes (also cut at segment ends) and one
-//        final call with the rest (empty when nothing is left);
+//        final call with the rest (empty when nothing is left); a '-' right after the closing
+//        "\r\n--<boundary>" sets Content-Length to its offset + 4 (_parseMultipartPostByte,
+//        DASH3_OR_RETURN2), so a body that ends without the CRLF after "--<boundary>--" or has
+//        an epilogue in the same segment is never handled (not for a body padded with zeros);
 //      - anything else: handleBody(data, len, index, total) per segment, also for a trivial
 //        handler;
+//      the segment with the last body bytes also carries Request::pipelined, which the library
+//      passes on with them (_onData does not stop at Content-Length): the request is then never
+//      handled, its parsed length ran past Content-Length;
 //   3. onDisconnect() keeps one callback, the last one set; it runs when the client is gone;
 //   4. beginResponse_P() data and chunked fillers are read when the response is transmitted
 //      (Exchange::finish()), not at send(): a buffer released too early shows as a wrong body;
-//   5. server().failNextResponse makes the next beginResponse*() return nullptr (out of memory).
+//   5. server().failNextResponse makes the next beginResponse*() return nullptr (out of memory);
+//   6. server().recycleRequests builds the next request in the memory of the last one deleted,
+//      like the heap handing a freed block back: state keyed by request pointers meets a
+//      recycled address.
 // Invariant checked by the runner hooks: every request that reached handleRequest() was answered
 // exactly once (Response::sends == 1) by the time it ended.
 #pragma once
@@ -54,6 +63,7 @@ struct Request {
   uint32_t remoteIp = 0x3201A8C0;  // 192.168.1.50
   uint32_t localIp = 0;            // the connection's local address (0 = unknown)
   bool zeroLengthFinal = false;    // uploads: the rest in a non-final call, then an empty final
+  std::string pipelined;           // bytes after the body in the segment with its last bytes
 
   Request& header(const std::string& name, const std::string& value) {
     headers.emplace_back(name, value);
@@ -109,6 +119,7 @@ class Exchange {
  private:
   void deliver(const uint8_t* data, size_t len);
   void deliverMultipartByte(size_t pos, uint8_t b, bool last);
+  void closeDelimiter(size_t pos, uint8_t b);
   void flushUpload(bool final);
   void addPostParams(const std::string& form);
   void transmit();
@@ -141,6 +152,8 @@ struct Server {
   int exchanges = 0;                   // requests handled so far
   std::vector<std::string> violations; // requests not answered exactly once
   int openExchanges = 0;               // Exchange objects not ended yet
+  bool recycleRequests = false;        // a new request takes the memory of the last one deleted
+  void* spareRequest = nullptr;        // that memory (recycleRequests)
 };
 Server& server();
 

@@ -504,7 +504,11 @@ UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t xTask) {
 }
 
 TaskHandle_t xTaskGetHandle(const char* pcNameToQuery) {
-  if (pcNameToQuery == nullptr) return nullptr;
+  if (pcNameToQuery == nullptr) {
+    // FreeRTOS reads the name (configASSERT(strlen(...)), the list search): a crash on the target
+    fakes::rtos().violation("xTaskGetHandle(nullptr): FreeRTOS dereferences the name");
+    return nullptr;
+  }
   fakes::Rtos& r = fakes::rtos();
   for (const fakes::TaskRecord& t : r.tasks) {
     if (t.name == pcNameToQuery) return t.handle;

@@ -433,6 +433,7 @@ struct Mqtt {
   bool connectResult = true;
   int failState = MQTT_CONNECT_FAILED;  // state() after a refused connect
   long failPublishAt = -1;   // index (0-based, over all publish calls) of a publish that fails
+  std::string failPublishTopic;   // the next publish to this topic fails ("" = none)
   bool failSubscribe = false;
   std::deque<MqttMessage> inbox;  // delivered by loop(), one per call
   bool burst = false;             // loop() delivers the whole inbox at once

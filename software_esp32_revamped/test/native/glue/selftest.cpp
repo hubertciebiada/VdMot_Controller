@@ -50,8 +50,9 @@ class EchoHandler : public AsyncWebHandler {
     uploads.push_back(
         {filename.str(), index, std::string(reinterpret_cast<char*>(data), len), final});
   }
-  bool isRequestHandlerTrivial() override { return false; }
+  bool isRequestHandlerTrivial() override { return trivial; }
 
+  bool trivial = false;
   struct Body {
     std::string data;
     size_t index;
@@ -359,6 +360,27 @@ TEST_CASE("mqtt: publish needs a session and room in the buffer, loop delivers o
   CHECK(c.state() == MQTT_CONNECTION_LOST);
 }
 
+TEST_CASE("mqtt: failPublishTopic fails the next publish to that topic, once") {
+  glue::begin();
+  WiFiClient net;
+  PubSubClient c(net);
+  REQUIRE(c.connect("id"));
+  fakes::mqtt().failPublishTopic = "a/b";
+  CHECK(c.publish("a/c", "1"));
+  CHECK_FALSE(c.publish("a/b", "2"));
+  CHECK(c.publish("a/b", "3"));
+  CHECK(fakes::mqtt().publishedTo("a/b").size() == 1);
+}
+
+// ---------------------------------------------------------------- siblings
+
+TEST_CASE("siblings: app::nowMs() runs onNowMs before it reads the clock") {
+  glue::begin();
+  sib::app().onNowMs = [] { fakes::advanceMs(5); };
+  const uint32_t before = millis();
+  CHECK(app::nowMs() == before + 5);
+}
+
 // ---------------------------------------------------------------- web request driver
 
 TEST_CASE("http: headers are filtered, the body arrives in segments, the client disconnects") {
@@ -416,6 +438,54 @@ TEST_CASE("http: failNextResponse makes the next beginResponse() return nullptr"
   CHECK(e.finish().code == 204);
 }
 
+TEST_CASE("http: pipelined bytes come with the last body bytes, the request is never handled") {
+  glue::begin();
+  AsyncWebServer server(80);
+  EchoHandler h;
+  server.addHandler(&h);
+  fakes::http::Request r = fakes::http::post("/api/x", std::string(2000, 'j'));
+  r.pipelined = "GET / HTTP/1.1\r\n";
+  CHECK(fakes::http::perform(r).sends == 0);
+  REQUIRE(h.bodies.size() == 2);
+  CHECK(h.bodies[1].index == 1460);
+  CHECK(h.bodies[1].total == 2000);
+  CHECK(h.bodies[1].data == std::string(540, 'j') + "GET / HTTP/1.1\r\n");
+}
+
+TEST_CASE("http: a parsed multipart body ends at its closing boundary, an unparsed one does not") {
+  glue::begin();
+  AsyncWebServer server(80);
+  EchoHandler h;
+  server.addHandler(&h);
+  const std::string form = "--b\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\n1\r\n--b--";
+  fakes::http::Request r = fakes::http::post("/api/x", form, "multipart/form-data; boundary=b");
+  CHECK(fakes::http::perform(r).sends == 0);  // Content-Length becomes 2 more than the body
+  r.body = form + "\r\n";
+  CHECK(fakes::http::perform(r).code == 200);
+  r.body = form + "\r\nepilogue";
+  CHECK(fakes::http::perform(r).sends == 0);  // the parsed length ran past the new length
+  h.trivial = true;
+  r.body = form;
+  CHECK(fakes::http::perform(r).code == 200);
+}
+
+TEST_CASE("http: a recycling server builds the next request where the last one was") {
+  glue::begin();
+  AsyncWebServer server(80);
+  EchoHandler h;
+  server.addHandler(&h);
+  fakes::http::server().recycleRequests = true;
+  const AsyncWebServerRequest* first = nullptr;
+  {
+    fakes::http::Exchange a(fakes::http::get("/a"));
+    first = a.request();
+    CHECK(a.finish().code == 200);
+  }
+  fakes::http::Exchange b(fakes::http::get("/b"));
+  CHECK(b.request() == first);
+  CHECK(b.finish().body == "GET /b");
+}
+
 // ---------------------------------------------------------------- fake STM
 
 TEST_CASE("fake stm: answers by protocol and holds still in reset") {
@@ -459,6 +529,11 @@ TEST_CASE("xfail: a second take of a held mutex" * doctest::test_suite("xfail"))
   xSemaphoreTake(m, portMAX_DELAY);
   xSemaphoreTake(m, portMAX_DELAY);  // deadlock on the target
   xSemaphoreGive(m);
+}
+
+TEST_CASE("xfail: xTaskGetHandle without a name" * doctest::test_suite("xfail")) {
+  glue::begin();
+  CHECK(xTaskGetHandle(nullptr) == nullptr);
 }
 
 TEST_CASE("xfail: a critical section left entered" * doctest::test_suite("xfail")) {

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,28 @@ std::string decode(const std::string& text) {
     }
   }
   return out;
+}
+
+// Server::recycleRequests: the next request is built in the memory of the last one deleted.
+AsyncWebServerRequest* newRequest(AsyncWebServer* srv, AsyncClient* client) {
+  Server& s = state();
+  if (s.recycleRequests && s.spareRequest != nullptr) {
+    void* mem = s.spareRequest;
+    s.spareRequest = nullptr;
+    return new (mem) AsyncWebServerRequest(srv, client);
+  }
+  return new AsyncWebServerRequest(srv, client);
+}
+
+void deleteRequest(AsyncWebServerRequest* req) {
+  Server& s = state();
+  if (!s.recycleRequests) {
+    delete req;
+    return;
+  }
+  req->~AsyncWebServerRequest();
+  ::operator delete(s.spareRequest);  // an older spare block goes back to the heap
+  s.spareRequest = req;
 }
 
 }  // namespace
@@ -131,6 +154,10 @@ struct Exchange::PartState {
   size_t itemSize = 0;          // file bytes so far
   std::string value;            // form field value
   std::string plain;            // plain post: fields not complete yet
+  size_t bodyLength = 0;        // what the client sends (Content-Length as announced)
+  bool padded = false;          // Content-Length above the wire body: zeros follow it
+  std::string boundary;         // of the Content-Type header, like the library reads it
+  bool closed = false;          // the multipart parse ended at the closing delimiter
 };
 
 Exchange::Exchange(const Request& r) : r_(r), client_(r.remoteIp) {
@@ -138,7 +165,7 @@ Exchange::Exchange(const Request& r) : r_(r), client_(r.remoteIp) {
   wire_ = r_.wireBody();
   ++state().openExchanges;
   AsyncWebServer* srv = state().instance;
-  req_ = new AsyncWebServerRequest(srv, &client_);
+  req_ = newRequest(srv, &client_);
   req_->exchange_ = this;
   req_->method_ = r_.method;
   const size_t q = r_.url.find('?');
@@ -202,7 +229,13 @@ Exchange::Exchange(const Request& r) : r_(r), client_(r.remoteIp) {
     }
   }
   mp_.reset(new PartState());
+  mp_->bodyLength = length;
+  mp_->padded = wire_.size() < length;
   if (req_->isMultipart_) {
+    // WebRequest.cpp _parseReqHeader: what follows the first '=' (all without one), no quotes
+    for (char c : r_.contentType.substr(r_.contentType.find('=') + 1)) {
+      if (c != '"') mp_->boundary.push_back(c);
+    }
     size_t pos = 0;
     const std::string delimiter = "\r\n--" + r_.boundary;
     for (const Part& p : r_.parts) {
@@ -232,26 +265,34 @@ Exchange::~Exchange() {
 
 bool Exchange::sendBody(size_t n) {
   if (ended_) return true;  // the client is gone, the request deleted
-  const size_t total = req_->contentLength_;
+  const size_t total = mp_->bodyLength;
   while (n > 0 && sent_ < total && !ended_) {
     size_t len = r_.segment < n ? r_.segment : n;
     if (len > total - sent_) len = total - sent_;
     // bytes missing from the wire (Content-Length larger than the body) arrive as zeros
     std::string seg = sent_ < wire_.size() ? wire_.substr(sent_, len) : std::string();
     seg.resize(len, '\0');
-    deliver(reinterpret_cast<const uint8_t*>(seg.data()), len);
+    if (sent_ + len == total) seg += r_.pipelined;
     n -= len;
+    deliver(reinterpret_cast<const uint8_t*>(seg.data()), seg.size());
   }
   return sent_ >= total;
 }
 
 void Exchange::deliver(const uint8_t* data, size_t len) {
+  if (handled_) {  // PARSE_REQ_END: the library ignores what follows
+    sent_ += len;
+    return;
+  }
   AsyncWebHandler* h = req_->handler_;
   const bool needParse = h != nullptr && !h->isRequestHandlerTrivial();
   const size_t start = sent_;
   if (req_->isMultipart_) {
     if (needParse) {
-      for (size_t i = 0; i < len; ++i) deliverMultipartByte(start + i, data[i], i == len - 1);
+      for (size_t i = 0; i < len; ++i) {
+        deliverMultipartByte(start + i, data[i], i == len - 1);
+        closeDelimiter(start + i, data[i]);
+      }
     }
     sent_ += len;
   } else {
@@ -350,6 +391,22 @@ void Exchange::deliverMultipartByte(size_t pos, uint8_t b, bool last) {
   ++s.current;
 }
 
+// WebRequest.cpp _parseMultipartPostByte, DASH3_OR_RETURN2: the '-' after "\r\n--<boundary>"
+// ends the parse and sets Content-Length to its offset + 4 ("--\r\n"). Checked on the bytes of a
+// body that starts with its first boundary line (else the library's parse failed at once).
+void Exchange::closeDelimiter(size_t pos, uint8_t b) {
+  PartState& s = *mp_;
+  if (s.closed || s.padded || b != '-' || pos >= wire_.size()) return;
+  const std::string first = "--" + s.boundary + "\r\n";
+  const std::string delimiter = "\r\n--" + s.boundary;
+  if (wire_.compare(0, first.size(), first) != 0 || pos < delimiter.size() ||
+      wire_.compare(pos - delimiter.size(), delimiter.size(), delimiter) != 0) {
+    return;
+  }
+  s.closed = true;
+  req_->contentLength_ = pos + 4;
+}
+
 void Exchange::flushUpload(bool final) {
   PartState& s = *mp_;
   const PartState::Range& r = s.ranges[s.current];
@@ -428,7 +485,7 @@ void Exchange::end() {
   // WebRequest.cpp _onDisconnect: the callback, then the request is deleted
   ArDisconnectHandler fn = req_->onDisconnect_;
   if (fn) fn();
-  delete req_;
+  deleteRequest(req_);
   req_ = nullptr;
 }
 
@@ -440,6 +497,7 @@ Response perform(const Request& r) {
 }  // namespace http
 
 void resetWebVolatile() {
+  ::operator delete(http::state().spareRequest);
   http::Server next;
   next.instance = http::state().instance;
   next.port = http::state().port;

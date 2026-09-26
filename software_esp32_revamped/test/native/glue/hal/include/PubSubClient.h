@@ -1,10 +1,10 @@
 // Fake knolleary/PubSubClient 2.8 (ESP32 build: std::function callback). The broker is
 // fakes::mqtt(): connect() records every argument and answers connectResult; publish() fails when
 // not connected, when the message does not fit the buffer (like the library: 5 + 2 + topic +
-// payload > bufferSize) or at fakes::mqtt().failPublishAt; loop() delivers one message of
-// fakes::mqtt().inbox per call through the callback. The callback gets heap copies of topic and
-// payload (exact size); a publish inside the callback frees them like the library's shared buffer
-// overwrites them, so a later use is an ASan error.
+// payload > bufferSize), at fakes::mqtt().failPublishAt or to failPublishTopic (once); loop()
+// delivers one message of fakes::mqtt().inbox per call through the callback. The callback gets
+// heap copies of topic and payload (exact size); a publish inside the callback frees them like
+// the library's shared buffer overwrites them, so a later use is an ASan error.
 #pragma once
 
 #include <stddef.h>

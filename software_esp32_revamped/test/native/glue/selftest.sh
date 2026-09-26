@@ -34,6 +34,7 @@ xfail() {
 
 xfail "xfail: an assertion" 'FAILED "xfail: an assertion"'
 xfail "xfail: a second take of a held mutex" "second xSemaphoreTake of a held mutex"
+xfail "xfail: xTaskGetHandle without a name" "xTaskGetHandle(nullptr)"
 xfail "xfail: a critical section left entered" "a critical section is still entered"
 xfail "xfail: an HTTP request without an answer" "GET /api/status answered 0 times"
 xfail "xfail: an HTTP request answered twice" "GET / answered 2 times"

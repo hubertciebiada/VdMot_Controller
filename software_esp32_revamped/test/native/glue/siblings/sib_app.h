@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <deque>
+#include <functional>
 #include <vector>
 
 #include <vdm/json_api.h>
@@ -17,6 +18,7 @@ namespace sib {
 
 struct App {
   // scripted
+  std::function<void()> onNowMs;      // runs at the start of every nowMs() (time passing)
   int64_t uptimeS = -1;               // -1: esp_timer_get_time() / 1 s
   bool submitResult = true;           // false: the queue is full
   std::deque<app::Command> toReceive;  // receive() hands these out in order

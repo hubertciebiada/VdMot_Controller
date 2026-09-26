@@ -14,7 +14,10 @@ void setup() {
   fakes::note("app.setup");
 }
 
-uint32_t nowMs() { return millis(); }
+uint32_t nowMs() {
+  if (sib::app().onNowMs) sib::app().onNowMs();
+  return millis();
+}
 
 uint32_t uptimeS() {
   const sib::App& a = sib::app();
