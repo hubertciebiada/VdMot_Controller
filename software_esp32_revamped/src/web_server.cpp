@@ -60,10 +60,10 @@ bool gBodyOverflow = false;
 AsyncWebServerRequest* gBodyOwner = nullptr;
 
 // Requests whose body was refused while it arrived (answered in
-// handleRequest). A mark is cleared when its request starts a new body and
-// when it disconnects (every request ends that way, also one that never
-// reached handleRequest), so a recycled request address never inherits a
-// stale mark.
+// handleRequest). A mark is cleared when its request starts a new body or
+// takes over the upload (both replace the callback of mark()) and when it
+// disconnects (every request ends that way, also one that never reached
+// handleRequest), so a recycled request address never inherits a stale mark.
 struct Mark {
   AsyncWebServerRequest* req;
   uint16_t code;
@@ -1463,6 +1463,9 @@ void beginUpload(AsyncWebServerRequest* req, UploadKind kind, const String& file
   gUpload.owner = req;
   gUpload.kind = kind;
   gUpload.started = true;
+  // The request owns the upload now: a file of it refused while another upload ran no longer
+  // decides the answer, and the callback that would clear its mark is replaced below.
+  clearMark(req);
   // Client gone before the request completed: abort and free the state.
   req->onDisconnect([req]() {
     if (gUpload.owner != req) return;
