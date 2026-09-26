@@ -968,7 +968,7 @@ void handleHealth(AsyncWebServerRequest* req) {
 // ---------------------------------------------------------------- log download
 
 void closeLogStream() {
-  if (gLog.file) gLog.file.close();
+  gLog.file.close();  // no-op when not open
   gLog.owner = nullptr;
   gLog.part = 2;
 }
@@ -1015,7 +1015,7 @@ void handleLog(AsyncWebServerRequest* req) {
 // JSON number (integer or fraction, never bool or string) rounded by
 // vdm::roundTargetPercent.
 bool targetField(JsonVariantConst v, uint8_t& out) {
-  if (v.isNull() || v.is<bool>() || !v.is<double>()) return false;
+  if (!v.is<double>()) return false;  // also null and bool
   return vdm::roundTargetPercent(v.as<double>(), out);
 }
 
@@ -1113,9 +1113,10 @@ void handleProfileRefresh(AsyncWebServerRequest* req, uint8_t valve) {
   handleSimple(req, app::CommandType::RequestProfile, valve);
 }
 
-// ?dryRun=1: validated like a save, nothing stored; the answer names what a
-// save would do. A save reserves its response slot first, so a busy server
-// answers 503 before anything is applied.
+// ?dryRun=1: validated like a save (applyConfigJson checks the whole
+// config), nothing stored; the answer names what a save would do. A save
+// reserves its response slot first, so a busy server answers 503 before
+// anything is applied.
 void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   bool dryRun = false;
   if (AsyncWebParameter* p = req->getParam("dryRun")) {
@@ -1136,9 +1137,6 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   info.restartRequired = vdm::configRestartReasons(gCfg, gPatch) != 0;
   info.netTrial = vdm::netTrialRequired(gCfg.net, gPatch.net);
   if (dryRun) {
-    if (!vdm::validateConfig(gPatch, path, sizeof path)) {
-      return sendError(req, 400, "invalid", path);
-    }
     char buf[64];
     snprintf(buf, sizeof buf, "{\"restartRequired\":%s,\"netTrial\":%s}",
              info.restartRequired ? "true" : "false", info.netTrial ? "true" : "false");
@@ -1152,7 +1150,7 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve,
               static_cast<int32_t>(storage::configRevision()), 0, "web");
   vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
-  if (!vdm::writeConfigJson(jw, gCfg, vdm::SecretMode::Flags, &info) || !jw.complete()) {
+  if (!vdm::writeConfigJson(jw, gCfg, vdm::SecretMode::Flags, &info)) {
     releaseSlot(slot);
     return sendError(req, 500, "internal", "document too large");
   }
