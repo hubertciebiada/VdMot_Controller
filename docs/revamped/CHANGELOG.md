@@ -130,6 +130,11 @@ recovery steps: see INSTALL.md.
 - ESP: a static IP without DNS uses the gateway as DNS.
 
 ### Fixed
+- ESP: 2.1.0-revamped-rc1 did not start on hardware: the working
+  objects allocated by static constructors ran out of heap before
+  `initArduino()` released the Bluetooth DRAM, `abort()` in
+  `do_global_ctors`, a reboot every 0.5 s. The first `bootAlloc()` now
+  releases that DRAM itself.
 - ESP: `POST /api/config` could answer 503 after it had already applied the
   change.
 - ESP: the dashboard computed the volt value with another formula than MQTT.

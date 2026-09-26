@@ -88,8 +88,10 @@ UartTransport gTransport;
 Port gPort;
 
 vdm::StmSession& newSession() {
-  vdm::StmSession* s =
-      new (std::nothrow) vdm::StmSession(gPort, gTransport, bootAlloc<vdm::StmSnapshot>());
+  // bootAlloc() first: a new-expression allocates before it evaluates its
+  // arguments, and bootAlloc() makes the BT DRAM part of the heap.
+  vdm::StmSnapshot& snapshot = bootAlloc<vdm::StmSnapshot>();
+  vdm::StmSession* s = new (std::nothrow) vdm::StmSession(gPort, gTransport, snapshot);
   if (s == nullptr) abort();  // out of memory at boot: nothing sensible to do
   return *s;
 }
