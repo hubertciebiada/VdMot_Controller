@@ -138,33 +138,33 @@ int32_t appendLine(FileSink& s, const char* line, size_t len) {
 
 // Writes the file backlog (events after gFileCursor up to the last seq at
 // the start). One open/close per attempt, nothing opened for Debug-only
-// backlogs.
+// backlogs. Events the ring dropped before they were written become a gap
+// line, checked per batch: the ring also drops events while the file is
+// written.
 void writeBacklog(uint32_t nowMs) {
-  uint32_t upper, first;
+  uint32_t upper;
   {
     Lock lock;
     upper = gLogPtr->lastSeq();
-    first = gLogPtr->firstSeq();
   }
   FileSink sink;
   int32_t failed = kStepOk;
   uint32_t lost = 0;
-  vdm::LogGap gap;
-  if (vdm::detectLogGap(gFileCursor, first, gap)) {
-    char line[64];
-    const size_t len = vdm::formatLogGapLine(gap, line, sizeof line - 1);
-    line[len] = '\n';
-    failed = appendLine(sink, line, len + 1);
-    if (failed == kStepOk) {
-      lost = gap.to - gap.from + 1;
-      gFileCursor = gap.to;
-    }
-  }
   vdm::Event batch[4];
   while (failed == kStepOk && gFileCursor < upper) {
     uint32_t next = gFileCursor;
     const size_t n = readSince(gFileCursor, batch, 4, next);
     if (n == 0) break;
+    vdm::LogGap gap;
+    if (vdm::detectLogGap(gFileCursor, batch[0].seq, gap)) {
+      char line[64];
+      const size_t len = vdm::formatLogGapLine(gap, line, sizeof line - 1);
+      line[len] = '\n';
+      failed = appendLine(sink, line, len + 1);
+      if (failed != kStepOk) break;
+      lost += gap.to - gap.from + 1;
+      gFileCursor = gap.to;
+    }
     for (size_t i = 0; i < n; ++i) {
       if (vdm::fileWantsSeverity(batch[i].severity)) {
         char line[161];

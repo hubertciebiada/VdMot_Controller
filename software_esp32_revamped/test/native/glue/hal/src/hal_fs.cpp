@@ -167,6 +167,7 @@ size_t File::write(uint8_t c) { return write(&c, 1); }
 size_t File::write(const uint8_t* buf, size_t size) {
   fakes::Fs& f = fakes::fs();
   if (!h_ || !h_->open || !h_->canWrite || size == 0) return 0;
+  if (f.onWrite) f.onWrite(h_->path);
   if (f.shouldFail("write", h_->path)) return 0;
   std::vector<uint8_t>& data = f.nodes[h_->path].data;
   if (h_->append) h_->pos = data.size();

@@ -217,6 +217,8 @@ struct Fs {
   int renames = 0;
   int removes = 0;
   int openHandles = 0;                   // File objects currently open
+  // Called with the path before every write to an open file (another task running meanwhile).
+  std::function<void(const std::string& path)> onWrite;
 
   // The next `count` operations `op` on `path` ("" = any) fail.
   void fail(const std::string& op, const std::string& path = "", int count = 1);

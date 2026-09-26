@@ -361,6 +361,33 @@ TEST_CASE("logger file: events lost in the ring become one gap line") {
   CHECK(logger::stats(11000).backlog == 0);
 }
 
+TEST_CASE("logger file: events the ring drops while the file is written become a gap line") {
+  glue::begin();
+  mountFs();
+  logger::begin();
+  info(300);  // 256 waiting: due
+  const std::vector<vdm::Event> before = all();
+  std::string first4;
+  for (size_t i = 0; i < 4; ++i) first4 += lineOf(before[i]) + "\n";
+  bool burst = false;
+  fakes::fs().onWrite = [&burst](const std::string& path) {
+    if (path != "/log/events.log" || burst) return;
+    burst = true;
+    info(600);  // another task meanwhile: the ring (512) drops seq 1..388
+  };
+  logger::service(false);
+  fakes::fs().onWrite = nullptr;
+  REQUIRE(burst);
+  REQUIRE(all().front().seq == 389);
+  // lines 1..4 were read before the drop, the next batch starts at 389
+  const std::string head = first4 + "#5-388 gap: 384 events not written\n" + linesOf(389, 392);
+  CHECK(logFile() == head);
+  CHECK(logger::stats(0).lost == 384);
+  logger::flush();
+  CHECK(logFile() == head + linesOf(393, 900));
+  CHECK(logger::stats(0).lost == 384);
+}
+
 TEST_CASE("logger file: a short write keeps the cursor at the last complete line") {
   glue::begin();
   mountFs();
