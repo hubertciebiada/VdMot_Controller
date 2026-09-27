@@ -1,7 +1,10 @@
-// Tests of the idle release of src/web_server.cpp: 30 s after the last callback the working set
-// and the response slot buffers go back to the heap (web::service(), called by the app task), the
-// next request allocates them again, nothing in flight loses a buffer, and a request that gets no
-// memory is answered 503. web::service() runs as the app task, the request driver as AsyncTCP.
+// Tests of the working set of src/web_server.cpp and its idle release: 30 s after the last callback
+// the working set and the response slot buffers go back to the heap (web::service(), called by the
+// app task), the next request allocates them again, nothing in flight loses a buffer, and a
+// request that gets no memory is answered 503. web::service() runs as the app task, the request
+// driver as AsyncTCP.
+#include <ArduinoJson.h>
+
 #include <string>
 
 #include "glue_test.h"
@@ -289,6 +292,17 @@ TEST_CASE("web idle: a body after a release without memory is refused, the buffe
   CHECK(sib::app().submitted[0].pos == 7);
 }
 
+TEST_CASE("web idle: a refused request answered after a release without memory gets 503") {
+  glue::begin();
+  start();
+  Exchange a(apiPost(kTarget1, std::string(web::kMaxBodySize + 1, ' ')));  // 413, body skipped
+  idleRelease();
+  fakes::heap().failAll = true;
+  const Response& r = a.finish();
+  CHECK(r.code == 503);
+  CHECK(r.body == errorBody("busy", "out of memory"));
+}
+
 TEST_CASE("web idle: an upload after a release without memory is refused, nothing stored") {
   glue::begin();
   start();
@@ -304,4 +318,25 @@ TEST_CASE("web idle: an upload after a release without memory is refused, nothin
   // the upload state is free
   sib::storage().uploadEndInfo.size = 3;
   CHECK(fakes::http::perform(apiUpload("/api/stm/images", "fw.bin", "abc")).code == 201);
+}
+
+// ---------------------------------------------------------------- working set
+
+TEST_CASE("web working set: the JSON document holds the largest object of 512 bytes") {
+  glue::begin();
+  start();
+  size_t fits = 0;
+  while (JSON_OBJECT_SIZE(fits + 1) <= 512) ++fits;
+  const auto object = [](size_t members) {
+    std::string body = "{\"target\":5";
+    for (size_t i = 1; i < members; ++i) body += ",\"k" + std::to_string(i) + "\":1";
+    return body + "}";
+  };
+  // parsed: the extra members are refused one step later
+  Response r = fakes::http::perform(apiPost(kTarget1, object(fits)));
+  CHECK(r.code == 400);
+  CHECK(r.body == errorBody("out_of_range", "target 0..100"));
+  r = fakes::http::perform(apiPost(kTarget1, object(fits + 1)));
+  CHECK(r.code == 400);
+  CHECK(r.body == errorBody("bad_request", "NoMemory"));
 }
