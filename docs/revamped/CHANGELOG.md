@@ -146,6 +146,10 @@ recovery steps: see INSTALL.md.
   file keeps the history), the web server allocates its working set and its
   response slots in the first request, and AsyncTCP's task stack is 10 KB
   instead of 16 KB.
+- ESP: the web server kept these buffers (~58 KB) until the next reboot, so
+  one visit of the dashboard left a WT32-ETH01 with 28.9 KB of heap. It gives
+  them back 30 s after the last request and allocates them again for the
+  next one.
 - ESP: the heap figures of `/api/health` and the `low_heap` and
   `heap_fragmented` alarms counted ~45 KB of IRAM that buffers cannot use;
   they count the 8-bit capable heap now.

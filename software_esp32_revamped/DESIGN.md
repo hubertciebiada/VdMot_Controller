@@ -148,7 +148,7 @@ Rules for module implementers:
 | Task | Created by | Core | Prio | Stack | TWDT | Loop | Runs |
 |---|---|---|---|---|---|---|---|
 | `stm` | app::setup | 1 | 5 | 6144 B | yes | 2 ms (`vTaskDelay(2)`) | commands in, UART RX, parse, link policy, target delivery, planner, lease client, reset gate, UART TX, flasher, health events, snapshot publish, RTC copies of targets and lease |
-| `app` | app::setup | 1 | 3 | 8192 B | yes | 100 ms | config apply, every 1 s: net service + web start, OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver), heap guard; every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
+| `app` | app::setup | 1 | 3 | 8192 B | yes | 100 ms | config apply, every 1 s: net service + web start, web idle release (`web::service`), OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver), heap guard; every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
 | `mqtt` | app::setup | 1 | 2 | 8192 B | yes | 20 ms connected, 100 ms connecting, 500 ms off | connect/back-off, `loop()`, publishing, discovery (one message per pass), events, inbound commands |
 | `async_tcp` | AsyncTCP lib | 0 | lib default (3) | 10240 B (patched, `app::kAsyncTcpStackBytes`) | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
 | sys event | ESP-IDF | 0 | IDF | IDF | no | event driven | `net` WiFi/ETH event callback (only sets flags) |
@@ -162,7 +162,8 @@ Rules for module implementers:
   may block in `connect()` for at most 3 s TCP + 5 s CONNACK (< 30 s TWDT);
   `app` blocks only for LittleFS writes (bounded per pass) and the factory
   pin check at boot (5 s only while the pin is LOW); HTTP handlers never
-  block.
+  block, except on the web lock while the app task frees the idle web
+  buffers (microseconds).
 - Ownership: only `stm` touches Serial2 and NRST. Only `mqtt` touches the
   PubSubClient. NVS is accessed only through `storage` (mutex).
 - Cross-task data:
@@ -177,6 +178,9 @@ Rules for module implementers:
     persists and bumps the revision.
   - Events: `logger::log()` from any task (mutex); readers use cursors
     (`readSince`).
+  - Web buffers: `web::service()` (app task) frees them while it holds the
+    recursive web lock, which every AsyncTCP callback into `web_server`
+    holds while it runs (section 9).
   - `mqtt::regulatorState()` (read by `stm` once per second),
     `app::requestStmSave()`/`stmSaveState()` (restart sequence, section 16),
     desired targets and scheduled-calibration results between `stm` and
@@ -617,12 +621,19 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   (~62 KB; the first `bootAlloc()` hands the Bluetooth DRAM to the heap, which
   initArduino() would do only after the constructors) and the event ring
   32 x 48 B (`logger::begin`).
-- Web server: its working set (~32 KB: snapshot and config copies, views,
-  the POST body buffer) and the response slots 2 x 12 KB get their buffers in
-  the first request and keep them; without a web client (Home Assistant uses
-  MQTT) they stay in the heap. No memory: 503. AsyncTCP's task stack is
-  10 KB (`app::kAsyncTcpStackBytes`, patched in by `tools/patch_libs.py`;
-  deepest handler path ~4.3 KB by the ELF, 3.4 KB measured).
+- Web server: its working set (~34 KB in 15 blocks, the largest the 8 KB
+  POST body buffer: snapshot, status and config copies, views, the health
+  text) and the response slots 2 x 12 KB get their buffers in the first
+  request and give them back 30 s after the last activity (`web::service()`
+  in the app task, `web::kIdleReleaseMs`); the next request allocates them
+  again, no memory: 503. Home Assistant uses MQTT, so most of the day the
+  heap has these ~58 KB; kept until reboot, one dashboard visit left
+  28.9 KB free. Every AsyncTCP callback into `web_server` holds a recursive
+  mutex while it runs, the release takes it without waiting, and a busy
+  slot, a body, an upload or a log download keeps the buffers. AsyncTCP's
+  task stack is 10 KB (`app::kAsyncTcpStackBytes`, patched in by
+  `tools/patch_libs.py`; deepest handler path ~4.3 KB by the ELF, 3.4 KB
+  measured).
 - Heap figures (`/api/health`, `low_heap`, `heap_fragmented`) count the 8-bit
   capable heap, not the IRAM that only 32-bit accesses reach.
   Everything else is static or on a task stack.
@@ -631,9 +642,12 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
 - No per-operation heap: PubSubClient's buffer is set once (2304 B,
   discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;
-  `/api/health` uses its own 1 KB buffer. POST bodies go into one 8 KB
-  buffer of the web working set. The only per-request allocations are AsyncWebServer's own
-  request and response objects, which it frees after each request.
+  `/api/health` uses its own 1 KB buffer of the web working set. POST bodies
+  go into the 8 KB buffer of the web working set. Beyond the web buffers
+  above, only AsyncWebServer allocates per request: its request and response
+  objects (the response holds a copy of the `/api/health` document) and a
+  send buffer per step, up to the free TCP send window; it frees them by the
+  end of the request.
 - Alarms (`ResourceMonitor`, every 10 s): `LowHeap` below 30 KB free,
   `HeapFragmented` when the largest free block is below 8 KB (each at most
   once per hour), `StackLow` once per task and boot when a task's minimum
@@ -742,11 +756,12 @@ Implementation rules:
   import-report) public unless `web.protectRead`; everything else needs
   auth. `AuthLimiter`: 8 client addresses, 10 failures within 60 s lock the
   address 1, 5, then 15 min (429 + `Retry-After`, event 214).
-- Bodies: one static 8 KB buffer, one body at a time; uploads stream straight
+- Bodies: one 8 KB buffer (web working set), one body at a time; uploads stream straight
   to LittleFS (`.part` file, the write result checked on every chunk, free
   space checked up front) or to the OTA partition, never through the JSON
   buffer. Only one upload or flash runs at a time.
-- Responses: 2 x 12 KB slots (buffers from their first use); `POST /api/config` reserves its slot before
+- Responses: 2 x 12 KB slots (buffers from their first use until the idle
+  release, section 9); `POST /api/config` reserves its slot before
   applying. `/api/health` is answered outside the pool (1 KB).
 - STM actions: `409 stm_unsupported` while `app::stmSupport()` is TooOld
   (except target, reset and flash) and for stop/safe mode below protocol 3;
@@ -1026,7 +1041,8 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   JSON writer and config defaults.
 - Glue suites (`test/native/glue`): the files of `src/` built on the host
   against fakes of Arduino, ESP-IDF, FreeRTOS, AsyncWebServer, PubSubClient,
-  LittleFS, NVS and the STM (`FakeStm` with golden protocol-3 replies), run
+  LittleFS, NVS, the heap (scripted failures of `new (std::nothrow)`) and the
+  STM (`FakeStm` with golden protocol-3 replies), run
   by `tools/native/testkit` (multi-boot: RTC_NOINIT data carried over
   simulated software restarts, 0xA5 after power-on).
 - Run everything in the container: `bash tools/native/docker.sh test esp32`.
