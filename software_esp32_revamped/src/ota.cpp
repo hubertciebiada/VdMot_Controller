@@ -69,8 +69,8 @@ void fail(const char* text, int32_t code) {
 }
 
 vdm::Severity rebootSeverity(uint8_t reason) {
-  return (reason == 2 || reason == 4 || reason == 5) ? vdm::Severity::Warning
-                                                     : vdm::Severity::Info;
+  return (reason == 2 || reason == 4 || reason == 5 || reason == 6) ? vdm::Severity::Warning
+                                                                    : vdm::Severity::Info;
 }
 
 // GET /api/health over the loopback interface; true when the status line

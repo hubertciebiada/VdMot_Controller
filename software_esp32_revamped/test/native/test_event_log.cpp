@@ -52,6 +52,7 @@ const CodeRow kTable[] = {
     {EventCode::ConfigRepaired, 119, "config_repaired", Severity::Warning, kWarn},
     {EventCode::ConfigNewerSchema, 120, "config_newer_schema", Severity::Warning, kWarn},
     {EventCode::FilesRemoved, 121, "files_removed", Severity::Info, kNo},
+    {EventCode::HeapCritical, 122, "heap_critical", Severity::Error, kWarn},
     {EventCode::NetUp, 200, "net_up", Severity::Info, kWarn},
     {EventCode::NetDown, 201, "net_down", Severity::Warning, kWarn},
     {EventCode::MqttConnected, 202, "mqtt_connected", Severity::Info, kWarn},
@@ -197,7 +198,7 @@ TEST_CASE("eventMqttNames lists every published code in registry order") {
   for (const CodeRow& r : kTable) {
     if (r.mqtt != EventMqtt::No) expected.push_back(r.name);
   }
-  REQUIRE(expected.size() == 81);
+  REQUIRE(expected.size() == 82);
   const char* names[100] = {};
   CHECK(eventMqttNames(names, 100) == expected.size());
   for (size_t i = 0; i < expected.size(); ++i) {
@@ -421,7 +422,8 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::RebootRequested, kNoValve, 3), "restart requested (factory reset)"},
       {ev(EventCode::RebootRequested, kNoValve, 4), "restart requested (rollback)"},
       {ev(EventCode::RebootRequested, kNoValve, 5), "restart requested (network revert)"},
-      {ev(EventCode::RebootRequested, kNoValve, 6), "restart requested (unknown)"},
+      {ev(EventCode::RebootRequested, kNoValve, 6), "restart requested (heap guard)"},
+      {ev(EventCode::RebootRequested, kNoValve, 7), "restart requested (unknown)"},
       {ev(EventCode::RebootRequested, kNoValve, -1), "restart requested (unknown)"},
       {ev(EventCode::RebootRequested, kNoValve, 2, 10), "restart requested (net watchdog, after 10 min)"},
       {ev(EventCode::RebootRequested, kNoValve, 2, 1), "restart requested (net watchdog, after 1 min)"},
@@ -463,6 +465,7 @@ TEST_CASE("event messages for every code") {
       {ev(EventCode::ConfigNewerSchema, kNoValve, 2, 3), "configuration written by a newer firmware (schema 2, 3 unknown settings kept)"},
       {ev(EventCode::FilesRemoved, kNoValve, 2, 96, "legacy images"), "removed 2 files (96 KiB): legacy images"},
       {ev(EventCode::FilesRemoved, kNoValve, 1, 0), "removed 1 files (0 KiB)"},
+      {ev(EventCode::HeapCritical, kNoValve, 11000, 4096), "heap critical, restarting (free 11000, largest block 4096)"},
       {ev(EventCode::NetUp, kNoValve, 1, 0, "192.168.1.5"), "network up (eth, 192.168.1.5)"},
       {ev(EventCode::NetUp, kNoValve, 2), "network up (wifi)"},
       {ev(EventCode::NetUp, kNoValve, 3), "network up (unknown)"},

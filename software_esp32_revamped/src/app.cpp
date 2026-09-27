@@ -70,6 +70,7 @@ MonitoredTask gTasks[kMonitoredTasks] = {{kStmTask.name, kStmTask.stackBytes, nu
 portMUX_TYPE gHealthMux = portMUX_INITIALIZER_UNLOCKED;  // gTasks handles, gMinLargest
 uint32_t gMinLargest = 0;
 vdm::ResourceMonitor gResources;  // app task
+vdm::HeapGuard gHeapGuard;        // app task
 bool gFactoryLatched = false;     // app task after setup
 
 // Factory reset pin at boot: the first sample, and (only when it is LOW and
@@ -143,6 +144,18 @@ void sampleResources(uint32_t now) {
   portEXIT_CRITICAL(&gHealthMux);
 }
 
+// Every second: the heap guard (vdm::HeapGuard). The restart takes the common
+// path (desired targets, STM EEPROM wait, log flush); the event is logged
+// before it, so that flush writes it too.
+void checkHeapGuard(uint32_t now) {
+  const uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+  const bool blocked = ota::uploadActive() || stmFlashActive() || ota::restartPending();
+  if (!gHeapGuard.onSample(freeHeap, blocked, now)) return;
+  logger::log(vdm::EventCode::HeapCritical, vdm::kNoValve, static_cast<int32_t>(freeHeap),
+              static_cast<int32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  ota::requestRestart(static_cast<uint8_t>(vdm::RebootReason::HeapGuard), 1000);
+}
+
 // Every second while latched: the jumper was removed, so the next fitting
 // resets again.
 void checkFactoryLatch() {
@@ -171,6 +184,7 @@ void appTask(void*) {
       ota::service(now, net::otaNetOk(), linkUp, web::started());
       checkFactoryLatch();
       stm_service::service(now);
+      checkHeapGuard(now);
     }
     if (vdm::elapsedMs(now, lastResources) >= 10000) {
       lastResources = now;

@@ -223,6 +223,22 @@ TEST_CASE("ota requestRestart: a user restart is Info") {
         vdm::Severity::Info);
 }
 
+TEST_CASE("ota requestRestart: a heap guard restart is a warning, keeps the targets, no confirm") {
+  glue::begin();
+  pendingImage("HTTP/1.1 200 OK\r\n", false);
+  ota::requestRestart(6, 0);
+  const vdm::Event e = sib::logger().withCode(vdm::EventCode::RebootRequested).at(0);
+  CHECK(e.arg1 == 6);
+  CHECK(e.severity == vdm::Severity::Warning);
+  ota::serviceRestart(0, true, true);
+  CHECK(sib::stmService().restartFlushes == 1);
+  sib::app().saveState = vdm::StmSaveState::Saved;
+  CHECK_THROWS_AS(ota::serviceRestart(100, true, true), fakes::Restarted);
+  CHECK(sib::logger().flushes == 1);
+  // Not a user restart: a pending image is left to the bootloader's rollback.
+  CHECK(fakes::ota().markValid == 0);
+}
+
 TEST_CASE("ota serviceRestart: STM save, target flush, log flush, then esp_restart") {
   glue::begin();
   ota::requestRestart(0, 0);

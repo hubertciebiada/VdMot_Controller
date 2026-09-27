@@ -49,6 +49,7 @@ enum class EventCode : uint16_t {
   ConfigRepaired = 119,     // arg1 repair mask, arg2 repairs; text first key path
   ConfigNewerSchema = 120,  // arg1 base schema, arg2 unknown settings kept
   FilesRemoved = 121,       // arg1 files, arg2 KiB; text file name or "legacy images"
+  HeapCritical = 122,       // heap guard restart; arg1 free heap, arg2 largest free block
   // network / MQTT / web 2xx
   NetUp = 200,              // arg1 interface (1 eth, 2 wifi); text IP
   NetDown = 201,            // arg1 interface
@@ -142,7 +143,7 @@ size_t eventMqttNames(const char** out, size_t cap);
 
 // RebootRequested arg1 (the numbers are the existing contract).
 enum class RebootReason : uint8_t { User = 0, Ota = 1, NetWatchdog = 2, FactoryReset = 3,
-                                    Rollback = 4, NetRevert = 5 };
+                                    Rollback = 4, NetRevert = 5, HeapGuard = 6 };
 
 constexpr size_t kEventTextMax = 23;  // chars, without NUL
 

@@ -47,6 +47,22 @@ size_t ResourceMonitor::onStack(uint8_t task, const char* name, uint32_t stackBy
   return 1;
 }
 
+bool HeapGuard::onSample(uint32_t freeHeap, bool blocked, uint32_t uptimeMs) {
+  if (!armed_ && uptimeMs < kArmMs) return false;
+  armed_ = true;
+  if (blocked || freeHeap >= kCriticalBytes) {
+    state_ = State::Idle;
+    return false;
+  }
+  if (state_ == State::Idle) {
+    state_ = State::Low;
+    lowSinceMs_ = uptimeMs;
+  }
+  if (state_ != State::Low || elapsedMs(uptimeMs, lowSinceMs_) < kHoldMs) return false;
+  state_ = State::Fired;
+  return true;
+}
+
 bool httpStatusOk(const char* line, size_t len) {
   if (line == nullptr || len < 12) return false;
   if (memcmp(line, "HTTP/1.", 7) != 0 || (line[7] != '0' && line[7] != '1')) return false;

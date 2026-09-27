@@ -1,5 +1,5 @@
-// System health: heap and stack alarms, the OTA self-check answer, reset
-// reasons. Hardware-free.
+// System health: heap and stack alarms, the heap guard, the OTA self-check
+// answer, reset reasons. Hardware-free.
 #pragma once
 
 #include <stddef.h>
@@ -38,6 +38,30 @@ class ResourceMonitor {
   uint32_t minLargest_ = 0;
   bool sampled_ = false;
   uint8_t stackReported_ = 0;  // bit per task
+};
+
+// Heap guard: a leak that keeps the free heap below kCriticalBytes on every
+// sample for kHoldMs ends in a controlled restart instead of a crash. Armed
+// from kArmMs of uptime on, so a boot that starts below the threshold
+// restarts every kArmMs + kHoldMs at most, not every kHoldMs.
+class HeapGuard {
+ public:
+  static constexpr uint32_t kCriticalBytes = 12 * 1024;
+  static constexpr uint32_t kHoldMs = 60000;
+  static constexpr uint32_t kArmMs = 600000;
+  // Every second. uptimeMs: millis() since boot; armed once it reaches
+  // kArmMs (the wrap after 49.7 days does not disarm it). blocked (an ESP
+  // upload or an STM flash runs, or a restart is pending) ends a low period
+  // like a sample at or above kCriticalBytes, so the hold time starts again
+  // after it. True once per low period: at its first sample kHoldMs or more
+  // after its first one.
+  bool onSample(uint32_t freeHeap, bool blocked, uint32_t uptimeMs);
+
+ private:
+  enum class State : uint8_t { Idle, Low, Fired };
+  bool armed_ = false;
+  State state_ = State::Idle;
+  uint32_t lowSinceMs_ = 0;
 };
 
 // OTA self-check: the status line starts "HTTP/1.0 200" or "HTTP/1.1 200"

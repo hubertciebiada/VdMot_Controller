@@ -1,5 +1,5 @@
 // Tests of src/app.cpp: boot sequence, factory reset pin, tasks, command queue, snapshot plumbing,
-// app task, resources and /api/health data.
+// app task, resources, heap guard and /api/health data.
 #include <Arduino.h>
 
 #include <vdm/version.h>
@@ -418,4 +418,78 @@ TEST_CASE("app task: a low stack high-water mark is reported once per task") {
   CHECK(std::string(ev[1].text) == "async_tcp");
   CHECK(ev[1].arg1 == static_cast<int32_t>(app::kAsyncTcpStackBytes / 8 - 1));
   CHECK(ev[1].arg2 == static_cast<int32_t>(app::kAsyncTcpStackBytes));
+}
+
+TEST_CASE("app task: the heap guard samples every second, from 10 min on, and restarts once") {
+  glue::begin();
+  app::setup();
+  fakes::esp().freeHeap = 12 * 1024 - 1;
+  fakes::esp().maxAllocHeap = 6000;
+  fakes::advanceMs(599000);
+  // Samples at 599.002 s (not armed yet), then 600.002 s (the 60 s start) .. 659.002 s.
+  runAppTask(610);
+  CHECK(sib::ota().restartRequests.empty());
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::HeapCritical));
+  runAppTask(1);  // 660.002 s
+  REQUIRE(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::ota().restartRequests[0].reason == 6);
+  CHECK(sib::ota().restartRequests[0].delayMs == 1000);
+  CHECK(sib::ota().restartRequests[0].detail == 0);
+  const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::HeapCritical);
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].arg1 == 12 * 1024 - 1);
+  CHECK(ev[0].arg2 == 6000);
+  CHECK(ev[0].severity == vdm::Severity::Error);
+  const int logged = fakes::find("logger.log heap_critical");
+  CHECK(logged >= 0);
+  CHECK(logged < fakes::find("ota.requestRestart 6 1000"));
+  // The restart is pending from now on: asked once.
+  runAppTask(700);
+  CHECK(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::logger().withCode(vdm::EventCode::HeapCritical).size() == 1);
+}
+
+TEST_CASE("app task: no heap guard restart during an ESP upload, the 60 s start after it") {
+  glue::begin();
+  app::setup();
+  fakes::esp().freeHeap = 1000;
+  sib::ota().uploadActive = true;
+  fakes::advanceMs(599000);
+  runAppTask(700);  // up to 668.902 s
+  CHECK(sib::ota().restartRequests.empty());
+  sib::ota().uploadActive = false;
+  runAppTask(600);  // samples 669.002 s (the 60 s start) .. 728.002 s
+  CHECK(sib::ota().restartRequests.empty());
+  runAppTask(1);
+  REQUIRE(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::ota().restartRequests[0].reason == 6);
+}
+
+TEST_CASE("app task: no heap guard restart during an STM flash, the 60 s start after it") {
+  glue::begin();
+  app::setup();
+  fakes::esp().freeHeap = 1000;
+  app::markStmFlashActive();
+  fakes::advanceMs(599000);
+  runAppTask(700);
+  CHECK(sib::ota().restartRequests.empty());
+  static app::StmSnapshot s;
+  s.flash.phase = vdm::FlashPhase::Done;
+  app::publishStmSnapshot(s);
+  runAppTask(600);
+  CHECK(sib::ota().restartRequests.empty());
+  runAppTask(1);
+  REQUIRE(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::logger().has(vdm::EventCode::HeapCritical));
+}
+
+TEST_CASE("app task: no heap guard restart while another restart is pending") {
+  glue::begin();
+  app::setup();
+  fakes::esp().freeHeap = 1000;
+  sib::ota().restartPending = true;
+  fakes::advanceMs(599000);
+  runAppTask(700);
+  CHECK(sib::ota().restartRequests.empty());
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::HeapCritical));
 }

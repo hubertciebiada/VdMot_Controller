@@ -82,6 +82,8 @@ const CodeInfo kCodes[] = {
      " unknown settings kept)"},
     {EventCode::FilesRemoved, Severity::Info, kNo, "files_removed",
      "removed " ARG1 " files (" ARG2 " KiB)" IF_TXT ": " TXT END_TXT},
+    {EventCode::HeapCritical, Severity::Error, kWarn, "heap_critical",
+     "heap critical, restarting (free " ARG1 ", largest block " ARG2 ")"},
     {EventCode::NetUp, Severity::Info, kWarn, "net_up",
      "network up (" NAME1 "i" IF_TXT ", " TXT END_TXT ")"},
     {EventCode::NetDown, Severity::Warning, kWarn, "net_down", "network down (" NAME1 "i" ")"},
@@ -257,8 +259,9 @@ const char* resetReasonName(int32_t r) {
 
 const char* rebootReasonName(int32_t r) {
   static const char* const kNames[] = {"user",          "ota",      "net watchdog",
-                                       "factory reset", "rollback", "network revert"};
-  return (r >= 0 && r < 6) ? kNames[r] : "unknown";
+                                       "factory reset", "rollback", "network revert",
+                                       "heap guard"};
+  return (r >= 0 && r < 7) ? kNames[r] : "unknown";
 }
 
 // names[v - 1] for v in 1..N, else "unknown" (arguments that name a reason).
