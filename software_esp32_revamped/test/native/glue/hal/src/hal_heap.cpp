@@ -1,6 +1,6 @@
-// Fake heap: the nothrow operator new of the library replaced by one with scripted failures
-// (fakes::heap()). The memory comes from the throwing operator new, so delete and ASan see an
-// ordinary new.
+// Fake heap: the nothrow forms of operator new replaced by forms with scripted failures
+// (fakes::heap()). The memory comes from the throwing forms, so delete and ASan see an ordinary
+// new.
 #include <new>
 
 #include "fakes/fakes.h"
