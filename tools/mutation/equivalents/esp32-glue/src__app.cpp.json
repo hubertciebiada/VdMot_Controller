@@ -5,5 +5,5 @@
   {"line": 124, "col": 17, "original": "2", "replacement": "3", "text": "vdm::Event ev[2];", "reason": "onHeap() writes at most 2 events (low heap, fragmented) and gets the capacity 2 passed separately"},
   {"line": 127, "col": 92, "original": "2", "replacement": "3", "text": "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), now, ev, 2);", "reason": "onHeap() produces at most 2 events (low heap, fragmented), so a capacity of 3 never limits it"},
   {"line": 139, "col": 71, "original": "1", "replacement": "2", "text": "uxTaskGetStackHighWaterMark(t.handle), ev, 1);", "reason": "onStack() writes at most one event (out[0]), so a capacity of 2 never changes its result"},
-  {"line": 306, "col": 20, "original": "false", "replacement": "true", "text": "bool formatted = false;", "reason": "dead initial value: storage::beginFs() assigns formatted on every path"}
+  {"line": 307, "col": 20, "original": "false", "replacement": "true", "text": "bool formatted = false;", "reason": "dead initial value: storage::beginFs() assigns formatted on every path"}
 ]

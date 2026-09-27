@@ -756,10 +756,10 @@ Implementation rules:
   import-report) public unless `web.protectRead`; everything else needs
   auth. `AuthLimiter`: 8 client addresses, 10 failures within 60 s lock the
   address 1, 5, then 15 min (429 + `Retry-After`, event 214).
-- Bodies: one 8 KB buffer (web working set), one body at a time; uploads stream straight
-  to LittleFS (`.part` file, the write result checked on every chunk, free
-  space checked up front) or to the OTA partition, never through the JSON
-  buffer. Only one upload or flash runs at a time.
+- Bodies: one 8 KB buffer (web working set), one body at a time; uploads
+  stream straight to LittleFS (`.part` file, the write result checked on
+  every chunk, free space checked up front) or to the OTA partition, never
+  through the JSON buffer. Only one upload or flash runs at a time.
 - Responses: 2 x 12 KB slots (buffers from their first use until the idle
   release, section 9); `POST /api/config` reserves its slot before
   applying. `/api/health` is answered outside the pool (1 KB).
