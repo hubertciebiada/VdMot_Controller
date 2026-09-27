@@ -51,7 +51,7 @@ enum class EventCode : uint16_t {
   FilesRemoved = 121,       // arg1 files, arg2 KiB; text file name or "legacy images"
   HeapCritical = 122,       // heap guard restart; arg1 free heap, arg2 largest free block
   // network / MQTT / web 2xx
-  NetUp = 200,              // arg1 interface (1 eth, 2 wifi); text IP
+  NetUp = 200,              // arg1 interface (1 eth; 2 was WiFi); text IP
   NetDown = 201,            // arg1 interface
   MqttConnected = 202,
   MqttDisconnected = 203,   // arg1 PubSubClient state
@@ -66,7 +66,7 @@ enum class EventCode : uint16_t {
                             // arg2 0 ok / -1 revert failed; text previous address
   NetUnreachable = 210,     // arg1 s since the last evidence, arg2 NetEvidence
   NetReachable = 211,       // arg1 outage s
-  NetInterfaceRestart = 212,  // arg1 outage s, arg2 1 eth, 2 wifi, 3 both
+  NetInterfaceRestart = 212,  // arg1 outage s, arg2 1 eth (2 WiFi, 3 both: removed in 2.1.0)
   RequestRefused = 213,     // arg1 verdict (1 host, 2 origin, 3 header, 4 content type); text client IP
   AuthLocked = 214,         // retired with the web login in 2.1.0: never raised, number reserved
   // STM link 3xx

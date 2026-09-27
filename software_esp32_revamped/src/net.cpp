@@ -13,8 +13,6 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include <algorithm>
-
 #include "ping/ping_sock.h"
 
 #include <vdm/event_log.h>
@@ -32,9 +30,6 @@ namespace net {
 namespace {
 
 constexpr int64_t kMinValidEpoch = 1577836800;  // 2020-01-01: before that SNTP has not run
-constexpr uint32_t kWifiFallbackMs = 30000;     // Auto: WiFi after 30 s without Ethernet
-constexpr uint32_t kWifiBackoffMinMs = 5000;
-constexpr uint32_t kWifiBackoffMaxMs = 60000;
 constexpr uint32_t kLoopbackNet = 127;          // 127.x.x.x (first octet in the low byte)
 
 // NetWatchdog restarts of the outage in progress, kept across software
@@ -59,7 +54,6 @@ portMUX_TYPE gMux = portMUX_INITIALIZER_UNLOCKED;
 // (flags and counters only), read by the app task.
 volatile bool gEthLink = false;
 volatile bool gEthIp = false;
-volatile bool gWifiUp = false;
 volatile bool gStaticIp = false;
 volatile uint32_t gSyncCount = 0;
 volatile uint32_t gLastSyncEpoch = 0;
@@ -83,11 +77,6 @@ vdm::NetConfig gTrialPrev;     // settings before the running trial
 vdm::NetConfig gArmedPrev;     // previous settings of the record armed during this boot
 bool gArmedThisBoot = false;
 bool gMdnsStarted = false;
-bool gEthStarted = false;
-bool gWifiStarted = false;
-uint32_t gEthDownSinceMs = 0;
-bool gEthDownKnown = false;
-vdm::Backoff gWifiBackoff(kWifiBackoffMinMs, kWifiBackoffMaxMs);
 uint32_t gSyncSeen = 0;
 bool gTimeSyncedOnce = false;
 int64_t gClockRefEpoch = 0;  // wall clock at the previous service() call
@@ -109,40 +98,11 @@ void onPingSuccess(esp_ping_handle_t, void*) { gPingReplies = gPingReplies + 1; 
 
 bool ethUp() { return gEthLink && (gEthIp || gStaticIp); }
 
-void applyStaticIp(bool eth) {
+void applyStaticIp() {
   if (gCfg.net.dhcp) return;
   // Without a DNS server the gateway resolves (NTP, broker names).
-  const IPAddress ip(gCfg.net.ip), gw(gCfg.net.gateway), mask(gCfg.net.mask),
-      dns(vdm::effectiveDns(gCfg.net));
-  if (eth) {
-    ETH.config(ip, gw, mask, dns);
-  } else {
-    WiFi.config(ip, gw, mask, dns);
-  }
-}
-
-bool wifiWanted() {
-  return gCfg.net.iface != vdm::NetInterface::Ethernet && gCfg.net.ssid[0] != '\0';
-}
-
-void startWifi() {
-  if (!gWifiStarted) {
-    WiFi.persistent(false);  // credentials come from vdmrev, never from the WiFi NVS
-    WiFi.mode(WIFI_STA);
-    WiFi.setHostname(gHostname);
-    WiFi.setAutoReconnect(true);
-    applyStaticIp(false);
-    gWifiStarted = true;
-  }
-  WiFi.begin(gCfg.net.ssid, gCfg.net.wifiPassword);
-}
-
-void stopWifi() {
-  if (!gWifiStarted) return;
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  gWifiStarted = false;
-  gWifiUp = false;
+  ETH.config(IPAddress(gCfg.net.ip), IPAddress(gCfg.net.gateway), IPAddress(gCfg.net.mask),
+             IPAddress(vdm::effectiveDns(gCfg.net)));
 }
 
 void onEvent(arduino_event_id_t event, arduino_event_info_t info) {
@@ -170,15 +130,6 @@ void onEvent(arduino_event_id_t event, arduino_event_info_t info) {
       gEthLink = false;
       gEthIp = false;
       break;
-    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      gWifiUp = true;
-      gGotIpCount = gGotIpCount + 1;
-      break;
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-    case ARDUINO_EVENT_WIFI_STA_LOST_IP:
-    case ARDUINO_EVENT_WIFI_STA_STOP:
-      gWifiUp = false;
-      break;
     default:
       break;
   }
@@ -193,14 +144,6 @@ void refreshInfo(uint32_t nowMs) {
     i.gateway = ETH.gatewayIP();
     i.dns = ETH.dnsIP();
     snprintf(i.mac, sizeof i.mac, "%s", ETH.macAddress().c_str());
-  } else if (gWifiUp) {
-    i.state = vdm::NetState::Wifi;
-    i.ip = WiFi.localIP();
-    i.mask = WiFi.subnetMask();
-    i.gateway = WiFi.gatewayIP();
-    i.dns = WiFi.dnsIP();
-    i.rssi = std::min<int8_t>(WiFi.RSSI(), 0);  // a positive RSSI is no valid reading
-    snprintf(i.mac, sizeof i.mac, "%s", WiFi.macAddress().c_str());
   }
   if (i.state != vdm::NetState::Down && i.ip == 0) i.state = vdm::NetState::Down;
   vdm::NetState before;
@@ -284,24 +227,17 @@ void probeGateway(uint32_t gateway) {
   esp_ping_start(gPing);
 }
 
-// Watchdog stage 1: restart the interfaces that run. Returns 1 Ethernet,
-// 2 WiFi, 3 both, 0 none.
-int32_t restartInterface() {
-  int32_t mask = 0;
+// Watchdog stage 1: restart Ethernet. False while the driver handle is not
+// known (no link since boot).
+bool restartInterface() {
   portENTER_CRITICAL(&gMux);
   const esp_eth_handle_t eth = gEthHandle;
   portEXIT_CRITICAL(&gMux);
-  if (eth != nullptr) {
-    esp_eth_stop(eth);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    esp_eth_start(eth);
-    mask |= 1;
-  }
-  if (gWifiStarted) {
-    WiFi.reconnect();
-    mask |= 2;
-  }
-  return mask;
+  if (eth == nullptr) return false;
+  esp_eth_stop(eth);
+  vTaskDelay(pdMS_TO_TICKS(200));
+  esp_eth_start(eth);
+  return true;
 }
 
 void noteEvidence(uint32_t nowMs, bool mqttConnected, bool synced) {
@@ -455,17 +391,13 @@ void begin(vdm::Config& cfg) {
   gStaticIp = !cfg.net.dhcp;
   gWatchdog.configure(cfg.net.reconnectTimeoutMin);
   gWatchdog.setRestartsInOutage(loadOutageRestarts());
-  WiFi.onEvent(onEvent);
-  if (cfg.net.iface != vdm::NetInterface::Wifi) {
-    gEthStarted = ETH.begin(board::kEthPhyAddr, board::kEthPhyPower, board::kEthMdc,
-                            board::kEthMdio, ETH_PHY_LAN8720, ETH_CLOCK_GPIO0_IN);
-    if (gEthStarted) {
-      applyStaticIp(true);
-    } else {
-      logger::log(vdm::EventCode::NetDown, vdm::kNoValve, 1, 0, "eth init failed");
-    }
+  WiFi.onEvent(onEvent);  // the Arduino event loop also carries the ETH events
+  if (ETH.begin(board::kEthPhyAddr, board::kEthPhyPower, board::kEthMdc, board::kEthMdio,
+                ETH_PHY_LAN8720, ETH_CLOCK_GPIO0_IN)) {
+    applyStaticIp();
+  } else {
+    logger::log(vdm::EventCode::NetDown, vdm::kNoValve, 1, 0, "eth init failed");
   }
-  if (cfg.net.iface == vdm::NetInterface::Wifi && wifiWanted()) startWifi();
   sntp_set_time_sync_notification_cb(onTimeSync);
   applyTime(gCfg);
   gClockRefEpoch = time(nullptr);
@@ -476,29 +408,6 @@ void begin(vdm::Config& cfg) {
 void service(uint32_t nowMs, bool mqttConnected) {
   refreshInfo(nowMs);
   const bool synced = checkTimeSync(nowMs);
-  const bool eth = ethUp();
-
-  // Ethernet preferred: WiFi off while Ethernet has an IP (Auto mode).
-  if (gCfg.net.iface == vdm::NetInterface::Auto && eth && gWifiStarted) stopWifi();
-
-  if (eth || !gEthStarted) {
-    gEthDownKnown = false;
-  } else if (!gEthDownKnown) {
-    gEthDownKnown = true;
-    gEthDownSinceMs = nowMs;
-  }
-  // WiFi when it is the configured interface, or the Auto fallback after
-  // kWifiFallbackMs without Ethernet (or when Ethernet failed to start).
-  const bool wifiNeeded =
-      wifiWanted() && !eth &&
-      (gCfg.net.iface == vdm::NetInterface::Wifi || !gEthStarted ||
-       (gEthDownKnown && vdm::elapsedMs(nowMs, gEthDownSinceMs) >= kWifiFallbackMs));
-  if (gWifiUp || !wifiNeeded) {
-    gWifiBackoff.reset();
-  } else if (gWifiBackoff.due(nowMs)) {
-    startWifi();
-    gWifiBackoff.onFailure(nowMs);  // counts as failed until gWifiUp
-  }
 
   const Info i = info();
   const bool up = i.state != vdm::NetState::Down;
@@ -519,14 +428,12 @@ void service(uint32_t nowMs, bool mqttConnected) {
   serviceTrial(nowMs, up);
 
   switch (gWatchdog.update(gReach.reachable(nowMs), nowMs)) {
-    case vdm::NetWatchdog::Action::RestartInterface: {
-      const int32_t mask = restartInterface();
-      if (mask != 0) {
+    case vdm::NetWatchdog::Action::RestartInterface:
+      if (restartInterface()) {
         logger::log(vdm::EventCode::NetInterfaceRestart, vdm::kNoValve,
-                    static_cast<int32_t>(gWatchdog.outageMs(nowMs) / 1000), mask);
+                    static_cast<int32_t>(gWatchdog.outageMs(nowMs) / 1000), 1);
       }
       break;
-    }
     case vdm::NetWatchdog::Action::RestartEsp:
       ota::requestRestart(2, 1000, static_cast<int32_t>(gWatchdog.outageMs(nowMs) / 60000));
       break;
@@ -672,9 +579,9 @@ void reconfigure(const vdm::Config& cfg) {
   }
   gWatchdog.configure(cfg.net.reconnectTimeoutMin);
   if (timeChanged) applyTime(gCfg);
-  // Interface/address/hostname changes need a clean start of the network
-  // stack (the Arduino ETH driver cannot be re-initialised): restart the
-  // ESP after the HTTP response went out.
+  // Address and hostname changes need a clean start of the network stack
+  // (the Arduino ETH driver cannot be re-initialised): restart the ESP
+  // after the HTTP response went out.
   if (restart) ota::requestRestart(0, 1500);
 }
 

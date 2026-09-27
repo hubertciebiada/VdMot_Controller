@@ -21,28 +21,37 @@ struct NetTrialRecord {
   uint32_t trialCrc = 0;  // netTrialFieldsCrc() of the settings on trial
 };
 
-// CRC-32 (vdm::crc32) over the trial fields of `n` (iface, dhcp, ip, mask,
-// gateway, dns, ssid, wifiPassword), encoded as in the blob.
+// The record keeps the layout of the firmware that had WiFi, so a rollback
+// reads it: the fields of the interface choice and WiFi hold their neutral
+// values (iface 0 = auto, ssid "", password "") and are skipped when read.
+
+// CRC-32 (vdm::crc32) over the trial fields as in the blob: iface 0, dhcp,
+// ip, mask, gateway, dns, ssid "", password "" (what the firmware with WiFi
+// computes for a config saved here).
 uint32_t netTrialFieldsCrc(const NetConfig& n);
 // Blob: "VDNT", u8 version 1, u8 state, u8 iface, u8 dhcp, u32 ip, mask,
 // gateway, dns (LE, legacy layout), u8 len + ssid, u8 len + wifiPassword,
-// u32 trialCrc, u32 CRC-32 over all bytes before it. Max 130 bytes. Returns
-// the bytes written, 0 when cap is too small.
+// u32 trialCrc, u32 CRC-32 over all bytes before it: 34 bytes as written
+// here, up to 130 from the firmware with WiFi. Returns the bytes written, 0
+// when cap is too small.
 size_t encodeNetTrial(const NetTrialRecord& r, uint8_t* out, size_t cap);
-// false: short, magic, version != 1, state not 1/2, iface > 2, dhcp > 1,
-// ssid > 32, password > 64, length mismatch, CRC. On false `out` is unchanged.
-// Only the trial fields of out.previous are written.
+// false: short, magic, version != 1, state not 1/2, dhcp > 1, lengths that do
+// not add up to `len`, CRC. The iface byte, ssid and password are skipped.
+// On false `out` is unchanged. Only the trial fields of out.previous are
+// written.
 bool decodeNetTrial(const uint8_t* data, size_t len, NetTrialRecord& out);
 
 enum class NetTrialBoot : uint8_t { None, Stale, Start, RevertNow };
 // null -> None; r->trialCrc != netTrialFieldsCrc(current) -> Stale (the stored
 // config is no longer the one on trial: erase, no action); Armed -> Start;
 // Running (the previous boot ended during the trial: crash, power loss,
-// restart) -> RevertNow.
+// restart) -> RevertNow. A record of the firmware with WiFi whose settings
+// on trial had an interface choice or WiFi set is Stale as well: the CRC
+// covers what is gone here.
 NetTrialBoot netTrialAtBoot(const NetTrialRecord* r, const NetConfig& current);
 
-// Revert: copies iface, dhcp, ip, mask, gateway, dns, ssid, wifiPassword of
-// `prev` into `dst`; reconnectTimeoutMin stays.
+// Revert: copies dhcp, ip, mask, gateway, dns of `prev` into `dst`;
+// reconnectTimeoutMin stays.
 void applyNetTrialFields(NetConfig& dst, const NetConfig& prev);
 // "192.168.1.50" for a static configuration, "dhcp" otherwise (event texts).
 // Returns the length (NUL-terminated, truncated to cap - 1; 0 for cap 0).

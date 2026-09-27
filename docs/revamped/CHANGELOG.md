@@ -32,6 +32,8 @@ recovery steps: see INSTALL.md.
   broker is often down get failsafe moves; set `failsafe.timeoutMin` to 0 to
   switch it off.
 - STM: `stdet x` with x != 255 answers `stdet err` (was an empty `stdet`).
+- ESP: Ethernet only: WiFi is gone, a controller reached over WiFi only has no
+  network after the update (see Removed).
 - ESP: no web login: every endpoint answers without credentials (see Removed).
 
 ### Added
@@ -129,7 +131,7 @@ recovery steps: see INSTALL.md.
 - ESP: factory reset by GPIO2 needs **5 s** at boot and works once per fitting of
   the jumper.
 - ESP: network settings run on a 2 min trial; changes that do not need a restart
-  (static fields under DHCP, WiFi fields on Ethernet) no longer restart the ESP.
+  (static fields under DHCP) no longer restart the ESP.
 - ESP: the imported legacy syslog level 1..3 becomes level 3 (debug).
 - ESP: a static IP without DNS uses the gateway as DNS.
 
@@ -164,6 +166,13 @@ recovery steps: see INSTALL.md.
 - ESP: late sensor replies could complete another request.
 
 ### Removed
+- ESP: WiFi: `net.iface` (the choice auto/Ethernet/WiFi and the WiFi fallback
+  after 30 s without Ethernet), `net.ssid`, `net.wifiPassword`, the `wifi`
+  state and `rssi` of `/api/status`, and the WiFi part of the network
+  watchdog. `POST /api/config` accepts the old keys and ignores them; the
+  legacy import ignores `netCfg/ethwifi`, `ssid` and `pwd`. The stored
+  settings and the network trial record keep their layout: a rollback reads
+  Ethernet without WiFi.
 - ESP: the web login: HTTP Basic auth with `web.user`, `web.password` and
   `web.protectRead`, the per-address lockout (`429`), the `auth` member of
   `/api/status`, and the export with passwords (`?secrets=1` is ignored: an

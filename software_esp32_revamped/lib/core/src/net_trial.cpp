@@ -10,8 +10,6 @@ namespace {
 
 constexpr uint8_t kMagic[4] = {'V', 'D', 'N', 'T'};
 constexpr uint8_t kVersion = 1;
-constexpr size_t kSsidMax = sizeof(NetConfig::ssid) - 1;              // 32
-constexpr size_t kPasswordMax = sizeof(NetConfig::wifiPassword) - 1;  // 64
 // magic, version, state, iface, dhcp, 4 addresses, 2 lengths, trialCrc, crc
 constexpr size_t kFixedBytes = 4 + 1 + 1 + 1 + 1 + 16 + 1 + 1 + 4 + 4;
 
@@ -27,32 +25,18 @@ uint32_t getU32(const uint8_t* p) {
          (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
-// Bounded strlen (the arrays are NUL-terminated by construction; this keeps
-// a corrupt struct from reading past them).
-size_t textLen(const char* s, size_t max) {
-  size_t n = 0;
-  while (n < max && s[n] != '\0') ++n;
-  return n;
-}
-
 // The trial fields (iface .. password) as in the blob; returns the bytes.
 size_t putFields(const NetConfig& n, uint8_t* p) {
   size_t at = 0;
-  p[at++] = static_cast<uint8_t>(n.iface);
+  p[at++] = 0;  // iface: auto
   p[at++] = n.dhcp ? 1 : 0;
   putU32(p + at, n.ip);
   putU32(p + at + 4, n.mask);
   putU32(p + at + 8, n.gateway);
   putU32(p + at + 12, n.dns);
   at += 16;
-  const size_t ssid = textLen(n.ssid, kSsidMax);
-  p[at++] = static_cast<uint8_t>(ssid);
-  memcpy(p + at, n.ssid, ssid);
-  at += ssid;
-  const size_t pass = textLen(n.wifiPassword, kPasswordMax);
-  p[at++] = static_cast<uint8_t>(pass);
-  memcpy(p + at, n.wifiPassword, pass);
-  at += pass;
+  p[at++] = 0;  // ssid: ""
+  p[at++] = 0;  // password: ""
   return at;
 }
 
@@ -86,25 +70,20 @@ bool decodeNetTrial(const uint8_t* data, size_t len, NetTrialRecord& out) {
       state != static_cast<uint8_t>(NetTrialState::Running)) {
     return false;
   }
-  if (data[6] > static_cast<uint8_t>(NetInterface::Wifi) || data[7] > 1) return false;
+  if (data[7] > 1) return false;
   const size_t ssid = data[24];
-  if (ssid > kSsidMax || 25 + ssid >= len) return false;
+  if (25 + ssid >= len) return false;
   const size_t pass = data[25 + ssid];
-  if (pass > kPasswordMax || len != kFixedBytes + ssid + pass) return false;
+  if (len != kFixedBytes + ssid + pass) return false;
   const size_t crcAt = len - 4;
   if (crc32(data, crcAt) != getU32(data + crcAt)) return false;
   out.state = static_cast<NetTrialState>(state);
   NetConfig& n = out.previous;
-  n.iface = static_cast<NetInterface>(data[6]);
   n.dhcp = data[7] != 0;
   n.ip = getU32(data + 8);
   n.mask = getU32(data + 12);
   n.gateway = getU32(data + 16);
   n.dns = getU32(data + 20);
-  memcpy(n.ssid, data + 25, ssid);
-  n.ssid[ssid] = '\0';
-  memcpy(n.wifiPassword, data + 26 + ssid, pass);
-  n.wifiPassword[pass] = '\0';
   out.trialCrc = getU32(data + crcAt - 4);
   return true;
 }

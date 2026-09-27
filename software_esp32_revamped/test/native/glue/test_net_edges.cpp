@@ -1,5 +1,5 @@
-// Tests of src/net.cpp, second part: boundaries and state transitions of the interfaces, the WiFi
-// back-off, the clock, the second-granular event arguments and the RTC restart count.
+// Tests of src/net.cpp, second part: boundaries and state transitions of Ethernet, the clock, the
+// second-granular event arguments and the RTC restart count.
 #include <ETH.h>
 #include <IPAddress.h>
 #include <WiFi.h>
@@ -32,18 +32,10 @@ vdm::Config config() {
 
 vdm::Config staticConfig(uint32_t ip) {
   vdm::Config c = config();
-  c.net.iface = vdm::NetInterface::Ethernet;
   c.net.dhcp = false;
   c.net.ip = ip;
   c.net.gateway = kGw;
   c.net.mask = kMask;
-  return c;
-}
-
-vdm::Config wifiConfig(const char* ssid) {
-  vdm::Config c = config();
-  c.net.iface = vdm::NetInterface::Wifi;
-  vdm::copyString(c.net.ssid, sizeof c.net.ssid, ssid);
   return c;
 }
 
@@ -203,144 +195,6 @@ TEST_CASE("net: a new address on the same interface is a new NetUp, down is no r
   CHECK(net::info().state == vdm::NetState::Down);
   CHECK(net::info().reconnects == 2);
   CHECK(net::info().upSinceMs == 4000);
-}
-
-TEST_CASE("net: WiFi with its address, RSSI, MAC and a DHCP lease as evidence") {
-  glue::begin();
-  vdm::Config c = wifiConfig("home");
-  net::begin(c);
-  fakes::net().wifiIp = kLongIp;
-  fakes::net().wifiMask = kMask;
-  fakes::net().rssi = -60;
-  fakes::net().fire(ARDUINO_EVENT_WIFI_STA_GOT_IP);
-  tick(1000);
-  net::Info i = net::info();
-  CHECK(i.state == vdm::NetState::Wifi);
-  CHECK(i.ip == kLongIp);
-  CHECK(i.mask == kMask);
-  CHECK(i.rssi == -60);
-  CHECK(std::string(i.mac) == "24:0A:C4:12:34:56");
-  const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetUp).at(0);
-  CHECK(e.arg1 == static_cast<int32_t>(vdm::NetState::Wifi));
-  CHECK(e.arg2 == 0);
-  CHECK(std::string(e.text) == "192.168.100.200");
-  CHECK(net::health(1000).evidence == vdm::NetEvidence::DhcpLease);
-  fakes::net().rssi = -128;
-  tick(2000);
-  CHECK(net::info().rssi == -128);
-  fakes::net().rssi = 1;  // no valid reading
-  tick(3000);
-  CHECK(net::info().rssi == 0);
-  fakes::net().rssi = 5;
-  tick(4000);
-  CHECK(net::info().rssi == 0);
-  const arduino_event_id_t downs[] = {ARDUINO_EVENT_WIFI_STA_DISCONNECTED,
-                                      ARDUINO_EVENT_WIFI_STA_LOST_IP, ARDUINO_EVENT_WIFI_STA_STOP};
-  uint32_t t = 5000;
-  for (arduino_event_id_t ev : downs) {
-    fakes::net().fire(ev);
-    tick(t);
-    CHECK(net::info().state == vdm::NetState::Down);
-    fakes::net().fire(ARDUINO_EVENT_WIFI_STA_GOT_IP);
-    tick(t + 1000);
-    CHECK(net::info().state == vdm::NetState::Wifi);
-    t += 2000;
-  }
-}
-
-TEST_CASE("net: a one-character SSID is a WiFi network") {
-  glue::begin();
-  vdm::Config c = wifiConfig("a");
-  net::begin(c);
-  CHECK(fakes::net().wifiBegins == 1);
-  CHECK(fakes::net().ssid == "a");
-}
-
-TEST_CASE("net: a static address on WiFi is configured on the WiFi interface") {
-  glue::begin();
-  vdm::Config c = wifiConfig("home");
-  c.net.dhcp = false;
-  c.net.ip = kIp;
-  c.net.gateway = kGw;
-  c.net.mask = kMask;
-  net::begin(c);
-  CHECK(fakes::net().ethBegins.empty());
-  CHECK(fakes::net().ethConfigs.empty());
-  REQUIRE(fakes::net().wifiConfigs.size() == 1);
-  CHECK(fakes::net().wifiConfigs[0].ip == kIp);
-  CHECK(fakes::net().wifiConfigs[0].gateway == kGw);
-}
-
-TEST_CASE("net: WiFi retries back off from 5 s, doubling up to 60 s") {
-  glue::begin();
-  vdm::Config c = wifiConfig("home");
-  net::begin(c);
-  CHECK(fakes::net().wifiBegins == 1);
-  const std::pair<uint32_t, int> steps[] = {
-      {0, 2},      {4999, 2},   {5000, 3},   {14999, 3},  {15000, 4},  {34999, 4},  {35000, 5},
-      {74999, 5},  {75000, 6},  {134999, 6}, {135000, 7}, {194999, 7}, {195000, 8}};
-  for (const auto& s : steps) {
-    net::service(s.first, false);
-    INFO("t = " << s.first);
-    CHECK(fakes::net().wifiBegins == s.second);
-  }
-}
-
-TEST_CASE("net: Auto fallback to WiFi and back to Ethernet") {
-  glue::begin();
-  vdm::Config c = config();
-  vdm::copyString(c.net.ssid, sizeof c.net.ssid, "home");
-  net::begin(c);
-  net::service(0, false);
-  net::service(30000, false);
-  CHECK(fakes::net().wifiBegins == 1);
-  net::service(31000, false);
-  CHECK(fakes::net().wifiDisconnects == 0);  // WiFi stays while Ethernet is down
-  fakes::net().wifiIp = kNewIp;
-  fakes::net().fire(ARDUINO_EVENT_WIFI_STA_GOT_IP);
-  net::service(32000, false);
-  CHECK(net::info().state == vdm::NetState::Wifi);
-  ethernetUp(kIp);
-  net::service(40000, false);
-  CHECK(net::info().state == vdm::NetState::Ethernet);
-  CHECK(fakes::net().wifiDisconnects == 1);
-  CHECK(fakes::net().lastDisconnectWifiOff);
-  CHECK(fakes::net().wifiMode == WIFI_OFF);
-  // Ethernet lost 60 s later: down (WiFi is off), WiFi again 30 s after the loss.
-  fakes::net().fire(ARDUINO_EVENT_ETH_DISCONNECTED);
-  net::service(100000, false);
-  CHECK(net::info().state == vdm::NetState::Down);
-  net::service(129999, false);
-  CHECK(fakes::net().wifiBegins == 1);
-  net::service(130000, false);
-  CHECK(fakes::net().wifiBegins == 2);
-  CHECK(fakes::net().wifiModes == std::vector<wifi_mode_t>{WIFI_STA, WIFI_OFF, WIFI_STA});
-}
-
-TEST_CASE("net: the Auto fallback counts from the first pass without Ethernet") {
-  glue::begin();
-  vdm::Config c = config();
-  vdm::copyString(c.net.ssid, sizeof c.net.ssid, "home");
-  net::begin(c);
-  net::service(10000, false);
-  net::service(39999, false);
-  CHECK(fakes::net().wifiBegins == 0);
-  net::service(40000, false);
-  CHECK(fakes::net().wifiBegins == 1);
-}
-
-TEST_CASE("net: Auto with an Ethernet driver that failed starts WiFi at once") {
-  glue::begin();
-  fakes::net().ethBeginResult = false;
-  vdm::Config c = config();
-  vdm::copyString(c.net.ssid, sizeof c.net.ssid, "home");
-  net::begin(c);
-  const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetDown).at(0);
-  CHECK(e.arg1 == 1);
-  CHECK(e.arg2 == 0);
-  CHECK(fakes::net().wifiBegins == 0);
-  net::service(0, false);
-  CHECK(fakes::net().wifiBegins == 1);
 }
 
 TEST_CASE("net: a station name of the maximum length is the whole host name") {

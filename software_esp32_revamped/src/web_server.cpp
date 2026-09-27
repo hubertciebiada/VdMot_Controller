@@ -618,7 +618,6 @@ void handleStatus(AsyncWebServerRequest* req) {
   s.gateway = ni.gateway;
   s.dns = ni.dns;
   memcpy(s.mac, ni.mac, sizeof s.mac);
-  s.wifiRssi = ni.rssi;
   vdm::buildHostname(gCfgPtr->station, s.hostname, sizeof s.hostname);
   const mqtt::Status ms = mqtt::status();
   s.mqtt = ms.state;

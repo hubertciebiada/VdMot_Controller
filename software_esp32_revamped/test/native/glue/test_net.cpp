@@ -1,5 +1,5 @@
-// Tests of src/net.cpp: interfaces, state events, WiFi fallback, time, end-to-end reachability,
-// watchdog stages, network trial.
+// Tests of src/net.cpp: Ethernet, state events, time, end-to-end reachability, watchdog stages,
+// network trial.
 #include <ETH.h>
 #include <IPAddress.h>
 #include <WiFi.h>
@@ -26,7 +26,6 @@ vdm::Config config() {
 
 vdm::Config staticConfig(uint32_t ip) {
   vdm::Config c = config();
-  c.net.iface = vdm::NetInterface::Ethernet;
   c.net.dhcp = false;
   c.net.ip = ip;
   c.net.gateway = kGw;
@@ -133,7 +132,10 @@ TEST_CASE("net begin: an Ethernet driver that does not start is logged") {
   net::begin(c);
   const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetDown).at(0);
   CHECK(e.arg1 == 1);
+  CHECK(e.arg2 == 0);
   CHECK(std::string(e.text) == "eth init failed");
+  CHECK(fakes::net().ethConfigs.empty());
+  CHECK(fakes::net().wifiBegins == 0);  // no other interface to fall back to
 }
 
 TEST_CASE("net begin: SNTP with the configured server and the POSIX TZ string") {
@@ -191,22 +193,19 @@ TEST_CASE("net service: Ethernet with an address is up, NetUp names the address"
         static_cast<int32_t>(vdm::NetState::Ethernet));
 }
 
-TEST_CASE("net service: WiFi as fallback after 30 s without Ethernet") {
+TEST_CASE("net service: Ethernet only, WiFi is never started") {
   glue::begin();
   vdm::Config c = config();
-  vdm::copyString(c.net.ssid, sizeof c.net.ssid, "home");
-  vdm::copyString(c.net.wifiPassword, sizeof c.net.wifiPassword, "secret-pass");
   net::begin(c);
-  net::service(0, false);
-  net::service(29999, false);
+  for (uint32_t t = 0; t <= 600000; t += 30000) net::service(t, false);
+  CHECK_FALSE(net::isUp());
   CHECK(fakes::net().wifiBegins == 0);
-  net::service(30000, false);
-  CHECK(fakes::net().wifiBegins == 1);
-  CHECK(fakes::net().ssid == "home");
-  CHECK(fakes::net().pass == "secret-pass");
-  CHECK_FALSE(fakes::net().wifiPersistent);
-  CHECK(fakes::net().wifiMode == WIFI_STA);
-  CHECK(fakes::net().autoReconnect);
+  CHECK(fakes::net().wifiModes.empty());
+  fakes::net().wifiIp = kIp;  // a WiFi event the system might still raise is ignored
+  fakes::net().fire(ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  net::service(601000, false);
+  CHECK_FALSE(net::isUp());
+  CHECK(net::info().state == vdm::NetState::Down);
 }
 
 TEST_CASE("net reachability: DHCP lease, MQTT, SNTP and LAN HTTP prove the network") {
@@ -352,14 +351,16 @@ TEST_CASE("net watchdog: no IP from boot, interface restart only with a driver h
   CHECK(fakes::net().ethStops == 0);
   tick(300000);
   CHECK(fakes::net().ethStops == 1);
-  CHECK(sib::logger().withCode(vdm::EventCode::NetInterfaceRestart).at(0).arg1 == 300);
+  const vdm::Event restart = sib::logger().withCode(vdm::EventCode::NetInterfaceRestart).at(0);
+  CHECK(restart.arg1 == 300);
+  CHECK(restart.arg2 == 1);  // Ethernet
   run(301000, 600000);
   REQUIRE(sib::ota().restartRequests.size() == 1);
   CHECK(fakes::nowMs() == 600000);
   CHECK(sib::ota().restartRequests[0].detail == 10);
 }
 
-TEST_CASE("net watchdog: without a driver handle and WiFi nothing is restarted at stage 1") {
+TEST_CASE("net watchdog: without a driver handle nothing is restarted at stage 1") {
   glue::begin();
   vdm::Config c = config();
   net::begin(c);
@@ -371,17 +372,6 @@ TEST_CASE("net watchdog: without a driver handle and WiFi nothing is restarted a
   run(301000, 600000);
   CHECK(fakes::nowMs() == 600000);
   REQUIRE(sib::ota().restartRequests.size() == 1);
-}
-
-TEST_CASE("net watchdog: WiFi is reconnected at stage 1") {
-  glue::begin();
-  vdm::Config c = config();
-  c.net.iface = vdm::NetInterface::Wifi;
-  vdm::copyString(c.net.ssid, sizeof c.net.ssid, "home");
-  net::begin(c);
-  run(0, 300000);
-  CHECK(fakes::net().wifiReconnects == 1);
-  CHECK(sib::logger().withCode(vdm::EventCode::NetInterfaceRestart).at(0).arg2 == 2);
 }
 
 TEST_CASE("net watchdog: 0 minutes disables both stages") {
@@ -463,7 +453,6 @@ TEST_CASE("net trial: a new static address is armed with the old settings and re
   const vdm::NetTrialRecord r = storedRecord();
   CHECK(r.state == vdm::NetTrialState::Armed);
   CHECK(r.previous.dhcp);
-  CHECK(r.previous.iface == vdm::NetInterface::Auto);
   CHECK(r.trialCrc == vdm::netTrialFieldsCrc(n.net));
   const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialStarted).at(0);
   CHECK(e.arg1 == 120);
@@ -510,7 +499,6 @@ TEST_CASE("net trial: boot with an Armed record runs it; no confirm -> revert at
   REQUIRE_FALSE(sib::storage().applied.empty());
   const vdm::Config& stored = sib::storage().applied.back();
   CHECK(stored.net.dhcp);
-  CHECK(stored.net.iface == vdm::NetInterface::Auto);
   CHECK(sib::storage().netTrial.empty());
   const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0);
   CHECK(e.arg1 == 1);
@@ -647,7 +635,6 @@ TEST_CASE("net trial: a change whose record cannot be stored is reverted at once
   CHECK_FALSE(sib::logger().has(vdm::EventCode::NetTrialStarted));
   REQUIRE(sib::storage().applied.size() == 1);
   CHECK(sib::storage().applied[0].net.dhcp);
-  CHECK(sib::storage().applied[0].net.iface == vdm::NetInterface::Auto);
   const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0);
   CHECK(e.arg1 == 5);
   CHECK(e.arg2 == 0);
@@ -750,6 +737,42 @@ TEST_CASE("net trial: a stale or undecodable record is erased without action") {
   CHECK(sib::storage().netTrial.empty());
   CHECK(sib::storage().netTrialClears == 1);
   CHECK_FALSE(net::trialInfo().active);
+}
+
+TEST_CASE("net trial: a record of the firmware with WiFi reverts, or is stale when WiFi was on trial") {
+  // The record of the firmware with WiFi: iface 0, previous DHCP with WiFi "home", the settings on
+  // trial static without WiFi, so the CRC is the one of this firmware.
+  vdm::Config n = staticConfig(kNewIp);
+  std::vector<uint8_t> rec = {'V', 'D', 'N', 'T', 1, 2, 0, 1};
+  for (int i = 0; i < 16; ++i) rec.push_back(0);
+  rec.push_back(4);
+  rec.insert(rec.end(), {'h', 'o', 'm', 'e'});
+  rec.push_back(8);
+  rec.insert(rec.end(), {'p', 'a', 's', 's', 'w', 'o', 'r', 'd'});
+  auto put32 = [&rec](uint32_t v) {
+    for (int i = 0; i < 4; ++i) rec.push_back(static_cast<uint8_t>(v >> (8 * i)));
+  };
+  put32(vdm::netTrialFieldsCrc(n.net));
+  put32(vdm::crc32(rec.data(), rec.size()));
+  glue::begin();
+  sib::storage().netTrial = rec;
+  net::begin(n);
+  CHECK(n.net.dhcp);  // reverted to the previous settings
+  CHECK(sib::storage().applied.back().net.dhcp);
+  CHECK(sib::storage().netTrial.empty());
+  CHECK(sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0).arg1 == 3);
+  // The same record for a trial whose settings had WiFi on (another CRC): stale, no action.
+  rec.resize(rec.size() - 8);
+  put32(0x12345678);
+  put32(vdm::crc32(rec.data(), rec.size()));
+  glue::begin();
+  sib::storage().netTrial = rec;
+  vdm::Config m = staticConfig(kNewIp);
+  net::begin(m);
+  CHECK_FALSE(m.net.dhcp);
+  CHECK(sib::storage().applied.empty());
+  CHECK(sib::storage().netTrial.empty());
+  CHECK_FALSE(sib::logger().has(vdm::EventCode::NetTrialReverted));
 }
 
 TEST_CASE("net time: valid only after 2020, local time follows TZ") {

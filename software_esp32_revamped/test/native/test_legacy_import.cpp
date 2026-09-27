@@ -261,17 +261,16 @@ TEST_CASE("legacy: a typical device imports completely") {
   CHECK(r.anyLegacy);
   CHECK(r.rejected == 0);
   CHECK(first(r).empty());
-  // stName + 13 netCfg + 2 tZCfg + dataProt brokerIp brokerPort
+  // stName + 10 netCfg + 2 tZCfg + dataProt brokerIp brokerPort
   // publishInterval brokerUser brokerPwd brokerPF brokerKAT brokerMD brokerMQF
   // + valves dayOfCalib hourOfCalib + temps + volts + MiscLC
-  CHECK(r.imported == 1 + 13 + 2 + 10 + 3 + 1 + 1 + 1);
-  // CF, userName, userPwd, brokerInterval, brokerMQTO, brokerMQToPos
-  CHECK(r.ignored == 6);
+  CHECK(r.imported == 1 + 10 + 2 + 10 + 3 + 1 + 1 + 1);
+  // CF, ethwifi, ssid, pwd, userName, userPwd, brokerInterval, brokerMQTO, brokerMQToPos
+  CHECK(r.ignored == 9);
   CHECK(r.lastCalibEpoch == 1760000000);
   CHECK(valid(c));
 
   CHECK(std::string(c.station) == "VdMotFBH");
-  CHECK(c.net.iface == NetInterface::Ethernet);
   CHECK(c.net.dhcp);
   CHECK(c.net.reconnectTimeoutMin == 5);
   CHECK(std::string(c.time.ntpServer) == "pool.ntp.org");
@@ -377,22 +376,20 @@ TEST_CASE("legacy: network keys and their quirks") {
     n.putInt("netCfg", "staticIp", -1);
     n.putInt("netCfg", "gw", 0x100000000ll);
     n.putInt("netCfg", "dhcp", 2);
-    n.putInt("netCfg", "ethwifi", 3);
+    n.putInt("netCfg", "ethwifi", 3);  // ignored
     n.putInt("netCfg", "netConnTO", 241);
     n.putInt("netCfg", "syslogEnable", 4);
     n.putInt("netCfg", "sysLogPort", 65536);
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
     CHECK(r.imported == 0);
-    CHECK(r.rejected == 8);
-    CHECK(first(r) == "netCfg/ethwifi");
+    CHECK(r.rejected == 7);
+    CHECK(r.ignored == 1);
+    CHECK(first(r) == "netCfg/dhcp");
     CHECK(sameConfig(c, Config{}));
   }
   SUBCASE("boundaries that are accepted") {
     FakeNvs n;
-    n.putInt("netCfg", "ethwifi", 2);
-    n.putStr("netCfg", "ssid", std::string(32, 's'));
-    n.putStr("netCfg", "pwd", std::string(63, 'p'));
     n.putInt("netCfg", "netConnTO", 240);
     n.putInt("netCfg", "syslogEnable", 3);
     n.putInt("netCfg", "sysLogIp", 0x0A00000A);
@@ -401,8 +398,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
     CHECK(r.rejected == 0);
-    CHECK(r.imported == 8);
-    CHECK(c.net.iface == NetInterface::Wifi);
+    CHECK(r.imported == 5);
     CHECK(c.net.reconnectTimeoutMin == 240);
     CHECK(c.syslog.level == 3);
     CHECK(c.syslog.server == 0x0A00000Au);
@@ -410,41 +406,41 @@ TEST_CASE("legacy: network keys and their quirks") {
     CHECK(c.net.ip == 0xFFFFFFFFu);
     CHECK(valid(c));
   }
-  SUBCASE("WiFi without a usable password is disabled") {
-    FakeNvs n;
-    n.putInt("netCfg", "ethwifi", 2);
-    n.putStr("netCfg", "ssid", "home");
-    n.putStr("netCfg", "pwd", "short");
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(std::string(c.net.ssid).empty());
-    CHECK(std::string(c.net.wifiPassword).empty());
-    CHECK(c.net.iface == NetInterface::Auto);
-    CHECK(r.imported == 3);
-    CHECK(r.rejected == 2);
-    CHECK(first(r) == "netCfg/pwd");
-    CHECK(valid(c));
-  }
-  SUBCASE("WiFi-only without ssid becomes auto") {
-    FakeNvs n;
-    n.putInt("netCfg", "ethwifi", 2);
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(c.net.iface == NetInterface::Auto);
-    CHECK(first(r) == "netCfg/ethwifi");
+  SUBCASE("WiFi and the interface choice are counted as ignored, whatever they hold") {
+    const struct {
+      int64_t iface;
+      const char* ssid;
+      const char* pwd;
+    } rows[] = {{2, "home", "short"}, {2, "", ""}, {1, "x", "12345678"}, {0, "Guest", ""},
+                {9, "G\xc3\xa4ste", "p\xc3\xa4sswort"}};
+    for (const auto& row : rows) {
+      CAPTURE(row.iface);
+      FakeNvs n;
+      n.putInt("netCfg", "ethwifi", row.iface);
+      n.putStr("netCfg", "ssid", row.ssid);
+      n.putStr("netCfg", "pwd", row.pwd);
+      Config c;
+      const ImportReport r = importLegacyConfig(n, c);
+      CHECK(r.anyLegacy);
+      CHECK(r.ignored == 3);
+      CHECK(r.imported == 0);
+      CHECK(r.rejected == 0);
+      CHECK(first(r).empty());
+      CHECK(sameConfig(c, Config{}));
+    }
   }
   SUBCASE("over-long strings (strncpy without NUL in the legacy UI)") {
     FakeNvs n;
-    n.putStr("netCfg", "ssid", std::string(33, 's'));
+    n.putStr("netCfg", "ssid", std::string(33, 's'));  // WiFi and the web login: ignored
     n.putStr("netCfg", "pwd", std::string(64, 'p'));
-    n.putStr("netCfg", "userName", std::string(65, 'u'));  // the web login: ignored
+    n.putStr("netCfg", "userName", std::string(65, 'u'));
     n.putStr("netCfg", "userPwd", std::string(200, 'p'));
     n.putStr("netCfg", "timeServer", "bad host");
     n.putStr("sysCfg", "stName", std::string(21, 'x'));
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
-    CHECK(r.rejected == 4);
-    CHECK(r.ignored == 2);
+    CHECK(r.rejected == 2);
+    CHECK(r.ignored == 4);
     CHECK(r.imported == 0);
     CHECK(first(r) == "sysCfg/stName");
     CHECK(sameConfig(c, Config{}));
@@ -501,27 +497,6 @@ TEST_CASE("legacy: cross-field repairs, one condition at a time") {
     CHECK(r.rejected == (k.dhcpAfter ? 1 : 0));
     CHECK(c.net.ip == static_cast<uint32_t>(k.ip));  // repaired, not reset to defaults
     CHECK(c.net.gateway == static_cast<uint32_t>(k.gw));
-  }
-  {
-    FakeNvs n;  // one-char ssid, short password
-    n.putStr("netCfg", "ssid", "x");
-    n.putStr("netCfg", "pwd", "1234567");
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(std::string(c.net.ssid).empty());
-    CHECK(first(r) == "netCfg/pwd");
-    CHECK(r.rejected == 1);
-  }
-  {
-    FakeNvs n;  // one-char ssid, WiFi only, good password: kept
-    n.putInt("netCfg", "ethwifi", 2);
-    n.putStr("netCfg", "ssid", "x");
-    n.putStr("netCfg", "pwd", "12345678");
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(std::string(c.net.ssid) == "x");
-    CHECK(c.net.iface == NetInterface::Wifi);
-    CHECK(r.rejected == 0);
   }
   {
     FakeNvs n;  // syslog level 1 without server
@@ -885,8 +860,6 @@ TEST_CASE("legacy: names and texts are kept byte for byte (UTF-8, edge spaces)")
   auto vb = voltsBlob();
   setVolt(vb, 0, "Vorlauf", 0, 0.0f, 1.0f, "\xc2\xb0" "C", "");
   n.putBlob("voltsCfg", "volts", vb);
-  n.putStr("netCfg", "ssid", "G\xc3\xa4ste");
-  n.putStr("netCfg", "pwd", "p\xc3\xa4sswort");
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
   CHECK(r.rejected == 0);
@@ -895,8 +868,6 @@ TEST_CASE("legacy: names and texts are kept byte for byte (UTF-8, edge spaces)")
   CHECK(std::string(c.valves[1].name) == "Bad ");
   CHECK(std::string(c.valves[2].name) == "\xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f\xc3\xa4");
   CHECK(std::string(c.volts[0].unit) == "\xc2\xb0" "C");
-  CHECK(std::string(c.net.ssid) == "G\xc3\xa4ste");
-  CHECK(std::string(c.net.wifiPassword) == "p\xc3\xa4sswort");
   char path[48];
   CHECK(validateConfig(c, path, sizeof path));
 
@@ -911,21 +882,6 @@ TEST_CASE("legacy: names and texts are kept byte for byte (UTF-8, edge spaces)")
   CHECK(rb.rejected == 2);
   CHECK(std::string(b.valves[0].name).empty());
   CHECK(std::string(b.station) == "VdMot");
-}
-
-TEST_CASE("legacy: an open WiFi network (empty password) is kept") {
-  FakeNvs n;
-  n.putInt("netCfg", "ethwifi", 2);
-  n.putStr("netCfg", "ssid", "Guest");
-  n.putStr("netCfg", "pwd", "");
-  Config c;
-  const ImportReport r = importLegacyConfig(n, c);
-  CHECK(r.rejected == 0);
-  CHECK(std::string(c.net.ssid) == "Guest");
-  CHECK(c.net.wifiPassword[0] == '\0');
-  CHECK(c.net.iface == NetInterface::Wifi);
-  char path[48];
-  CHECK(validateConfig(c, path, sizeof path));
 }
 
 TEST_CASE("legacy: valves blob") {
@@ -1361,6 +1317,9 @@ TEST_CASE("legacy: last calibration time") {
 TEST_CASE("legacy: dropped keys are counted, never imported") {
   FakeNvs n;
   n.putInt("sysCfg", "CF", 1);
+  n.putInt("netCfg", "ethwifi", 2);
+  n.putStr("netCfg", "ssid", "home");
+  n.putStr("netCfg", "pwd", std::string(300, 'p'));
   n.putStr("netCfg", "userName", "admin");
   n.putStr("netCfg", "userPwd", std::string(300, 'p'));
   n.putInt("protCfg", "brokerInterval", 1000);
@@ -1389,7 +1348,7 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
   n.putInt("msgCfg", "unknownKey", 1);  // not on the list: not counted
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
-  CHECK(r.ignored == 26);
+  CHECK(r.ignored == 29);
   CHECK(r.imported == 0);
   CHECK(r.rejected == 0);
   CHECK(r.dropped == kDroppedMessenger);
@@ -1410,18 +1369,18 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
 TEST_CASE("legacy: first rejected key is kept, counting continues") {
   FakeNvs n;
   n.putStr("sysCfg", "stName", "");
-  n.putInt("netCfg", "ethwifi", 9);
+  n.putInt("netCfg", "netConnTO", 241);
   n.putInt("valvesCfg", "hourOfCalib", 256);
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
   CHECK(r.rejected == 2);
-  CHECK(first(r) == "netCfg/ethwifi");
+  CHECK(first(r) == "netCfg/netConnTO");
 }
 
 TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fuzz")) {
   std::mt19937 rng(97531);
   const char* intKeys[][2] = {
-      {"netCfg", "ethwifi"},       {"netCfg", "dhcp"},         {"netCfg", "staticIp"},
+      {"netCfg", "dhcp"},         {"netCfg", "staticIp"},
       {"netCfg", "mask"},          {"netCfg", "gw"},           {"netCfg", "dnsIp"},
       {"netCfg", "netConnTO"},     {"netCfg", "syslogEnable"}, {"netCfg", "sysLogIp"},
       {"netCfg", "sysLogPort"},    {"protCfg", "dataProt"},    {"protCfg", "brokerIp"},
@@ -1429,8 +1388,7 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
       {"protCfg", "brokerKAT"},    {"protCfg", "brokerMD"},    {"protCfg", "brokerMQF"},
       {"valvesCfg", "dayOfCalib"}, {"valvesCfg", "hourOfCalib"}, {"Misc", "MiscLC"}};
   // tZCfg/tZ is always "Europe/Warsaw": nothing resets the whole config.
-  const char* strKeys[][2] = {{"sysCfg", "stName"},     {"netCfg", "ssid"},
-                              {"netCfg", "pwd"},        {"netCfg", "timeServer"},
+  const char* strKeys[][2] = {{"sysCfg", "stName"},     {"netCfg", "timeServer"},
                               {"tZCfg", "tZCode"},
                               {"protCfg", "brokerUser"}, {"protCfg", "brokerPwd"}};
   // The first 10 are names, the last 3 ids.
@@ -1489,20 +1447,6 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
     CHECK(strlen(r.firstRejected) < sizeof r.firstRejected);
     CHECK((r.rejected == 0) == (r.firstRejected[0] == '\0'));
   }
-}
-
-TEST_CASE("legacy: a one-character WiFi password is repaired, not reset to defaults") {
-  FakeNvs n;
-  n.putStr("netCfg", "ssid", "home");
-  n.putStr("netCfg", "pwd", "1");
-  n.putStr("sysCfg", "stName", "keep");
-  Config c;
-  const ImportReport r = importLegacyConfig(n, c);
-  CHECK(std::string(c.net.ssid).empty());
-  CHECK(std::string(c.net.wifiPassword).empty());
-  CHECK(std::string(c.station) == "keep");
-  CHECK(first(r) == "netCfg/pwd");
-  CHECK(r.rejected == 1);
 }
 
 TEST_CASE("legacy: names MQTT cannot carry are renamed, the legacy segment kept (W18-2)") {

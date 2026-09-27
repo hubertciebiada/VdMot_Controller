@@ -13,24 +13,12 @@ namespace {
 
 NetConfig staticNet() {
   NetConfig n;
-  n.iface = NetInterface::Ethernet;
   n.dhcp = false;
   n.ip = 0x3201A8C0;       // 192.168.1.50
   n.mask = 0x00FFFFFF;     // 255.255.255.0
   n.gateway = 0x0101A8C0;  // 192.168.1.1
   n.dns = 0x0201A8C0;
   n.reconnectTimeoutMin = 7;
-  return n;
-}
-
-NetConfig wifiNet() {
-  NetConfig n;
-  n.iface = NetInterface::Wifi;
-  n.dhcp = true;
-  memset(n.ssid, 'S', 32);
-  n.ssid[32] = '\0';
-  memset(n.wifiPassword, 'p', 64);
-  n.wifiPassword[64] = '\0';
   return n;
 }
 
@@ -42,6 +30,33 @@ std::vector<uint8_t> encode(const NetTrialRecord& r) {
   std::vector<uint8_t> v(kNetTrialBlobMax);
   v.resize(encodeNetTrial(r, v.data(), v.size()));
   return v;
+}
+
+// A record in the layout of the firmware with WiFi (the one kept here): the
+// interface choice `iface`, the previous settings of `n`, an ssid and a password.
+std::vector<uint8_t> wifiRecord(NetTrialState st, uint8_t iface, const NetConfig& n,
+                                const std::string& ssid, const std::string& pwd,
+                                uint32_t trialCrc) {
+  std::vector<uint8_t> v = {'V', 'D', 'N', 'T', 1, static_cast<uint8_t>(st), iface,
+                            static_cast<uint8_t>(n.dhcp ? 1 : 0)};
+  addU32(v, n.ip);
+  addU32(v, n.mask);
+  addU32(v, n.gateway);
+  addU32(v, n.dns);
+  v.push_back(static_cast<uint8_t>(ssid.size()));
+  v.insert(v.end(), ssid.begin(), ssid.end());
+  v.push_back(static_cast<uint8_t>(pwd.size()));
+  v.insert(v.end(), pwd.begin(), pwd.end());
+  addU32(v, trialCrc);
+  addU32(v, crc32(v.data(), v.size()));
+  return v;
+}
+
+// netTrialFieldsCrc() as the firmware with WiFi computes it: over iface .. password.
+uint32_t wifiFieldsCrc(uint8_t iface, const NetConfig& n, const std::string& ssid,
+                       const std::string& pwd) {
+  const std::vector<uint8_t> r = wifiRecord(NetTrialState::Armed, iface, n, ssid, pwd, 0);
+  return crc32(r.data() + 6, r.size() - 6 - 8);
 }
 
 // A blob with its CRC fixed after a change of the bytes before it.
@@ -57,37 +72,35 @@ bool decodes(const std::vector<uint8_t>& v) {
 }
 
 bool sameTrialFields(const NetConfig& a, const NetConfig& b) {
-  return a.iface == b.iface && a.dhcp == b.dhcp && a.ip == b.ip && a.mask == b.mask &&
-         a.gateway == b.gateway && a.dns == b.dns && strcmp(a.ssid, b.ssid) == 0 &&
-         strcmp(a.wifiPassword, b.wifiPassword) == 0;
+  return a.dhcp == b.dhcp && a.ip == b.ip && a.mask == b.mask && a.gateway == b.gateway &&
+         a.dns == b.dns;
 }
 
 }  // namespace
 
-TEST_CASE("encodeNetTrial: the exact layout of a static record") {
+TEST_CASE("encodeNetTrial: the layout of the firmware with WiFi, its fields neutral") {
   NetTrialRecord r;
   r.state = NetTrialState::Running;
   r.previous = staticNet();
-  vdm::copyString(r.previous.ssid, sizeof r.previous.ssid, "ab");
-  vdm::copyString(r.previous.wifiPassword, sizeof r.previous.wifiPassword, "xyz");
   r.trialCrc = 0x11223344;
-  std::vector<uint8_t> want = {'V', 'D', 'N', 'T', 1, 2, 1, 0};
+  const std::vector<uint8_t> b = encode(r);
+  std::vector<uint8_t> want = {'V', 'D', 'N', 'T', 1, 2, 0, 0};
   addU32(want, 0x3201A8C0);
   addU32(want, 0x00FFFFFF);
   addU32(want, 0x0101A8C0);
   addU32(want, 0x0201A8C0);
-  want.push_back(2);
-  want.push_back('a');
-  want.push_back('b');
-  want.push_back(3);
-  want.push_back('x');
-  want.push_back('y');
-  want.push_back('z');
+  want.push_back(0);  // ssid ""
+  want.push_back(0);  // password ""
   addU32(want, 0x11223344);
   addU32(want, crc32(want.data(), want.size()));
-  CHECK(encode(r) == want);
-  // The fields CRC covers exactly the bytes from iface to the password.
+  CHECK(b == want);
+  CHECK(b == wifiRecord(NetTrialState::Running, 0, staticNet(), "", "", 0x11223344));
+  // The fields CRC covers the bytes from iface to the password, as the firmware with WiFi
+  // computes it for a config saved here (iface auto, no WiFi).
   CHECK(netTrialFieldsCrc(r.previous) == crc32(want.data() + 6, want.size() - 6 - 8));
+  CHECK(netTrialFieldsCrc(r.previous) == wifiFieldsCrc(0, r.previous, "", ""));
+  NetConfig dhcp;
+  CHECK(netTrialFieldsCrc(dhcp) == wifiFieldsCrc(0, dhcp, "", ""));
 }
 
 TEST_CASE("encodeNetTrial / decodeNetTrial: round trips") {
@@ -106,42 +119,56 @@ TEST_CASE("encodeNetTrial / decodeNetTrial: round trips") {
 
   NetTrialRecord dhcp;
   dhcp.state = NetTrialState::Running;
-  dhcp.previous.iface = NetInterface::Auto;
   b = encode(dhcp);
   NetTrialRecord out2;
   out2.previous = staticNet();
-  vdm::copyString(out2.previous.ssid, sizeof out2.previous.ssid, "old");
   REQUIRE(decodeNetTrial(b.data(), b.size(), out2));
   CHECK(out2.state == NetTrialState::Running);
   CHECK(sameTrialFields(out2.previous, dhcp.previous));
+}
 
-  NetTrialRecord wifi;
-  wifi.previous = wifiNet();
-  b = encode(wifi);
-  CHECK(b.size() == 130);
-  NetTrialRecord out3;
-  REQUIRE(decodeNetTrial(b.data(), b.size(), out3));
-  CHECK(sameTrialFields(out3.previous, wifi.previous));
-  CHECK(strlen(out3.previous.ssid) == 32);
-  CHECK(strlen(out3.previous.wifiPassword) == 64);
+TEST_CASE("decodeNetTrial: a record of the firmware with WiFi is read, its WiFi skipped") {
+  // The longest one: WiFi only, a 32-byte ssid and a 64-byte password.
+  const std::vector<uint8_t> w = wifiRecord(NetTrialState::Running, 2, staticNet(),
+                                            std::string(32, 'S'), std::string(64, 'p'), 0xCAFE);
+  REQUIRE(w.size() == 130);
+  NetTrialRecord out;
+  REQUIRE(decodeNetTrial(w.data(), w.size(), out));
+  CHECK(out.state == NetTrialState::Running);
+  CHECK(sameTrialFields(out.previous, staticNet()));
+  CHECK(out.trialCrc == 0xCAFE);
+  // Any interface byte, and lengths that add up, are skipped.
+  NetConfig d;
+  const struct {
+    uint8_t iface;
+    const char* ssid;
+    const char* pwd;
+  } rows[] = {{1, "", ""}, {7, "home", ""}, {0, "", "x"}, {255, "a", "12345678"}};
+  for (const auto& row : rows) {
+    CAPTURE(row.iface);
+    const std::vector<uint8_t> v = wifiRecord(NetTrialState::Armed, row.iface, d, row.ssid, row.pwd, 5);
+    NetTrialRecord o;
+    o.previous = staticNet();
+    REQUIRE(decodeNetTrial(v.data(), v.size(), o));
+    CHECK(o.state == NetTrialState::Armed);
+    CHECK(sameTrialFields(o.previous, d));
+    CHECK(o.trialCrc == 5);
+  }
 }
 
 TEST_CASE("encodeNetTrial: capacity") {
   NetTrialRecord r;
-  r.previous = wifiNet();
+  r.previous = staticNet();
   uint8_t buf[kNetTrialBlobMax];
-  CHECK(encodeNetTrial(r, buf, 129) == 0);
-  CHECK(encodeNetTrial(r, buf, 130) == 130);
-  CHECK(encodeNetTrial(r, nullptr, 130) == 0);
-  CHECK(kNetTrialBlobMax == 136);
+  CHECK(encodeNetTrial(r, buf, 33) == 0);
+  CHECK(encodeNetTrial(r, buf, 34) == 34);
+  CHECK(encodeNetTrial(r, nullptr, 34) == 0);
+  CHECK(kNetTrialBlobMax == 136);  // a record of the firmware with WiFi has up to 130 bytes
 }
 
 TEST_CASE("decodeNetTrial: rejects") {
-  NetTrialRecord r;
-  r.previous = staticNet();
-  vdm::copyString(r.previous.ssid, sizeof r.previous.ssid, "net");
-  vdm::copyString(r.previous.wifiPassword, sizeof r.previous.wifiPassword, "password");
-  const std::vector<uint8_t> good = encode(r);
+  const std::vector<uint8_t> good =
+      wifiRecord(NetTrialState::Armed, 1, staticNet(), "net", "password", 77777);
   REQUIRE(decodes(good));
   NetTrialRecord out;
   out.trialCrc = 77;
@@ -169,11 +196,6 @@ TEST_CASE("decodeNetTrial: rejects") {
     CHECK_FALSE(decodes(recrc(v)));
   }
   v = good;
-  v[6] = 3;  // iface
-  CHECK_FALSE(decodes(recrc(v)));
-  v[6] = 2;
-  CHECK(decodes(recrc(v)));
-  v = good;
   v[7] = 2;  // dhcp
   CHECK_FALSE(decodes(recrc(v)));
   v[7] = 1;
@@ -195,33 +217,35 @@ TEST_CASE("decodeNetTrial: rejects") {
   }
 }
 
-TEST_CASE("decodeNetTrial: ssid and password length limits") {
+TEST_CASE("decodeNetTrial: the ssid and password lengths must add up to the blob") {
   NetTrialRecord r;
-  r.previous = wifiNet();
-  const std::vector<uint8_t> good = encode(r);
-  // ssid length 33: one more byte in the blob (still consistent), rejected.
+  r.previous = staticNet();
+  const std::vector<uint8_t> good = encode(r);  // 34 bytes, both lengths 0
+  // An ssid length that puts the password length at the blob end, or past it: nothing is read
+  // beyond the blob (exact-size buffers).
+  for (uint8_t ssid : {9, 10, 255}) {
+    std::vector<uint8_t> v = good;
+    v[24] = ssid;
+    const std::vector<uint8_t> exact = recrc(v);
+    INFO(static_cast<int>(ssid));
+    CHECK_FALSE(decodes(exact));
+  }
+  // One byte short of the end: the password length is read, the total does not add up.
   std::vector<uint8_t> v = good;
-  v[24] = 33;
-  v.insert(v.begin() + 25, 'S');
+  v[24] = 8;
   CHECK_FALSE(decodes(recrc(v)));
-  // password length 65.
+  // A password length that does not fit.
   v = good;
-  v[25 + 32] = 65;
-  v.insert(v.begin() + 26 + 32, 'p');
+  v[25] = 1;
   CHECK_FALSE(decodes(recrc(v)));
-  // A length byte pointing past the end.
-  v = good;
-  v[24] = 32;
-  v.resize(34 + 10);
-  v[24] = 30;
-  CHECK_FALSE(decodes(recrc(v)));
-  // A shorter ssid with the password length adjusted: consistent and accepted.
-  NetTrialRecord s;
-  s.previous = staticNet();
-  vdm::copyString(s.previous.ssid, sizeof s.previous.ssid, "a");
-  const std::vector<uint8_t> one = encode(s);
+  // Consistent lengths are accepted, whatever they are.
+  const std::vector<uint8_t> one = wifiRecord(NetTrialState::Armed, 0, staticNet(), "a", "", 1);
   CHECK(one.size() == 35);
   CHECK(decodes(one));
+  const std::vector<uint8_t> big =
+      wifiRecord(NetTrialState::Armed, 0, staticNet(), std::string(40, 's'), std::string(62, 'p'), 1);
+  CHECK(big.size() == 136);
+  CHECK(decodes(big));
 }
 
 TEST_CASE("netTrialFieldsCrc changes with every trial field, not with reconnectTimeoutMin") {
@@ -230,9 +254,6 @@ TEST_CASE("netTrialFieldsCrc changes with every trial field, not with reconnectT
   NetConfig n = base;
   n.reconnectTimeoutMin = 0;
   CHECK(netTrialFieldsCrc(n) == c);
-  n = base;
-  n.iface = NetInterface::Auto;
-  CHECK(netTrialFieldsCrc(n) != c);
   n = base;
   n.dhcp = true;
   CHECK(netTrialFieldsCrc(n) != c);
@@ -248,17 +269,6 @@ TEST_CASE("netTrialFieldsCrc changes with every trial field, not with reconnectT
   n = base;
   n.dns ^= 0x00000100u;
   CHECK(netTrialFieldsCrc(n) != c);
-  n = base;
-  vdm::copyString(n.ssid, sizeof n.ssid, "x");
-  CHECK(netTrialFieldsCrc(n) != c);
-  n = base;
-  vdm::copyString(n.wifiPassword, sizeof n.wifiPassword, "x");
-  const uint32_t pw = netTrialFieldsCrc(n);
-  CHECK(pw != c);
-  // "x" as ssid and as password are different settings.
-  NetConfig s = base;
-  vdm::copyString(s.ssid, sizeof s.ssid, "x");
-  CHECK(netTrialFieldsCrc(s) != pw);
 }
 
 TEST_CASE("netTrialAtBoot") {
@@ -276,11 +286,29 @@ TEST_CASE("netTrialAtBoot") {
   CHECK(netTrialAtBoot(&r, cur) == NetTrialBoot::Start);
 }
 
-TEST_CASE("applyNetTrialFields copies the 8 fields and keeps reconnectTimeoutMin") {
+TEST_CASE("netTrialAtBoot: a record of the firmware with WiFi (an upgrade during a trial)") {
+  const NetConfig cur = staticNet();
+  // Settings on trial with the interface auto and no WiFi: the trial goes on here.
+  std::vector<uint8_t> v = wifiRecord(NetTrialState::Running, 2, NetConfig{}, "home", "password",
+                                      wifiFieldsCrc(0, cur, "", ""));
+  NetTrialRecord r;
+  REQUIRE(decodeNetTrial(v.data(), v.size(), r));
+  CHECK(netTrialAtBoot(&r, cur) == NetTrialBoot::RevertNow);
+  CHECK(r.previous.dhcp);
+  // An interface choice or WiFi on trial: gone here, so the record is stale.
+  const uint32_t gone[] = {wifiFieldsCrc(1, cur, "", ""), wifiFieldsCrc(2, cur, "home", ""),
+                           wifiFieldsCrc(0, cur, "", "password")};
+  for (uint32_t crc : gone) {
+    v = wifiRecord(NetTrialState::Running, 0, NetConfig{}, "", "", crc);
+    REQUIRE(decodeNetTrial(v.data(), v.size(), r));
+    CHECK(netTrialAtBoot(&r, cur) == NetTrialBoot::Stale);
+  }
+}
+
+TEST_CASE("applyNetTrialFields copies the 5 fields and keeps reconnectTimeoutMin") {
   NetConfig dst;
   dst.reconnectTimeoutMin = 3;
-  const NetConfig prev = wifiNet();
-  NetConfig p2 = prev;
+  NetConfig p2;
   p2.ip = 1;
   p2.mask = 2;
   p2.gateway = 3;

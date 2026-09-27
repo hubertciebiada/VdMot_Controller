@@ -112,12 +112,8 @@ TEST_CASE("sanitize: every field kind outside its rule gets its default") {
        [](const Config& c) { return c.schema == kConfigJsonSchema; }},
       {"station", [](Config& c) { c.station[0] = '\0'; },
        [](const Config& c) { return std::string(c.station) == "VdMot"; }},
-      {"net.iface", [](Config& c) { c.net.iface = static_cast<NetInterface>(3); },
-       [](const Config& c) { return c.net.iface == NetInterface::Auto; }},
       {"net.mask", [](Config& c) { c.net.mask = 0x00FF00FFu; },
        [](const Config& c) { return c.net.mask == 0; }},
-      {"net.wifiPassword", [](Config& c) { strcpy(c.net.wifiPassword, "a\x01"); },
-       [](const Config& c) { return c.net.wifiPassword[0] == '\0'; }},
       {"net.reconnectTimeoutMin", [](Config& c) { c.net.reconnectTimeoutMin = 241; },
        [](const Config& c) { return c.net.reconnectTimeoutMin == 5; }},
       {"time.ntpServer", [](Config& c) { strcpy(c.time.ntpServer, "a b"); },
@@ -128,6 +124,8 @@ TEST_CASE("sanitize: every field kind outside its rule gets its default") {
        [](const Config& c) { return c.syslog.port == 514; }},
       {"web.allowedHosts", [](Config& c) { strcpy(c.web.allowedHosts, "a,,b"); },
        [](const Config& c) { return c.web.allowedHosts[0] == '\0'; }},
+      {"mqtt.password", [](Config& c) { strcpy(c.mqtt.password, "a\x01"); },
+       [](const Config& c) { return c.mqtt.password[0] == '\0'; }},
       {"mqtt.keepAliveS", [](Config& c) { c.mqtt.keepAliveS = 4; },
        [](const Config& c) { return c.mqtt.keepAliveS == 60; }},
       {"mqtt.discoveryPrefix", [](Config& c) { c.mqtt.discoveryPrefix[0] = '\0'; },
@@ -191,14 +189,6 @@ TEST_CASE("sanitize: each cross-field repair alone sets exactly its bit") {
          c.net.gateway = 0;
        },
        [](const Config& c) { return c.net.dhcp && c.net.ip == 1; }},
-      {kRepairWifiPassword, "net.wifiPassword",
-       [](Config& c) {
-         strcpy(c.net.ssid, "w");
-         strcpy(c.net.wifiPassword, "1234567");
-       },
-       [](const Config& c) { return c.net.ssid[0] == '\0' && c.net.wifiPassword[0] == '\0'; }},
-      {kRepairWifiIface, "net.iface", [](Config& c) { c.net.iface = NetInterface::Wifi; },
-       [](const Config& c) { return c.net.iface == NetInterface::Auto; }},
       {kRepairSyslog, "syslog.level", [](Config& c) { c.syslog.level = 1; },
        [](const Config& c) { return c.syslog.level == 0; }},
       {kRepairMqttHost, "mqtt.mode", [](Config& c) { c.mqtt.mode = MqttMode::Mqtt; },
@@ -268,9 +258,6 @@ TEST_CASE("sanitize: the cross-field rules keep what is valid (boundaries)") {
   c.net.ip = 1;
   c.net.mask = 0x00FFFFFFu;
   c.net.gateway = 2;
-  strcpy(c.net.ssid, "w");
-  strcpy(c.net.wifiPassword, "12345678");
-  c.net.iface = NetInterface::Wifi;
   c.syslog.level = 3;
   c.syslog.server = 9;
   c.mqtt.mode = MqttMode::MqttHa;
@@ -285,10 +272,6 @@ TEST_CASE("sanitize: the cross-field rules keep what is valid (boundaries)") {
   const Outcome o = repair(c);
   CHECK(o.mask == 0);
   CHECK(sameConfig(c, before));
-  // An open network (no password) is kept.
-  c.net.wifiPassword[0] = '\0';
-  CHECK(repair(c).mask == 0);
-  CHECK(std::string(c.net.ssid) == "w");
   // Every part of an incomplete static address counts.
   for (int part = 0; part < 3; ++part) {
     CAPTURE(part);
@@ -441,8 +424,8 @@ TEST_CASE("sanitize: fuzzed configs always end valid and stay put on a second pa
       switch (rng() % 20) {
         case 0: strcpy(c.station, pick(strs)); break;
         case 1: c.net.dhcp = rng() % 2; c.net.ip = rng() % 3; break;
-        case 2: strcpy(c.net.ssid, pick(strs)); strcpy(c.net.wifiPassword, pick(strs)); break;
-        case 3: c.net.iface = static_cast<NetInterface>(rng() % 4); break;
+        case 2: c.net.gateway = rng() % 3; c.net.dns = rng() % 3; break;
+        case 3: c.net.reconnectTimeoutMin = static_cast<uint8_t>(rng() % 300); break;
         case 4: c.syslog.level = static_cast<uint8_t>(rng() % 5); c.syslog.server = rng() % 2; break;
         case 5: strcpy(c.mqtt.user, pick(strs)); strcpy(c.mqtt.password, pick(strs)); break;
         case 6: c.mqtt.mode = static_cast<MqttMode>(rng() % 3); strcpy(c.mqtt.host, pick(strs)); break;

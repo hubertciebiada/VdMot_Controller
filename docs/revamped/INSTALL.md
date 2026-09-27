@@ -82,7 +82,9 @@ Recommended order: **ESP first, then STM.**
 1. Note or screenshot your legacy settings (network, MQTT, valve names, sensor
    assignment, motor parameters). The import is automatic, but a record
    helps if something is not taken over.
-2. Make sure the device is reachable over Ethernet (or the configured WiFi).
+2. Connect the device by Ethernet. This firmware has no WiFi: a controller
+   that is reached over WiFi only has no network after the update (the new
+   image then rolls back after 15 min, step 1.4).
 3. Expect every valve to calibrate once after the STM update (see step 2).
 4. MQTT: the client id changes to `<host>-<mac6>` (MQTT.md): update broker
    ACLs keyed on the old id first.
@@ -198,8 +200,8 @@ The failsafe is **on** after the update: default **60 min**, failsafe position
 
 ### 3.3 Network settings on trial
 
-A change of network settings that are in use (interface, DHCP, static IP,
-mask, gateway, DNS; WiFi fields on WiFi) restarts the ESP and runs on trial:
+A change of network settings that are in use (DHCP, static IP, mask,
+gateway, DNS) restarts the ESP and runs on trial:
 the dashboard shows "Keep these settings" / "Revert now" with a countdown.
 Without "Keep" within 2 min after the network came up (2 min after the boot
 when it does not come up) the ESP goes back to the previous settings and
@@ -255,7 +257,10 @@ firmware are **not** copied back. After the rollback:
 
 Upgrading again later does not re-import (the new firmware keeps its own
 settings in NVS namespace `vdmrev`). A downgrade to ESP 2.0.0 keeps the
-settings 2.0.0 knows; the 2.1 settings are kept for the next upgrade.
+settings 2.0.0 knows; the 2.1 settings are kept for the next upgrade. The
+settings this firmware no longer has come back as saved here: Ethernet
+without WiFi and the web login off (a downgrade before the first save here
+finds the old values).
 
 **Downgrade STM.** Flash a 1.4.x or 2.0.0 STM image with either ESP (new
 dashboard → Maintenance, or the legacy STM update page). The 1.x layout in the
@@ -281,7 +286,7 @@ meantime are replaced by the values last written by 2.1.
 |---|---|
 | New ESP image does not come up | wait 15 min for the automatic rollback; power-cycle if it hangs |
 | Wrong network settings, device unreachable | wait: without "Keep" the previous settings come back after about 2 min (at most about 5 min including the restarts). As a last resort use the factory reset |
-| Factory reset | fit a jumper from **GPIO2 to GND** and power up; keep it for **5 s** while the ESP boots, then remove it. Erases only the new firmware's settings (namespace `vdmrev`); legacy settings are not imported again. The device starts with defaults (interface auto, DHCP, station `VdMot`, host name `VdMot`). The reset happens once per fitting: while the jumper stays fitted, later boots keep the settings (event `factory_reset_skipped`) |
+| Factory reset | fit a jumper from **GPIO2 to GND** and power up; keep it for **5 s** while the ESP boots, then remove it. Erases only the new firmware's settings (namespace `vdmrev`); legacy settings are not imported again. The device starts with defaults (DHCP, station `VdMot`, host name `VdMot`). The reset happens once per fitting: while the jumper stays fitted, later boots keep the settings (event `factory_reset_skipped`) |
 | ESP does not boot at all | USB-serial (3.3 V) on the WT32-ETH01 header, IO0 to GND while powering up, then `esptool.py --chip esp32 erase_region 0xe000 0x2000` (otadata, so app0 boots) and `esptool.py --chip esp32 write_flash 0x10000 <image>.bin`. Do not erase NVS if you want to keep the settings |
 | Config broken after an update | the device restores the last saved config from its backup (`config_restored`) or repairs the broken fields (`config_repaired`); only when both fail it boots with defaults (`config_defaults`). Restore with Maintenance → Import config |
 | Network unreachable while the link is up | the ESP restarts its network interface after `net.reconnectTimeoutMin` (default 5 min) without proof of the network, and itself after another 5 min (longer on every further restart in the same outage) |
