@@ -76,6 +76,11 @@ recovery steps: see INSTALL.md.
 - ESP: OTA validation by network, HTTP self-check and STM link; network
   watchdog that restarts the interface first; stack, heap-fragmentation and log
   write alarms.
+- ESP: heap guard: when the free heap stays below 12 KB for 60 s (armed after
+  10 min of uptime, not during an ESP update or an STM flash), the ESP logs
+  event 122 `heap_critical` and restarts through the restart sequence
+  (restart reason 6 `heap guard`); the desired targets are kept and the valves
+  do not move.
 - ESP: log lines start with `#<seq>`; missing lines are written as a gap line.
 - ESP: event 415 `calib_stroke_short` and the health flag `strokeShort` when a
   calibration stroke is close to minCounts.

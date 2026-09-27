@@ -127,13 +127,13 @@ Rules for module implementers:
 | `net_policy.h` | network reachability, network watchdog, time sync step | net |
 | `net_trial.h` | network trial record and state machine | net |
 | `log_sink.h` | log flush policy, file rotation step, gap lines, syslog format | logger |
-| `sys_health.h` | heap and stack alarms, abnormal reset reasons | app |
+| `sys_health.h` | heap and stack alarms, heap guard, abnormal reset reasons | app |
 | `factory_reset.h` | GPIO2 decision and latch | app |
 
 | Glue module | Owns |
 |---|---|
 | `main.cpp` | `setup()` -> `app::setup()`, `loop()` deletes itself, `verifyRollbackLater()` |
-| `app` | boot sequence, task creation, TWDT, command queue, STM snapshot, health data, app task (config apply, net/web start, OTA validation, stm_service, log flush, deferred restart, resource alarms, factory latch) |
+| `app` | boot sequence, task creation, TWDT, command queue, STM snapshot, health data, app task (config apply, net/web start, OTA validation, stm_service, log flush, deferred restart, resource alarms, heap guard, factory latch) |
 | `stm_link` | Serial2, NRST; runs `StmSession` and implements its port |
 | `stm_service` | app-task side of the link: scheduled calibration, desired-target NVS saver, `flushForRestart()` |
 | `mqtt_client` | PubSubClient, LWT, publishing, discovery, inbound commands, regulator state |
@@ -148,7 +148,7 @@ Rules for module implementers:
 | Task | Created by | Core | Prio | Stack | TWDT | Loop | Runs |
 |---|---|---|---|---|---|---|---|
 | `stm` | app::setup | 1 | 5 | 6144 B | yes | 2 ms (`vTaskDelay(2)`) | commands in, UART RX, parse, link policy, target delivery, planner, lease client, reset gate, UART TX, flasher, health events, snapshot publish, RTC copies of targets and lease |
-| `app` | app::setup | 1 | 3 | 8192 B | yes | 100 ms | config apply, every 1 s: net service + web start, OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver); every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
+| `app` | app::setup | 1 | 3 | 8192 B | yes | 100 ms | config apply, every 1 s: net service + web start, OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver), heap guard; every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
 | `mqtt` | app::setup | 1 | 2 | 8192 B | yes | 20 ms connected, 100 ms connecting, 500 ms off | connect/back-off, `loop()`, publishing, discovery (one message per pass), events, inbound commands |
 | `async_tcp` | AsyncTCP lib | 0 | lib default (3) | 10240 B (patched, `app::kAsyncTcpStackBytes`) | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
 | sys event | ESP-IDF | 0 | IDF | IDF | no | event driven | `net` WiFi/ETH event callback (only sets flags) |
@@ -638,6 +638,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   `HeapFragmented` when the largest free block is below 8 KB (each at most
   once per hour), `StackLow` once per task and boot when a task's minimum
   free stack falls below max(512 B, stack / 8).
+- Heap guard (`HeapGuard`, every second, section 16): below 12 KB free on
+  every sample for 60 s ends in `heap_critical` and a controlled restart.
 
 ## 10. MQTT
 
@@ -773,7 +775,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 106 | esp_ota_done | Info | W | - | size / - / version |
 | 107 | esp_ota_failed | Error | W | - | Update error |
 | 108 | app_marked_valid | Info | W | - | seconds after boot |
-| 109 | reboot_requested | Info (Warning for 2, 4 and 5) | W | - | reason 0 user, 1 ota, 2 net watchdog, 3 factory reset, 4 rollback, 5 network revert / detail: reason 2 outage minutes, reason 4 missing checks (bit0 net, bit1 http, bit2 stm) |
+| 109 | reboot_requested | Info (Warning for 2, 4, 5 and 6) | W | - | reason 0 user, 1 ota, 2 net watchdog, 3 factory reset, 4 rollback, 5 network revert, 6 heap guard / detail: reason 2 outage minutes, reason 4 missing checks (bit0 net, bit1 http, bit2 stm) |
 | 110 | low_heap | Warning | W | - | free / min free |
 | 111 | time_synced | Info (first), Debug after | W | - | step s |
 | 112 | calib_time_missing | Warning | W | - | slot key |
@@ -786,6 +788,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 119 | config_repaired | Warning | W | - | repair mask / count / first key |
 | 120 | config_newer_schema | Warning | W | - | base schema / unknown ext records |
 | 121 | files_removed | Info | - | - | files / KiB / name or `legacy images` |
+| 122 | heap_critical | Error | W | - | free / largest block (the heap guard's restart follows, section 16) |
 | 200 | net_up | Info | W | - | 1 eth, 2 wifi / - / IP |
 | 201 | net_down | Warning | W | - | interface |
 | 202 | mqtt_connected | Info | W | - | |
@@ -969,6 +972,22 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   `esp_restart()` or the rollback call. No STM flash starts while a restart
   is pending (HTTP 409). With jumper X20 fitted the ESP restart also resets
   the STM (IO15 strap).
+- Heap guard (`HeapGuard`, app task, every second): when the free 8-bit heap
+  is below 12 KB on every sample for 60 s, the ESP logs `heap_critical`
+  (122: free heap, largest block) and requests restart reason 6 (heap
+  guard) with the sequence above, so a leak ends in a warm restart (desired
+  targets saved, valves not moved) instead of a crash. Armed from 10 min of
+  uptime on: a boot that starts below the threshold restarts every 11 min at
+  most, not every minute. An ESP upload, an STM flash or a pending restart
+  ends the low period, and the 60 s start again after it; one request per
+  low period. The sample is one `heap_caps_get_free_size()`; at 1 s instead
+  of the 10 s of the alarms, a recovery between two alarm samples is not
+  missed. After the restart only the log tells the reason: the file (and
+  syslog) has `heap_critical` and `reboot_requested` (heap guard) before the
+  new `boot` line. The `boot` event, `/api/status` `resetReason` and the
+  dashboard show the reset reason `sw` of every requested restart, and MQTT
+  gets neither event: the MQTT task goes offline as soon as a restart is
+  pending and publishes only the events of its own boot.
 - Network reachability (`NetReachability`): evidence = a gateway ping reply
   (probe every 60 s), the MQTT session, an SNTP sync, an HTTP request from a
   LAN peer, a DHCP lease. The staleness check (150 s without evidence) is
