@@ -267,27 +267,68 @@ namespace {
 
 constexpr char kHaDefaultPrefix[] = "homeassistant";
 
+// Where the entries go: from entry `skip` on into `out`, at most `cap`; the entries before
+// `skip` are only counted (buildSubscription() takes one entry at a time).
+struct SubscriptionSink {
+  Subscription* out;
+  size_t cap;
+  size_t skip;
+  size_t seen = 0;
+  size_t n = 0;
+};
+
 // Appends one entry (skipped when it does not fit or the filter is empty).
-void addSubscription(Subscription* out, size_t cap, size_t& n, const char* filter, size_t len,
-                     uint8_t qos) {
-  if (n >= cap || len == 0) return;
-  memcpy(out[n].filter, filter, len + 1);
-  out[n].qos = qos;
-  ++n;
+void addSubscription(SubscriptionSink& s, const char* filter, size_t len, uint8_t qos) {
+  if (len == 0) return;
+  const size_t index = s.seen++;
+  if (index < s.skip || s.n >= s.cap) return;
+  memcpy(s.out[s.n].filter, filter, len + 1);
+  s.out[s.n].qos = qos;
+  ++s.n;
 }
 
 // "<main>valves/<seg>/target[/set]" and the same + "/set".
 void addTargetFilters(const TopicContext& ctx, const char* main, size_t ml, const char* seg,
-                      Subscription* out, size_t cap, size_t& n) {
+                      SubscriptionSink& s) {
   char f[kTopicMax + 1];
   Builder b(f, sizeof f);
   b.add(main, ml);
   b.add("valves/");
   b.add(seg);
   b.add(ctx.separate ? "/target/set" : "/target");
-  addSubscription(out, cap, n, f, b.finish(), 1);
+  addSubscription(s, f, b.finish(), 1);
   b.add("/set");
-  addSubscription(out, cap, n, f, b.finish(), 1);
+  addSubscription(s, f, b.finish(), 1);
+}
+
+// Every entry of buildSubscriptions() in order (a mode other than Off).
+void addSubscriptions(const TopicContext& ctx, MqttMode mode, const char* haPrefix,
+                      const char segments[kValveCount][kSegmentMax + 1], SubscriptionSink& s) {
+  char main[kTopicMax + 1];
+  const size_t ml = buildMainTopic(ctx, main, sizeof main);
+  if (ml > 0) {
+    addTargetFilters(ctx, main, ml, "+", s);
+    char f[kTopicMax + 1];
+    Builder b(f, sizeof f);
+    b.add(main, ml);
+    b.add("cmd/#");
+    addSubscription(s, f, b.finish(), 0);
+    for (uint8_t i = 0; segments != nullptr && i < kValveCount; ++i) {
+      const size_t sl = boundedLength(segments[i], kSegmentMax);
+      if (memchr(segments[i], '/', sl) == nullptr || !topicSegmentValid(segments[i], sl)) continue;
+      char seg[kSegmentMax + 1];
+      memcpy(seg, segments[i], sl);
+      seg[sl] = '\0';
+      addTargetFilters(ctx, main, ml, seg, s);
+    }
+  }
+  if (mode == MqttMode::MqttHa) {
+    char f[kTopicMax + 1];
+    addSubscription(s, f, buildHaStatusTopic(kHaDefaultPrefix, f, sizeof f), 1);
+    if (haPrefix != nullptr && strcmp(haPrefix, kHaDefaultPrefix) != 0) {
+      addSubscription(s, f, buildHaStatusTopic(haPrefix, f, sizeof f), 1);
+    }
+  }
 }
 
 bool startsWith(const char* s, size_t n, const char* prefix, size_t pl) {
@@ -328,33 +369,18 @@ size_t buildSubscriptions(const TopicContext& ctx, MqttMode mode, const char* ha
                           const char segments[kValveCount][kSegmentMax + 1], Subscription* out,
                           size_t cap) {
   if (out == nullptr || mode == MqttMode::Off) return 0;
-  size_t n = 0;
-  char main[kTopicMax + 1];
-  const size_t ml = buildMainTopic(ctx, main, sizeof main);
-  if (ml > 0) {
-    addTargetFilters(ctx, main, ml, "+", out, cap, n);
-    char f[kTopicMax + 1];
-    Builder b(f, sizeof f);
-    b.add(main, ml);
-    b.add("cmd/#");
-    addSubscription(out, cap, n, f, b.finish(), 0);
-    for (uint8_t i = 0; segments != nullptr && i < kValveCount; ++i) {
-      const size_t sl = boundedLength(segments[i], kSegmentMax);
-      if (memchr(segments[i], '/', sl) == nullptr || !topicSegmentValid(segments[i], sl)) continue;
-      char seg[kSegmentMax + 1];
-      memcpy(seg, segments[i], sl);
-      seg[sl] = '\0';
-      addTargetFilters(ctx, main, ml, seg, out, cap, n);
-    }
-  }
-  if (mode == MqttMode::MqttHa) {
-    char f[kTopicMax + 1];
-    addSubscription(out, cap, n, f, buildHaStatusTopic(kHaDefaultPrefix, f, sizeof f), 1);
-    if (haPrefix != nullptr && strcmp(haPrefix, kHaDefaultPrefix) != 0) {
-      addSubscription(out, cap, n, f, buildHaStatusTopic(haPrefix, f, sizeof f), 1);
-    }
-  }
-  return n;
+  SubscriptionSink s{out, cap, 0};
+  addSubscriptions(ctx, mode, haPrefix, segments, s);
+  return s.n;
+}
+
+bool buildSubscription(const TopicContext& ctx, MqttMode mode, const char* haPrefix,
+                       const char segments[kValveCount][kSegmentMax + 1], size_t index,
+                       Subscription& out) {
+  if (mode == MqttMode::Off) return false;
+  SubscriptionSink s{&out, 1, index};
+  addSubscriptions(ctx, mode, haPrefix, segments, s);
+  return s.n == 1;
 }
 
 InboundTopic parseInboundTopic(const TopicContext& ctx, const char* haPrefix, const char* topic,

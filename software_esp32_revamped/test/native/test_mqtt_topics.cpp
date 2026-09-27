@@ -375,6 +375,47 @@ TEST_CASE("subscriptions per mode, separate and prefix") {
   CHECK(subs(longRoot, MqttMode::Mqtt, "ha").size() == 3);
 }
 
+TEST_CASE("buildSubscription: entry i of the table, false past the last and for Off") {
+  Segments all;
+  for (uint8_t i = 0; i < kValveCount; ++i) snprintf(all[i], sizeof all[i], "V/%u", i + 1u);
+  Segments some = {};
+  copyString(some[3], sizeof some[3], "Bad/WC");
+  struct Case {
+    TopicContext ctx;
+    MqttMode mode;
+    const char* prefix;
+    const Segments* seg;
+  };
+  const Case cases[] = {
+      {ctxOf("VdMot"), MqttMode::MqttHa, "ha", &all},  // every entry: 29
+      {ctxOf("VdMot", false), MqttMode::Mqtt, "ha", &some},
+      {ctxOf("abcdefghijklmnopqrst", true, true), MqttMode::Mqtt, "ha", &all},  // entries skipped
+      {ctxOf("a+b"), MqttMode::MqttHa, "homeassistant", nullptr},  // the HA status only
+  };
+  for (const Case& c : cases) {
+    const auto segs = c.seg ? *c.seg : nullptr;
+    Subscription table[kMaxSubscriptions + 1];
+    const size_t n = buildSubscriptions(c.ctx, c.mode, c.prefix, segs, table, kMaxSubscriptions + 1);
+    REQUIRE(n > 0);
+    for (size_t i = 0; i < n; ++i) {
+      Subscription one;
+      memset(one.filter, 'x', sizeof one.filter);
+      one.qos = 7;
+      REQUIRE(buildSubscription(c.ctx, c.mode, c.prefix, segs, i, one));
+      CHECK(std::string(one.filter) == table[i].filter);
+      CHECK(one.qos == table[i].qos);
+    }
+    Subscription past;
+    memset(past.filter, 'y', sizeof past.filter);
+    CHECK_FALSE(buildSubscription(c.ctx, c.mode, c.prefix, segs, n, past));
+    CHECK(past.filter[0] == 'y');
+  }
+  Subscription off;
+  memset(off.filter, 'z', sizeof off.filter);
+  CHECK_FALSE(buildSubscription(ctxOf("VdMot"), MqttMode::Off, "ha", all, 0, off));
+  CHECK(off.filter[0] == 'z');
+}
+
 namespace {
 
 std::string inbound(const TopicContext& c, const char* t, const Segments* seg,

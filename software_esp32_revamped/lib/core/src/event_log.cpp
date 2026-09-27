@@ -749,4 +749,13 @@ size_t eventMqttNames(const char** out, size_t cap) {
   return n;
 }
 
+const char* eventMqttName(size_t index) {
+  for (const CodeInfo& ci : kCodes) {
+    if (ci.mqtt == EventMqtt::No) continue;
+    if (index == 0) return ci.name;
+    --index;
+  }
+  return nullptr;
+}
+
 }  // namespace vdm

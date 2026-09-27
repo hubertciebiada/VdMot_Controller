@@ -19,6 +19,10 @@ using namespace vdm;
 
 namespace {
 
+// What the glue lends the importer for the temps blob (storage's config blob buffer); exactly
+// the size the importer needs.
+uint8_t gScratch[kLegacyTempsBlob];
+
 // In-memory NVS with typed entries (a key has exactly one type).
 class FakeNvs : public LegacyNvsReader {
  public:
@@ -243,7 +247,7 @@ TEST_CASE("legacy: empty NVS gives the defaults and no legacy flag") {
   FakeNvs n;
   Config c;
   c.calib.hour = 9;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK_FALSE(r.anyLegacy);
   CHECK(r.imported == 0);
   CHECK(r.rejected == 0);
@@ -257,7 +261,7 @@ TEST_CASE("legacy: empty NVS gives the defaults and no legacy flag") {
 TEST_CASE("legacy: a typical device imports completely") {
   FakeNvs n = typicalDevice();
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.anyLegacy);
   CHECK(r.rejected == 0);
   CHECK(first(r).empty());
@@ -324,8 +328,8 @@ TEST_CASE("legacy: a typical device imports completely") {
 TEST_CASE("legacy: import is idempotent and read-only") {
   FakeNvs n = typicalDevice();
   Config a, b;
-  const ImportReport ra = importLegacyConfig(n, a);
-  const ImportReport rb = importLegacyConfig(n, b);
+  const ImportReport ra = importLegacyConfig(n, a, gScratch, sizeof gScratch);
+  const ImportReport rb = importLegacyConfig(n, b, gScratch, sizeof gScratch);
   CHECK(sameConfig(a, b));
   CHECK(ra.imported == rb.imported);
   CHECK(ra.rejected == rb.rejected);
@@ -334,7 +338,7 @@ TEST_CASE("legacy: import is idempotent and read-only") {
   Config dirty;
   strcpy(dirty.valves[9].name, "junk");
   dirty.calib.minute = 30;
-  importLegacyConfig(n, dirty);
+  importLegacyConfig(n, dirty, gScratch, sizeof gScratch);
   CHECK(sameConfig(dirty, a));
 }
 
@@ -347,7 +351,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     n.putInt("netCfg", "gw", 0x0101A8C0);
     n.putInt("netCfg", "dnsIp", 0x08080808);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.imported == 5);
     CHECK(r.rejected == 0);
     CHECK_FALSE(c.net.dhcp);
@@ -363,7 +367,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     n.putInt("netCfg", "staticIp", 0x3201A8C0);
     n.putInt("netCfg", "mask", 0x00FFFFFF);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.net.dhcp);
     CHECK(c.net.ip == 0x3201A8C0u);
     CHECK(r.rejected == 1);
@@ -381,7 +385,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     n.putInt("netCfg", "syslogEnable", 4);
     n.putInt("netCfg", "sysLogPort", 65536);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.imported == 0);
     CHECK(r.rejected == 7);
     CHECK(r.ignored == 1);
@@ -396,7 +400,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     n.putInt("netCfg", "sysLogPort", 65535);
     n.putInt("netCfg", "staticIp", 0xFFFFFFFFll);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 0);
     CHECK(r.imported == 5);
     CHECK(c.net.reconnectTimeoutMin == 240);
@@ -420,7 +424,7 @@ TEST_CASE("legacy: network keys and their quirks") {
       n.putStr("netCfg", "ssid", row.ssid);
       n.putStr("netCfg", "pwd", row.pwd);
       Config c;
-      const ImportReport r = importLegacyConfig(n, c);
+      const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
       CHECK(r.anyLegacy);
       CHECK(r.ignored == 3);
       CHECK(r.imported == 0);
@@ -438,7 +442,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     n.putStr("netCfg", "timeServer", "bad host");
     n.putStr("sysCfg", "stName", std::string(21, 'x'));
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 2);
     CHECK(r.ignored == 4);
     CHECK(r.imported == 0);
@@ -449,7 +453,7 @@ TEST_CASE("legacy: network keys and their quirks") {
     FakeNvs n;
     n.putStr("netCfg", "timeServer", std::string(200, 'h'));
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 1);
     CHECK(first(r) == "netCfg/timeServer");
     CHECK(sameConfig(c, Config{}));
@@ -458,17 +462,17 @@ TEST_CASE("legacy: network keys and their quirks") {
     FakeNvs n;
     n.putStr("netCfg", "timeServer", "");
     Config c;
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(std::string(c.time.ntpServer).empty());
     n.putStr("netCfg", "timeServer", "192.168.1.1");
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(std::string(c.time.ntpServer) == "192.168.1.1");
   }
   SUBCASE("syslog without server is switched off") {
     FakeNvs n;
     n.putInt("netCfg", "syslogEnable", 2);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.syslog.level == 0);
     CHECK(first(r) == "netCfg/syslogEnable");
     CHECK(r.imported == 1);
@@ -492,7 +496,7 @@ TEST_CASE("legacy: cross-field repairs, one condition at a time") {
     n.putInt("netCfg", "mask", k.mask);
     n.putInt("netCfg", "gw", k.gw);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.net.dhcp == k.dhcpAfter);
     CHECK(r.rejected == (k.dhcpAfter ? 1 : 0));
     CHECK(c.net.ip == static_cast<uint32_t>(k.ip));  // repaired, not reset to defaults
@@ -502,7 +506,7 @@ TEST_CASE("legacy: cross-field repairs, one condition at a time") {
     FakeNvs n;  // syslog level 1 without server
     n.putInt("netCfg", "syslogEnable", 1);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.syslog.level == 0);
     CHECK(first(r) == "netCfg/syslogEnable");
   }
@@ -513,7 +517,7 @@ TEST_CASE("legacy: cross-field repairs, one condition at a time") {
     n.putInt("protCfg", "brokerMD", 10);
     n.putInt("protCfg", "publishInterval", 10);  // min delay == interval: fine
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.mode == MqttMode::Mqtt);
     CHECK(c.mqtt.minDelayS == 10);
     CHECK(r.rejected == 0);
@@ -536,7 +540,7 @@ TEST_CASE("legacy: the web login is counted as ignored, whatever it holds") {
     if (l.user != nullptr) n.putStr("netCfg", "userName", l.user);
     if (l.password != nullptr) n.putStr("netCfg", "userPwd", l.password);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.ignored == l.ignored);
     CHECK(r.imported == 1);
     CHECK(r.rejected == 0);
@@ -551,29 +555,29 @@ TEST_CASE("legacy: station name") {
   FakeNvs n;
   n.putStr("sysCfg", "stName", "a/b");
   Config c;
-  ImportReport r = importLegacyConfig(n, c);
+  ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.station) == "VdMot");
   CHECK(first(r) == "sysCfg/stName");
   CHECK(r.anyLegacy);  // a string key alone counts
   CHECK(c.mqtt.rootTopic[0] == '\0');
   // Empty: the legacy topics were under "VdMotFBH/" (W18-1).
   n.putStr("sysCfg", "stName", "");
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.station) == "VdMot");
   CHECK(std::string(c.mqtt.rootTopic) == "VdMotFBH");
   CHECK(r.rejected == 0);
   CHECK(r.imported == 1);
   n.putStr("sysCfg", "stName", "Dom 1");
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.station) == "Dom 1");
   CHECK(c.mqtt.rootTopic[0] == '\0');
   n.putStr("sysCfg", "stName", std::string(20, 'x'));
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.station) == std::string(20, 'x'));
   CHECK(r.imported == 1);
   // Wrong stored type: the key is treated as missing.
   n.putInt("sysCfg", "stName", 5);
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.station) == "VdMot");
   CHECK(r.rejected == 0);
   CHECK(r.imported == 0);
@@ -588,7 +592,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     n.putInt("protCfg", "brokerPort", 0);
     n.putInt("protCfg", "publishInterval", 0);
     Config c;
-    ImportReport r = importLegacyConfig(n, c);
+    ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.mode == MqttMode::Mqtt);
     CHECK(std::string(c.mqtt.host) == "10.0.0.1");
     CHECK(c.mqtt.port == 1883);
@@ -597,24 +601,24 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     CHECK(first(r) == "protCfg/brokerMD");
     CHECK(r.imported == 4);
     n.putInt("protCfg", "publishInterval", 1);
-    r = importLegacyConfig(n, c);
+    r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.publishIntervalS == 2);
     n.putInt("protCfg", "publishInterval", 2);
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.publishIntervalS == 2);
     n.putInt("protCfg", "publishInterval", 3600);
-    r = importLegacyConfig(n, c);
+    r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.publishIntervalS == 3600);
     CHECK(c.mqtt.minDelayS == 5);
     CHECK(r.rejected == 0);
     n.putInt("protCfg", "publishInterval", 3601);
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.publishIntervalS == 3600);
     n.putInt("protCfg", "publishInterval", 4294967295ll);
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.publishIntervalS == 3600);
     n.putInt("protCfg", "publishInterval", -5);
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.publishIntervalS == 2);
   }
   SUBCASE("broker address 0 means no host") {
@@ -622,7 +626,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     n.putInt("protCfg", "dataProt", 1);
     n.putInt("protCfg", "brokerIp", 0);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.mode == MqttMode::Off);  // MQTT without a broker is switched off
     CHECK(std::string(c.mqtt.host).empty());
     CHECK(r.imported == 2);
@@ -633,7 +637,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     FakeNvs n;
     n.putInt("protCfg", "brokerIp", -1);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(first(r) == "protCfg/brokerIp");
     CHECK(r.imported == 0);
   }
@@ -641,7 +645,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     FakeNvs n;
     n.putInt("protCfg", "dataProt", 0);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.separate);
     CHECK(c.mqtt.allTemps);
     CHECK(c.mqtt.pathAsRoot);
@@ -657,7 +661,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     FakeNvs n;
     n.putStr("sysCfg", "stName", "x");
     Config c;
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK_FALSE(c.mqtt.pathAsRoot);
     CHECK(c.mqtt.upTime);
     CHECK(c.mqtt.diag);
@@ -670,7 +674,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
       FakeNvs n;
       n.putInt("protCfg", "brokerPF", 1 << bit);
       Config c;
-      importLegacyConfig(n, c);
+      importLegacyConfig(n, c, gScratch, sizeof gScratch);
       const MqttConfig& m = c.mqtt;
       const bool got[] = {m.separate, m.allTemps, m.pathAsRoot, m.upTime,
                           m.onChange, m.retained, m.plainText,  m.diag};
@@ -680,7 +684,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
       FakeNvs z;
       z.putInt("protCfg", "brokerPF", 0);
       Config c0;
-      const ImportReport r0 = importLegacyConfig(z, c0);
+      const ImportReport r0 = importLegacyConfig(z, c0, gScratch, sizeof gScratch);
       CHECK(r0.rejected == 0);
       CHECK(r0.imported == 1);
       CHECK_FALSE(c0.mqtt.separate);
@@ -690,15 +694,15 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     FakeNvs n;
     n.putInt("protCfg", "brokerPF", 0xFF);
     Config c;
-    importLegacyConfig(n, c);
+    importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.diag);
     CHECK(c.mqtt.pathAsRoot);
     n.putInt("protCfg", "brokerPF", 256);
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(first(r) == "protCfg/brokerPF");
     CHECK(c.mqtt.upTime);  // default kept
     n.putInt("protCfg", "brokerPF", -1);
-    CHECK(first(importLegacyConfig(n, c)) == "protCfg/brokerPF");
+    CHECK(first(importLegacyConfig(n, c, gScratch, sizeof gScratch)) == "protCfg/brokerPF");
   }
   SUBCASE("HA mode needs separate topics") {
     FakeNvs n;
@@ -706,7 +710,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     n.putInt("protCfg", "brokerIp", 0x0100000A);
     n.putInt("protCfg", "brokerPF", 0xFE);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.mode == MqttMode::Mqtt);
     CHECK_FALSE(c.mqtt.separate);
     CHECK(first(r) == "protCfg/dataProt");
@@ -717,7 +721,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     FakeNvs n;
     n.putInt("protCfg", "dataProt", 3);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.mode == MqttMode::Off);
     CHECK(first(r) == "protCfg/dataProt");
     CHECK(c.mqtt.pathAsRoot);  // namespace present -> brokerPF fallback 7
@@ -728,7 +732,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     n.putInt("protCfg", "brokerMD", 3601);
     n.putInt("protCfg", "brokerMQF", 4);
     Config c;
-    ImportReport r = importLegacyConfig(n, c);
+    ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.keepAliveS == 60);
     CHECK(c.mqtt.minDelayS == 5);
     CHECK(c.mqtt.germanDecimal);
@@ -738,7 +742,7 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     n.putInt("protCfg", "brokerKAT", 300);
     n.putInt("protCfg", "brokerMD", 0);
     n.putInt("protCfg", "brokerMQF", 3);  // failsafe bits only: dropped
-    r = importLegacyConfig(n, c);
+    r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.keepAliveS == 300);
     CHECK(c.mqtt.minDelayS == 0);
     CHECK_FALSE(c.mqtt.germanDecimal);
@@ -746,29 +750,29 @@ TEST_CASE("legacy: MQTT keys and their quirks") {
     CHECK(r.rejected == 0);
     n.putInt("protCfg", "brokerKAT", 5);
     n.putInt("protCfg", "brokerMQF", 1);
-    r = importLegacyConfig(n, c);
+    r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.mqtt.keepAliveS == 5);
     CHECK(r.ignored == 1);
     n.putInt("protCfg", "brokerKAT", 301);
     n.putInt("protCfg", "brokerMQF", 0x104);
-    r = importLegacyConfig(n, c);
+    r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 2);
     CHECK_FALSE(c.mqtt.germanDecimal);
     n.putInt("protCfg", "brokerMQF", 0xFF);
     n.putInt("protCfg", "brokerKAT", 60);
-    r = importLegacyConfig(n, c);
+    r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 0);
     CHECK(c.mqtt.germanDecimal);
     CHECK(r.ignored == 1);
     n.putInt("protCfg", "brokerMQF", -4);
-    CHECK(importLegacyConfig(n, c).rejected == 1);
+    CHECK(importLegacyConfig(n, c, gScratch, sizeof gScratch).rejected == 1);
   }
   SUBCASE("credentials") {
     FakeNvs n;
     n.putStr("protCfg", "brokerUser", std::string(64, 'u'));
     n.putStr("protCfg", "brokerPwd", std::string(65, 'p'));
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(std::string(c.mqtt.user) == std::string(64, 'u'));
     CHECK(std::string(c.mqtt.password).empty());
     CHECK(first(r) == "protCfg/brokerPwd");
@@ -780,14 +784,14 @@ TEST_CASE("legacy: time zone keys") {
   n.putStr("tZCfg", "tZ", "");
   n.putStr("tZCfg", "tZCode", "");  // setDefault() stores empty strings
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.time.tzName).empty());
   CHECK(std::string(c.time.tzPosix) == "CET-1CEST,M3.5.0,M10.5.0/3");
   CHECK(first(r) == "tZCfg/tZCode");
   CHECK(r.imported == 1);
   n.putStr("tZCfg", "tZCode", "EST5EDT");
   n.putStr("tZCfg", "tZ", std::string(50, 'z'));
-  const ImportReport r2 = importLegacyConfig(n, c);
+  const ImportReport r2 = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.time.tzPosix) == "EST5EDT");
   CHECK(std::string(c.time.tzName) == "Europe/Berlin");
   CHECK(first(r2) == "tZCfg/tZ");
@@ -798,24 +802,24 @@ TEST_CASE("legacy: calibration schedule keys") {
   n.putInt("valvesCfg", "dayOfCalib", 127);
   n.putInt("valvesCfg", "hourOfCalib", 23);
   Config c;
-  ImportReport r = importLegacyConfig(n, c);
+  ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(c.calib.dayMask == 127);
   CHECK(c.calib.hour == 23);
   CHECK(r.imported == 2);
   n.putInt("valvesCfg", "dayOfCalib", 0);
   n.putInt("valvesCfg", "hourOfCalib", 0);
-  importLegacyConfig(n, c);
+  importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(c.calib.dayMask == 0);
   CHECK(c.calib.hour == 0);
   n.putInt("valvesCfg", "dayOfCalib", 128);
   n.putInt("valvesCfg", "hourOfCalib", 23);
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(c.calib.dayMask == 9);
   CHECK(c.calib.hour == 23);
   CHECK(r.rejected == 1);
   CHECK(first(r) == "valvesCfg/dayOfCalib");
   n.putInt("valvesCfg", "hourOfCalib", -1);
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.rejected == 2);
   CHECK(c.calib.dayMask == 9);
   CHECK(c.calib.hour == 0);
@@ -829,7 +833,7 @@ TEST_CASE("legacy: calibration schedule keys") {
       h.putInt("valvesCfg", "dayOfCalib", days);
       h.putInt("valvesCfg", "hourOfCalib", hour);
       Config d;
-      r = importLegacyConfig(h, d);
+      r = importLegacyConfig(h, d, gScratch, sizeof gScratch);
       CHECK(d.calib.dayMask == 0);
       CHECK(d.calib.hour == 0);
       CHECK(r.imported == 2);
@@ -839,12 +843,12 @@ TEST_CASE("legacy: calibration schedule keys") {
   FakeNvs h;
   h.putInt("valvesCfg", "hourOfCalib", 24);  // days missing
   Config d;
-  r = importLegacyConfig(h, d);
+  r = importLegacyConfig(h, d, gScratch, sizeof gScratch);
   CHECK(d.calib.dayMask == 0);
   CHECK(r.imported == 1);
   h.putInt("valvesCfg", "hourOfCalib", 256);  // not a legacy value
   d = Config{};
-  r = importLegacyConfig(h, d);
+  r = importLegacyConfig(h, d, gScratch, sizeof gScratch);
   CHECK(d.calib.dayMask == 9);
   CHECK(r.rejected == 1);
 }
@@ -861,7 +865,7 @@ TEST_CASE("legacy: names and texts are kept byte for byte (UTF-8, edge spaces)")
   setVolt(vb, 0, "Vorlauf", 0, 0.0f, 1.0f, "\xc2\xb0" "C", "");
   n.putBlob("voltsCfg", "volts", vb);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.rejected == 0);
   CHECK(std::string(c.station) == "Fu\xc3\x9f" "boden");
   CHECK(std::string(c.valves[0].name) == "K\xc3\xbc" "che");
@@ -878,7 +882,7 @@ TEST_CASE("legacy: names and texts are kept byte for byte (UTF-8, edge spaces)")
   bad.putBlob("valvesCfg", "valves", bv);
   bad.putStr("sysCfg", "stName", "St\xe4tion");  // Latin-1
   Config b;
-  const ImportReport rb = importLegacyConfig(bad, b);
+  const ImportReport rb = importLegacyConfig(bad, b, gScratch, sizeof gScratch);
   CHECK(rb.rejected == 2);
   CHECK(std::string(b.valves[0].name).empty());
   CHECK(std::string(b.station) == "VdMot");
@@ -893,7 +897,7 @@ TEST_CASE("legacy: valves blob") {
       if (size >= 12) setValve(b, 0, "x", 1);
       n.putBlob("valvesCfg", "valves", b);
       Config c;
-      const ImportReport r = importLegacyConfig(n, c);
+      const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
       CHECK(r.anyLegacy);
       CHECK(r.imported == 0);
       CHECK(r.rejected == 1);
@@ -913,7 +917,7 @@ TEST_CASE("legacy: valves blob") {
     setValve(b, 11, "1234567890", 1);
     n.putBlob("valvesCfg", "valves", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.imported == 1);
     CHECK(r.rejected == 3);
     CHECK(r.renamedValves == 0);
@@ -937,7 +941,7 @@ TEST_CASE("legacy: valves blob") {
     setValve(b, 6, "a_b", 1);
     n.putBlob("valvesCfg", "valves", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(std::string(c.valves[0].name) == "Bad");
     CHECK(std::string(c.valves[4].name).empty());
     CHECK(std::string(c.valves[5].name) == "a b");
@@ -955,7 +959,7 @@ TEST_CASE("legacy: valves blob") {
     setValve(b, 7, "8", 1);   // own number: fine
     n.putBlob("valvesCfg", "valves", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(std::string(c.valves[3].name).empty());
     CHECK(std::string(c.valves[0].name).empty());
     CHECK(std::string(c.valves[1].name) == "x");
@@ -981,7 +985,7 @@ TEST_CASE("legacy: valve name rules keep everything else") {
   n.putBlob("tempsCfg", "temps", t);
   n.putStr("sysCfg", "stName", "keep");
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.valves[1].name) == "ab");
   CHECK(std::string(c.valves[2].name) == "ac");
   CHECK(std::string(c.valves[3].name) == "05");
@@ -1008,7 +1012,7 @@ TEST_CASE("legacy: slot repairs keep everything else") {
   n.putBlob("voltsCfg", "volts", v);
   n.putStr("sysCfg", "stName", "keep");
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK_FALSE(c.temps[0].active);
   CHECK(c.temps[2].active);
   CHECK(c.temps[2].id == oid(kIdB));
@@ -1029,21 +1033,21 @@ TEST_CASE("legacy: HA mode with the decimal comma switches to the dot") {
   FakeNvs n = staticDevice();
   n.putInt("protCfg", "brokerMQF", 4);
   Config c;
-  ImportReport r = importLegacyConfig(n, c);
+  ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK_FALSE(c.mqtt.germanDecimal);
   CHECK(r.rejected == 1);
   CHECK(first(r) == "protCfg/brokerMQF");
   checkKept(c);
   // HA without separate topics becomes plain MQTT first, which keeps the comma.
   n.putInt("protCfg", "brokerPF", 0x7A);
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(c.mqtt.mode == MqttMode::Mqtt);
   CHECK(c.mqtt.germanDecimal);
   CHECK(r.rejected == 1);
   CHECK(first(r) == "protCfg/dataProt");
   n.putInt("protCfg", "brokerPF", 0x7B);
   n.putInt("protCfg", "dataProt", 1);
-  r = importLegacyConfig(n, c);
+  r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(c.mqtt.germanDecimal);
   CHECK(r.rejected == 0);
 }
@@ -1058,7 +1062,7 @@ TEST_CASE("legacy: valve names with one HA id keep the first name") {
   setValve(v, 4, "Bad-1", 1);          // '-' stays: another id
   n.putBlob("valvesCfg", "valves", v);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.valves[0].name) == "Bad 1");
   CHECK(std::string(c.valves[1].name).empty());
   CHECK(c.valves[1].active);
@@ -1084,7 +1088,7 @@ TEST_CASE("legacy: active sensors with one HA id keep the first name") {
   setVolt(w, 1, "U", 1, 0.0f, 1.0f, "V", "26-00-00-00-00-00-00-01");  // neighbours, one char
   n.putBlob("voltsCfg", "volts", w);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.temps[0].name) == "Flur");
   CHECK(std::string(c.temps[5].name).empty());
   CHECK(c.temps[5].active);
@@ -1109,7 +1113,7 @@ TEST_CASE("legacy: a sensor named like the number of a later unnamed one loses i
   setTemp(t, 6, "", 1, 0, "28-00-00-00-00-00-00-01");
   n.putBlob("tempsCfg", "temps", t);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.temps[0].name).empty());
   CHECK(std::string(c.temps[2].name).empty());
   CHECK(c.temps[0].active);
@@ -1129,7 +1133,7 @@ TEST_CASE("legacy: a sensor name cleared for one clash is checked again") {
   setTemp(t, 2, "x", 1, 0, "28-00-00-00-00-00-00-01");
   n.putBlob("tempsCfg", "temps", t);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.temps[0].name) == "x");
   CHECK(std::string(c.temps[1].name).empty());
   CHECK(std::string(c.temps[2].name).empty());
@@ -1149,7 +1153,7 @@ TEST_CASE("legacy: a sensor topic override cleared for one clash is reported") {
   setVolt(w, 1, "Bad/WC", 1, 0.0f, 1.0f, "", "26-11-22-33-44-55-66-01");
   n.putBlob("voltsCfg", "volts", w);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.temps[0].topic) == "Bad/WC");
   CHECK(c.temps[1].topic[0] == '\0');
   CHECK(std::string(c.volts[0].topic) == "Bad/WC");
@@ -1166,7 +1170,7 @@ TEST_CASE("legacy: temps blob") {
     FakeNvs n;
     n.putBlob("tempsCfg", "temps", std::vector<uint8_t>(1495, 0));
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(first(r) == "tempsCfg/temps");
     CHECK(r.imported == 0);
   }
@@ -1181,7 +1185,7 @@ TEST_CASE("legacy: temps blob") {
     setTemp(b, 5, "", 0, INT32_MIN, "");
     n.putBlob("tempsCfg", "temps", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.temps[0].offset == 100);
     CHECK(c.temps[1].offset == -100);
     CHECK(c.temps[2].offset == 100);
@@ -1204,7 +1208,7 @@ TEST_CASE("legacy: temps blob") {
     setTemp(b, 33, "z", 1, 5, kIdB);
     n.putBlob("tempsCfg", "temps", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.temps[0].active);
     CHECK(c.temps[0].id == oid(kIdA));
     CHECK_FALSE(c.temps[1].active);
@@ -1230,7 +1234,7 @@ TEST_CASE("legacy: temps blob") {
     memset(&b[2 * 44], 'n', 11);
     n.putBlob("tempsCfg", "temps", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(std::string(c.temps[0].name) == "Wohnzimmer");
     CHECK(std::string(c.temps[1].name) == "x_");  // renamed (W18)
     CHECK(c.temps[1].topic[0] == '\0');
@@ -1241,6 +1245,36 @@ TEST_CASE("legacy: temps blob") {
   }
 }
 
+TEST_CASE("legacy: the temps blob goes into the lent scratch, without room it is not read") {
+  FakeNvs n;
+  auto b = tempsBlob();
+  setTemp(b, 2, "Flur", 1, 25, kIdA);
+  n.putBlob("tempsCfg", "temps", b);
+  Config c;
+  memset(gScratch, 0xA5, sizeof gScratch);
+  ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
+  CHECK(r.imported == 1);
+  CHECK(std::string(c.temps[2].name) == "Flur");
+  CHECK(c.temps[2].offset == 25);
+  CHECK(memcmp(gScratch, b.data(), kLegacyTempsBlob) == 0);
+  // One byte short, or no buffer at all: the blob stays unread (one NVS read less), nothing
+  // is counted.
+  const int readsFull = n.reads;
+  r = importLegacyConfig(n, c, gScratch, kLegacyTempsBlob - 1);
+  CHECK(n.reads - readsFull == readsFull - 1);
+  CHECK(r.imported == 0);
+  CHECK(r.rejected == 0);
+  CHECK_FALSE(r.anyLegacy);
+  CHECK(std::string(c.temps[2].name).empty());
+  CHECK(c.temps[2].offset == 0);
+  const int readsShort = n.reads;
+  r = importLegacyConfig(n, c, nullptr, 2 * kLegacyTempsBlob);
+  CHECK(n.reads - readsShort == readsFull - 1);
+  CHECK(r.imported == 0);
+  CHECK_FALSE(r.anyLegacy);
+  CHECK(c.temps[2].offset == 0);
+}
+
 TEST_CASE("legacy: volts blob") {
   SUBCASE("wrong size") {
     for (size_t size : {size_t{447}, size_t{449}, size_t{479}, size_t{481}}) {
@@ -1248,7 +1282,7 @@ TEST_CASE("legacy: volts blob") {
       FakeNvs n;
       n.putBlob("voltsCfg", "volts", std::vector<uint8_t>(size, 0));
       Config c;
-      const ImportReport r = importLegacyConfig(n, c);
+      const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
       CHECK(first(r) == "voltsCfg/volts");
       CHECK(r.imported == 0);
       CHECK(r.anyLegacy);
@@ -1268,7 +1302,7 @@ TEST_CASE("legacy: volts blob") {
     b[7 * 56 + 11] = 3;
     n.putBlob("voltsCfg", "volts", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.volts[0].offset == -1000.0f);
     CHECK(c.volts[0].factor == 1000.0f);
     CHECK(std::string(c.volts[0].unit) == "12345678");
@@ -1305,7 +1339,7 @@ TEST_CASE("legacy: last calibration time") {
     FakeNvs n;
     n.putInt("Misc", "MiscLC", k.v);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.lastCalibEpoch == k.epoch);
     CHECK(r.rejected == k.rejected);
     CHECK(r.imported == (k.rejected ? 0 : 1));
@@ -1347,7 +1381,7 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
   n.putInt("motorCfg", "motorMaxC", 2);
   n.putInt("msgCfg", "unknownKey", 1);  // not on the list: not counted
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.ignored == 29);
   CHECK(r.imported == 0);
   CHECK(r.rejected == 0);
@@ -1361,7 +1395,7 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
   FakeNvs only;
   only.putInt("valvesCtrlCfg", "vCtrlHeat", 1);
   Config d;
-  const ImportReport r2 = importLegacyConfig(only, d);
+  const ImportReport r2 = importLegacyConfig(only, d, gScratch, sizeof gScratch);
   CHECK(r2.anyLegacy);
   CHECK(r2.ignored == 1);
 }
@@ -1372,7 +1406,7 @@ TEST_CASE("legacy: first rejected key is kept, counting continues") {
   n.putInt("netCfg", "netConnTO", 241);
   n.putInt("valvesCfg", "hourOfCalib", 256);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.rejected == 2);
   CHECK(first(r) == "netCfg/netConnTO");
 }
@@ -1441,7 +1475,7 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
       n.putBlob("voltsCfg", "volts", b);
     }
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(valid(c));
     CHECK(std::string(c.time.tzName) == "Europe/Warsaw");
     CHECK(strlen(r.firstRejected) < sizeof r.firstRejected);
@@ -1474,7 +1508,7 @@ TEST_CASE("legacy: names MQTT cannot carry are renamed, the legacy segment kept 
     setVolt(w, 7, k.legacy, 0, 0.0f, 1.0f, "", "");
     n.putBlob("voltsCfg", "volts", w);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 0);
     CHECK(r.imported == 3);
     CHECK(std::string(c.valves[2].name) == k.name);
@@ -1495,7 +1529,7 @@ TEST_CASE("legacy: names MQTT cannot carry are renamed, the legacy segment kept 
   setValve(v, 1, "a/\x01", 1);
   n.putBlob("valvesCfg", "valves", v);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.renamedValves == 0);
   CHECK(r.rejected == 1);
   CHECK(first(r) == "valvesCfg/valves.2.name");
@@ -1511,7 +1545,7 @@ TEST_CASE("legacy: a renamed valve that clashes loses its name and its override"
   setValve(v, 4, "Bad/WC", 1);
   n.putBlob("valvesCfg", "valves", v);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(std::string(c.valves[0].name) == "Bad_WC");
   CHECK(std::string(c.valves[0].topic) == "Bad/WC");
   CHECK(c.valves[4].name[0] == '\0');
@@ -1535,7 +1569,7 @@ TEST_CASE("legacy: the volts blob of 1.4.0 (448 bytes) is imported (W18-3)") {
     w.resize(size);
     n.putBlob("voltsCfg", "volts", w);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.voltsBlob448 == (size == 448));
     CHECK(r.imported == 1);
     CHECK(r.rejected == 0);
@@ -1562,7 +1596,7 @@ TEST_CASE("legacy: valvesCtrl counts PI valves and window contacts (W18-4)") {
     FakeNvs n;
     n.putBlob("valvesCtrlCfg", "valvesCtrl", ctrl(elem));
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.piValves == 2);
     CHECK(r.windowValves == 1);
     CHECK(r.dropped == (kDroppedPi | kDroppedWindow));
@@ -1576,7 +1610,7 @@ TEST_CASE("legacy: valvesCtrl counts PI valves and window contacts (W18-4)") {
     b[5 * 20] = 0x10;
     n.putBlob("valvesCtrlCfg", "valvesCtrl", b);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.piValves == 0);
     CHECK(r.windowValves == 1);
     CHECK(r.dropped == kDroppedWindow);
@@ -1586,7 +1620,7 @@ TEST_CASE("legacy: valvesCtrl counts PI valves and window contacts (W18-4)") {
     FakeNvs n;
     n.putBlob("valvesCtrlCfg", "valvesCtrl", std::vector<uint8_t>(size, 0x11));
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.rejected == 1);
     CHECK(first(r) == "valvesCtrlCfg/valvesCtrl");
     CHECK(r.piValves == 0);
@@ -1601,7 +1635,7 @@ TEST_CASE("legacy: messenger, DS18 timeout and the legacy failsafe are reported 
     FakeNvs n;
     n.putInt("msgCfg", "msgFlags", flags);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.dropped == ((flags & 3) != 0 ? kDroppedMessenger : 0));
     CHECK(r.ignored == 1);
   }
@@ -1609,7 +1643,7 @@ TEST_CASE("legacy: messenger, DS18 timeout and the legacy failsafe are reported 
     FakeNvs n;
     n.putInt("protCfg", "brokerMQF", 0x02);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.dropped == kDroppedDs18Timeout);
     CHECK_FALSE(r.legacyFailsafeEnabled);
     CHECK_FALSE(r.legacyFailsafeValid);
@@ -1622,7 +1656,7 @@ TEST_CASE("legacy: messenger, DS18 timeout and the legacy failsafe are reported 
     n.putInt("protCfg", "brokerMQTO", 120);
     n.putInt("protCfg", "brokerMQToPos", 10);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.failsafe.timeoutMin == 60);
     for (const ValveConfig& v : c.valves) CHECK(v.failsafePct == 50);
     CHECK(r.legacyFailsafeValid);
@@ -1638,7 +1672,7 @@ TEST_CASE("legacy: messenger, DS18 timeout and the legacy failsafe are reported 
     FakeNvs n;
     n.putInt("protCfg", "brokerMQToPos", 30);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(r.legacyFailsafeValid);
     CHECK_FALSE(r.legacyFailsafeEnabled);
     CHECK(r.legacyFailsafeTimeoutMin == 0);
@@ -1646,7 +1680,7 @@ TEST_CASE("legacy: messenger, DS18 timeout and the legacy failsafe are reported 
     CHECK(r.dropped == 0);
     FakeNvs m;
     m.putInt("protCfg", "brokerMQTO", 45);
-    const ImportReport r2 = importLegacyConfig(m, c);
+    const ImportReport r2 = importLegacyConfig(m, c, gScratch, sizeof gScratch);
     CHECK(r2.legacyFailsafeValid);
     CHECK(r2.legacyFailsafeTimeoutMin == 45);
     CHECK(r2.legacyFailsafePct == 0);
@@ -1668,7 +1702,7 @@ TEST_CASE("legacy: syslog levels 1-3 were debug verbosity and become 3 (E27-1)")
     n.putInt("netCfg", "syslogEnable", k.legacy);
     n.putInt("netCfg", "sysLogIp", 0x0901A8C0);
     Config c;
-    const ImportReport r = importLegacyConfig(n, c);
+    const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
     CHECK(c.syslog.level == k.level);
     CHECK(r.syslogDebug == k.debug);
     CHECK(r.rejected == (k.ok ? 0 : 1));
@@ -1740,7 +1774,7 @@ TEST_CASE("legacy: a typical device reports its dropped features in one import")
   n.putBlob("valvesCtrlCfg", "valvesCtrl", ctrl);
   n.putInt("msgCfg", "msgFlags", 1);
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.dropped == (kDroppedPi | kDroppedMessenger | kDroppedDs18Timeout |
                       kDroppedLegacyFailsafe));
   CHECK(r.piValves == 1);

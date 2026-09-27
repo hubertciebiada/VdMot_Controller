@@ -130,10 +130,14 @@ struct ImportReport {
 // ("protCfg/brokerMQF"), cleared valve names and overrides
 // ("valvesCfg/valves.<n>.name|topic"), sensor ids, active flags and names
 // ("tempsCfg/temps.<n>.id|active|name", volts alike). The result always
-// passes validateConfig(). The temps blob buffer (1496 B) is static, so the
-// function is not reentrant (it runs once at boot under the storage lock);
-// the valvesCtrl blob (up to 768 B) is read on the stack.
-ImportReport importLegacyConfig(LegacyNvsReader& nvs, Config& out);
+// passes validateConfig(). The caller lends `scratch` for the temps blob
+// (kLegacyTempsBlob bytes or more; the glue passes the config blob buffer of
+// storage, unused while it imports under the storage lock): 1.5 KB for a
+// function that runs once at boot is too much for a static and for the
+// caller's stack. Without that room the temps blob is not read. The
+// valvesCtrl blob (up to 768 B) is read on the stack.
+ImportReport importLegacyConfig(LegacyNvsReader& nvs, Config& out, uint8_t* scratch,
+                                size_t scratchCap);
 
 // The import report document (/sys/import.json):
 // {"imported":57,"rejected":2,"ignored":14,"firstRejected":"valvesCfg/valves.5.name",

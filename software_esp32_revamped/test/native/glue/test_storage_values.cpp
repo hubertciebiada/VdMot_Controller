@@ -390,6 +390,23 @@ TEST_CASE("storage import: a legacy blob of exactly its size is read") {
   CHECK(std::string(l.cfg.valves[0].name) == "Bad");
 }
 
+TEST_CASE("storage import: the 1.5 KB temps blob is read into the config blob buffer") {
+  glue::begin();
+  std::vector<uint8_t> temps(vdm::kLegacyTempsBlob, 0);
+  memcpy(temps.data() + 33 * 44, "Flur", 4);  // the last of 34 elements of 44 bytes
+  temps[33 * 44 + 12] = 25;                    // offset 2.5 C
+  fakes::nvs().setBlob("tempsCfg", "temps", temps);
+  const Load l = load();
+  CHECK(l.src == storage::LoadSource::Imported);
+  CHECK(l.report.imported == 1);
+  CHECK(std::string(l.cfg.temps[33].name) == "Flur");
+  CHECK(l.cfg.temps[33].offset == 25);
+  // The same buffer encoded the save afterwards: the stored blob holds the imported config.
+  const Load again = load();
+  CHECK(again.src == storage::LoadSource::Stored);
+  CHECK(std::string(again.cfg.temps[33].name) == "Flur");
+}
+
 TEST_CASE("storage import: the last calibration time is stored only when the import has one") {
   glue::begin();
   fakes::nvs().setStr("sysCfg", "stName", "Legacy");

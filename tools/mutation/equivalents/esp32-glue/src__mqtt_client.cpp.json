@@ -109,6 +109,6 @@
   {"line": 1059, "col": 18, "original": "false", "replacement": "true", "text": "gFullRunning = false;", "reason": "the forced full publish after the connect sets gFullRunning and gFullCursor in the first pass"},
   {"line": 1060, "col": 17, "original": "0", "replacement": "1", "text": "gFullCursor = 0;", "reason": "the forced full publish after the connect sets gFullRunning and gFullCursor in the first pass"},
   {"line": 1064, "col": 46, "original": "0", "replacement": "1", "text": "if (gCfg.mqtt.host[0] == '\\0' || gLwtTopic[0] == '\\0') {", "reason": "the LWT topic is never empty or one character long ('<root>/status', root at least 'VdMotFBH')"},
-  {"line": 1117, "col": 19, "original": "0", "replacement": "1", "text": "gInboundCount = 0;", "reason": "connect() sets gInboundCount to 0 before the next drainInbound()"},
-  {"line": 1152, "col": 24, "original": "true", "replacement": "false", "text": "gOfflineSent = true;", "reason": "after the first pass the session is closed: another disconnectClean() and setState(Disabled) change nothing"}
+  {"line": 1119, "col": 19, "original": "0", "replacement": "1", "text": "gInboundCount = 0;", "reason": "connect() sets gInboundCount to 0 before the next drainInbound()"},
+  {"line": 1154, "col": 24, "original": "true", "replacement": "false", "text": "gOfflineSent = true;", "reason": "after the first pass the session is closed: another disconnectClean() and setState(Disabled) change nothing"}
 ]

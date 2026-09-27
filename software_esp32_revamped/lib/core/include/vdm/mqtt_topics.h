@@ -138,6 +138,12 @@ struct Subscription {
 size_t buildSubscriptions(const TopicContext& ctx, MqttMode mode, const char* haPrefix,
                           const char segments[kValveCount][kSegmentMax + 1], Subscription* out,
                           size_t cap);
+// Entry `index` (0-based) of buildSubscriptions() into `out`; false when there
+// is no such entry. The glue subscribes one filter at a time and keeps no
+// table of all of them.
+bool buildSubscription(const TopicContext& ctx, MqttMode mode, const char* haPrefix,
+                       const char segments[kValveCount][kSegmentMax + 1], size_t index,
+                       Subscription& out);
 
 enum class InboundKind : uint8_t {
   None,            // not one of our topics

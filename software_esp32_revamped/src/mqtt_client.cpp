@@ -1088,10 +1088,12 @@ bool connect(uint32_t now) {
   gEcho.reset();
   gButtons.reset();
   publishRaw(gLwtTopic, "online", true);
-  static vdm::Subscription subs[vdm::kMaxSubscriptions];
-  const size_t n = vdm::buildSubscriptions(gTopics, gCfg.mqtt.mode, gCfg.mqtt.discoveryPrefix,
-                                           gSegments, subs, vdm::kMaxSubscriptions);
-  for (size_t i = 0; i < n; ++i) gClient.subscribe(subs[i].filter, subs[i].qos);
+  static vdm::Subscription sub;  // one filter at a time: subscribe() copies it into the packet
+  size_t i = 0;
+  while (vdm::buildSubscription(gTopics, gCfg.mqtt.mode, gCfg.mqtt.discoveryPrefix, gSegments,
+                                i++, sub)) {
+    gClient.subscribe(sub.filter, sub.qos);
+  }
   gScheduler.onConnected(now);
   gConnected = true;
   gOfflineSent = false;

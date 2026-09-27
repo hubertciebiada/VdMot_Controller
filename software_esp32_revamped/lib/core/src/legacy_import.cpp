@@ -71,7 +71,8 @@ const DroppedKey kDropped[] = {
 
 class Importer {
  public:
-  Importer(LegacyNvsReader& nvs, Config& c, ImportReport& r) : nvs_(nvs), c_(c), r_(r) {}
+  Importer(LegacyNvsReader& nvs, Config& c, ImportReport& r, uint8_t* scratch, size_t scratchCap)
+      : nvs_(nvs), c_(c), r_(r), scratch_(scratch), scratchCap_(scratchCap) {}
 
   void run() {
     importSys();
@@ -426,8 +427,9 @@ class Importer {
   }
 
   void importTemps() {
-    static uint8_t blob[kLegacyTempsBlob];  // 1.5 KB: keep it off the caller's stack
-    if (!readBlob("tempsCfg", "temps", blob, sizeof blob)) return;
+    uint8_t* blob = scratch_;  // lent by the caller (legacy_import.h)
+    if (blob == nullptr || scratchCap_ < kLegacyTempsBlob) return;
+    if (!readBlob("tempsCfg", "temps", blob, kLegacyTempsBlob)) return;
     imported();
     for (size_t i = 0; i < kTempSlotCount; ++i) {
       const uint8_t* e = blob + i * kTempElem;
@@ -612,14 +614,17 @@ class Importer {
   LegacyNvsReader& nvs_;
   Config& c_;
   ImportReport& r_;
+  uint8_t* scratch_;
+  size_t scratchCap_;
 };
 
 }  // namespace
 
-ImportReport importLegacyConfig(LegacyNvsReader& nvs, Config& out) {
+ImportReport importLegacyConfig(LegacyNvsReader& nvs, Config& out, uint8_t* scratch,
+                                size_t scratchCap) {
   ImportReport report;
   setDefaults(out);
-  Importer(nvs, out, report).run();
+  Importer(nvs, out, report, scratch, scratchCap).run();
   return report;
 }
 

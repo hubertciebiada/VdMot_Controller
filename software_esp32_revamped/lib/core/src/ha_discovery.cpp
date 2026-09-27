@@ -616,11 +616,10 @@ void writeEntity(const DiscoveryContext& ctx, const char* station, const Entity&
   if (e.category == Category::Diagnostic) jw.kv("entity_category", "diagnostic");
   if (e.category == Category::Config) jw.kv("entity_category", "config");
   if (e.eventTypes) {
-    static const char* names[kEventTypesMax];  // the MQTT task only: kept off its stack
-    const size_t n = eventMqttNames(names, kEventTypesMax);
+    const size_t n = eventMqttNames(nullptr, 0);
     jw.key("event_types");
     jw.beginArray();
-    for (size_t i = 0; i < n && i < kEventTypesMax; ++i) jw.value(names[i]);
+    for (size_t i = 0; i < n && i < kEventTypesMax; ++i) jw.value(eventMqttName(i));
     jw.endArray();
     if (n > kEventTypesMax) poison(jw);  // never a partial list
   }
@@ -852,6 +851,33 @@ TopicClass classifyDiscoveryTopic(const DiscoveryContext& ctx, const char* topic
 
 // ---------------------------------------------------------------- context
 
+namespace {
+
+// The snapshot-dependent parts, one item at a time: buildDiscoveryContext() fills a context
+// with them, discoveryInputKey() hashes them without building a context (3.3 KB). `in.cfg`
+// is set.
+
+// Valve i: the STM reports sensor 1 / sensor 2 assigned, and its assignments are settled.
+void valveSensors(const DiscoveryInputs& in, uint8_t i, bool& temp1, bool& temp2, bool& known) {
+  temp1 = in.valves != nullptr && in.valves[i].temp1 != kTempUnassigned;
+  temp2 = in.valves != nullptr && in.valves[i].temp2 != kTempUnassigned;
+  known = in.valves != nullptr && in.sensorsSettled && in.valves[i].known;
+}
+
+bool sensorPublished(const DiscoveryInputs& in, ItemKind kind, uint8_t i) {
+  return kind == ItemKind::Temp ? tempPublished(*in.cfg, in.valves, i) : voltAnnounced(*in.cfg, i);
+}
+
+// The published segment of sensor slot i; 0 when it is not known (unnamed and not on the bus).
+size_t sensorSegment(const DiscoveryInputs& in, ItemKind kind, uint8_t i, char* out, size_t cap) {
+  const Config& cfg = *in.cfg;
+  const int bus = kind == ItemKind::Temp ? findTempBus(in.temps, in.tempCount, cfg.temps[i].id)
+                                         : findVoltBus(in.volts, in.voltCount, cfg.volts[i].id);
+  return sensorTopicSegment(cfg, kind, i, bus, out, cap);
+}
+
+}  // namespace
+
 bool buildDiscoveryContext(const DiscoveryInputs& in, DiscoveryContext& c) {
   c = DiscoveryContext{};
   if (in.cfg == nullptr) return false;
@@ -877,22 +903,15 @@ bool buildDiscoveryContext(const DiscoveryInputs& in, DiscoveryContext& c) {
     v.active = cfg.valves[i].active;
     itemSegment(cfg, ItemKind::Valve, i, v.segment, sizeof v.segment);
     copyString(v.name, sizeof v.name, cfg.valves[i].name);
-    if (in.valves != nullptr) {
-      v.hasTemp1 = in.valves[i].temp1 != kTempUnassigned;
-      v.hasTemp2 = in.valves[i].temp2 != kTempUnassigned;
-      v.tempsKnown = in.sensorsSettled && in.valves[i].known;
-    } else {
-      v.tempsKnown = false;
-    }
+    valveSensors(in, i, v.hasTemp1, v.hasTemp2, v.tempsKnown);
   }
   for (uint8_t i = 0; i < kTempSlotCount; ++i) {
     const TempSlotConfig& s = cfg.temps[i];
     DiscoveryContext::Sensor& d = c.temps[i];
     d.active = s.active && !isZero(s.id);
-    d.published = tempPublished(cfg, in.valves, i);
+    d.published = sensorPublished(in, ItemKind::Temp, i);
     itemSegment(cfg, ItemKind::Temp, i, d.segment, sizeof d.segment);
-    d.topicKnown = sensorTopicSegment(cfg, ItemKind::Temp, i, findTempBus(in.temps, in.tempCount, s.id),
-                                      d.topicSegment, sizeof d.topicSegment) > 0;
+    d.topicKnown = sensorSegment(in, ItemKind::Temp, i, d.topicSegment, sizeof d.topicSegment) > 0;
     copyString(d.name, sizeof d.name, s.name);
     if (!isZero(s.id)) formatOneWireId(s.id, d.id, sizeof d.id);
   }
@@ -900,10 +919,9 @@ bool buildDiscoveryContext(const DiscoveryInputs& in, DiscoveryContext& c) {
     const VoltSlotConfig& s = cfg.volts[i];
     DiscoveryContext::Sensor& d = c.volts[i];
     d.active = voltAnnounced(cfg, i);
-    d.published = d.active;
+    d.published = sensorPublished(in, ItemKind::Volt, i);
     itemSegment(cfg, ItemKind::Volt, i, d.segment, sizeof d.segment);
-    d.topicKnown = sensorTopicSegment(cfg, ItemKind::Volt, i, findVoltBus(in.volts, in.voltCount, s.id),
-                                      d.topicSegment, sizeof d.topicSegment) > 0;
+    d.topicKnown = sensorSegment(in, ItemKind::Volt, i, d.topicSegment, sizeof d.topicSegment) > 0;
     copyString(d.name, sizeof d.name, s.name);
     if (!isZero(s.id)) formatOneWireId(s.id, d.id, sizeof d.id);
     copyString(d.unit, sizeof d.unit, s.unit);
@@ -912,23 +930,29 @@ bool buildDiscoveryContext(const DiscoveryInputs& in, DiscoveryContext& c) {
 }
 
 uint32_t discoveryInputKey(const DiscoveryInputs& in) {
-  static DiscoveryContext c;  // task-local use only (the MQTT task): too large for its stack
-  if (!buildDiscoveryContext(in, c)) return 0;
+  if (in.cfg == nullptr) return 0;
+  // Whole arrays go into the CRC: zeroed first, like the fields of a new context.
   uint32_t crc = 0;
-  for (const DiscoveryContext::Valve& v : c.valves) {
-    const uint8_t b[3] = {v.hasTemp1, v.hasTemp2, v.tempsKnown};
+  for (uint8_t i = 0; i < kValveCount; ++i) {
+    bool temp1, temp2, known;
+    valveSensors(in, i, temp1, temp2, known);
+    const uint8_t b[3] = {temp1, temp2, known};
     crc = crc32(b, sizeof b, crc);
   }
-  for (const DiscoveryContext::Sensor* arr : {c.temps, c.volts}) {
-    const uint8_t n = arr == c.temps ? kTempSlotCount : kVoltSlotCount;
+  for (const ItemKind kind : {ItemKind::Temp, ItemKind::Volt}) {
+    const uint8_t n = kind == ItemKind::Temp ? kTempSlotCount : kVoltSlotCount;
     for (uint8_t i = 0; i < n; ++i) {
-      const uint8_t b[2] = {arr[i].published, arr[i].topicKnown};
+      char seg[sizeof DiscoveryContext::Sensor::topicSegment] = {};
+      const bool topicKnown = sensorSegment(in, kind, i, seg, sizeof seg) > 0;
+      const uint8_t b[2] = {sensorPublished(in, kind, i), topicKnown};
       crc = crc32(b, sizeof b, crc);
-      crc = crc32(reinterpret_cast<const uint8_t*>(arr[i].topicSegment), sizeof arr[i].topicSegment, crc);
+      crc = crc32(reinterpret_cast<const uint8_t*>(seg), sizeof seg, crc);
     }
   }
-  crc = crc32(reinterpret_cast<const uint8_t*>(c.hwVersion), sizeof c.hwVersion, crc);
-  const uint8_t v3 = c.stmV3;
+  char hw[sizeof DiscoveryContext::hwVersion] = {};
+  copyString(hw, sizeof hw, in.stmHw);
+  crc = crc32(reinterpret_cast<const uint8_t*>(hw), sizeof hw, crc);
+  const uint8_t v3 = in.stmProto >= 3;
   return crc32(&v3, 1, crc);
 }
 

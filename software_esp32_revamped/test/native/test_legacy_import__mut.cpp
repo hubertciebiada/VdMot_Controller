@@ -15,6 +15,9 @@ using namespace vdm;
 
 namespace {
 
+// What the glue lends the importer for the temps blob (storage's config blob buffer).
+uint8_t gScratch[kLegacyTempsBlob];
+
 // In-memory NVS with string keys only.
 class StrNvs : public LegacyNvsReader {
  public:
@@ -46,7 +49,7 @@ TEST_CASE("legacy: a station name starting with a control character is rejected,
   StrNvs n;
   n.strs["sysCfg/stName"] = "\x01VdMot";
   Config c;
-  const ImportReport r = importLegacyConfig(n, c);
+  const ImportReport r = importLegacyConfig(n, c, gScratch, sizeof gScratch);
   CHECK(r.rejected == 1);
   CHECK(r.imported == 0);
   CHECK(std::string(r.firstRejected) == "sysCfg/stName");

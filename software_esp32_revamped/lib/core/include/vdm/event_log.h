@@ -140,6 +140,8 @@ EventMqtt eventMqtt(EventCode c);  // No for unknown codes
 // Names of every code with eventMqtt() != No, in registry order (the HA
 // event entity's event_types). Writes at most cap names, returns the total.
 size_t eventMqttNames(const char** out, size_t cap);
+// Name `index` of that list (no table of all of them); nullptr past its end.
+const char* eventMqttName(size_t index);
 
 // RebootRequested arg1 (the numbers are the existing contract).
 enum class RebootReason : uint8_t { User = 0, Ota = 1, NetWatchdog = 2, FactoryReset = 3,

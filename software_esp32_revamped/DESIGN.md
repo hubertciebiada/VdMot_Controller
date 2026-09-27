@@ -643,7 +643,16 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   Everything else is static or on a task stack.
 - Big objects stay off the stacks: `vdm::Reply` (1 KB), `StmSnapshot`,
   `Config`, `DiscoveryContext`.
-- No per-operation heap: PubSubClient's buffer is set once (2304 B,
+- Static DRAM counts 1:1 against the heap, so a buffer needed only briefly is
+  no static: `connect()` subscribes one filter at a time, `discoveryInputKey()`
+  hashes item by item without a `DiscoveryContext`, the HA event types are
+  written name by name, the legacy import reads the temps blob (1.5 KB) into
+  the config blob buffer of storage, and the last_good copy takes its 1 KiB
+  chunk buffer from the heap for each pass (a pass without one copies
+  nothing). Our statics above 256 B are long-lived state: the command queue,
+  the MQTT event limiter, inbound queue, button gate, scheduler, calibration
+  tracker and published values, the image index.
+- No other per-operation heap: PubSubClient's buffer is set once (2304 B,
   discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;
   `/api/health` uses its own 1 KB buffer of the web working set. POST bodies
@@ -678,10 +687,12 @@ Topic tables, payloads, subscriptions, retained handling and broker settings:
   segments `itemSegment()` (override, name with ' ' -> '_', 1-based index);
   unnamed temp/volt slots without override use 1 + STM bus index
   (`sensorTopicSegment`).
-- Subscriptions (`buildSubscriptions`, at most 29): the target wildcard
-  filters (QoS 1), the same filters spelled out for every valve whose segment
-  contains `/`, `<main>cmd/#` (QoS 0), and in mode 2 `homeassistant/status`
-  plus `<discoveryPrefix>/status` when different (QoS 1).
+- Subscriptions (`buildSubscriptions`, at most 29; `connect()` builds and
+  subscribes one entry at a time with `buildSubscription`): the target
+  wildcard filters (QoS 1), the same filters spelled out for every valve
+  whose segment contains `/`, `<main>cmd/#` (QoS 0), and in mode 2
+  `homeassistant/status` plus `<discoveryPrefix>/status` when different
+  (QoS 1).
 - Inbound (`decideInbound`): configured segments first (multi-level), then
   the number 1..12; payloads per `parseTargetPayload` (digits with one `.` or
   `,`, <= 16 bytes, `roundTargetPercent`), `OPEN`/`CLOSE`/`STOP`, buttons

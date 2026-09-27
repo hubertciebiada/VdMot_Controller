@@ -217,6 +217,20 @@ TEST_CASE("eventMqttNames lists every published code in registry order") {
   CHECK(eventMqttNames(few, 0) == expected.size());
 }
 
+TEST_CASE("eventMqttName: one name of that list at a time") {
+  std::vector<std::string> expected;
+  for (const CodeRow& r : kTable) {
+    if (r.mqtt != EventMqtt::No) expected.push_back(r.name);
+  }
+  for (size_t i = 0; i < expected.size(); ++i) {
+    CAPTURE(i);
+    REQUIRE(eventMqttName(i) != nullptr);
+    CHECK(expected[i] == eventMqttName(i));
+  }
+  CHECK(eventMqttName(expected.size()) == nullptr);
+  CHECK(eventMqttName(SIZE_MAX) == nullptr);
+}
+
 TEST_CASE("eventReachesMqtt: Always, or WarnPlus at Warning and above") {
   CHECK(eventReachesMqtt(makeEvent(EventCode::CalibOk, Severity::Info, 1, 0, 0, "")));
   CHECK(eventReachesMqtt(makeEvent(EventCode::CalibOk, Severity::Debug, 1, 0, 0, "")));

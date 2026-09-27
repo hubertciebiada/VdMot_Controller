@@ -9,6 +9,8 @@
 #include <nvs_flash.h>
 #include <string.h>
 
+#include <new>
+
 #include <vdm/event_log.h>
 #include <vdm/file_manager.h>
 #include <vdm/image_store.h>
@@ -36,7 +38,7 @@ vdm::Config& gActive = bootAlloc<vdm::Config>();
 volatile uint32_t gRevision = 0;
 uint32_t gBootCount = 0;
 using Blob = ObjArray<uint8_t, vdm::kConfigBlobMax>;
-Blob& gBlob = bootAlloc<Blob>();  // encode/decode scratch, guarded by gCfgMutex
+Blob& gBlob = bootAlloc<Blob>();  // encode/decode and legacy import scratch, guarded by gCfgMutex
 using ExtBlob = ObjArray<uint8_t, vdm::kConfigExtBlobMax>;
 ExtBlob& gExt = bootAlloc<ExtBlob>();  // the same for cfgx
 // Unknown cfgx records (a newer firmware's keys) read at boot and written back
@@ -314,6 +316,22 @@ void stopCopy(bool ok) {
   gCopy.running = false;
 }
 
+// Up to kCopyChunksPerCall chunks of the running copy through `buf` (kCopyChunk bytes).
+void copyChunks(uint8_t* buf) {
+  for (size_t i = 0; i < kCopyChunksPerCall; ++i) {
+    const size_t n = gCopy.src.read(buf, kCopyChunk);
+    if (n == 0) {
+      stopCopy(gCopy.done == gCopy.src.size() && gCopy.done > 0);
+      return;
+    }
+    if (gCopy.dst.write(buf, n) != n) {
+      stopCopy(false);
+      return;
+    }
+    gCopy.done += static_cast<uint32_t>(n);
+  }
+}
+
 // One bounded step of the last_good copy.
 void serviceCopy() {
   if (!gCopy.running) {
@@ -351,19 +369,11 @@ void serviceCopy() {
     }
     gCopy.done = 0;
   }
-  static uint8_t buf[kCopyChunk];
-  for (size_t i = 0; i < kCopyChunksPerCall; ++i) {
-    const size_t n = gCopy.src.read(buf, sizeof buf);
-    if (n == 0) {
-      stopCopy(gCopy.done == gCopy.src.size() && gCopy.done > 0);
-      return;
-    }
-    if (gCopy.dst.write(buf, n) != n) {
-      stopCopy(false);
-      return;
-    }
-    gCopy.done += static_cast<uint32_t>(n);
-  }
+  // The chunk buffer only for this pass: a copy runs once after a flash.
+  uint8_t* buf = new (std::nothrow) uint8_t[kCopyChunk];
+  if (buf == nullptr) return;  // the next pass goes on
+  copyChunks(buf);
+  delete[] buf;
 }
 
 // Validates one unscanned image (reads the whole file; runs in the app task).
@@ -572,7 +582,7 @@ LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, LoadDetails& 
   vdm::setDefaults(out);
 
   NvsLegacyReader reader;
-  report = vdm::importLegacyConfig(reader, out);
+  report = vdm::importLegacyConfig(reader, out, gBlob.data(), sizeof gBlob.items);
   if (report.lastCalibEpoch > 0) gPrefs.putLong64(kKeyLastCalib, report.lastCalibEpoch);
   // "imported" only after the blob is safely stored: a failed save retries
   // the (idempotent) import on the next boot.

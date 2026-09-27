@@ -157,6 +157,26 @@ TEST_CASE("storage last_good copy: 8 KiB per call, the copied image busy until i
   CHECK(storage::deleteImage("fw") == storage::ImageResult::Ok);
 }
 
+TEST_CASE("storage last_good copy: a 1 KiB buffer per pass, a pass without memory copies nothing") {
+  glue::begin();
+  const std::string img = pattern(9000);
+  fakes::fs().put("/stm/fw.bin", img);
+  mount();
+  storage::requestLastGoodCopy("fw");
+  fakes::heap().next = {false};
+  storage::service();  // the copy starts, its buffer does not
+  CHECK(partSize("/stm/last_good.bin.part") == 0);
+  CHECK(fakes::heap().allocated.empty());
+  CHECK(storage::deleteImage("fw") == storage::ImageResult::Busy);
+  storage::service();
+  CHECK(partSize("/stm/last_good.bin.part") == 8192);
+  CHECK(fakes::heap().allocated == std::vector<size_t>{1024});
+  storage::service();
+  CHECK(fakes::fs().read("/stm/last_good.bin") == img);
+  CHECK(fakes::heap().allocated == std::vector<size_t>{1024, 1024});
+  CHECK(fakes::fs().openHandles == 0);
+}
+
 TEST_CASE("storage last_good copy: the image plus 16 KiB must be free") {
   glue::begin();
   fakes::fs().put("/stm/fw.bin", pattern(3000));
