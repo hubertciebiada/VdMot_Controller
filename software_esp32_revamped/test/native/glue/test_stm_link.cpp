@@ -289,6 +289,45 @@ TEST_CASE("stm_link task: a config revision change is applied in the loop") {
   CHECK(stm.requestsOf("sfspo") == std::vector<std::string>{"sfspo 255 255 ", "sfspo 5 50 "});
 }
 
+TEST_CASE("stm_link task: a config change without memory for its copy is applied by the next pass") {
+  glue::begin();
+  sib::storage().loadSource = storage::LoadSource::Stored;
+  glue::FakeStm stm;
+  stm.protocol(3);
+  stm_link::begin();
+  fakes::rtos().onDelay = [](uint32_t) {
+    if (fakes::nowMs() == 9000) {
+      activeValve(5);
+      fakes::heap().next = {false};
+    }
+  };
+  runTask(12000);
+  CHECK(stm.requestsOf("sfspo") == std::vector<std::string>{"sfspo 255 255 ", "sfspo 5 50 "});
+  // the copy of the start and the one of the pass after the refused one
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config), sizeof(vdm::Config)});
+}
+
+TEST_CASE("stm_link task: without memory for the config the session waits, then begins with it") {
+  glue::begin();
+  activeValve(0);
+  sib::stmService().bootTargets.valid[0] = true;
+  sib::stmService().bootTargets.pos[0] = 33;
+  sib::stmService().bootTargets.source[0] = vdm::TargetSource::Mqtt;
+  sib::stmService().bootSource = vdm::RestoreSource::Nvs;
+  stm_link::begin();
+  fakes::heap().next = {false, false};
+  fakes::rtos().stopAfterYields(3);
+  CHECK_THROWS_AS(stm_link::task(nullptr), fakes::YieldLimit);
+  // two waits of 2 ms with the watchdog fed, then the first pass of the loop
+  CHECK(fakes::rtos().delays == std::vector<uint32_t>{2, 2, 2});
+  CHECK(fakes::esp().wdtResets == 3);
+  // the session began with its config: valve 0 active, its target restored
+  const std::vector<vdm::Event> restored = sib::logger().withCode(vdm::EventCode::TargetsRestored);
+  REQUIRE(restored.size() == 1);
+  CHECK(restored[0].arg1 == 1);
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config)});
+}
+
 TEST_CASE("stm_link task: the STM save before an ESP restart reports Saved") {
   glue::begin();
   glue::FakeStm stm;

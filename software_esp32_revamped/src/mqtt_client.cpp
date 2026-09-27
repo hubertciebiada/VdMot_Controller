@@ -65,7 +65,6 @@ PubSubClient gClient(gNet);
 
 // Task-owned copies (static: too large for the stack).
 vdm::Config& gCfg = bootAlloc<vdm::Config>();
-vdm::Config& gNextCfg = bootAlloc<vdm::Config>();  // reloadConfig() scratch
 uint32_t gCfgRevision = 0;
 app::StmSnapshot& gSnap = bootAlloc<app::StmSnapshot>();
 uint32_t gSnapRevision = UINT32_MAX;
@@ -262,11 +261,15 @@ void updateRegulator() {
 }
 
 void reloadConfig() {
-  vdm::Config& next = gNextCfg;
+  // The new config next to the old one only for the comparison: a reload is rare, so a second
+  // copy (2.5 KB) lives on the heap for this moment only.
+  vdm::Config* next = new (std::nothrow) vdm::Config;
+  if (next == nullptr) return;  // the next pass tries again
   gCfgRevision = storage::configRevision();
-  storage::getConfig(next);
-  const bool reconnect = vdm::mqttTopicConfigChanged(next, gCfg);
-  gCfg = next;
+  storage::getConfig(*next);
+  const bool reconnect = vdm::mqttTopicConfigChanged(*next, gCfg);
+  gCfg = *next;
+  delete next;
   vdm::copyString(gTopics.station, sizeof gTopics.station, vdm::mqttRootTopic(gCfg));
   gTopics.pathAsRoot = gCfg.mqtt.pathAsRoot;
   gTopics.separate = gCfg.mqtt.separate;

@@ -12,6 +12,8 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <new>
+
 #include "ping/ping_sock.h"
 
 #include <vdm/event_log.h>
@@ -19,7 +21,6 @@
 #include <vdm/net_trial.h>
 
 #include "board.h"
-#include "boot_alloc.h"
 #include "logger.h"
 #include "ota.h"
 #include "storage.h"
@@ -67,8 +68,11 @@ vdm::NetHealthInfo gHealth;             // guarded by gMux
 bool gTrialActive = false;              // guarded by gMux
 uint32_t gTrialRemainS = 0;             // guarded by gMux
 
-// App task only.
-vdm::Config& gCfg = bootAlloc<vdm::Config>();
+// App task only. The parts of the config net reads, kept by begin() and reconfigure(): the
+// restart rules compare them with the next config.
+vdm::NetConfig gNet;
+vdm::TimeConfig gTime;  // configTzTime() keeps pointers to its strings
+char gStation[vdm::kStationNameMax + 1] = "VdMot";
 vdm::NetWatchdog gWatchdog;
 vdm::NetReachability gReach;
 vdm::NetTrial gTrial;
@@ -97,10 +101,10 @@ void onPingSuccess(esp_ping_handle_t, void*) { gPingReplies = gPingReplies + 1; 
 bool ethUp() { return gEthLink && (gEthIp || gStaticIp); }
 
 void applyStaticIp() {
-  if (gCfg.net.dhcp) return;
+  if (gNet.dhcp) return;
   // Without a DNS server the gateway resolves (NTP, broker names).
-  ETH.config(IPAddress(gCfg.net.ip), IPAddress(gCfg.net.gateway), IPAddress(gCfg.net.mask),
-             IPAddress(vdm::effectiveDns(gCfg.net)));
+  ETH.config(IPAddress(gNet.ip), IPAddress(gNet.gateway), IPAddress(gNet.mask),
+             IPAddress(vdm::effectiveDns(gNet)));
 }
 
 void onEvent(arduino_event_id_t event, arduino_event_info_t info) {
@@ -162,13 +166,13 @@ void refreshInfo(uint32_t nowMs) {
   }
 }
 
-void applyTime(const vdm::Config& cfg) {
-  if (cfg.time.ntpServer[0] != '\0') {
-    // configTzTime copies neither string; the config copy (gCfg) outlives it.
-    configTzTime(cfg.time.tzPosix, cfg.time.ntpServer);
+void applyTime() {
+  if (gTime.ntpServer[0] != '\0') {
+    // configTzTime copies neither string; gTime outlives it.
+    configTzTime(gTime.tzPosix, gTime.ntpServer);
   } else {
     if (sntp_enabled()) sntp_stop();
-    setenv("TZ", cfg.time.tzPosix, 1);
+    setenv("TZ", gTime.tzPosix, 1);
     tzset();
   }
 }
@@ -255,7 +259,7 @@ void noteEvidence(uint32_t nowMs, bool mqttConnected, bool synced) {
   const uint32_t gotIp = gGotIpCount;
   if (gotIp != gGotIpSeen) {
     gGotIpSeen = gotIp;
-    if (gCfg.net.dhcp) gReach.onEvidence(vdm::NetEvidence::DhcpLease, nowMs);
+    if (gNet.dhcp) gReach.onEvidence(vdm::NetEvidence::DhcpLease, nowMs);
   }
 }
 
@@ -277,14 +281,31 @@ void reportReachability(uint32_t nowMs) {
   }
 }
 
+// Stores `base` (null: the active config) with the trial fields of `fields`.
+// A revert is rare, so its copy of the config (2.5 KB) lives on the heap for
+// this moment only. False when nothing was stored, also for want of memory.
+bool storeNetFields(const vdm::Config* base, const vdm::NetConfig& fields) {
+  vdm::Config* c = new (std::nothrow) vdm::Config;
+  if (c == nullptr) return false;
+  if (base != nullptr) {
+    *c = *base;
+  } else {
+    storage::getConfig(*c);
+  }
+  vdm::applyNetTrialFields(c->net, fields);
+  const bool ok = storage::applyConfig(*c, nullptr, 0);
+  delete c;
+  return ok;
+}
+
 // The trial settings failed (or the user asked): the previous fields go back
 // into the stored config and the ESP restarts. A failed persist leaves the
 // record Running, so the next boot reverts before the interfaces start.
 void revertTrial(vdm::NetTrialRevert reason) {
-  vdm::applyNetTrialFields(gCfg.net, gTrialPrev);
+  vdm::applyNetTrialFields(gNet, gTrialPrev);
   char addr[16];
   vdm::formatNetAddress(gTrialPrev, addr, sizeof addr);
-  const bool ok = storage::applyConfig(gCfg, nullptr, 0);
+  const bool ok = storeNetFields(nullptr, gTrialPrev);
   if (ok) storage::clearNetTrial();
   logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve, static_cast<int32_t>(reason),
               ok ? 0 : -1, addr);
@@ -379,11 +400,17 @@ void publishHealth(uint32_t nowMs) {
   portEXIT_CRITICAL(&gMux);
 }
 
+void keep(const vdm::Config& cfg) {
+  gNet = cfg.net;
+  gTime = cfg.time;
+  vdm::copyString(gStation, sizeof gStation, cfg.station);
+}
+
 }  // namespace
 
 void begin(vdm::Config& cfg) {
   beginTrial(cfg, millis());
-  gCfg = cfg;
+  keep(cfg);
   // DHCP needs a host name; the station name may hold spaces and UTF-8.
   vdm::buildHostname(cfg.station, gHostname, sizeof gHostname);
   gStaticIp = !cfg.net.dhcp;
@@ -397,7 +424,7 @@ void begin(vdm::Config& cfg) {
     logger::log(vdm::EventCode::NetDown, vdm::kNoValve, 1, 0, "eth init failed");
   }
   sntp_set_time_sync_notification_cb(onTimeSync);
-  applyTime(gCfg);
+  applyTime();
   gClockRefEpoch = time(nullptr);
   gClockRefMs = millis();
   publishHealth(millis());
@@ -528,9 +555,9 @@ bool timeValid() { return time(nullptr) >= kMinValidEpoch; }
 uint32_t lastSyncEpoch() { return gLastSyncEpoch; }
 
 void reconfigure(const vdm::Config& cfg) {
-  uint8_t restart = vdm::configRestartReasons(gCfg, cfg);
+  uint8_t restart = vdm::configRestartReasons(gNet, gStation, cfg);
   bool unstored = false;
-  if (vdm::netTrialRequired(gCfg.net, cfg.net)) {
+  if (vdm::netTrialRequired(gNet, cfg.net)) {
     vdm::NetTrialRecord r;
     r.trialCrc = vdm::netTrialFieldsCrc(cfg.net);
     if (!gArmedThisBoot) {
@@ -541,7 +568,7 @@ void reconfigure(const vdm::Config& cfg) {
         logger::log(vdm::EventCode::NetTrialConfirmed, vdm::kNoValve,
                     static_cast<int32_t>(upFor / 1000), 1);
       }
-      gArmedPrev = gCfg.net;
+      gArmedPrev = gNet;
       gArmedThisBoot = true;
     }
     // Two changes before the restart: the first one's previous settings are
@@ -555,24 +582,24 @@ void reconfigure(const vdm::Config& cfg) {
                   static_cast<int32_t>(vdm::kNetTrialWindowMs / 1000), 0, addr);
     }
   }
-  const bool timeChanged = strcmp(cfg.time.ntpServer, gCfg.time.ntpServer) != 0 ||
-                           strcmp(cfg.time.tzPosix, gCfg.time.tzPosix) != 0;
-  gCfg = cfg;
+  const bool timeChanged = strcmp(cfg.time.ntpServer, gTime.ntpServer) != 0 ||
+                           strcmp(cfg.time.tzPosix, gTime.tzPosix) != 0;
+  keep(cfg);
   if (unstored) {
     // Without its record the next boot would run the new settings without a
     // trial: the stored config gets back the settings in use, and no record
     // of an earlier change of this boot is left either.
     storage::clearNetTrial();
-    vdm::applyNetTrialFields(gCfg.net, gArmedPrev);
+    vdm::applyNetTrialFields(gNet, gArmedPrev);
     char addr[16];
     vdm::formatNetAddress(gArmedPrev, addr, sizeof addr);
-    const bool ok = storage::applyConfig(gCfg, nullptr, 0);
+    const bool ok = storeNetFields(&cfg, gArmedPrev);
     logger::log(vdm::EventCode::NetTrialReverted, vdm::kNoValve,
                 static_cast<int32_t>(vdm::NetTrialRevert::NotStored), ok ? 0 : -1, addr);
     restart &= static_cast<uint8_t>(~vdm::kRestartNetwork);
   }
   gWatchdog.configure(cfg.net.reconnectTimeoutMin);
-  if (timeChanged) applyTime(gCfg);
+  if (timeChanged) applyTime();
   // Address and hostname changes need a clean start of the network stack
   // (the Arduino ETH driver cannot be re-initialised): restart the ESP
   // after the HTTP response went out.

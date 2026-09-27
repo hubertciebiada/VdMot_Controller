@@ -740,10 +740,15 @@ bool netTrialRequired(const NetConfig& before, const NetConfig& after) {
 }
 
 uint8_t configRestartReasons(const Config& before, const Config& after) {
-  uint8_t r = netTrialRequired(before.net, after.net) ? kRestartNetwork : 0;
+  return configRestartReasons(before.net, before.station, after);
+}
+
+uint8_t configRestartReasons(const NetConfig& beforeNet, const char* beforeStation,
+                             const Config& after) {
+  uint8_t r = netTrialRequired(beforeNet, after.net) ? kRestartNetwork : 0;
   char a[sizeof(Config::station)];
   char b[sizeof(Config::station)];
-  buildHostname(before.station, a, sizeof a);
+  buildHostname(beforeStation, a, sizeof a);
   buildHostname(after.station, b, sizeof b);
   if (strcmp(a, b) != 0) r |= kRestartHostname;
   return r;

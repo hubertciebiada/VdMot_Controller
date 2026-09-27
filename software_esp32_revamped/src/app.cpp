@@ -49,9 +49,7 @@ volatile vdm::StmSaveState gSaveState = vdm::StmSaveState::Idle;
 portMUX_TYPE gCalibMux = portMUX_INITIALIZER_UNLOCKED;
 CalibInfo gCalibInfo;
 
-// App task working copies (static: too large for the task stack).
-vdm::Config& gCfg = bootAlloc<vdm::Config>();
-uint32_t gCfgRevision = 0;
+uint32_t gCfgRevision = 0;  // the config the app task's modules follow
 
 // Tasks whose stack high-water mark is watched: ours, AsyncTCP's (created by
 // the first AsyncServer::begin) and the Arduino event task (runs net's event
@@ -107,13 +105,18 @@ void startTask(const TaskSpec& spec, TaskFunction_t fn, size_t slot) {
 }
 
 // Live effects of a config change (DESIGN.md "Config schema", apply
-// semantics). The stm and mqtt tasks follow configRevision() themselves.
+// semantics). The stm and mqtt tasks follow configRevision() themselves. The
+// logger and net keep what they need, so the copy (2.5 KB) lives on the heap
+// only for this call; without memory for it the next pass applies the change.
 void applyConfigChange() {
+  vdm::Config* cfg = new (std::nothrow) vdm::Config;
+  if (cfg == nullptr) return;
   gCfgRevision = storage::configRevision();
-  storage::getConfig(gCfg);
-  logger::configure(gCfg.syslog.level, gCfg.syslog.server, gCfg.syslog.port, gCfg.persistLog,
-                    gCfg.station);
-  net::reconfigure(gCfg);
+  storage::getConfig(*cfg);
+  logger::configure(cfg->syslog.level, cfg->syslog.server, cfg->syslog.port, cfg->persistLog,
+                    cfg->station);
+  net::reconfigure(*cfg);
+  delete cfg;
 }
 
 // Every 10 s: heap, fragmentation and stack alarms (vdm::ResourceMonitor).
@@ -314,10 +317,14 @@ void setup() {
   if (resetOk) storage::setFactoryLatched(true);
   if (pin == vdm::FactoryPinDecision::ClearLatch) storage::setFactoryLatched(false);
   gFactoryLatched = resetOk || pin == vdm::FactoryPinDecision::KeepLatched;
+  // The boot config, on the heap until the modules below kept what they need.
+  vdm::Config* bootCfg = new (std::nothrow) vdm::Config;
+  if (bootCfg == nullptr) abort();  // out of memory at boot: nothing sensible to do
+  vdm::Config& cfg = *bootCfg;
   vdm::ImportReport report;
   storage::LoadDetails loadDetails;
-  storage::loadConfig(gCfg, report, loadDetails);
-  storage::setActiveConfig(gCfg);
+  storage::loadConfig(cfg, report, loadDetails);
+  storage::setActiveConfig(cfg);
   gCfgRevision = storage::configRevision();
 
   const uint32_t boots = storage::incrementBootCount();
@@ -333,12 +340,13 @@ void setup() {
                 resetOk ? 0 : -1, "factory");
   }
   if (pin == vdm::FactoryPinDecision::KeepLatched) logger::log(vdm::EventCode::FactoryResetSkipped);
-  logger::configure(gCfg.syslog.level, gCfg.syslog.server, gCfg.syslog.port, gCfg.persistLog,
-                    gCfg.station);
+  logger::configure(cfg.syslog.level, cfg.syslog.server, cfg.syslog.port, cfg.persistLog,
+                    cfg.station);
 
   stm_service::begin();
 
-  net::begin(gCfg);
+  net::begin(cfg);
+  delete bootCfg;
   ota::begin();
   mqtt::begin();
 

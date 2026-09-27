@@ -73,7 +73,9 @@ bool configSavedSinceBoot();
 
 // Thread-safe config holder (all tasks). Copies in/out under a mutex.
 void setActiveConfig(const vdm::Config& c);
-void getConfig(vdm::Config& out);   // ~2 KB: callers use static storage
+void getConfig(vdm::Config& out);   // ~2.5 KB: callers use static or heap storage
+// The calibration schedule of the active config (stm_service reads nothing else).
+vdm::CalibScheduleConfig calibConfig();
 uint32_t configRevision();          // +1 on every successful apply
 // Validates, persists (NVS cfgx, then cfg) and publishes a new config. On
 // failure nothing changes and `path` names the offending key ("nvs" when a

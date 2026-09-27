@@ -98,17 +98,22 @@ vdm::StmSession& newSession() {
 
 // ~12 KB (config, snapshot, reply): allocated once at boot, like bootAlloc().
 vdm::StmSession& gSession = newSession();
-vdm::Config& gCfg = bootAlloc<vdm::Config>();
 uint32_t gCfgRevision = 0;
 
-void reloadConfig() {
+// The session keeps what it needs of the config, so the copy (2.5 KB) lives on
+// the heap only while it is applied. False without memory for it.
+bool reloadConfig() {
+  vdm::Config* cfg = new (std::nothrow) vdm::Config;
+  if (cfg == nullptr) return false;
   gCfgRevision = storage::configRevision();
-  storage::getConfig(gCfg);
+  storage::getConfig(*cfg);
   // Defaults nobody saved must not overwrite the failsafe settings the STM holds.
   const storage::LoadSource src = storage::bootLoadSource();
   const bool defaults =
       src == storage::LoadSource::Defaults || src == storage::LoadSource::DefaultsAfterError;
-  gSession.applyConfig(gCfg, !defaults || storage::configSavedSinceBoot());
+  gSession.applyConfig(*cfg, !defaults || storage::configSavedSinceBoot());
+  delete cfg;
+  return true;
 }
 
 void readUart(uint32_t now) {
@@ -147,8 +152,13 @@ void begin() {
 
 void task(void*) {
   esp_task_wdt_add(nullptr);
+  // The session begins with its config (StmSession::begin()); a later change
+  // without memory is applied by a later pass.
+  while (!reloadConfig()) {
+    esp_task_wdt_reset();
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
   const uint32_t start = app::nowMs();
-  reloadConfig();
   vdm::RestoreSource src = vdm::RestoreSource::None;
   const vdm::PersistedTargets& targets = stm_service::bootTargets(src);
   vdm::LeaseClient::Snapshot lease;

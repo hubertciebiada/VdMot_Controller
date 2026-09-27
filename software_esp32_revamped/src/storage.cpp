@@ -677,6 +677,11 @@ void getConfig(vdm::Config& out) {
   out = gActive;
 }
 
+vdm::CalibScheduleConfig calibConfig() {
+  CfgLock lock;
+  return gActive.calib;
+}
+
 uint32_t configRevision() { return gRevision; }
 
 bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {

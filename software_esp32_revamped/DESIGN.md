@@ -173,7 +173,12 @@ Rules for module implementers:
     something changed; readers copy it under a mutex into their own static
     buffer (`web`, `mqtt`).
   - Config: `storage::getConfig()` copy under mutex; `configRevision()`
-    tells readers when to reload. `storage::applyConfig()` validates,
+    tells readers when to reload. A whole copy stays only with `mqtt`; the
+    other readers keep the parts they read (`net`: network, time, station
+    name; `stm_service`: the calibration schedule, `storage::calibConfig()`)
+    or take a heap copy for the moment of the reload (`app`, `stm_link`,
+    `mqtt`'s comparison of old and new), which a later pass takes again
+    when there is no memory for it. `storage::applyConfig()` validates,
     persists and bumps the revision.
   - Events: `logger::log()` from any task (mutex); readers use cursors
     (`readSince`).
@@ -621,10 +626,18 @@ recorded as a gap line; failures raise `log_write_failed` (hourly at most).
 
 RAM budget (WT32-ETH01: 263 KB of 8-bit capable heap, measured on the
 hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
-- Allocated once at boot and never freed: the `bootAlloc()` working copies
-  (~62 KB; the first `bootAlloc()` hands the Bluetooth DRAM to the heap, which
-  initArduino() would do only after the constructors) and the event ring
-  32 x 48 B (`logger::begin`).
+- Allocated once at boot and never freed: the `bootAlloc()` working copies,
+  48 KB in 13 blocks (the first `bootAlloc()` hands the Bluetooth DRAM to the
+  heap, which initArduino() would do only after the constructors): the STM
+  session 11.4 KB with its snapshot 6.1 KB, the snapshot copies of `app` and
+  `mqtt` (6.1 KB each), the active config of `storage` and the copy of
+  `mqtt` (2.5 KB each, the only whole `Config` copies kept), the blob
+  buffers of `storage` (4 KB `cfg`, 1.5 KB `cfgx`, 512 B kept records) and
+  its load details (196 B), the discovery context (3.4 KB), the payload
+  buffer (2 KB) and the published valve states (1.6 KB) of `mqtt`; and the
+  event ring 32 x 48 B (`logger::begin`). The 2.5 KB copies of a config
+  reload (`app`, `stm_link`, `mqtt`) and of a network trial revert (`net`)
+  live on the heap only for that moment.
 - Web server: its working set (~34 KB in 15 blocks, the largest the 8 KB
   POST body buffer: snapshot, status and config copies, views, the health
   text) and the response slots 2 x 12 KB get their buffers in the first
@@ -640,7 +653,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   measured).
 - Heap figures (`/api/health`, `low_heap`, `heap_fragmented`) count the 8-bit
   capable heap, not the IRAM that only 32-bit accesses reach.
-  Everything else is static or on a task stack.
+  Everything else is static, on a task stack or one of the short-lived heap
+  blocks named here.
 - Big objects stay off the stacks: `vdm::Reply` (1 KB), `StmSnapshot`,
   `Config`, `DiscoveryContext`.
 - Static DRAM counts 1:1 against the heap, so a buffer needed only briefly is

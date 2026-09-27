@@ -270,6 +270,9 @@ enum RestartReason : uint8_t { kRestartNetwork = 0x01, kRestartHostname = 0x02 }
 // of the stations differs. The single rule for net::reconfigure (restart
 // iff != 0) and the POST /api/config answer.
 uint8_t configRestartReasons(const Config& before, const Config& after);
+// The same rule from the parts of `before` it reads (net keeps only these).
+uint8_t configRestartReasons(const NetConfig& beforeNet, const char* beforeStation,
+                             const Config& after);
 // True when the MQTT topics or the session differ: station, every mqtt.*
 // field, and per valve name/active/topic, per temp and volt slot
 // name/active/topic/id. Not failsafe.timeoutMin, not valves.N.failsafePct

@@ -129,6 +129,28 @@ TEST_CASE("storage applyConfig: persisted, published, revision + 1; a failed wri
   CHECK(storage::configRevision() == rev + 1);
 }
 
+TEST_CASE("storage calibConfig: the schedule of the active config, a saved change at once") {
+  glue::begin();
+  vdm::Config c = named("A");
+  c.calib.dayMask = 0x41;
+  c.calib.hour = 23;
+  c.calib.minute = 59;
+  storage::setActiveConfig(c);
+  vdm::CalibScheduleConfig k = storage::calibConfig();
+  CHECK(k.dayMask == 0x41);
+  CHECK(k.hour == 23);
+  CHECK(k.minute == 59);
+  c.calib.dayMask = 0;
+  c.calib.hour = 4;
+  c.calib.minute = 30;
+  char path[32] = "";
+  REQUIRE(storage::applyConfig(c, path, sizeof path));
+  k = storage::calibConfig();
+  CHECK(k.dayMask == 0);
+  CHECK(k.hour == 4);
+  CHECK(k.minute == 30);
+}
+
 TEST_CASE("storage factoryReset: vdmrev is erased, the latch is kept, imported is set") {
   glue::begin();
   fakes::nvs().setBlob("vdmrev", "cfg", blobOf(named("X")));

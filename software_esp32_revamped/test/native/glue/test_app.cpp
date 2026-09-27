@@ -388,6 +388,26 @@ TEST_CASE("app task: a new config revision reconfigures the logger and the netwo
   CHECK(sib::net().reconfigures.size() == 1);
 }
 
+TEST_CASE("app task: without memory for its copy a config change is applied by the next pass") {
+  glue::begin();
+  app::setup();
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config)});  // the boot copy
+  vdm::Config c = sib::storage().active;
+  vdm::copyString(c.station, sizeof c.station, "Boiler");
+  char path[32];
+  REQUIRE(storage::applyConfig(c, path, sizeof path));
+  const size_t configures = sib::logger().configures.size();
+  fakes::heap().next = {false};
+  runAppTask(1);
+  CHECK(sib::net().reconfigures.empty());
+  CHECK(sib::logger().configures.size() == configures);
+  runAppTask(1);
+  REQUIRE(sib::net().reconfigures.size() == 1);
+  CHECK(std::string(sib::net().reconfigures[0].station) == "Boiler");
+  CHECK(sib::logger().configures.back().hostname == "Boiler");
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config), sizeof(vdm::Config)});
+}
+
 TEST_CASE("app task: resources are sampled every 10 s, not before") {
   glue::begin();
   app::setup();

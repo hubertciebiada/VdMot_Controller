@@ -77,6 +77,7 @@ void bootWithRecord(vdm::NetTrialState st, const vdm::Config& prev, vdm::Config&
   r.previous = prev.net;
   r.trialCrc = vdm::netTrialFieldsCrc(onTrial.net);
   sib::storage().netTrial = blob(r);
+  sib::storage().active = onTrial;  // app::setup() publishes the config before net::begin()
   net::begin(onTrial);
 }
 
@@ -428,6 +429,19 @@ TEST_CASE("net reconfigure: a TZ change applies live, a station change restarts 
   CHECK_FALSE(sib::logger().has(vdm::EventCode::NetTrialReverted));
 }
 
+TEST_CASE("net reconfigure: a station name of full length is kept whole for the restart rule") {
+  glue::begin();
+  vdm::Config c = config();
+  vdm::copyString(c.station, sizeof c.station, "abcdefghijklmnopqrst");  // 20 characters
+  net::begin(c);
+  net::reconfigure(c);
+  CHECK(sib::ota().restartRequests.empty());
+  vdm::copyString(c.station, sizeof c.station, "abcdefghijklmnopqrsu");  // the last one differs
+  net::reconfigure(c);
+  REQUIRE(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::ota().restartRequests[0].reason == 0);
+}
+
 TEST_CASE("net reconfigure: unused static fields and reconnectTimeoutMin do not restart") {
   glue::begin();
   vdm::Config c = config();
@@ -530,6 +544,40 @@ TEST_CASE("net trial: a failed persist on revert keeps the record for the next b
   run(1000, 120000);
   REQUIRE(sib::ota().restartRequests.size() == 1);
   CHECK(sib::ota().restartRequests[0].reason == 5);
+  CHECK(storedRecord().state == vdm::NetTrialState::Running);
+  CHECK(sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0).arg2 == -1);
+}
+
+TEST_CASE("net trial: the revert stores the active config with the previous network settings") {
+  glue::begin();
+  vdm::Config old = staticConfig(kIp);
+  vdm::Config n = staticConfig(kNewIp);
+  bootWithRecord(vdm::NetTrialState::Armed, old, n);
+  vdm::Config& active = sib::storage().active;
+  vdm::copyString(active.station, sizeof active.station, "Saved Later");  // a later save stays
+  active.net.reconnectTimeoutMin = 9;  // no trial field
+  run(1000, 120000);
+  REQUIRE(sib::storage().applied.size() == 1);
+  const vdm::Config& stored = sib::storage().applied[0];
+  CHECK(std::string(stored.station) == "Saved Later");
+  CHECK(stored.net.ip == kIp);
+  CHECK_FALSE(stored.net.dhcp);
+  CHECK(stored.net.reconnectTimeoutMin == 9);
+  CHECK(sib::storage().netTrial.empty());
+  // the copy lived on the heap for the revert only
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config)});
+}
+
+TEST_CASE("net trial: without memory for the config copy the revert keeps the record for the next boot") {
+  glue::begin();
+  vdm::Config old = staticConfig(kIp);
+  vdm::Config n = staticConfig(kNewIp);
+  bootWithRecord(vdm::NetTrialState::Armed, old, n);
+  fakes::heap().failAll = true;
+  run(1000, 120000);
+  REQUIRE(sib::ota().restartRequests.size() == 1);
+  CHECK(sib::ota().restartRequests[0].reason == 5);
+  CHECK(sib::storage().applied.empty());
   CHECK(storedRecord().state == vdm::NetTrialState::Running);
   CHECK(sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0).arg2 == -1);
 }
@@ -661,6 +709,27 @@ TEST_CASE("net trial: an unstored change keeps the restart of a new station name
   CHECK(std::string(e.text) == "192.168.100.200");  // 15 characters
   REQUIRE(sib::ota().restartRequests.size() == 1);
   CHECK(sib::ota().restartRequests[0].reason == 0);
+}
+
+TEST_CASE("net trial: an unstored change without memory for the copy is -1, the settings in use stay") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  sib::storage().saveNetTrialResult = false;
+  fakes::heap().next = {false};
+  vdm::Config n = staticConfig(kNewIp);
+  net::reconfigure(n);
+  CHECK(sib::storage().applied.empty());
+  CHECK(sib::storage().netTrialClears == 1);
+  const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetTrialReverted).at(0);
+  CHECK(e.arg1 == 5);
+  CHECK(e.arg2 == -1);
+  CHECK(std::string(e.text) == "dhcp");
+  CHECK(sib::ota().restartRequests.empty());
+  // net goes on with the settings in use: the same config again needs a trial
+  sib::storage().saveNetTrialResult = true;
+  net::reconfigure(n);
+  CHECK(sib::logger().has(vdm::EventCode::NetTrialStarted));
 }
 
 TEST_CASE("net trial: a second change whose record cannot be stored goes back to the settings in use") {

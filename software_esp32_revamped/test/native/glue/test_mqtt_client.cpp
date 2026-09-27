@@ -245,6 +245,23 @@ TEST_CASE("mqtt task: clean session only after a topic config change (W3-4)") {
   CHECK_FALSE(fakes::mqtt().cleanSession);
 }
 
+TEST_CASE("mqtt task: without memory for the reload copy the old config stays until the next pass") {
+  glue::begin();
+  vdm::Config& c = useMqtt();
+  settle(2);
+  REQUIRE(fakes::mqtt().connects == 1);
+  REQUIRE(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config)});  // begin()'s reload
+  c.mqtt.separate = false;  // a topic change: a new session
+  ++sib::storage().revision;
+  fakes::heap().next = {false};
+  runTask(1);
+  CHECK(fakes::mqtt().connects == 1);
+  runTask(2);
+  CHECK(fakes::mqtt().connects == 2);
+  CHECK(fakes::mqtt().cleanSession);
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(vdm::Config), sizeof(vdm::Config)});
+}
+
 TEST_CASE("mqtt inbound: a target is submitted and its retained topic cleared (W3-5)") {
   glue::begin();
   useMqtt();

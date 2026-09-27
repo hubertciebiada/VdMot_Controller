@@ -3170,6 +3170,10 @@ TEST_CASE("config: restart reasons (C-7)") {
     CHECK(configRestartReasons(before, after) == r.reasons);
     CHECK(configRestartReasons(after, before) == r.reasons);
     CHECK(configRestartReasons(after, after) == 0);
+    // The parts net keeps give the same answer.
+    CHECK(configRestartReasons(before.net, before.station, after) == r.reasons);
+    CHECK(configRestartReasons(after.net, after.station, before) == r.reasons);
+    CHECK(configRestartReasons(after.net, after.station, after) == 0);
   }
   // Static addresses: every field counts, a dns of 0.0.0.0 means the gateway.
   Config st;

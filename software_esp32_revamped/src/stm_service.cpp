@@ -12,7 +12,6 @@
 #include <vdm/stm_codec.h>
 
 #include "app.h"
-#include "boot_alloc.h"
 #include "logger.h"
 #include "net.h"
 #include "storage.h"
@@ -23,8 +22,8 @@ namespace {
 
 constexpr uint32_t kCalibrationTickMs = 10000;
 
-// App task working copy of the config (static: too large for the task stack).
-vdm::Config& gCfg = bootAlloc<vdm::Config>();
+// App task copy of the only part of the config read here.
+vdm::CalibScheduleConfig gCalibCfg;
 uint32_t gCfgRevision = 0;
 vdm::CalibScheduler gCalib;
 uint32_t gLastCalibMs = 0;
@@ -75,7 +74,7 @@ bool takeResult(CalibResult& out) {
 // second pass takes the UTC offset in force at the slot (a DST change before it).
 int64_t slotEpoch(uint32_t slot, const vdm::LocalTime& now) {
   const time_t first =
-      static_cast<time_t>(vdm::calibSlotEpoch(slot, gCfg.calib.hour, gCfg.calib.minute, now));
+      static_cast<time_t>(vdm::calibSlotEpoch(slot, gCalibCfg.hour, gCalibCfg.minute, now));
   struct tm tm;
   localtime_r(&first, &tm);
   vdm::LocalTime at;
@@ -86,7 +85,7 @@ int64_t slotEpoch(uint32_t slot, const vdm::LocalTime& now) {
   at.hour = static_cast<uint8_t>(tm.tm_hour);
   at.minute = static_cast<uint8_t>(tm.tm_min);
   at.epoch = first;
-  return vdm::calibSlotEpoch(slot, gCfg.calib.hour, gCfg.calib.minute, at);
+  return vdm::calibSlotEpoch(slot, gCalibCfg.hour, gCalibCfg.minute, at);
 }
 
 void setCalibInfo(int64_t lastEpoch, uint32_t nextSlot, const vdm::LocalTime& now) {
@@ -104,7 +103,7 @@ void failed(vdm::CalibFailure reason) {
 
 void calibrationTick(uint32_t now) {
   const vdm::LocalTime lt = net::localTime();
-  const vdm::CalibDecision d = gCalib.evaluate(gCfg.calib, lt, now);
+  const vdm::CalibDecision d = gCalib.evaluate(gCalibCfg, lt, now);
   if (d == vdm::CalibDecision::Fire) {
     app::Command c;
     c.type = app::CommandType::Calibrate;
@@ -124,7 +123,7 @@ void calibrationTick(uint32_t now) {
     logger::log(vdm::EventCode::ScheduledCalibrationMissed, vdm::kNoValve,
                 static_cast<int32_t>(gCalib.attemptSlot()), gCalib.attempts());
   }
-  setCalibInfo(app::calibInfo().lastScheduledEpoch, gCalib.nextSlot(gCfg.calib, lt), lt);
+  setCalibInfo(app::calibInfo().lastScheduledEpoch, gCalib.nextSlot(gCalibCfg, lt), lt);
 }
 
 // The STM confirmed (or not) the staln of the current attempt.
@@ -143,7 +142,7 @@ void calibrationResult(uint32_t now) {
   storage::saveLastCalib(lt.epoch);
   logger::log(vdm::EventCode::ScheduledCalibration, vdm::kNoValve,
               static_cast<int32_t>(gCalib.lastSlot()), gCalib.lateMinutes());
-  setCalibInfo(lt.epoch, gCalib.nextSlot(gCfg.calib, lt), lt);
+  setCalibInfo(lt.epoch, gCalib.nextSlot(gCalibCfg, lt), lt);
 }
 
 void saveTargets(uint32_t now) {
@@ -175,7 +174,7 @@ void begin() {
 void service(uint32_t nowMs) {
   if (storage::configRevision() != gCfgRevision) {
     gCfgRevision = storage::configRevision();
-    storage::getConfig(gCfg);
+    gCalibCfg = storage::calibConfig();
   }
   calibrationResult(nowMs);
   targetsTick(nowMs);

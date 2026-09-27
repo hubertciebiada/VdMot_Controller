@@ -48,6 +48,8 @@ void setActiveConfig(const vdm::Config& c) {
 
 void getConfig(vdm::Config& out) { out = sib::storage().active; }
 
+vdm::CalibScheduleConfig calibConfig() { return sib::storage().active.calib; }
+
 uint32_t configRevision() { return sib::storage().revision; }
 
 bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {
