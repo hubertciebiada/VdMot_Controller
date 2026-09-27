@@ -152,6 +152,19 @@ struct Esp {
 };
 Esp& esp();
 
+// ---------------------------------------------------------------- heap
+
+// new (std::nothrow), how the firmware allocates what it can do without (the web buffers, the
+// event ring): scripted failures, recorded successes. Other allocations are not scripted.
+struct Heap {
+  // scripted: the outcome of the next calls in order (false = nullptr), then failAll decides
+  std::deque<bool> next;
+  bool failAll = false;
+  // recorded: the sizes of the allocations that succeeded
+  std::vector<size_t> allocated;
+};
+Heap& heap();
+
 // ---------------------------------------------------------------- FreeRTOS
 
 struct TaskRecord {

@@ -207,6 +207,47 @@ TEST_CASE("rtos: vTaskDelay advances the clock and ends a loop after stopAfterYi
   CHECK(fakes::rtos().delays == std::vector<uint32_t>{100, 100, 100});
 }
 
+TEST_CASE("rtos: a recursive mutex nests for its holder, another task's take fails") {
+  glue::begin();
+  static StaticSemaphore_t storage;
+  SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutexStatic(&storage);
+  CHECK(xSemaphoreTakeRecursive(m, portMAX_DELAY) == pdTRUE);
+  CHECK(xSemaphoreTakeRecursive(m, portMAX_DELAY) == pdTRUE);
+  CHECK(xSemaphoreGiveRecursive(m) == pdTRUE);
+  fakes::rtos().current = reinterpret_cast<TaskHandle_t>(0xA11);
+  CHECK(xSemaphoreTakeRecursive(m, 0) == pdFALSE);  // still held once
+  CHECK(xSemaphoreTakeRecursive(m, 5) == pdFALSE);  // a finite wait passes first
+  CHECK(millis() == 5);
+  fakes::rtos().current = nullptr;
+  CHECK(xSemaphoreGiveRecursive(m) == pdTRUE);
+  fakes::rtos().current = reinterpret_cast<TaskHandle_t>(0xA11);
+  CHECK(xSemaphoreTakeRecursive(m, 0) == pdTRUE);
+  CHECK(xSemaphoreGiveRecursive(m) == pdTRUE);
+  fakes::rtos().current = nullptr;
+  CHECK(fakes::rtos().violations == 0);
+}
+
+TEST_CASE("heap: new (std::nothrow) follows the script, then failAll") {
+  glue::begin();
+  fakes::heap().next = {true, false};
+  int* a = new (std::nothrow) int(1);
+  char* b = new (std::nothrow) char[10];
+  fakes::heap().failAll = true;
+  int* c = new (std::nothrow) int(2);
+  int* d = new int(3);  // not scripted
+  fakes::heap().failAll = false;
+  char* e = new (std::nothrow) char[20];
+  CHECK(a != nullptr);
+  CHECK(b == nullptr);
+  CHECK(c == nullptr);
+  CHECK(d != nullptr);
+  CHECK(e != nullptr);
+  CHECK(fakes::heap().allocated == std::vector<size_t>{sizeof(int), 20});
+  delete a;
+  delete d;
+  delete[] e;
+}
+
 TEST_CASE("time: millis() wraps at 32 bits, the wall clock follows the fake clock") {
   glue::begin();
   fakes::setMs(0xFFFFF000ull);
@@ -529,6 +570,26 @@ TEST_CASE("xfail: a second take of a held mutex" * doctest::test_suite("xfail"))
   xSemaphoreTake(m, portMAX_DELAY);
   xSemaphoreTake(m, portMAX_DELAY);  // deadlock on the target
   xSemaphoreGive(m);
+}
+
+TEST_CASE("xfail: a wait for a recursive mutex another task holds" *
+          doctest::test_suite("xfail")) {
+  glue::begin();
+  static StaticSemaphore_t storage;
+  SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutexStatic(&storage);
+  xSemaphoreTakeRecursive(m, portMAX_DELAY);
+  fakes::rtos().current = reinterpret_cast<TaskHandle_t>(0xA11);
+  xSemaphoreTakeRecursive(m, portMAX_DELAY);  // deadlock on the target
+}
+
+TEST_CASE("xfail: a recursive mutex given by a task that does not hold it" *
+          doctest::test_suite("xfail")) {
+  glue::begin();
+  static StaticSemaphore_t storage;
+  SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutexStatic(&storage);
+  xSemaphoreTakeRecursive(m, portMAX_DELAY);
+  fakes::rtos().current = reinterpret_cast<TaskHandle_t>(0xA11);
+  xSemaphoreGiveRecursive(m);
 }
 
 TEST_CASE("xfail: xTaskGetHandle without a name" * doctest::test_suite("xfail")) {

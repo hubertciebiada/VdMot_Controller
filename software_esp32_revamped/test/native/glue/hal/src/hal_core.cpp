@@ -179,6 +179,7 @@ void reset() {
   resetNetVolatile();
   resetMqttVolatile();
   resetWebVolatile();
+  resetHeapVolatile();
 }
 
 }  // namespace fakes
@@ -434,6 +435,7 @@ constexpr uint32_t kQueueMagic = 0x51554555;  // "QUEU"
 constexpr uint8_t kKindQueue = 1;
 constexpr uint8_t kKindMutex = 2;
 constexpr uint8_t kKindBinary = 3;
+constexpr uint8_t kKindRecursive = 4;
 
 bool validQueue(QueueHandle_t q, const char* call) {
   if (q != nullptr && q->magic == kQueueMagic) return true;
@@ -692,6 +694,45 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t xSemaphore) {
 }
 
 void vSemaphoreDelete(SemaphoreHandle_t xSemaphore) { vQueueDelete(xSemaphore); }
+
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t* pxMutexBuffer) {
+  if (pxMutexBuffer == nullptr) return nullptr;
+  *pxMutexBuffer = StaticSemaphore_t{};
+  pxMutexBuffer->magic = kQueueMagic;
+  pxMutexBuffer->kind = kKindRecursive;
+  pxMutexBuffer->length = 1;
+  return pxMutexBuffer;  // count 0: nobody holds it
+}
+
+BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t xMutex, TickType_t xBlockTime) {
+  if (!validQueue(xMutex, "xSemaphoreTakeRecursive")) return pdFALSE;
+  if (xMutex->kind != kKindRecursive) {
+    fakes::rtos().violation("xSemaphoreTakeRecursive of a mutex that is not recursive");
+    return pdFALSE;
+  }
+  if (xBlockTime != 0 && fakes::rtos().criticalDepth > 0) {
+    fakes::rtos().violation("xSemaphoreTakeRecursive blocks inside a critical section");
+  }
+  const TaskHandle_t self = fakes::rtos().current;
+  if (xMutex->count != 0 && xMutex->holder != self) {
+    waitFor(xBlockTime, "xSemaphoreTakeRecursive");
+    return pdFALSE;
+  }
+  xMutex->holder = self;
+  ++xMutex->count;
+  return pdTRUE;
+}
+
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t xMutex) {
+  if (!validQueue(xMutex, "xSemaphoreGiveRecursive")) return pdFALSE;
+  if (xMutex->kind != kKindRecursive || xMutex->count == 0 ||
+      xMutex->holder != fakes::rtos().current) {
+    fakes::rtos().violation("xSemaphoreGiveRecursive of a mutex this task does not hold");
+    return pdFALSE;
+  }
+  --xMutex->count;
+  return pdTRUE;
+}
 
 // ---------------------------------------------------------------- critical sections
 

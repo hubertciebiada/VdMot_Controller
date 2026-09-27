@@ -9,7 +9,9 @@
 //   - misuse that deadlocks or corrupts on the target counts as an RTOS violation, which fails the
 //     test case: a second take of a held mutex, a give of a mutex nobody holds, an exit of a
 //     critical section that was not entered, a blocking call inside a critical section, a
-//     critical section still entered at the end of a case.
+//     critical section still entered at the end of a case;
+//   - the running task is fakes::rtos().current (a test sets it to play another task): the holder
+//     of a recursive mutex.
 #pragma once
 
 #include <stddef.h>
@@ -65,13 +67,14 @@ TickType_t xTaskGetTickCount(void);
 // The fake keeps its bookkeeping in the static control block of the caller.
 typedef struct xSTATIC_QUEUE {
   uint32_t magic;
-  uint8_t kind;  // 1 queue, 2 mutex, 3 binary semaphore
+  uint8_t kind;  // 1 queue, 2 mutex, 3 binary semaphore, 4 recursive mutex
   uint8_t* storage;
   UBaseType_t length;
   UBaseType_t itemSize;
   UBaseType_t head;
-  UBaseType_t count;
+  UBaseType_t count;  // recursive mutex: the holder's takes not given back yet
   uint8_t ownsStorage;
+  TaskHandle_t holder;  // recursive mutex
 } StaticQueue_t;
 typedef StaticQueue_t StaticSemaphore_t;
 typedef StaticQueue_t* QueueHandle_t;
@@ -101,6 +104,12 @@ SemaphoreHandle_t xSemaphoreCreateBinary(void);
 BaseType_t xSemaphoreTake(SemaphoreHandle_t xSemaphore, TickType_t xBlockTime);
 BaseType_t xSemaphoreGive(SemaphoreHandle_t xSemaphore);
 void vSemaphoreDelete(SemaphoreHandle_t xSemaphore);
+// Recursive mutex: the takes of its holder nest. A take while another task holds it fails; with a
+// wait it is a violation for portMAX_DELAY (the holder cannot run to give it back), a finite wait
+// passes first. A give by a task that does not hold it is a violation.
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t* pxMutexBuffer);
+BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t xMutex, TickType_t xBlockTime);
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t xMutex);
 
 // ---------------------------------------------------------------- critical sections
 

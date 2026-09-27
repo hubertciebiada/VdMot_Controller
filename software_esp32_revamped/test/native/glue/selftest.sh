@@ -34,6 +34,10 @@ xfail() {
 
 xfail "xfail: an assertion" 'FAILED "xfail: an assertion"'
 xfail "xfail: a second take of a held mutex" "second xSemaphoreTake of a held mutex"
+xfail "xfail: a wait for a recursive mutex another task holds" \
+  "xSemaphoreTakeRecursive waits forever"
+xfail "xfail: a recursive mutex given by a task that does not hold it" \
+  "xSemaphoreGiveRecursive of a mutex this task does not hold"
 xfail "xfail: xTaskGetHandle without a name" "xTaskGetHandle(nullptr)"
 xfail "xfail: a critical section left entered" "a critical section is still entered"
 xfail "xfail: an HTTP request without an answer" "GET /api/status answered 0 times"

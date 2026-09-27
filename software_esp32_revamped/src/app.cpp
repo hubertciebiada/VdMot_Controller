@@ -181,6 +181,7 @@ void appTask(void*) {
       lastSecond = now;
       net::service(now, mqtt::status().state == vdm::MqttState::Connected);
       if (net::isUp() && !web::started()) web::begin();
+      web::service(now);
       ota::service(now, net::otaNetOk(), linkUp, web::started());
       checkFactoryLatch();
       stm_service::service(now);

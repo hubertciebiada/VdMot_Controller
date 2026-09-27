@@ -348,6 +348,16 @@ TEST_CASE("app task: once a second the network, the web server, OTA and the sche
   CHECK(net < ota);
 }
 
+TEST_CASE("app task: once a second the web server may release its idle buffers") {
+  glue::begin();
+  app::setup();
+  sib::net().up = true;
+  const uint32_t t0 = static_cast<uint32_t>(fakes::nowMs());
+  runAppTask(21);  // 2.1 s
+  CHECK(sib::web().services == std::vector<uint32_t>{t0 + 1000, t0 + 2000});
+  CHECK(fakes::find("web.service " + std::to_string(t0 + 1000)) > fakes::find("web.begin"));
+}
+
 TEST_CASE("app task: the link state goes to OTA, the web server starts only with the network") {
   glue::begin();
   app::setup();

@@ -10,6 +10,7 @@ void resetOtaVolatile();
 void resetNetVolatile();
 void resetMqttVolatile();
 void resetWebVolatile();
+void resetHeapVolatile();
 
 // The WiFiClient a PubSubClient was built with is the broker socket: its stop() ends the session.
 bool isMqttSocket(const void* client);

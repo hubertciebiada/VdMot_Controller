@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <vector>
+
 #include "web_server.h"
 
 namespace sib {
@@ -12,6 +14,7 @@ namespace sib {
 struct Web {
   bool started = false;  // set by begin()
   int begins = 0;
+  std::vector<uint32_t> services;  // nowMs of every service()
 };
 Web& web();
 
