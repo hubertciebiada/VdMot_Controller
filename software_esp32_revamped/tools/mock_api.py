@@ -9,7 +9,6 @@ progress, and restarts make the device briefly unreachable.
     python3 tools/mock_api.py                     # station "east" on :8080
     python3 tools/mock_api.py --station west --port 8081
     python3 tools/mock_api.py --proto 1           # legacy STM 1.4.x (no gvlvx/gprof/svmov)
-    python3 tools/mock_api.py --auth admin:secret # HTTP Basic auth like web.user/web.password
     python3 tools/mock_api.py --proto 3           # STM protocol 3: failsafe lease, stop, safe mode
     python3 tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
     python3 tools/mock_api.py --import-report     # a legacy import report (notice N2)
@@ -24,7 +23,6 @@ Standard library only. Development tool; never part of the firmware image.
 from __future__ import annotations
 
 import argparse
-import base64
 import copy
 import datetime as dt
 import hashlib
@@ -75,9 +73,11 @@ INT_RANGES = {
 }
 STR_RANGES = {
     "station": (1, 20), "net.ssid": (0, 32), "time.ntpServer": (0, 64), "time.tzName": (0, 49),
-    "time.tzPosix": (1, 49), "web.user": (0, 64), "mqtt.host": (0, 64), "mqtt.user": (0, 64),
+    "time.tzPosix": (1, 49), "mqtt.host": (0, 64), "mqtt.user": (0, 64),
 }
-SECRETS = {"net.wifiPassword": 63, "web.password": 64, "mqtt.password": 64}
+SECRETS = {"net.wifiPassword": 63, "mqtt.password": 64}
+# Keys of removed settings: accepted and ignored, so an older export still imports.
+RETIRED = {"web.user", "web.password", "web.passwordSet", "web.protectRead"}
 IP_KEYS = {"net.ip", "net.mask", "net.gateway", "net.dns", "syslog.server"}
 ONEWIRE_RE = re.compile(r"^[0-9a-fA-F]{2}(-[0-9a-fA-F]{2}){7}$")
 SAFE_BAD = re.compile(r'[+#/"\\]')
@@ -95,7 +95,7 @@ LEGACY_GONE = dict(
               "/api/sensors/scan, /api/mqtt/reconnect, /api/mqtt/discovery"),
      ("/valvesctrlconfig", "removed: PI control"), ("/msgconfig", "removed: messenger"),
      ("/testPO", "removed: messenger"), ("/testEmail", "removed: messenger"), ("/ssidinfo", "removed: WiFi scan"),
-     ("/auth", "removed: HTTP Basic auth is used")])
+     ("/auth", "removed: web login")])
 LEGACY_ALIASES = {"/valves": "GET", "/temps": "GET", "/volts": "GET", "/setvalve": "POST"}
 DEMO_IMPORT_REPORT = {"imported": 57, "rejected": 2, "ignored": 14, "firstRejected": "valvesCfg/valves.5.name",
                       "piValves": 3, "windowValves": 1, "dropped": ["pi", "window", "messenger", "ds18Timeout"],
@@ -214,8 +214,7 @@ def ipv4(s) -> bool:
 
 
 class Device:
-    def __init__(self, station: str, proto: int, auth: tuple[str, str] | None, scenarios=(), import_report=False,
-                 station_name=None):
+    def __init__(self, station: str, proto: int, scenarios=(), import_report=False, station_name=None):
         self.lock = threading.RLock()
         self.rng = random.Random(42 if station == "east" else 7)
         self.station = station
@@ -235,7 +234,6 @@ class Device:
         self.import_report = copy.deepcopy(DEMO_IMPORT_REPORT) if import_report else None
         self.trial = None           # {"until": wall time, "previous": net config} while a network trial runs
         self.pending_trial = None   # previous net config of a save that restarts into a trial
-        self.limiter = {}           # client address -> {"fails", "win", "until", "level"}
         self.requests = 0           # /api/* requests (scenario busy)
         self.actions = 0            # valve actions (scenario queue)
         self.safe_mode = "safemode" in self.scenarios
@@ -251,7 +249,7 @@ class Device:
         self.learn = 0
         self.cfg_rev = 1
         self.breakaway = {"enable": False, "stepPct": 25, "maxmA": 45} if proto >= 2 else None
-        self.config = self._default_config(auth)
+        self.config = self._default_config()
         self.valves = []
         self.temps = []
         self.volts = []
@@ -262,15 +260,14 @@ class Device:
 
     # ------------------------------------------------------------ setup
 
-    def _default_config(self, auth):
+    def _default_config(self):
         c = {
             "schema": 2, "station": f"VdMot-{self.station}",
             "net": {"iface": 1, "dhcp": True, "ip": "0.0.0.0", "mask": "0.0.0.0", "gateway": "0.0.0.0",
                     "dns": "0.0.0.0", "ssid": "", "wifiPassword": "", "reconnectTimeoutMin": 5},
             "time": {"ntpServer": "pool.ntp.org", "tzName": "Europe/Warsaw", "tzPosix": "CET-1CEST,M3.5.0,M10.5.0/3"},
             "syslog": {"level": 0, "server": "0.0.0.0", "port": 514},
-            "web": {"user": auth[0] if auth else "", "password": auth[1] if auth else "", "protectRead": False,
-                    "allowedHosts": "localhost"},
+            "web": {"allowedHosts": "localhost"},
             "mqtt": {"mode": 2, "host": "homeassistant.local", "port": 1883, "user": "vdmot", "password": "mqtt-pass",
                      "keepAliveS": 60, "publishIntervalS": 10, "minDelayS": 5, "separate": True, "allTemps": True,
                      "pathAsRoot": False, "upTime": True, "onChange": True, "retained": True, "plainText": True,
@@ -380,7 +377,7 @@ class Device:
             return "error"
         if code in (313,):
             return "critical"
-        if code in (408, 410, 411, 412, 413, 201, 203, 204, 206, 305):
+        if code in (408, 410, 411, 412, 413, 201, 203, 204, 305):
             return "warning"
         if code == 401:
             return "debug"
@@ -630,7 +627,6 @@ class Device:
                     "learnTime": 7200 if self.proto >= 3 else None},
             "calibration": {"active": any(v["calUntil"] for v in self.valves), "lastScheduled": int(now) - 86400 * 2,
                             "nextSlot": int(nxt.strftime("%Y%m%d")), "next": nxt.strftime("%Y-%m-%dT%H:%M:%S")},
-            "auth": bool(c["web"]["user"] and c["web"]["password"]),
             "lastEventSeq": self.next_seq - 1,
             "config": {"source": self.config_source, "repairs": 0, "newerSchema": False},
             "importReport": self.import_report is not None,
@@ -722,13 +718,12 @@ class Device:
                           "age": self.rng.randrange(1, 9)})
         return {"temps": temps, "volts": volts}
 
-    def config_doc(self, secrets=False):
+    def config_doc(self):
+        """The export never carries a secret: "<key>Set" stands in for it."""
         c = copy.deepcopy(self.config)
         for key in SECRETS:
             grp, field = key.split(".")
-            c[grp][field + "Set"] = bool(c[grp][field])
-            if not secrets:
-                c[grp].pop(field)
+            c[grp][field + "Set"] = bool(c[grp].pop(field))
         return c
 
     def legacy_valves(self):
@@ -851,7 +846,7 @@ class Device:
         clear = flat.pop("clearSecrets", False) is True
         new = copy.deepcopy(self.config)
         for key, val in flat.items():
-            if key == "schema" or key.endswith("PasswordSet") or key.endswith("passwordSet"):
+            if key == "schema" or key in RETIRED or key.endswith("PasswordSet") or key.endswith("passwordSet"):
                 continue
             err = self._set(new, key, val, clear)
             if err:
@@ -983,9 +978,6 @@ class Device:
             return "net.ssid"
         if c["syslog"]["level"] > 0 and c["syslog"]["server"] == "0.0.0.0":
             return "syslog.server"
-        w = c["web"]
-        if bool(w["user"]) != bool(w["password"]):
-            return "web.password" if w["user"] else "web.user"
         m = c["mqtt"]
         if m["mode"] and not m["host"]:
             return "mqtt.host"
@@ -1164,42 +1156,6 @@ class Handler(BaseHTTPRequestHandler):
         self.error(verdict[1], verdict[2], verdict[3])
         return True
 
-    def authorized(self, read_only):
-        """Basic auth with the per-address limiter (vdm::AuthLimiter)."""
-        c = self.dev.config["web"]
-        if not (c["user"] and c["password"]) or (read_only and not c["protectRead"]):
-            return True
-        ip = self.client_address[0]
-        now = time.time()
-        lim = self.dev.limiter.setdefault(ip, {"fails": 0, "win": 0.0, "until": 0.0, "level": 0})
-        if now < lim["until"]:
-            left = max(1, math.ceil(lim["until"] - now))
-            self.error(429, "locked", f"too many failed logins from this address, retry in {left} s",
-                       {"Retry-After": str(left)})
-            return False
-        hdr = self.headers.get("Authorization", "")
-        if hdr:
-            user = pw = None
-            if hdr.startswith("Basic "):
-                try:
-                    user, _, pw = base64.b64decode(hdr[6:]).decode().partition(":")
-                except ValueError:
-                    pass
-            if user == c["user"] and pw == c["password"]:
-                self.dev.limiter.pop(ip, None)
-                return True
-            if lim["fails"] == 0 or now - lim["win"] >= 60:
-                lim["fails"], lim["win"] = 0, now
-            lim["fails"] += 1
-            self.dev.event(206, a1=lim["fails"], text=ip)
-            if lim["fails"] >= 10:
-                secs = (60, 300, 900)[min(lim["level"], 2)]
-                lim.update(until=now + secs, fails=0, level=lim["level"] + 1)
-                self.dev.event(214, a1=secs, a2=lim["level"], text=ip)
-        self.send_json(401, {"error": "unauthorized", "detail": ""},
-                       {"WWW-Authenticate": 'Basic realm="VdMot"'})
-        return False
-
     def static(self, path):
         if path == "/":
             path = "/index.html"
@@ -1249,11 +1205,6 @@ class Handler(BaseHTTPRequestHandler):
             if method != "GET":
                 return self.error(405, "method_not_allowed", path)
             return self.send_json(200, d.health_doc())
-        read_only = method == "GET" and (path in ("/api/status", "/api/valves", "/api/sensors", "/api/events",
-                                                  "/api/stm/motor", "/api/stm/flash", "/api/import-report")
-                                         or re.fullmatch(r"/api/valves/(\d+)/profile", path) is not None)
-        if not self.authorized(read_only):
-            return self.drain()
         if "busy" in d.scenarios:
             d.requests += 1
             if d.requests % 4 == 0:
@@ -1274,8 +1225,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(405, "method_not_allowed", path)
             if self.guard(method, "legacy"):
                 return
-            if not self.authorized(path != "/setvalve"):
-                return self.drain()
             with d.lock:
                 if path == "/valves":
                     return self.send_json(200, d.legacy_valves())
@@ -1348,17 +1297,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/config":
                 return self.send_json(200, d.config_doc())
             if path == "/api/config/export":
-                secrets = q.get("secrets")
-                if secrets is None:
-                    return self.send_json(200, d.config_doc(),
-                                          {"Content-Disposition": 'attachment; filename="vdmot-config.json"'})
-                if secrets != ["1"]:
-                    return self.error(400, "bad_request", "secrets=1")
-                w = d.config["web"]
-                if not (w["user"] and w["password"]):
-                    return self.error(403, "auth_required", "enable web login to export passwords")
-                return self.send_json(200, d.config_doc(secrets=True),
-                                      {"Content-Disposition": 'attachment; filename="vdmot-config-secrets.json"'})
+                return self.send_json(200, d.config_doc(),
+                                      {"Content-Disposition": 'attachment; filename="vdmot-config.json"'})
             if path == "/api/stm/motor":
                 return self.send_json(200, {"motor": d.motor, "learnMovements": d.learn, "breakaway": d.breakaway,
                                             "known": True})
@@ -1716,23 +1656,16 @@ def main():
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--proto", type=int, choices=(1, 2, 3), default=2,
                     help="STM protocol: 1 = legacy 1.4.x, 2 = revamped 2.0, 3 = revamped 2.1")
-    ap.add_argument("--auth", metavar="USER:PASS", help="enable HTTP Basic auth for changes")
     ap.add_argument("--scenario", default="", help="comma-separated: health, busy, queue, failsafe, safemode, tooold, "
                                                    "haoffline")
     ap.add_argument("--import-report", action="store_true", help="show a legacy import report")
     ap.add_argument("--station-name", help="station name (UTF-8 allowed)")
     args = ap.parse_args()
-    auth = None
-    if args.auth:
-        user, sep, pw = args.auth.partition(":")
-        if not sep or not user or not pw:
-            ap.error("--auth needs USER:PASS")
-        auth = (user, pw)
     scenarios = [x for x in args.scenario.split(",") if x]
     unknown = set(scenarios) - {"health", "busy", "queue", "failsafe", "safemode", "tooold", "haoffline"}
     if unknown:
         ap.error("unknown scenario: " + ", ".join(sorted(unknown)))
-    Handler.dev = Device(args.station, args.proto, auth, scenarios, args.import_report, args.station_name)
+    Handler.dev = Device(args.station, args.proto, scenarios, args.import_report, args.station_name)
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True
     print(f"VdMot mock ({args.station}, STM proto {args.proto}) on http://{args.bind}:{args.port}/", flush=True)

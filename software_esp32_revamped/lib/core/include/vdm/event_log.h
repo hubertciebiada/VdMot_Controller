@@ -58,7 +58,7 @@ enum class EventCode : uint16_t {
   MqttCommandRejected = 204,// arg1 valve (1-based, 0 unknown), arg2 TargetPayload of a payload
                             // reject; text reason
   HaDiscoverySent = 205,    // arg1 configs published, arg2 deletes published
-  AuthFailed = 206,         // arg1 failures in the current window; text client IP
+  AuthFailed = 206,         // retired with the web login in 2.1.0: never raised, number reserved
   NetTrialStarted = 207,    // arg1 window s; text new address
   NetTrialConfirmed = 208,  // arg1 s since the network came up, arg2 1 = by a newer change
   NetTrialReverted = 209,   // arg1 reason (1 not confirmed, 2 no network, 3 interrupted, 4 user,
@@ -68,7 +68,7 @@ enum class EventCode : uint16_t {
   NetReachable = 211,       // arg1 outage s
   NetInterfaceRestart = 212,  // arg1 outage s, arg2 1 eth, 2 wifi, 3 both
   RequestRefused = 213,     // arg1 verdict (1 host, 2 origin, 3 header, 4 content type); text client IP
-  AuthLocked = 214,         // arg1 lock s, arg2 lockout level; text client IP
+  AuthLocked = 214,         // retired with the web login in 2.1.0: never raised, number reserved
   // STM link 3xx
   LinkUp = 300,
   LinkDegraded = 301,       // arg1 consecutive timeouts

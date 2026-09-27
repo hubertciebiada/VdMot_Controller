@@ -261,11 +261,12 @@ TEST_CASE("legacy: a typical device imports completely") {
   CHECK(r.anyLegacy);
   CHECK(r.rejected == 0);
   CHECK(first(r).empty());
-  // stName + 16 netCfg + 2 tZCfg + dataProt brokerIp brokerPort
+  // stName + 13 netCfg + 2 tZCfg + dataProt brokerIp brokerPort
   // publishInterval brokerUser brokerPwd brokerPF brokerKAT brokerMD brokerMQF
   // + valves dayOfCalib hourOfCalib + temps + volts + MiscLC
-  CHECK(r.imported == 1 + 15 + 2 + 10 + 3 + 1 + 1 + 1);
-  CHECK(r.ignored == 4);  // CF, brokerInterval, brokerMQTO, brokerMQToPos
+  CHECK(r.imported == 1 + 13 + 2 + 10 + 3 + 1 + 1 + 1);
+  // CF, userName, userPwd, brokerInterval, brokerMQTO, brokerMQToPos
+  CHECK(r.ignored == 6);
   CHECK(r.lastCalibEpoch == 1760000000);
   CHECK(valid(c));
 
@@ -436,15 +437,25 @@ TEST_CASE("legacy: network keys and their quirks") {
     FakeNvs n;
     n.putStr("netCfg", "ssid", std::string(33, 's'));
     n.putStr("netCfg", "pwd", std::string(64, 'p'));
-    n.putStr("netCfg", "userName", std::string(65, 'u'));
+    n.putStr("netCfg", "userName", std::string(65, 'u'));  // the web login: ignored
     n.putStr("netCfg", "userPwd", std::string(200, 'p'));
     n.putStr("netCfg", "timeServer", "bad host");
     n.putStr("sysCfg", "stName", std::string(21, 'x'));
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
-    CHECK(r.rejected == 6);
+    CHECK(r.rejected == 4);
+    CHECK(r.ignored == 2);
     CHECK(r.imported == 0);
     CHECK(first(r) == "sysCfg/stName");
+    CHECK(sameConfig(c, Config{}));
+  }
+  SUBCASE("a string longer than the read buffer is rejected once") {
+    FakeNvs n;
+    n.putStr("netCfg", "timeServer", std::string(200, 'h'));
+    Config c;
+    const ImportReport r = importLegacyConfig(n, c);
+    CHECK(r.rejected == 1);
+    CHECK(first(r) == "netCfg/timeServer");
     CHECK(sameConfig(c, Config{}));
   }
   SUBCASE("time server may be empty or an address") {
@@ -521,25 +532,6 @@ TEST_CASE("legacy: cross-field repairs, one condition at a time") {
     CHECK(first(r) == "netCfg/syslogEnable");
   }
   {
-    FakeNvs n;  // one-char credentials are a complete login
-    n.putStr("netCfg", "userName", "u");
-    n.putStr("netCfg", "userPwd", "p");
-    Config c;
-    CHECK(importLegacyConfig(n, c).rejected == 0);
-    CHECK(std::string(c.web.user) == "u");
-  }
-  {
-    FakeNvs n;  // one-char user alone
-    n.putStr("netCfg", "userName", "u");
-    Config c;
-    n.putStr("sysCfg", "stName", "keep");
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(first(r) == "netCfg/userPwd");
-    CHECK(r.rejected == 1);
-    CHECK(std::string(c.web.user).empty());
-    CHECK(std::string(c.station) == "keep");
-  }
-  {
     FakeNvs n;  // one-char broker host is a host
     n.putInt("protCfg", "dataProt", 1);
     n.putInt("protCfg", "brokerIp", 0x04030201);
@@ -553,44 +545,30 @@ TEST_CASE("legacy: cross-field repairs, one condition at a time") {
   }
 }
 
-TEST_CASE("legacy: web login needs both user and password") {
-  {
+TEST_CASE("legacy: the web login is counted as ignored, whatever it holds") {
+  struct Login {
+    const char* user;
+    const char* password;
+    uint16_t ignored;
+  };
+  // A whole login, half ones the 1.4.x firmware accepted, one with a ':'.
+  const Login logins[] = {{"admin", "pw", 2}, {"u", nullptr, 1}, {nullptr, "p", 1},
+                          {"ad:min", "pw", 2}, {"", "", 2}};
+  for (const Login& l : logins) {
+    CAPTURE(l.ignored);
     FakeNvs n;
-    n.putStr("netCfg", "userName", "admin");
-    n.putStr("netCfg", "userPwd", "pw");
+    n.putStr("sysCfg", "stName", "keep");
+    if (l.user != nullptr) n.putStr("netCfg", "userName", l.user);
+    if (l.password != nullptr) n.putStr("netCfg", "userPwd", l.password);
     Config c;
     const ImportReport r = importLegacyConfig(n, c);
-    CHECK(std::string(c.web.user) == "admin");
-    CHECK(std::string(c.web.password) == "pw");
+    CHECK(r.ignored == l.ignored);
+    CHECK(r.imported == 1);
     CHECK(r.rejected == 0);
-  }
-  {
-    FakeNvs n;
-    n.putStr("netCfg", "userName", "admin");
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(std::string(c.web.user).empty());
-    CHECK(first(r) == "netCfg/userPwd");
-  }
-  {
-    FakeNvs n;
-    n.putStr("netCfg", "userPwd", "pw");
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(std::string(c.web.password).empty());
-    CHECK(first(r) == "netCfg/userName");
-    CHECK(valid(c));
-  }
-  {
-    FakeNvs n;
-    n.putStr("netCfg", "userName", "ad:min");
-    n.putStr("netCfg", "userPwd", "pw");
-    Config c;
-    const ImportReport r = importLegacyConfig(n, c);
-    CHECK(r.rejected == 2);
-    CHECK(first(r) == "netCfg/userName");
-    CHECK(std::string(c.web.password).empty());
-    CHECK(valid(c));
+    CHECK(first(r).empty());
+    Config expect;
+    strcpy(expect.station, "keep");
+    CHECK(sameConfig(c, expect));
   }
 }
 
@@ -1383,6 +1361,8 @@ TEST_CASE("legacy: last calibration time") {
 TEST_CASE("legacy: dropped keys are counted, never imported") {
   FakeNvs n;
   n.putInt("sysCfg", "CF", 1);
+  n.putStr("netCfg", "userName", "admin");
+  n.putStr("netCfg", "userPwd", std::string(300, 'p'));
   n.putInt("protCfg", "brokerInterval", 1000);
   n.putInt("protCfg", "brokerMQTO", 120);
   n.putInt("protCfg", "brokerMQToPos", 10);
@@ -1409,7 +1389,7 @@ TEST_CASE("legacy: dropped keys are counted, never imported") {
   n.putInt("msgCfg", "unknownKey", 1);  // not on the list: not counted
   Config c;
   const ImportReport r = importLegacyConfig(n, c);
-  CHECK(r.ignored == 24);
+  CHECK(r.ignored == 26);
   CHECK(r.imported == 0);
   CHECK(r.rejected == 0);
   CHECK(r.dropped == kDroppedMessenger);
@@ -1450,8 +1430,7 @@ TEST_CASE("legacy: fuzz - the result always validates" * doctest::test_suite("fu
       {"valvesCfg", "dayOfCalib"}, {"valvesCfg", "hourOfCalib"}, {"Misc", "MiscLC"}};
   // tZCfg/tZ is always "Europe/Warsaw": nothing resets the whole config.
   const char* strKeys[][2] = {{"sysCfg", "stName"},     {"netCfg", "ssid"},
-                              {"netCfg", "pwd"},        {"netCfg", "userName"},
-                              {"netCfg", "userPwd"},    {"netCfg", "timeServer"},
+                              {"netCfg", "pwd"},        {"netCfg", "timeServer"},
                               {"tZCfg", "tZCode"},
                               {"protCfg", "brokerUser"}, {"protCfg", "brokerPwd"}};
   // The first 10 are names, the last 3 ids.

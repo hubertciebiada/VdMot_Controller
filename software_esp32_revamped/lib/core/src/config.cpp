@@ -39,7 +39,6 @@ enum class Rule : uint8_t {
   None,
   Printable,     // isPrintableText: ASCII 0x20..0x7E and UTF-8 (SSIDs, secrets, like legacy)
   NoSpace,       // 0x21..0x7E
-  NoColon,       // Printable without ':' (HTTP Basic user)
   SafeName,      // isSafeName()
   Host,          // isHostName() or dotted IPv4
   HostList,      // "" or 1..4 isHostName() entries separated by ',', spaces around them ignored
@@ -59,6 +58,7 @@ struct Field {
   Rule rule;
   bool nonZero;     // Float: 0 is not allowed
   uint8_t ext;      // 0: `cfg` blob; else the `cfgx` record tag (never reused)
+  bool retired;     // gone from Config (retiredField())
 };
 
 // Members a kind does not use stay zero.
@@ -92,6 +92,24 @@ constexpr Field floatField(const char* n, size_t off, int32_t mn, int32_t mx, bo
 // A field stored in the `cfgx` blob under `tag`.
 constexpr Field extField(Field f, uint8_t tag) {
   f.ext = tag;
+  return f;
+}
+// A setting an older firmware had: it keeps its place in the `cfg` blob,
+// written as its neutral value (0, "" or false) and skipped when read, so
+// the older firmware still reads the blob after a rollback; POST accepts and
+// ignores its key, so an older export still imports. `k` is its old kind:
+// it gives the bytes skipped.
+constexpr Field retiredField(const char* n, Kind k) {
+  Field f{};
+  f.name = n;
+  f.kind = k;
+  f.retired = true;
+  return f;
+}
+// A retired string; `cap` is its old array size.
+constexpr Field retiredField(const char* n, Kind k, size_t cap) {
+  Field f = retiredField(n, k);
+  f.cap = static_cast<uint8_t>(cap);
   return f;
 }
 
@@ -135,12 +153,11 @@ constexpr Field kSyslogFields[] = {
     intField("port", Kind::U16, offsetof(SyslogConfig, port), 1, 65535),
 };
 
+// The web login went in 2.1.0.
 constexpr Field kWebFields[] = {
-    strField("user", Kind::Str, offsetof(WebConfig, user), sizeof(WebConfig::user), 0, kSecretMaxI,
-             Rule::NoColon),
-    strField("password", Kind::Secret, offsetof(WebConfig, password), sizeof(WebConfig::password),
-             0, kSecretMaxI, Rule::Printable),
-    boolField("protectRead", offsetof(WebConfig, protectRead)),
+    retiredField("user", Kind::Str, kSecretMax + 1),
+    retiredField("password", Kind::Secret, kSecretMax + 1),
+    retiredField("protectRead", Kind::Bool),
     extField(strField("allowedHosts", Kind::Str, offsetof(WebConfig, allowedHosts),
                       sizeof(WebConfig::allowedHosts), 0, static_cast<int32_t>(kAllowedHostsMax),
                       Rule::HostList),
@@ -413,9 +430,6 @@ bool stringRuleOk(const Field& f, const char* s, size_t len) {
         return false;
       }
       break;
-    case Rule::NoColon:
-      if (memchr(s, ':', len) != nullptr) return false;
-      break;
     case Rule::None:
     case Rule::Printable:
       break;
@@ -522,7 +536,6 @@ uint8_t valveNumberSegment(const char* s) {
 
 const Group& kNet = kGroups[1];
 const Group& kSyslog = kGroups[3];
-const Group& kWeb = kGroups[4];
 const Group& kMqtt = kGroups[5];
 const Group& kValves = kGroups[6];
 const Group& kTemps = kGroups[7];
@@ -596,9 +609,8 @@ bool storedRulesOk(const Config& c, PathOut& po) {
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g); ++e) {
       for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
-        if (!fieldValid(g.fields[fi], fieldPtr(c, g, e, g.fields[fi]))) {
-          return failAt(po, g, e, g.fields[fi].name);
-        }
+        const Field& f = g.fields[fi];
+        if (!f.retired && !fieldValid(f, fieldPtr(c, g, e, f))) return failAt(po, g, e, f.name);
       }
     }
   }
@@ -615,11 +627,6 @@ bool storedRulesOk(const Config& c, PathOut& po) {
   if (n.iface == NetInterface::Wifi && n.ssid[0] == '\0') return failAt(po, kNet, "ssid");
 
   if (c.syslog.level > 0 && c.syslog.server == 0) return failAt(po, kSyslog, "server");
-
-  const bool userSet = c.web.user[0] != '\0';
-  const bool pwdSet = c.web.password[0] != '\0';
-  if (userSet && !pwdSet) return failAt(po, kWeb, "password");
-  if (pwdSet && !userSet) return failAt(po, kWeb, "user");
 
   const MqttConfig& m = c.mqtt;
   if (m.mode != MqttMode::Off && m.host[0] == '\0') return failAt(po, kMqtt, "host");
@@ -1049,10 +1056,11 @@ SetResult setInGroup(Config& c, const Group& g, uint8_t element, const char* seg
                      const ConfigValue& v, bool clearSecrets) {
   for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
     const Field& f = g.fields[fi];
-    if (segmentIs(seg, segLen, f.name)) return setField(c, g, element, f, v, clearSecrets);
-    if (isSecretFlag(f, seg, segLen)) {
-      return v.type == ConfigValue::Type::Bool ? SetResult::Ok : SetResult::WrongType;
-    }
+    const bool flag = isSecretFlag(f, seg, segLen);
+    if (!flag && !segmentIs(seg, segLen, f.name)) continue;
+    if (f.retired) return SetResult::Ok;  // whatever its value
+    if (flag) return v.type == ConfigValue::Type::Bool ? SetResult::Ok : SetResult::WrongType;
+    return setField(c, g, element, f, v, clearSecrets);
   }
   return SetResult::UnknownKey;
 }
@@ -1127,8 +1135,8 @@ void writeFloat(JsonWriter& jw, float v) {
   jw.raw(tmp);
 }
 
-void writeField(JsonWriter& jw, const Field& f, const uint8_t* p, SecretMode secrets) {
-  if (f.kind == Kind::Secret && secrets == SecretMode::Flags) {
+void writeField(JsonWriter& jw, const Field& f, const uint8_t* p) {
+  if (f.kind == Kind::Secret) {
     char name[32];
     snprintf(name, sizeof name, "%sSet", f.name);
     jw.key(name);
@@ -1178,33 +1186,33 @@ void writeField(JsonWriter& jw, const Field& f, const uint8_t* p, SecretMode sec
   }
 }
 
-void writeFields(JsonWriter& jw, const Config& c, const Group& g, uint8_t element,
-                 SecretMode secrets) {
+void writeFields(JsonWriter& jw, const Config& c, const Group& g, uint8_t element) {
   for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
-    writeField(jw, g.fields[fi], fieldPtr(c, g, element, g.fields[fi]), secrets);
+    const Field& f = g.fields[fi];
+    if (!f.retired) writeField(jw, f, fieldPtr(c, g, element, f));
   }
 }
 
 }  // namespace
 
-bool writeConfigJson(JsonWriter& jw, const Config& c, SecretMode secrets, const ApplyInfo* apply) {
+bool writeConfigJson(JsonWriter& jw, const Config& c, const ApplyInfo* apply) {
   jw.beginObject();
   jw.kv("schema", static_cast<uint32_t>(c.schema));
   for (size_t gi = 0; gi < kGroupCount; ++gi) {
     const Group& g = kGroups[gi];
     if (g.name == nullptr) {
-      writeFields(jw, c, g, 0, secrets);
+      writeFields(jw, c, g, 0);
     } else if (g.count == 0) {
       jw.key(g.name);
       jw.beginObject();
-      writeFields(jw, c, g, 0, secrets);
+      writeFields(jw, c, g, 0);
       jw.endObject();
     } else {
       jw.key(g.name);
       jw.beginArray();
       for (uint8_t e = 0; e < g.count; ++e) {
         jw.beginObject();
-        writeFields(jw, c, g, e, secrets);
+        writeFields(jw, c, g, e);
         jw.endObject();
       }
       jw.endArray();
@@ -1781,8 +1789,13 @@ size_t encodeConfig(const Config& c, uint8_t* out, size_t cap) {
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g); ++e) {
       for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
-        if (g.fields[fi].ext != 0) continue;
-        encodeField(bo, g.fields[fi], fieldPtr(c, g, e, g.fields[fi]));
+        const Field& f = g.fields[fi];
+        if (f.ext != 0) continue;
+        if (f.retired) {
+          bo.u8(0);  // the neutral value of every kind: 0, "" (length 0) or false
+        } else {
+          encodeField(bo, f, fieldPtr(c, g, e, f));
+        }
       }
     }
   }
@@ -1855,7 +1868,6 @@ class Repairer {
   void run() {
     fields();
     network();
-    web();
     mqtt();
     while (valveStep()) {
     }
@@ -1884,7 +1896,7 @@ class Repairer {
       for (uint8_t e = 0; e < elementCount(g); ++e) {
         for (uint8_t fi = 0; fi < g.fieldCount; ++fi) {
           const Field& f = g.fields[fi];
-          if (fieldValid(f, fieldPtr(c_, g, e, f))) continue;
+          if (f.retired || fieldValid(f, fieldPtr(c_, g, e, f))) continue;
           resetField(c_, g, e, f);
           note(kRepairField, g, e, f.name);
         }
@@ -1912,19 +1924,6 @@ class Repairer {
       c_.syslog.level = 0;
       note(kRepairSyslog, kSyslog, 0, "level");
     }
-  }
-
-  void web() {
-    WebConfig& w = c_.web;
-    const bool userSet = w.user[0] != '\0';
-    if (userSet == (w.password[0] != '\0')) return;
-    if (userSet) {
-      note(kRepairWebNoPassword, kWeb, 0, "password");
-    } else {
-      note(kRepairWebNoUser, kWeb, 0, "user");
-    }
-    w.user[0] = '\0';
-    w.password[0] = '\0';
   }
 
   void mqtt() {
@@ -2070,8 +2069,11 @@ DecodeResult decodeConfig(const uint8_t* data, size_t len, Config& out, DecodeIn
     const Group& g = kGroups[gi];
     for (uint8_t e = 0; e < elementCount(g) && in.ok(); ++e) {
       for (uint8_t fi = 0; fi < g.fieldCount && in.ok(); ++fi) {
-        if (g.fields[fi].ext != 0) continue;
-        decodeField(in, g.fields[fi], fieldPtr(out, g, e, g.fields[fi]));
+        const Field& f = g.fields[fi];
+        if (f.ext != 0) continue;
+        // A retired field is read by its old rules and dropped.
+        uint8_t dropped[sizeof(WebConfig::allowedHosts)];  // the largest field incl. NUL
+        decodeField(in, f, f.retired ? dropped : fieldPtr(out, g, e, f));
       }
     }
   }

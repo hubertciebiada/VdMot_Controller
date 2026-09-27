@@ -65,7 +65,6 @@ struct StatusSnapshot {
   bool calibrationActive = false;
   int64_t lastScheduledCalibEpoch = 0;
   uint32_t nextCalibSlot = 0;       // yyyymmdd, 0 = none
-  bool authEnabled = false;
   uint32_t lastEventSeq = 0;
   // Added in 2.1.
   const char* station = "";         // config station name (root "station", first member)
@@ -95,7 +94,7 @@ struct StatusSnapshot {
 //         "stats":{...LinkStats...},"status":{...gstat...}|null,
 //         "espRx":{"overflow":..,"malformed":..}},
 //  "calibration":{"active":..,"lastScheduled":..,"nextSlot":..},
-//  "auth":..,"lastEventSeq":..}
+//  "lastEventSeq":..}
 // 2.1 members: root "station" first; net.trial null|{"remainS":n};
 // mqtt.clientId, mqtt.haStatus; stm.support, stm.lease null (mode none)|
 // {"mode","state","remainS","timeoutMin","failsafeMask","regulator",
@@ -285,7 +284,7 @@ enum class ApiRoute : uint8_t {
   MqttReconnect,     // POST /api/mqtt/reconnect
   MqttDiscovery,     // POST /api/mqtt/discovery           {"action":"publish|delete|republish"}
   LogDownload,       // GET  /api/log                      current + previous log file, text/plain
-  Health,            // GET  /api/health                   public, also with protectRead
+  Health,            // GET  /api/health
   ValveStop,         // POST /api/valves/{n}/stop
   StopAll,           // POST /api/valves/stop
   StmSafeModeLeave,  // POST /api/stm/safe-mode/leave
@@ -301,16 +300,11 @@ struct RouteMatch {
   ApiRoute route = ApiRoute::NotFound;
   uint8_t valve = kNoValve;  // 0-based, from {n} = 1..12
   char name[32] = {0};       // {name}: [A-Za-z0-9._-]{1,31}, no leading '.'
-  bool needsAuth = true;     // when web auth is enabled
 };
 
 // Matches "/api/..." (no query string; a trailing '/' is not accepted).
-// {n} must be 1..12 without leading zeros, else NotFound. needsAuth is false
-// for Health, and for the read-only GET routes (Status, Valves,
-// ValveProfile, Sensors, Events, Motor, StmFlashStatus, ImportReport;
-// DESIGN.md "HTTP API" auth column "read") when protectRead is false.
-// MethodNotAllowed keeps needsAuth true. A path containing NUL bytes is
-// NotFound.
-RouteMatch matchApiRoute(HttpMethod m, const char* path, size_t len, bool protectRead);
+// {n} must be 1..12 without leading zeros, else NotFound. A path containing
+// NUL bytes is NotFound.
+RouteMatch matchApiRoute(HttpMethod m, const char* path, size_t len);
 
 }  // namespace vdm

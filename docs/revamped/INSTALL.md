@@ -224,7 +224,6 @@ once. A static IP without DNS uses the gateway as DNS server.
 - [ ] Events: `app_marked_valid` logged a few minutes after the update.
 - [ ] Settings → calibration schedule (weekday mask, hour, minute) as wanted. With a
       schedule the STM's own time trigger is switched off.
-- [ ] Optional: set a web user and password (Settings) to protect changes.
 - [ ] Maintenance → Export config, keep the file.
 
 ## 5. Rollback and downgrade
@@ -283,7 +282,6 @@ meantime are replaced by the values last written by 2.1.
 | New ESP image does not come up | wait 15 min for the automatic rollback; power-cycle if it hangs |
 | Wrong network settings, device unreachable | wait: without "Keep" the previous settings come back after about 2 min (at most about 5 min including the restarts). As a last resort use the factory reset |
 | Factory reset | fit a jumper from **GPIO2 to GND** and power up; keep it for **5 s** while the ESP boots, then remove it. Erases only the new firmware's settings (namespace `vdmrev`); legacy settings are not imported again. The device starts with defaults (interface auto, DHCP, station `VdMot`, host name `VdMot`). The reset happens once per fitting: while the jumper stays fitted, later boots keep the settings (event `factory_reset_skipped`) |
-| Forgot the web password | factory reset as above, or `POST /api/system/factory-reset` if you still have access |
 | ESP does not boot at all | USB-serial (3.3 V) on the WT32-ETH01 header, IO0 to GND while powering up, then `esptool.py --chip esp32 erase_region 0xe000 0x2000` (otadata, so app0 boots) and `esptool.py --chip esp32 write_flash 0x10000 <image>.bin`. Do not erase NVS if you want to keep the settings |
 | Config broken after an update | the device restores the last saved config from its backup (`config_restored`) or repairs the broken fields (`config_repaired`); only when both fail it boots with defaults (`config_defaults`). Restore with Maintenance → Import config |
 | Network unreachable while the link is up | the ESP restarts its network interface after `net.reconnectTimeoutMin` (default 5 min) without proof of the network, and itself after another 5 min (longer on every further restart in the same outage) |

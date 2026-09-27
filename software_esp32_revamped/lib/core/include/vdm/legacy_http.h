@@ -16,15 +16,12 @@ enum class LegacyRoute : uint8_t { None, Valves, Temps, Volts, SetValve, Gone, M
 struct LegacyMatch {
   LegacyRoute route = LegacyRoute::None;
   const char* replacement = "";  // Gone: the "detail" of the 410 answer
-  bool needsAuth = false;
 };
 
 // Exact, case-sensitive path (no query). MethodNotAllowed: an alias path
 // with another method (GET for /valves, /temps, /volts; POST for
-// /setvalve). Gone: any method on a path of the 410 table. needsAuth:
-// Valves/Temps/Volts like /api/valves (true only with protectRead);
-// SetValve true; Gone and MethodNotAllowed false.
-LegacyMatch matchLegacyRoute(HttpMethod m, const char* path, size_t len, bool protectRead);
+// /setvalve). Gone: any method on a path of the 410 table.
+LegacyMatch matchLegacyRoute(HttpMethod m, const char* path, size_t len);
 
 // {"valves":[{"idx":n,"name":"..","state":s,"pos":..,"meanCur":..,
 //  "targetPos":t,"link":0,"moves":..,"oc":..,"cc":..,"dc":..,"cr":..,

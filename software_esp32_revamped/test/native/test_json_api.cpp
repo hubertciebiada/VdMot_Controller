@@ -83,7 +83,7 @@ TEST_CASE("api: status of an empty snapshot") {
       "\"lastReplyMs\":0},\"status\":null,\"espRx\":{\"overflow\":0,\"malformed\":0},"
       "\"support\":\"unknown\",\"lease\":null,\"learnTime\":null},"
       "\"calibration\":{\"active\":false,\"lastScheduled\":null,\"nextSlot\":null,"
-      "\"next\":null},\"auth\":false,\"lastEventSeq\":0,"
+      "\"next\":null},\"lastEventSeq\":0,"
       "\"config\":{\"source\":\"stored\",\"repairs\":0,\"newerSchema\":false},"
       "\"importReport\":false}";
   CHECK(j == expected);
@@ -153,7 +153,6 @@ TEST_CASE("api: status of a populated snapshot") {
   s.calibrationActive = true;
   s.lastScheduledCalibEpoch = 1789990000;
   s.nextCalibSlot = 20260927;
-  s.authEnabled = true;
   s.lastEventSeq = 999;
   s.station = "Dom P\xc3\xb3\xc5\x82noc";  // "Dom Północ"
   s.netTrialActive = true;
@@ -212,7 +211,7 @@ TEST_CASE("api: status of a populated snapshot") {
       "\"configFailed\":false,\"configTrusted\":true},\"learnTime\":7200},"
       "\"calibration\":{\"active\":true,\"lastScheduled\":1789990000,\"nextSlot\":20260927,"
       "\"next\":\"2026-09-27T03:30:00\"},"
-      "\"auth\":true,\"lastEventSeq\":999,\"config\":{\"source\":\"backup\","
+      "\"lastEventSeq\":999,\"config\":{\"source\":\"backup\","
       "\"repairs\":32770,\"newerSchema\":true},\"importReport\":true}";
   CHECK(j == expected);
   checkOverflow([&](JsonWriter& jw) { return writeStatusJson(jw, s); }, j.size());
@@ -673,92 +672,75 @@ TEST_CASE("api: error document") {
 
 namespace {
 
-RouteMatch route(HttpMethod m, const std::string& path, bool protectRead = false) {
-  return matchApiRoute(m, path.data(), path.size(), protectRead);
+RouteMatch route(HttpMethod m, const std::string& path) {
+  return matchApiRoute(m, path.data(), path.size());
 }
 
 }  // namespace
 
-TEST_CASE("api: every route, method and auth flag") {
+TEST_CASE("api: every route and method") {
   struct Case {
     HttpMethod m;
     const char* path;
     ApiRoute r;
-    bool readOnly;  // public unless protectRead
   };
   const HttpMethod G = HttpMethod::Get, P = HttpMethod::Post, D = HttpMethod::Delete;
   const Case cases[] = {
-      {G, "/api/status", ApiRoute::Status, true},
-      {G, "/api/valves", ApiRoute::Valves, true},
-      {P, "/api/valves/1/target", ApiRoute::ValveTarget, false},
-      {P, "/api/valves/1/calibrate", ApiRoute::ValveCalibrate, false},
-      {P, "/api/valves/1/assembly", ApiRoute::ValveAssembly, false},
-      {P, "/api/valves/1/service-move", ApiRoute::ValveServiceMove, false},
-      {P, "/api/valves/1/sensors", ApiRoute::ValveSensors, false},
-      {G, "/api/valves/1/profile", ApiRoute::ValveProfile, true},
-      {P, "/api/valves/1/profile", ApiRoute::ValveProfileRefresh, false},
-      {P, "/api/valves/calibrate", ApiRoute::CalibrateAll, false},
-      {P, "/api/valves/assembly", ApiRoute::AssemblyAll, false},
-      {P, "/api/valves/detect", ApiRoute::Detect, false},
-      {G, "/api/sensors", ApiRoute::Sensors, true},
-      {P, "/api/sensors/scan", ApiRoute::SensorsScan, false},
-      {G, "/api/events", ApiRoute::Events, true},
-      {G, "/api/config", ApiRoute::ConfigGet, false},
-      {P, "/api/config", ApiRoute::ConfigPatch, false},
-      {G, "/api/config/export", ApiRoute::ConfigExport, false},
-      {G, "/api/stm/motor", ApiRoute::Motor, true},
-      {P, "/api/stm/motor", ApiRoute::MotorSet, false},
-      {P, "/api/stm/reset", ApiRoute::StmReset, false},
-      {G, "/api/stm/images", ApiRoute::StmImages, false},
-      {P, "/api/stm/images", ApiRoute::StmImageUpload, false},
-      {D, "/api/stm/images/fw.bin", ApiRoute::StmImageDelete, false},
-      {P, "/api/stm/flash", ApiRoute::StmFlash, false},
-      {G, "/api/stm/flash", ApiRoute::StmFlashStatus, true},
-      {P, "/api/stm/flash/abort", ApiRoute::StmFlashAbort, false},
-      {P, "/api/ota/esp", ApiRoute::EspOta, false},
-      {P, "/api/system/reboot", ApiRoute::Reboot, false},
-      {P, "/api/system/factory-reset", ApiRoute::FactoryReset, false},
-      {P, "/api/mqtt/reconnect", ApiRoute::MqttReconnect, false},
-      {P, "/api/mqtt/discovery", ApiRoute::MqttDiscovery, false},
-      {G, "/api/log", ApiRoute::LogDownload, false},
-      {P, "/api/valves/12/stop", ApiRoute::ValveStop, false},
-      {P, "/api/valves/stop", ApiRoute::StopAll, false},
-      {P, "/api/stm/safe-mode/leave", ApiRoute::StmSafeModeLeave, false},
-      {P, "/api/system/network/confirm", ApiRoute::NetConfirm, false},
-      {P, "/api/system/network/revert", ApiRoute::NetRevert, false},
-      {G, "/api/files", ApiRoute::Files, false},
-      {D, "/api/files", ApiRoute::FileDelete, false},
-      {G, "/api/import-report", ApiRoute::ImportReport, true},
-      {D, "/api/import-report", ApiRoute::ImportReportDismiss, false},
+      {G, "/api/status", ApiRoute::Status},
+      {G, "/api/valves", ApiRoute::Valves},
+      {P, "/api/valves/1/target", ApiRoute::ValveTarget},
+      {P, "/api/valves/1/calibrate", ApiRoute::ValveCalibrate},
+      {P, "/api/valves/1/assembly", ApiRoute::ValveAssembly},
+      {P, "/api/valves/1/service-move", ApiRoute::ValveServiceMove},
+      {P, "/api/valves/1/sensors", ApiRoute::ValveSensors},
+      {G, "/api/valves/1/profile", ApiRoute::ValveProfile},
+      {P, "/api/valves/1/profile", ApiRoute::ValveProfileRefresh},
+      {P, "/api/valves/calibrate", ApiRoute::CalibrateAll},
+      {P, "/api/valves/assembly", ApiRoute::AssemblyAll},
+      {P, "/api/valves/detect", ApiRoute::Detect},
+      {G, "/api/sensors", ApiRoute::Sensors},
+      {P, "/api/sensors/scan", ApiRoute::SensorsScan},
+      {G, "/api/events", ApiRoute::Events},
+      {G, "/api/config", ApiRoute::ConfigGet},
+      {P, "/api/config", ApiRoute::ConfigPatch},
+      {G, "/api/config/export", ApiRoute::ConfigExport},
+      {G, "/api/stm/motor", ApiRoute::Motor},
+      {P, "/api/stm/motor", ApiRoute::MotorSet},
+      {P, "/api/stm/reset", ApiRoute::StmReset},
+      {G, "/api/stm/images", ApiRoute::StmImages},
+      {P, "/api/stm/images", ApiRoute::StmImageUpload},
+      {D, "/api/stm/images/fw.bin", ApiRoute::StmImageDelete},
+      {P, "/api/stm/flash", ApiRoute::StmFlash},
+      {G, "/api/stm/flash", ApiRoute::StmFlashStatus},
+      {P, "/api/stm/flash/abort", ApiRoute::StmFlashAbort},
+      {P, "/api/ota/esp", ApiRoute::EspOta},
+      {P, "/api/system/reboot", ApiRoute::Reboot},
+      {P, "/api/system/factory-reset", ApiRoute::FactoryReset},
+      {P, "/api/mqtt/reconnect", ApiRoute::MqttReconnect},
+      {P, "/api/mqtt/discovery", ApiRoute::MqttDiscovery},
+      {G, "/api/log", ApiRoute::LogDownload},
+      {G, "/api/health", ApiRoute::Health},
+      {P, "/api/valves/12/stop", ApiRoute::ValveStop},
+      {P, "/api/valves/stop", ApiRoute::StopAll},
+      {P, "/api/stm/safe-mode/leave", ApiRoute::StmSafeModeLeave},
+      {P, "/api/system/network/confirm", ApiRoute::NetConfirm},
+      {P, "/api/system/network/revert", ApiRoute::NetRevert},
+      {G, "/api/files", ApiRoute::Files},
+      {D, "/api/files", ApiRoute::FileDelete},
+      {G, "/api/import-report", ApiRoute::ImportReport},
+      {D, "/api/import-report", ApiRoute::ImportReportDismiss},
   };
   for (const Case& k : cases) {
     CAPTURE(k.path);
-    const RouteMatch a = route(k.m, k.path, false);
-    CHECK(a.route == k.r);
-    CHECK(a.needsAuth == !k.readOnly);
-    const RouteMatch b = route(k.m, k.path, true);
-    CHECK(b.route == k.r);
-    CHECK(b.needsAuth);
+    CHECK(route(k.m, k.path).route == k.r);
     // Every other method on a known path -> 405 (unless another entry uses it).
     for (HttpMethod other : {G, P, D, HttpMethod::Other}) {
       if (other == k.m) continue;
       bool alsoRouted = false;
       for (const Case& c2 : cases) alsoRouted |= (c2.m == other && strcmp(c2.path, k.path) == 0);
       if (alsoRouted) continue;
-      const RouteMatch x = route(other, k.path);
-      CHECK(x.route == ApiRoute::MethodNotAllowed);
-      CHECK(x.needsAuth);
+      CHECK(route(other, k.path).route == ApiRoute::MethodNotAllowed);
     }
-  }
-  // The health check is public, also with protectRead.
-  for (bool protectRead : {false, true}) {
-    CAPTURE(protectRead);
-    const RouteMatch h = route(G, "/api/health", protectRead);
-    CHECK(h.route == ApiRoute::Health);
-    CHECK_FALSE(h.needsAuth);
-    const RouteMatch x = route(P, "/api/health", protectRead);
-    CHECK(x.route == ApiRoute::MethodNotAllowed);
-    CHECK(x.needsAuth);
   }
   CHECK(route(P, "/api/valves/3/stop").valve == 2);
   CHECK(route(P, "/api/valves/13/stop").route == ApiRoute::NotFound);
@@ -835,18 +817,17 @@ TEST_CASE("api: malformed and unknown paths") {
     for (HttpMethod m : {HttpMethod::Get, HttpMethod::Post, HttpMethod::Delete}) {
       const RouteMatch r = route(m, p);
       CHECK(r.route == ApiRoute::NotFound);
-      CHECK(r.needsAuth);
       CHECK(r.valve == kNoValve);
     }
   }
-  CHECK(matchApiRoute(HttpMethod::Get, nullptr, 11, false).route == ApiRoute::NotFound);
+  CHECK(matchApiRoute(HttpMethod::Get, nullptr, 11).route == ApiRoute::NotFound);
   const std::string withNul("/api/status\0", 12);
   CHECK(route(HttpMethod::Get, withNul).route == ApiRoute::NotFound);
   const std::string nulInside("/api/sta\0us", 11);
   CHECK(route(HttpMethod::Get, nulInside).route == ApiRoute::NotFound);
   // Only `len` bytes are considered.
-  CHECK(matchApiRoute(HttpMethod::Get, "/api/statusXYZ", 11, false).route == ApiRoute::Status);
-  CHECK(matchApiRoute(HttpMethod::Get, "/api/status", 10, false).route == ApiRoute::NotFound);
+  CHECK(matchApiRoute(HttpMethod::Get, "/api/statusXYZ", 11).route == ApiRoute::Status);
+  CHECK(matchApiRoute(HttpMethod::Get, "/api/status", 10).route == ApiRoute::NotFound);
 }
 
 TEST_CASE("api: router fuzz" * doctest::test_suite("fuzz")) {
@@ -859,11 +840,8 @@ TEST_CASE("api: router fuzz" * doctest::test_suite("fuzz")) {
     const int n = static_cast<int>(rng() % 6);
     for (int i = 0; i < n; ++i) p += pieces[rng() % (sizeof pieces / sizeof pieces[0])];
     const HttpMethod m = static_cast<HttpMethod>(rng() % 4);
-    const RouteMatch r = matchApiRoute(m, p.data(), p.size(), rng() % 2 != 0);
+    const RouteMatch r = matchApiRoute(m, p.data(), p.size());
     CHECK(strlen(r.name) < sizeof r.name);
-    if (r.route == ApiRoute::NotFound || r.route == ApiRoute::MethodNotAllowed) {
-      CHECK(r.needsAuth);
-    }
     CHECK((r.valve == kNoValve || r.valve < kValveCount));
   }
 }

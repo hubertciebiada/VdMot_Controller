@@ -1,5 +1,5 @@
-// Tests of src/web_server.cpp through the request driver: routing, the request guard, per-address
-// auth, response slots, static assets, uploads, the legacy aliases and the 2.1 routes.
+// Tests of src/web_server.cpp through the request driver: routing, the request guard, response
+// slots, static assets, uploads, the legacy aliases and the 2.1 routes.
 #include <string>
 
 #include <vdm/stm_codec.h>
@@ -39,18 +39,6 @@ Request apiDel(const std::string& url) {
 Request apiUpload(const std::string& url, const std::string& name, const std::string& data) {
   Request r = fakes::http::upload(url, name, data);
   r.header("X-VdMot", "1");
-  return r;
-}
-
-void enableAuth() {
-  vdm::Config& c = sib::storage().active;
-  vdm::copyString(c.web.user, sizeof c.web.user, "admin");
-  vdm::copyString(c.web.password, sizeof c.web.password, "secret12");
-}
-
-Request withAuth(Request r, bool right = true) {
-  // admin:secret12 / admin:wrong
-  r.header("Authorization", right ? "Basic YWRtaW46c2VjcmV0MTI=" : "Basic YWRtaW46d3Jvbmc=");
   return r;
 }
 
@@ -178,21 +166,23 @@ TEST_CASE("web: a target out of range, an inactive valve, a full queue") {
   CHECK(r.body == errorBody("queue_full", "STM command queue full"));
 }
 
-TEST_CASE("web auth: without credentials a protected route answers 401 with a challenge") {
+TEST_CASE("web: no request needs credentials, an Authorization header is ignored") {
   glue::begin();
-  enableAuth();
   start();
-  Response r = fakes::http::perform(apiPost("/api/valves/1/target", "{\"target\":5}"));
-  CHECK(r.code == 401);
-  CHECK(r.header("WWW-Authenticate") == "Basic realm=\"VdMot\"");
-  CHECK(sib::app().submitted.empty());
-  r = fakes::http::perform(withAuth(apiPost("/api/valves/1/target", "{\"target\":5}")));
+  Request post = apiPost("/api/valves/1/target", "{\"target\":5}");
+  post.header("Authorization", "Basic YWRtaW46d3Jvbmc=");  // admin:wrong
+  Response r = fakes::http::perform(post);
   CHECK(r.code == 202);
-  r = fakes::http::perform(withAuth(apiPost("/api/valves/1/target", "{\"target\":5}"), false));
-  CHECK(r.code == 401);
-  const vdm::Event e = sib::logger().withCode(vdm::EventCode::AuthFailed).at(0);
-  CHECK(std::string(e.text) == "192.168.1.50");
-  CHECK(e.arg1 == 1);
+  CHECK(r.header("WWW-Authenticate").empty());
+  CHECK(sib::app().submitted.size() == 1);
+  Request upload = apiUpload("/api/stm/images", "fw.bin", "abc");
+  upload.header("Authorization", "Basic YWRtaW46d3Jvbmc=");
+  r = fakes::http::perform(upload);
+  CHECK(r.code == 201);
+  CHECK(sib::storage().uploadBegins.size() == 1);
+  CHECK(fakes::http::perform(fakes::http::post("/setvalve", "{\"valve\":1,\"value\":1}")).code ==
+        200);
+  CHECK(sib::logger().withCode(vdm::EventCode::AuthFailed).empty());
 }
 
 TEST_CASE("web: reboot and MQTT reconnect are handed to their modules") {
@@ -409,60 +399,6 @@ TEST_CASE("WG-16: RequestRefused is logged once per verdict and minute") {
   CHECK(sib::logger().withCode(vdm::EventCode::RequestRefused).back().arg1 == 4);
 }
 
-// ---------------------------------------------------------------- auth per address (WG-7)
-
-TEST_CASE("WG-7: ten wrong logins lock that address only, with Retry-After") {
-  glue::begin();
-  enableAuth();
-  start();
-  Request wrong = withAuth(apiPost("/api/valves/1/target", "{\"target\":5}"), false);
-  wrong.remoteIp = 0x0200000A;  // 10.0.0.2
-  for (int i = 0; i < 9; ++i) CHECK(fakes::http::perform(wrong).code == 401);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthLocked).empty());
-  Response r = fakes::http::perform(wrong);
-  CHECK(r.code == 401);  // the 10th is still checked
-  std::vector<vdm::Event> locked = sib::logger().withCode(vdm::EventCode::AuthLocked);
-  REQUIRE(locked.size() == 1);
-  CHECK(locked[0].arg1 == 60);
-  CHECK(locked[0].arg2 == 1);
-  CHECK(std::string(locked[0].text) == "10.0.0.2");
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthFailed).back().arg1 == 10);
-  r = fakes::http::perform(wrong);
-  CHECK(r.code == 429);
-  CHECK(r.header("Retry-After") == "60");
-  CHECK(r.body ==
-        errorBody("locked", "too many failed logins from this address, retry in 60 s"));
-  // even the right password is locked out from that address
-  Request right = withAuth(apiPost("/api/valves/1/target", "{\"target\":5}"));
-  right.remoteIp = 0x0200000A;
-  fakes::advanceMs(30500);
-  r = fakes::http::perform(right);
-  CHECK(r.code == 429);
-  CHECK(r.header("Retry-After") == "30");
-  // another address is not affected
-  right.remoteIp = 0x0300000A;  // 10.0.0.3
-  CHECK(fakes::http::perform(right).code == 202);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthLocked).size() == 1);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthFailed).size() == 10);
-  // after the lock the address may log in again
-  fakes::advanceMs(29500);
-  right.remoteIp = 0x0200000A;
-  CHECK(fakes::http::perform(right).code == 202);
-}
-
-TEST_CASE("WG-7: an upload from a locked address answers 429") {
-  glue::begin();
-  enableAuth();
-  start();
-  Request wrong = withAuth(apiPost("/api/valves/1/target", "{\"target\":5}"), false);
-  for (int i = 0; i < 10; ++i) fakes::http::perform(wrong);
-  const Response r =
-      fakes::http::perform(withAuth(apiUpload("/api/stm/images", "fw.bin", "abc")));
-  CHECK(r.code == 429);
-  CHECK(r.header("Retry-After") == "60");
-  CHECK(sib::storage().uploadBegins.empty());
-}
-
 // ---------------------------------------------------------------- legacy (WG-8)
 
 TEST_CASE("WG-8: GET /valves answers the legacy document") {
@@ -556,19 +492,6 @@ TEST_CASE("WG-8: POST /setvalve rounds the value and answers the legacy body") {
   CHECK(sib::app().submitted.size() == 1);
   CHECK(fakes::http::perform(fakes::http::get("/setvalve")).code == 405);
   CHECK(fakes::http::perform(fakes::http::post("/valves", "")).code == 405);
-}
-
-TEST_CASE("WG-8: /setvalve needs the login when auth is on; /valves only with protectRead") {
-  glue::begin();
-  enableAuth();
-  start();
-  CHECK(fakes::http::perform(fakes::http::post("/setvalve", "{\"valve\":1,\"value\":1}")).code ==
-        401);
-  CHECK(fakes::http::perform(fakes::http::get("/valves")).code == 200);
-  sib::storage().active.web.protectRead = true;
-  ++sib::storage().revision;
-  CHECK(fakes::http::perform(fakes::http::get("/valves")).code == 401);
-  CHECK(fakes::http::perform(withAuth(fakes::http::get("/valves"))).code == 200);
 }
 
 TEST_CASE("WG-8: legacy paths answer 410 without buffering, others 404/405, never 413") {
@@ -720,29 +643,19 @@ TEST_CASE("WG-10: a failed save releases its slot") {
   CHECK(b.finish().code == 200);
 }
 
-TEST_CASE("WG-11: export with secrets needs the web login") {
+TEST_CASE("WG-11: the export never carries a secret, ?secrets=1 included") {
   glue::begin();
   vdm::copyString(sib::storage().active.mqtt.password, sizeof sib::storage().active.mqtt.password,
                   "brokerpw");
   start();
-  Response r = fakes::http::perform(fakes::http::get("/api/config/export?secrets=1"));
-  CHECK(r.code == 403);
-  CHECK(r.body == errorBody("auth_required", "enable web login to export passwords"));
-  r = fakes::http::perform(fakes::http::get("/api/config/export"));
-  CHECK(r.code == 200);
-  CHECK(r.header("Content-Disposition") == "attachment; filename=\"vdmot-config.json\"");
-  CHECK(r.body.find("brokerpw") == std::string::npos);
-  r = fakes::http::perform(fakes::http::get("/api/config/export?secrets=0"));
-  CHECK(r.code == 400);
-  CHECK(r.body == errorBody("bad_request", "secrets=1"));
-  enableAuth();
-  ++sib::storage().revision;
-  r = fakes::http::perform(withAuth(fakes::http::get("/api/config/export?secrets=1")));
-  CHECK(r.code == 200);
-  CHECK(r.header("Content-Disposition") ==
-        "attachment; filename=\"vdmot-config-secrets.json\"");
-  CHECK(r.body.find("\"brokerpw\"") != std::string::npos);
-  CHECK(r.body.find("\"secret12\"") != std::string::npos);
+  for (const char* url : {"/api/config/export", "/api/config/export?secrets=1"}) {
+    CAPTURE(url);
+    const Response r = fakes::http::perform(fakes::http::get(url));
+    CHECK(r.code == 200);
+    CHECK(r.header("Content-Disposition") == "attachment; filename=\"vdmot-config.json\"");
+    CHECK(r.body.find("brokerpw") == std::string::npos);
+    CHECK(r.body.find("\"passwordSet\":true") != std::string::npos);
+  }
 }
 
 // ---------------------------------------------------------------- network trial (WG-12)
@@ -940,16 +853,14 @@ TEST_CASE("web: valves carry the sensor position and the calibration end") {
 
 // ---------------------------------------------------------------- health (WG-17)
 
-TEST_CASE("WG-17: /api/health is public and needs no response slot") {
+TEST_CASE("WG-17: /api/health needs no response slot") {
   glue::begin();
-  enableAuth();
-  sib::storage().active.web.protectRead = true;
   sib::net().info.ip = 0x3301A8C0;
   sib::app().health.version = "2.1.0-revamped";
   sib::app().health.uptimeS = 77;
   start();
-  fakes::http::Exchange a(withAuth(fakes::http::get("/api/status")));
-  fakes::http::Exchange b(withAuth(fakes::http::get("/api/status")));
+  fakes::http::Exchange a(fakes::http::get("/api/status"));
+  fakes::http::Exchange b(fakes::http::get("/api/status"));
   Request h = fakes::http::get("/api/health");
   h.host = "192.168.1.51";
   Response r = fakes::http::perform(h);

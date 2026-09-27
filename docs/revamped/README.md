@@ -56,7 +56,8 @@ The full list is in [CHANGELOG.md](CHANGELOG.md) (ESP) and
 - **STM safe mode:** 3 watchdog resets within 10 min stop the motors until
   `ssafe 0`, a power-on, or 30 min of uptime.
 - **HTTP guard:** API writes need the header `X-VdMot: 1` and JSON content; the
-  `Host`/`Origin` must name the device; failed logins lock per client address.
+  `Host`/`Origin` must name the device. There is no login: the controller
+  belongs in a private network.
 
 ### Robustness
 - Targets survive restarts: the STM keeps position, target and status over a

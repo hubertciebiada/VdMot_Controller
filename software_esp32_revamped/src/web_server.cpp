@@ -16,7 +16,6 @@
 #include <string.h>
 #include <time.h>
 
-#include <vdm/auth.h>
 #include <vdm/config.h>
 #include <vdm/file_manager.h>
 #include <vdm/json_api.h>
@@ -182,7 +181,6 @@ struct LogStream {
 } gLog;
 
 uint32_t gCfgRevision = UINT32_MAX;
-vdm::AuthLimiter gAuthLimiter;
 vdm::RepeatLimiter gRefusedLimiter;  // RequestRefused once per verdict per 60 s
 char gHostname[vdm::kStationNameMax + 1] = {};   // buildHostname(gCfgPtr->station)
 
@@ -236,8 +234,6 @@ bool refreshConfig() {
 uint32_t remoteIp(AsyncWebServerRequest* req) {
   return static_cast<uint32_t>(req->client()->remoteIP());
 }
-
-bool authEnabled() { return gCfgPtr->web.user[0] != '\0' && gCfgPtr->web.password[0] != '\0'; }
 
 // ---------------------------------------------------------------- responses
 
@@ -333,7 +329,7 @@ bool takeMark(AsyncWebServerRequest* req, Mark& out) {
   return false;
 }
 
-// ---------------------------------------------------------------- auth
+// ---------------------------------------------------------------- routing
 
 vdm::HttpMethod methodOf(AsyncWebServerRequest* req) {
   switch (req->method()) {
@@ -346,73 +342,7 @@ vdm::HttpMethod methodOf(AsyncWebServerRequest* req) {
 
 vdm::RouteMatch route(AsyncWebServerRequest* req) {
   const String& url = req->url();
-  return vdm::matchApiRoute(methodOf(req), url.c_str(), url.length(), gCfgPtr->web.protectRead);
-}
-
-enum class AuthResult : uint8_t { Ok, Locked, Missing, Wrong };
-
-AuthResult checkAuth(AsyncWebServerRequest* req, bool needsAuth, uint32_t* retryAfterS = nullptr) {
-  if (!authEnabled() || !needsAuth) return AuthResult::Ok;
-  if (gAuthLimiter.locked(remoteIp(req), app::nowMs(), retryAfterS)) return AuthResult::Locked;
-  AsyncWebHeader* h = req->getHeader("Authorization");
-  if (h == nullptr) return AuthResult::Missing;
-  return vdm::checkBasicAuth(h->value().c_str(), h->value().length(), gCfgPtr->web.user,
-                             gCfgPtr->web.password)
-             ? AuthResult::Ok
-             : AuthResult::Wrong;
-}
-
-// Books the result, logs failures and answers 401/429. True = go on.
-bool authorised(AsyncWebServerRequest* req, bool needsAuth) {
-  uint32_t retry = 0;
-  const uint32_t addr = remoteIp(req);
-  const AuthResult r = checkAuth(req, needsAuth, &retry);
-  if (r == AuthResult::Ok) {
-    if (authEnabled() && needsAuth) gAuthLimiter.onResult(addr, true, app::nowMs());
-    return true;
-  }
-  if (r == AuthResult::Locked) {
-    char detail[80];
-    snprintf(detail, sizeof detail, "too many failed logins from this address, retry in %lu s",
-             static_cast<unsigned long>(retry));
-    char body[160];
-    vdm::JsonWriter jw(body, sizeof body);
-    vdm::writeErrorJson(jw, "locked", detail);
-    AsyncWebServerResponse* res = req->beginResponse(429, kJson, body);
-    if (res == nullptr) {
-      req->send(500);  // out of memory
-      return false;
-    }
-    char after[12];
-    snprintf(after, sizeof after, "%lu", static_cast<unsigned long>(retry));
-    res->addHeader("Retry-After", after);
-    req->send(res);
-    return false;
-  }
-  if (r == AuthResult::Wrong) {
-    // A missing header is the browser's first attempt, not a failure.
-    const uint32_t now = app::nowMs();
-    const bool lockStarted = gAuthLimiter.onResult(addr, false, now);
-    char ip[16];
-    vdm::formatIpv4(addr, ip, sizeof ip);
-    logger::log(vdm::EventCode::AuthFailed, vdm::kNoValve,
-                static_cast<int32_t>(gAuthLimiter.failuresInWindow(addr)), 0, ip);
-    if (lockStarted) {
-      uint32_t lockS = 0;
-      gAuthLimiter.locked(addr, now, &lockS);
-      logger::log(vdm::EventCode::AuthLocked, vdm::kNoValve, static_cast<int32_t>(lockS),
-                  static_cast<int32_t>(gAuthLimiter.lockLevel(addr)), ip);
-    }
-  }
-  AsyncWebServerResponse* res =
-      req->beginResponse(401, kJson, "{\"error\":\"unauthorized\",\"detail\":\"\"}");
-  if (res == nullptr) {
-    req->send(500);  // out of memory
-    return false;
-  }
-  res->addHeader("WWW-Authenticate", "Basic realm=\"VdMot\"");
-  req->send(res);
-  return false;
+  return vdm::matchApiRoute(methodOf(req), url.c_str(), url.length());
 }
 
 // ---------------------------------------------------------------- guard
@@ -436,7 +366,6 @@ struct Refusal {
   uint16_t code = 0;
   const char* error = nullptr;
   const char* detail = nullptr;
-  AuthResult auth = AuthResult::Ok;
   vdm::GuardVerdict verdict = vdm::GuardVerdict::Allow;
 };
 
@@ -474,8 +403,7 @@ bool guardRefusal(AsyncWebServerRequest* req, vdm::GuardScope scope, bool upload
   const vdm::GuardVerdict v = vdm::checkRequest(g, p);
   if (v == vdm::GuardVerdict::Allow) return false;
   vdm::guardDetail(v, g, p, gGuardDetailPtr->data(), sizeof gGuardDetailPtr->items);
-  out = Refusal{vdm::guardHttpStatus(v), vdm::guardErrorCode(v), gGuardDetailPtr->data(),
-                AuthResult::Ok, v};
+  out = Refusal{vdm::guardHttpStatus(v), vdm::guardErrorCode(v), gGuardDetailPtr->data(), v};
   return true;
 }
 
@@ -485,8 +413,7 @@ bool guardRefusal(AsyncWebServerRequest* req, vdm::GuardScope scope, bool upload
 bool legacyRefusal(AsyncWebServerRequest* req, Refusal& out) {
   const String& url = req->url();
   const size_t len = req->contentLength();
-  const vdm::LegacyMatch lm =
-      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfgPtr->web.protectRead);
+  const vdm::LegacyMatch lm = vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length());
   switch (lm.route) {
     case vdm::LegacyRoute::Gone:
       out = Refusal{410, "gone", lm.replacement};
@@ -534,13 +461,8 @@ bool refusal(AsyncWebServerRequest* req, Refusal& out) {
       out = Refusal{411, "length_required", "Content-Length"};
     } else if (len > uploadLimit(m.route)) {
       out = Refusal{413, "too_large", "file"};
-    } else {
-      out.auth = checkAuth(req, m.needsAuth);
-      if (out.auth != AuthResult::Ok) {
-        out.code = 401;
-      } else if (uploadBusy()) {
-        out = Refusal{409, "busy", "upload or flash running"};
-      }
+    } else if (uploadBusy()) {
+      out = Refusal{409, "busy", "upload or flash running"};
     }
     return out.code != 0;
   }
@@ -553,7 +475,6 @@ bool refusal(AsyncWebServerRequest* req, Refusal& out) {
 }
 
 void keepGuardHeaders(AsyncWebServerRequest* req) {
-  req->addInterestingHeader("Authorization");
   req->addInterestingHeader("Origin");
   req->addInterestingHeader("X-VdMot");
 }
@@ -578,12 +499,6 @@ class GuardHandler : public AsyncWebHandler {
       vdm::formatIpv4(remoteIp(req), ip, sizeof ip);
       logger::log(vdm::EventCode::RequestRefused, vdm::kNoValve,
                   static_cast<int32_t>(r.verdict), 0, ip);
-    }
-    if (r.code == 401) {
-      // Books the failure and answers 401/429; credentials that became
-      // valid meanwhile (config change) get a retry answer.
-      if (authorised(req, true)) sendError(req, 503, "retry", "state changed");
-      return;
     }
     sendError(req, r.code, r.error, r.detail);
   }
@@ -726,7 +641,6 @@ void handleStatus(AsyncWebServerRequest* req) {
   const app::CalibInfo ci = app::calibInfo();
   s.lastScheduledCalibEpoch = ci.lastScheduledEpoch;
   s.nextCalibSlot = ci.nextSlot;
-  s.authEnabled = authEnabled();
   s.lastEventSeq = logger::lastSeq();
   s.station = gCfgPtr->station;
   const net::TrialInfo trial = net::trialInfo();
@@ -1014,20 +928,6 @@ void handleConfigGet(AsyncWebServerRequest* req, bool attachment) {
                attachment ? "attachment; filename=\"vdmot-config.json\"" : nullptr);
 }
 
-// ?secrets=1: passwords in clear, only while the web login protects it.
-void handleConfigExport(AsyncWebServerRequest* req) {
-  AsyncWebParameter* p = req->getParam("secrets");
-  if (p == nullptr) return handleConfigGet(req, true);
-  if (p->value() != "1") return sendError(req, 400, "bad_request", "secrets=1");
-  if (!authEnabled()) {
-    return sendError(req, 403, "auth_required", "enable web login to export passwords");
-  }
-  sendDocument(
-      req, 200,
-      [](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, *gCfgPtr, vdm::SecretMode::Clear); },
-      "attachment; filename=\"vdmot-config-secrets.json\"");
-}
-
 // ---------------------------------------------------------------- files
 
 void handleFiles(AsyncWebServerRequest* req) {
@@ -1281,7 +1181,7 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve,
               static_cast<int32_t>(storage::configRevision()), 0, "web");
   vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
-  if (!vdm::writeConfigJson(jw, *gCfgPtr, vdm::SecretMode::Flags, &info)) {
+  if (!vdm::writeConfigJson(jw, *gCfgPtr, &info)) {
     releaseSlot(slot);
     return sendError(req, 500, "internal", "document too large");
   }
@@ -1700,7 +1600,6 @@ void handleApi(AsyncWebServerRequest* req, bool hasBody) {
     return sendError(req, 405, "method_not_allowed", url.c_str());
   }
   if (isUploadRoute(m.route)) return finishUpload(req, m.route);
-  if (!authorised(req, m.needsAuth)) return;
   if (hasBody && gBodyOverflow) return sendError(req, 413, "too_large", "body");
 
   const uint8_t v = m.valve;
@@ -1724,7 +1623,7 @@ void handleApi(AsyncWebServerRequest* req, bool hasBody) {
     case R::Events: return handleEvents(req);
     case R::ConfigGet: return handleConfigGet(req, false);
     case R::ConfigPatch: return handleConfigPatch(req, hasBody);
-    case R::ConfigExport: return handleConfigExport(req);
+    case R::ConfigExport: return handleConfigGet(req, true);
     case R::Motor: return handleMotorGet(req);
     case R::MotorSet: return handleMotorSet(req, hasBody);
     case R::StmReset: return handleStmReset(req, hasBody);
@@ -1777,19 +1676,15 @@ void handleStatic(AsyncWebServerRequest* req) {
 // Non-API paths: the legacy aliases, else the dashboard files.
 void handleNonApi(AsyncWebServerRequest* req, bool hasBody) {
   const String& url = req->url();
-  const vdm::LegacyMatch lm =
-      vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length(), gCfgPtr->web.protectRead);
+  const vdm::LegacyMatch lm = vdm::matchLegacyRoute(methodOf(req), url.c_str(), url.length());
   switch (lm.route) {
     case vdm::LegacyRoute::Valves:
-      if (authorised(req, lm.needsAuth)) handleLegacyValves(req);
-      return;
+      return handleLegacyValves(req);
     case vdm::LegacyRoute::Temps:
     case vdm::LegacyRoute::Volts:
-      if (authorised(req, lm.needsAuth)) handleLegacySensors(req, lm.route == vdm::LegacyRoute::Temps);
-      return;
+      return handleLegacySensors(req, lm.route == vdm::LegacyRoute::Temps);
     case vdm::LegacyRoute::SetValve:
-      if (authorised(req, lm.needsAuth)) handleSetValve(req, hasBody);
-      return;
+      return handleSetValve(req, hasBody);
     default:
       break;
   }
@@ -1803,7 +1698,6 @@ class ApiHandler : public AsyncWebHandler {
     Lock lock;
     req->addInterestingHeader("Origin");
     req->addInterestingHeader("X-VdMot");
-    req->addInterestingHeader("Authorization");
     req->addInterestingHeader("If-None-Match");
     req->addInterestingHeader("X-Update-MD5");
     req->addInterestingHeader("X-MD5");

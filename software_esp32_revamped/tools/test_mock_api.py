@@ -8,7 +8,6 @@ gets a fresh simulated device.
 """
 from __future__ import annotations
 
-import base64
 import http.client
 import json
 import os
@@ -27,7 +26,7 @@ PORT = 0
 
 def setUpModule():
     global SERVER, PORT
-    mock_api.Handler.dev = mock_api.Device("east", 2, None)
+    mock_api.Handler.dev = mock_api.Device("east", 2)
     SERVER = ThreadingHTTPServer(("127.0.0.1", 0), mock_api.Handler)
     SERVER.daemon_threads = True
     PORT = SERVER.server_address[1]
@@ -67,14 +66,10 @@ def req(method, path, body=None, headers=None, host=None, raw=None, ctype="appli
     return r
 
 
-def device(proto=2, auth=None, scenarios=(), import_report=False, station_name=None):
-    d = mock_api.Device("east", proto, auth, scenarios, import_report, station_name)
+def device(proto=2, scenarios=(), import_report=False, station_name=None):
+    d = mock_api.Device("east", proto, scenarios, import_report, station_name)
     mock_api.Handler.dev = d
     return d
-
-
-def basic(user, pw):
-    return {"Authorization": "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()}
 
 
 def restart_now(d):
@@ -112,21 +107,22 @@ class Guard(unittest.TestCase):  # M1
         self.assertEqual(req("GET", "/api/valves", marker=False).status, 200)
 
 
-class Auth(unittest.TestCase):  # M2
-    def test_per_address_lock(self):
-        device(auth=("admin", "secret"))
-        for _ in range(10):
-            self.assertEqual(req("POST", "/api/system/reboot", {}, headers=basic("admin", "x")).status, 401)
-        r = req("POST", "/api/system/reboot", {}, headers=basic("admin", "secret"))
-        self.assertEqual(r.status, 429)
-        self.assertEqual(r.headers["retry-after"], "60")
-        self.assertEqual(r.json["detail"], "too many failed logins from this address, retry in 60 s")
+class NoLogin(unittest.TestCase):  # M2
+    def test_no_credentials_needed(self):
+        device()
+        headers = {"Authorization": "Basic YWRtaW46eA=="}  # admin:x, ignored
+        self.assertEqual(req("POST", "/api/mqtt/reconnect", {}, headers=headers).status, 202)
+        self.assertEqual(req("POST", "/setvalve", {"valve": 1, "value": 20}).status, 200)
+        self.assertNotIn("auth", req("GET", "/api/status").json)
 
-    def test_missing_header_is_no_failure(self):
-        device(auth=("admin", "secret"))
-        for _ in range(12):
-            self.assertEqual(req("POST", "/api/system/reboot", {}).status, 401)
-        self.assertEqual(req("POST", "/api/mqtt/reconnect", {}, headers=basic("admin", "secret")).status, 202)
+    def test_retired_login_keys(self):
+        d = device()
+        before = req("GET", "/api/config").json
+        self.assertNotIn("user", before["web"])
+        r = req("POST", "/api/config", {"web": {"user": "admin", "password": "pw", "passwordSet": True,
+                                                "protectRead": True, "allowedHosts": "heating.lan"}})
+        self.assertEqual(r.status, 200)
+        self.assertEqual(d.config["web"], {"allowedHosts": "heating.lan"})
 
 
 class Legacy(unittest.TestCase):  # M3
@@ -188,15 +184,14 @@ class Config(unittest.TestCase):  # M4
                                                 "gateway": "192.168.1.1"}})
         self.assertEqual((r.json["restartRequired"], r.json["netTrial"]), (True, True))
 
-    def test_export_secrets(self):
+    def test_export_without_secrets(self):
         device()
-        self.assertEqual(req("GET", "/api/config/export?secrets=1").json["error"], "auth_required")
-        self.assertEqual(req("GET", "/api/config/export?secrets=0").status, 400)
-        device(auth=("admin", "secret"))
-        r = req("GET", "/api/config/export?secrets=1", headers=basic("admin", "secret"))
-        self.assertEqual(r.status, 200)
-        self.assertEqual(r.json["mqtt"]["password"], "mqtt-pass")
-        self.assertIn("vdmot-config-secrets.json", r.headers["content-disposition"])
+        for path in ("/api/config/export", "/api/config/export?secrets=1"):
+            r = req("GET", path)
+            self.assertEqual(r.status, 200)
+            self.assertNotIn("password", r.json["mqtt"])
+            self.assertTrue(r.json["mqtt"]["passwordSet"])
+            self.assertIn("vdmot-config.json", r.headers["content-disposition"])
 
 
 class Status(unittest.TestCase):  # M5, E16
@@ -349,7 +344,7 @@ class Ota(unittest.TestCase):  # M14, E19
 
 class Health(unittest.TestCase):  # M15
     def test_public(self):
-        device(auth=("admin", "secret"))
+        device()
         r = req("GET", "/api/health")
         self.assertEqual(r.status, 200)
         self.assertTrue(r.json["ok"])

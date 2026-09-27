@@ -117,10 +117,9 @@ Rules for module implementers:
 | `stm_flasher.h` | AN3155 flasher state machine, image validation, board check | stm_link |
 | `image_store.h` | STM image names and index | storage, web |
 | `json_writer.h` | bounded JSON writer | json_api, event_log, config, ha_discovery, mqtt |
-| `json_api.h` | `/api/*` documents, API router with auth class, health document | web_server |
+| `json_api.h` | `/api/*` documents, API router, health document | web_server |
 | `web_guard.h` | request guard (Host, Origin, X-VdMot, Content-Type) | web_server |
 | `legacy_http.h` | legacy aliases and the 410 table | web_server |
-| `auth.h` | Basic-auth check, constant-time compare, per-address lockout | web_server |
 | `file_manager.h` | LittleFS file list and delete rules | storage, web |
 | `ota_policy.h` | OTA image validation (`OtaValidator`), MD5 argument | ota |
 | `restart_gate.h` | restart after the STM EEPROM wait (guard) | ota |
@@ -427,11 +426,11 @@ failsafe active, or any other health flag on an active valve; 0 = otherwise.
 One struct, `vdm::Config` (`config.h`). The key path is what
 `setConfigValue` takes and what `writeConfigJson` emits. Arrays are 1-based in
 paths (`valves.3.name`) and 0-based JSON arrays in the export. IPv4 values are
-dotted strings in JSON. Secrets are write-only: the export has `"<key>Set":
-true|false`, and an empty string leaves the secret unchanged unless the
-request says to clear secrets (`GET /api/config/export?secrets=1` exports them
-when web login is enabled). "Legacy source" is the NVS namespace/key that
-`importLegacyConfig` reads. `-` means the key is new.
+dotted strings in JSON. Secrets are write-only: the export never carries
+one, it has `"<key>Set": true|false` in its place, and an empty string leaves
+the secret unchanged unless the request says to clear secrets. "Legacy
+source" is the NVS namespace/key that `importLegacyConfig` reads. `-` means
+the key is new.
 
 Storage: the base blob `cfg` has `kConfigBaseSchema` 1 and exactly the 2.0.0
 fields, so ESP 2.0.0 still reads it after a downgrade; keys added in 2.1 live
@@ -457,9 +456,6 @@ and written back). JSON `schema` = `kConfigJsonSchema` 2; import accepts 1..2.
 | `syslog.level` | int | 0 off, 1 warning+, 2 info+, 3 debug | 0 | `netCfg/syslogEnable` (1..3 -> 3) |
 | `syslog.server` | IPv4 | non-zero when level > 0 | 0.0.0.0 | `netCfg/sysLogIp` |
 | `syslog.port` | int | 1..65535 | 514 | `netCfg/sysLogPort` (0 -> 514) |
-| `web.user` | string | 0..64 printable, no ':' | "" | `netCfg/userName` |
-| `web.password` | secret | 0..64; user and password both set or both empty | "" | `netCfg/userPwd` |
-| `web.protectRead` | bool | | false | - |
 | `web.allowedHosts` | string | "" or 1..4 comma-separated host names / IPv4, 0..80 bytes | "" | - |
 | `mqtt.mode` | int | 0 off, 1 MQTT, 2 MQTT + HA (needs `separate`, V1: not `germanDecimal`) | 0 | `protCfg/dataProt` |
 | `mqtt.host` | host | 0..64, host name or IPv4; required when mode > 0 | "" | `protCfg/brokerIp` (u32 -> dotted, 0 -> "") |
@@ -506,6 +502,13 @@ and written back). JSON `schema` = `kConfigJsonSchema` 2; import accepts 1..2.
 | `failsafe.timeoutMin` | int | 0 (off) or 5..1440 | 60 | - (`brokerMQTO` only in the import report) |
 | `persistLog` | bool | | true | - |
 
+Removed settings (`retiredField` in `config.cpp`): `web.user`, `web.password`
+and `web.protectRead` (the web login, gone in 2.1.0). Their places in the `cfg`
+blob are kept with the neutral values "", "" and false (section 9), so an
+older firmware reads the login as off after a rollback. `setConfigValue`
+accepts their keys and `web.passwordSet` with any value and ignores them, so
+an export of an older firmware imports unchanged; the export leaves them out.
+
 Validation rules V1-V3 (mode 2 without `germanDecimal`; unique effective
 valve segments; unique HA ids of valves, of active temp slots with an id and
 of active volt slots with an id) run on save and import. Loading never
@@ -521,9 +524,11 @@ valve to sensor mapping (`gvlon`/`stvls`; the ESP resolves ids to slots for
 display and only writes a mapping the user changed). The STM learn time
 (`stlnt`) follows the calibration schedule (section 14).
 
-Dropped legacy keys (never imported): `sysCfg/CF` (°C only),
-`protCfg/brokerInterval`, `brokerMQTO`, `brokerMQToPos`, `brokerMQF` bit0 and
-bit1, all of `valvesCtrlCfg`, `msgCfg`, `motorCfg`, `valvesCfg/movCalib`.
+Dropped legacy keys (never imported, counted as ignored in the import
+report): `sysCfg/CF` (°C only), `netCfg/userName` and `netCfg/userPwd` (the
+web login), `protCfg/brokerInterval`, `brokerMQTO`, `brokerMQToPos`,
+`brokerMQF` bit0 and bit1, all of `valvesCtrlCfg`, `msgCfg`, `motorCfg`,
+`valvesCfg/movCalib`.
 
 Apply semantics (`POST /api/config`): the handler reserves its response slot
 first (503 `busy`, nothing applied), copies the active config, applies every
@@ -571,7 +576,7 @@ NVS namespace `vdmrev`:
 
 | Key | Type | Content |
 |---|---|---|
-| `cfg` | blob <= 4096 | `encodeConfig`: "VDMC", u16 schema 1, u16 length, fields LE, CRC32 (frozen 2.0.0 layout) |
+| `cfg` | blob <= 4096 | `encodeConfig`: "VDMC", u16 schema 1, u16 length, fields LE, CRC32 (frozen 2.0.0 layout; a removed setting is written as its neutral value at its place and skipped when read, by its 2.0.0 structure rules) |
 | `cfgx` | blob <= 1536 | `encodeConfigExt`: "VDMX", version 1, u16 length, records `{u8 tag, u8 element, u8 len, bytes}`, CRC32 |
 | `imported` | u8 | 1 = legacy import done (or factory reset) |
 | `boots` | u32 | boot counter |
@@ -747,15 +752,13 @@ Implementation rules:
 
 - Port 80. Order per request: guard (`web_guard`, K5: Host, Origin, X-VdMot,
   Content-Type; refusals logged as 213 once per verdict per 60 s), then
-  routing (`matchApiRoute`, `matchLegacyRoute`), then auth, then the body.
-  Static assets and 410 answers skip the guard. Refusals are answered before
-  the body is buffered.
-- Auth: HTTP Basic (`checkBasicAuth`), enabled when `web.user` and
-  `web.password` are both set. Classes: `/api/health` public; read routes
-  (status, valves, profile, sensors, events, stm/motor, stm/flash,
-  import-report) public unless `web.protectRead`; everything else needs
-  auth. `AuthLimiter`: 8 client addresses, 10 failures within 60 s lock the
-  address 1, 5, then 15 min (429 + `Retry-After`, event 214).
+  routing (`matchApiRoute`, `matchLegacyRoute`), then the body. Static assets
+  and 410 answers skip the guard. Refusals are answered before the body is
+  buffered.
+- No login (the web login went in 2.1.0): every route answers without
+  credentials, an `Authorization` header is ignored. The device belongs in a
+  network that only trusted clients reach; the guard keeps browsers of other
+  sites out.
 - Bodies: one 8 KB buffer (web working set), one body at a time; uploads
   stream straight to LittleFS (`.part` file, the write result checked on
   every chunk, free space checked up front) or to the OTA partition, never
@@ -810,7 +813,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 203 | mqtt_disconnected | Warning | W | - | PubSubClient state |
 | 204 | mqtt_command_rejected | Warning | W | - | valve 1-based or 0 / TargetPayload for payload rejects / reject reason |
 | 205 | ha_discovery_sent | Info | W | - | configs / deletes |
-| 206 | auth_failed | Warning | W | - | failures in window / - / client IP |
+| 206 | auth_failed | Warning | - | - | retired with the web login (2.1.0): never raised, number and name reserved |
 | 207 | net_trial_started | Info | - | - | window s / - / new address |
 | 208 | net_trial_confirmed | Info | - | - | s since the network came up / 1 = by a newer change |
 | 209 | net_trial_reverted | Warning | W | - | reason 1 not confirmed, 2 no network, 3 interrupted, 4 user, 5 trial not stored / 0 ok, -1 revert failed / previous address |
@@ -818,7 +821,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 211 | net_reachable | Info | - | - | outage s |
 | 212 | net_interface_restart | Warning | W | - | outage s / 1 eth, 2 wifi, 3 both |
 | 213 | request_refused | Warning | W | - | 1 host, 2 origin, 3 header, 4 content type / - / client IP |
-| 214 | auth_locked | Warning | W | - | lock s / lockout level / client IP |
+| 214 | auth_locked | Warning | - | - | retired with the web login (2.1.0): never raised, number and name reserved |
 | 300 | link_up | Info | W | - | |
 | 301 | link_degraded | Info | W | - | consecutive timeouts |
 | 302 | link_down | Error | W | - | consecutive timeouts |

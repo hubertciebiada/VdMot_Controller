@@ -94,7 +94,9 @@ const CodeInfo kCodes[] = {
      "MQTT command rejected (" NAME1 "m" IF_TXT ", " TXT END_TXT ")"},
     {EventCode::HaDiscoverySent, Severity::Info, kWarn, "ha_discovery_sent",
      "HA discovery sent (" ARG1 " configs, " ARG2 " deletes)"},
-    {EventCode::AuthFailed, Severity::Warning, kWarn, "auth_failed",
+    // Retired with the web login (2.1.0): never raised, kept so the number
+    // and name stay reserved; not in the HA event types.
+    {EventCode::AuthFailed, Severity::Warning, kNo, "auth_failed",
      "authentication failed (" ARG1 " in window" IF_TXT ", " TXT END_TXT ")"},
     {EventCode::NetTrialStarted, Severity::Info, kNo, "net_trial_started",
      "network settings on trial for " ARG1 " s" IF_TXT " (" TXT ")" END_TXT},
@@ -109,7 +111,8 @@ const CodeInfo kCodes[] = {
      "network interface restarted (" NAME2 "j" ", after " ARG1 " s)"},
     {EventCode::RequestRefused, Severity::Warning, kWarn, "request_refused",
      "request refused (" NAME1 "q" ")" IF_TXT " from " TXT END_TXT},
-    {EventCode::AuthLocked, Severity::Warning, kWarn, "auth_locked",
+    // Retired like auth_failed.
+    {EventCode::AuthLocked, Severity::Warning, kNo, "auth_locked",
      "login locked for " ARG1 " s (lockout " ARG2 ")" IF_TXT " for " TXT END_TXT},
     {EventCode::LinkUp, Severity::Info, kWarn, "link_up", "STM link up"},
     {EventCode::LinkDegraded, Severity::Info, kWarn, "link_degraded",

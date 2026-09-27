@@ -41,16 +41,14 @@ OneWireId oid(const char* s) {
   return v;
 }
 
-LegacyMatch match(HttpMethod m, const char* p, bool protectRead = false) {
-  return matchLegacyRoute(m, p, strlen(p), protectRead);
-}
+LegacyMatch match(HttpMethod m, const char* p) { return matchLegacyRoute(m, p, strlen(p)); }
 
 const HttpMethod kMethods[] = {HttpMethod::Get, HttpMethod::Post, HttpMethod::Delete,
                                HttpMethod::Other};
 
 }  // namespace
 
-TEST_CASE("legacy routes: aliases per method and auth") {
+TEST_CASE("legacy routes: aliases per method") {
   struct Row {
     const char* path;
     LegacyRoute route;
@@ -62,20 +60,11 @@ TEST_CASE("legacy routes: aliases per method and auth") {
                       {"/setvalve", LegacyRoute::SetValve, HttpMethod::Post}};
   for (const Row& r : rows) {
     for (HttpMethod m : kMethods) {
-      for (bool protectRead : {false, true}) {
-        CAPTURE(r.path);
-        CAPTURE(static_cast<int>(m));
-        CAPTURE(protectRead);
-        const LegacyMatch lm = match(m, r.path, protectRead);
-        CHECK(std::string(lm.replacement) == "");
-        if (m == r.method) {
-          CHECK(lm.route == r.route);
-          CHECK(lm.needsAuth == (r.route == LegacyRoute::SetValve || protectRead));
-        } else {
-          CHECK(lm.route == LegacyRoute::MethodNotAllowed);
-          CHECK_FALSE(lm.needsAuth);
-        }
-      }
+      CAPTURE(r.path);
+      CAPTURE(static_cast<int>(m));
+      const LegacyMatch lm = match(m, r.path);
+      CHECK(std::string(lm.replacement) == "");
+      CHECK(lm.route == (m == r.method ? r.route : LegacyRoute::MethodNotAllowed));
     }
   }
 }
@@ -114,17 +103,14 @@ TEST_CASE("legacy routes: the 410 table") {
       {"/testPO", "removed: messenger"},
       {"/testEmail", "removed: messenger"},
       {"/ssidinfo", "removed: WiFi scan"},
-      {"/auth", "removed: HTTP Basic auth is used"},
+      {"/auth", "removed: web login"},
   };
   for (const Row& r : rows) {
     for (HttpMethod m : kMethods) {
-      for (bool protectRead : {false, true}) {
-        CAPTURE(r.path);
-        const LegacyMatch lm = match(m, r.path, protectRead);
-        CHECK(lm.route == LegacyRoute::Gone);
-        CHECK(std::string(lm.replacement) == r.replacement);
-        CHECK_FALSE(lm.needsAuth);
-      }
+      CAPTURE(r.path);
+      const LegacyMatch lm = match(m, r.path);
+      CHECK(lm.route == LegacyRoute::Gone);
+      CHECK(std::string(lm.replacement) == r.replacement);
     }
   }
 }
@@ -137,13 +123,12 @@ TEST_CASE("legacy routes: everything else is None") {
     CAPTURE(p);
     const LegacyMatch lm = match(HttpMethod::Get, p);
     CHECK(lm.route == LegacyRoute::None);
-    CHECK_FALSE(lm.needsAuth);
     CHECK(std::string(lm.replacement) == "");
   }
-  CHECK(matchLegacyRoute(HttpMethod::Get, nullptr, 7, true).route == LegacyRoute::None);
+  CHECK(matchLegacyRoute(HttpMethod::Get, nullptr, 7).route == LegacyRoute::None);
   // only `len` bytes count
-  CHECK(matchLegacyRoute(HttpMethod::Get, "/valvesX", 7, false).route == LegacyRoute::Valves);
-  CHECK(matchLegacyRoute(HttpMethod::Get, "/valves", 6, false).route == LegacyRoute::None);
+  CHECK(matchLegacyRoute(HttpMethod::Get, "/valvesX", 7).route == LegacyRoute::Valves);
+  CHECK(matchLegacyRoute(HttpMethod::Get, "/valves", 6).route == LegacyRoute::None);
 }
 
 TEST_CASE("legacy /valves document") {

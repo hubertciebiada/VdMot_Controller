@@ -81,29 +81,25 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mo
 // ------------------------------------------------------------------ API
 
 class ApiError extends Error {
-  constructor(status, data, retryAfter) {
-    super(apiMessage(status, data, retryAfter));
+  constructor(status, data) {
+    super(apiMessage(status, data));
     this.status = status;
     this.data = data || null;
-    this.retryAfter = retryAfter || 0;
   }
 }
 
 let fsFree = null;  // free LittleFS bytes from the last /api/files
 const MSG_503 = { queue_full: "The STM command queue is full; try again in a moment",
   busy: "The device is busy with other requests; nothing was changed, try again", retry: "The device state changed; try again" };
-function apiMessage(status, d, retryAfter) {
+function apiMessage(status, d) {
   const code = d && typeof d.error === "string" ? d.error : "";
   const detail = d && typeof d.detail === "string" ? d.detail : "";
   if (status === 0) return code === "timeout" ? "The device did not answer in time" : "The device is not reachable";
-  if (status === 401) return "Login required: reload the page and sign in";
   if (status === 403 && code === "host_not_allowed") return "This device does not accept requests for this host name: " + detail;
   if (status === 403 && code === "origin_not_allowed") return "Request from another web page refused: " + detail;
   if (status === 403 && code === "header_required") return "The request lacks the X-VdMot header: reload the page";
-  if (status === 403 && code === "auth_required") return "Set a web user and password (Settings, Web access) to export passwords";
   if (status === 410) return "Removed: use " + detail;
   if (status === 415) return "The device expects JSON: " + detail;
-  if (status === 429) return "Too many failed logins from this address; try again in " + (retryAfter || 60) + " s";
   if (status === 409 && code === "stm_unsupported") return detail;
   if (status === 501) return "Not supported by this firmware";
   if (status === 503) return MSG_503[code] || "The device is busy; try again";
@@ -134,7 +130,7 @@ async function api(method, path, body, timeoutMs) {
   }
   let data = null;
   if (text) { try { data = JSON.parse(text); } catch { data = null; } }
-  if (!r.ok) throw new ApiError(r.status, data, Number(r.headers.get("Retry-After")) || 0);
+  if (!r.ok) throw new ApiError(r.status, data);
   return data;
 }
 
@@ -151,7 +147,7 @@ function upload(url, field, file, fileName, onProgress, headers) {
       let d = null;
       try { d = x.responseText ? JSON.parse(x.responseText) : null; } catch { d = null; }
       if (x.status >= 200 && x.status < 300) resolve(d);
-      else reject(new ApiError(x.status, d, Number(x.getResponseHeader("Retry-After")) || 0));
+      else reject(new ApiError(x.status, d));
     };
     x.onerror = () => reject(new ApiError(0, { error: "network" }));
     x.ontimeout = () => reject(new ApiError(0, { error: "timeout" }));
@@ -325,10 +321,6 @@ function importText(r) {
 }
 function renderNotices(st) {
   const net = st.net || {}, stm = st.stm || {}, mq = st.mqtt || {}, c = st.config || {};
-  notice("auth", st.auth === false && !(Number(lsGet("vdm.authNoticeUntil")) > Date.now()), "info",
-    "Login is off: anyone on your network can change settings, reset the STM or flash firmware. Set a user and a password under Settings -> Web access.",
-    [btn("Settings", () => { location.hash = "#settings"; }),
-      btn("Hide for 30 days", () => { lsSet("vdm.authNoticeUntil", String(Date.now() + 30 * 86400000)); renderNotices(S); })]);
   if (st.importReport === true && importReport === null) {
     importReport = false;
     api("GET", "/api/import-report").then((r) => { importReport = r; renderNotices(S); }).catch(() => { importReport = null; });
@@ -386,8 +378,6 @@ async function pollStatus() {
     if (e.status === 0) {
       setChip($("st-net"), "offline", "err");
       if (!restartWait) banner("The device is not reachable. Retrying…", true);
-    } else if (e.status === 401) {
-      banner("Login required: reload the page and sign in.", true);
     }
     throw e;
   }
@@ -941,7 +931,7 @@ $("ev-live").addEventListener("change", () => kick(pEvents));
 //   str: a..b UTF-8 bytes, rule; int: a..b; num: a..b (float); sel: a = options;
 //   secret: a..b bytes; ip/mask/bool/id/days: no extra.
 const RULE_MSG = { safe: "no + # / \" \\ or control characters",
-  print: "no control characters", nospace: "printable ASCII without spaces", nocolon: "no ':' or control characters",
+  print: "no control characters", nospace: "printable ASCII without spaces",
   host: "host name (letters, digits, '-', '.') or IPv4 address",
   hosts: "up to 4 host names or IPv4 addresses, comma-separated", seg: "letters, digits, '_' and '-'",
   path: "levels of letters, digits, '_', '-' separated by single '/'", client: "letters, digits, '_', '-'" };
@@ -961,10 +951,7 @@ const GROUPS = [
     ["time.ntpServer", "NTP server", "str", 0, 64, "host", "Empty disables time sync"],
     ["time.tzName", "Time zone name", "str", 0, 49, "print"],
     ["time.tzPosix", "POSIX time zone", "str", 1, 49, "nospace", "e.g. CET-1CEST,M3.5.0,M10.5.0/3"]]],
-  ["Web access", "Login is required when both user and password are set.", [
-    ["web.user", "User", "str", 0, 64, "nocolon"],
-    ["web.password", "Password", "secret", 0, 64],
-    ["web.protectRead", "Also require login to view status", "bool"],
+  ["Web access", "", [
     ["web.allowedHosts", "Additional host names", "str", 0, 80, "hosts",
       "The API answers only for the device IP, its host name and <host name>.local; add other names you use, comma-separated"]]],
   ["MQTT", "", [
@@ -1039,7 +1026,6 @@ function ruleOk(rule, v) {
   switch (rule) {
     case "safe": return !/[+#/"\\]/.test(v);
     case "nospace": return /^[\x21-\x7e]*$/.test(v);
-    case "nocolon": return !v.includes(":");
     case "seg": return /^[A-Za-z0-9_-]*$/.test(v);
     case "client": return /^[A-Za-z0-9_-]*$/.test(v);
     case "path": return v === "" || /^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/.test(v);
@@ -1424,10 +1410,6 @@ function validateSettings() {
     if (r.err !== undefined) { if (!errs.has(k)) errs.set(k, r.err); return f.orig; }
     return r.v;
   };
-  const secretSet = (k) => {
-    const f = CF.get(k);
-    return f.el.value !== "" || (!!f.orig && !f.clear.checked);
-  };
   for (const f of CF.values()) { const r = readField(f); if (r.err !== undefined) errs.set(f.key, r.err); }
   const need = (k, msg) => { if (!errs.has(k)) errs.set(k, msg); };
   if (!val("net.dhcp")) {
@@ -1441,9 +1423,6 @@ function validateSettings() {
   }
   if (val("net.iface") === 2 && !ssid) need("net.ssid", "Required for WiFi");
   if (val("syslog.level") > 0 && val("syslog.server") === "0.0.0.0") need("syslog.server", "Required when syslog is on");
-  const user = val("web.user"), pwSet = secretSet("web.password");
-  if (user && !pwSet) need("web.password", "Set a password too, or clear the user");
-  if (!user && pwSet) need("web.user", "Set a user too, or remove the password");
   const mode = val("mqtt.mode");
   if (mode > 0 && !val("mqtt.host")) need("mqtt.host", "Required when MQTT is on");
   if (val("mqtt.minDelayS") > val("mqtt.publishIntervalS")) need("mqtt.minDelayS", "Must not exceed the publish interval");
@@ -1646,7 +1625,6 @@ function renderInfo(st) {
     ["MAC", net.mac || "–"],
     ["MQTT", (mq.state || "?") + ", " + fmt(mq.reconnects) + " reconnects, " + fmt(mq.publishFailures) + " failed publishes"],
     ["Time", st.time && st.time.valid ? (st.time.local || "").replace("T", " ") + (st.time.lastSync ? ", synced " + fmtEpoch(st.time.lastSync) : "") : "not synced"],
-    ["Login", st.auth ? "enabled" : "disabled"],
   ]);
   const stm = st.stm || {}, ls = stm.stats || {}, gs = stm.status, rx = stm.espRx || {};
   infoList($("info-stm"), [
@@ -1966,7 +1944,9 @@ function flatten(obj, prefix, out, depth) {
 // Import sends only what differs from the current configuration, as one
 // request of at most 8000 bytes; keys this firmware does not know are skipped
 // and listed. Passwords the file does not carry can be typed in.
-const SECRETS = ["web.password", "mqtt.password", "net.wifiPassword"];
+const SECRETS = ["mqtt.password", "net.wifiPassword"];
+// Settings this firmware no longer has; the device ignores them too.
+const REMOVED = ["web.user", "web.password", "web.protectRead"];
 $("cfg-import").addEventListener("change", async () => {
   const inp = $("cfg-import"), f = inp.files[0];
   inp.value = "";
@@ -1978,9 +1958,10 @@ $("cfg-import").addEventListener("change", async () => {
   await busy(null, async () => {
     const cur = await api("GET", "/api/config");
     if (!cur || doc.schema < 1) throw new Error("The export has configuration schema " + doc.schema);
-    const now = flatten(cur, "", new Map(), 0), patch = {}, skipped = [];
+    const now = flatten(cur, "", new Map(), 0), patch = {}, skipped = [], removed = [];
     const file = flatten(doc, "", new Map(), 0);
     for (const [k, v] of file) {
+      if (REMOVED.includes(k)) { removed.push(k); continue; }
       if (SECRETS.includes(k)) { if (v !== "") patch[k] = v; continue; }
       if (!now.has(k)) { skipped.push(k); continue; }
       if (now.get(k) === v) continue;
@@ -1992,30 +1973,22 @@ $("cfg-import").addEventListener("change", async () => {
       if (getPath(doc, k + "Set") === true && !(k in patch) && getPath(cur, k + "Set") !== true) {
         const el = h("input", { type: "password", autocomplete: "new-password", id: "imp-" + k.replace(/\./g, "-") });
         pw.push({ k, el, field: h("div", { class: "field" }, h("label", { for: el.id, text: k }), el,
-          h("span", { class: "hint", text: k === "web.password" ? "Required for the imported web login" :
-            k === "mqtt.password" ? "Without it the broker login fails" : "Without it the WiFi login fails" })) });
+          h("span", { class: "hint", text: k === "mqtt.password" ? "Without it the broker login fails" : "Without it the WiFi login fails" })) });
       }
     }
-    const webPw = pw.find((x) => x.k === "web.password");
-    const skipWeb = h("input", { type: "checkbox", id: "imp-skipweb" });
     const n = Object.keys(patch).length;
     if (!n && !pw.length) { toast("The file matches the current configuration"); return; }
     const extra = [];
     if (doc.schema > cur.schema) extra.push(h("p", { class: "small err-msg", text: "Written by a newer firmware; unknown settings are skipped." }));
     if (skipped.length) extra.push(h("p", { class: "small muted", text: "Skipped (unknown here): " + skipped.slice(0, 12).join(", ") + (skipped.length > 12 ? " …" : "") }));
+    if (removed.length) extra.push(h("p", { class: "small muted", text: "Not imported (removed from this firmware): " + removed.join(", ") }));
     for (const x of pw) extra.push(x.field);
-    if (webPw) extra.push(h("label", { class: "inline small" }, skipWeb, "Skip the web login settings"));
-    const dlgOk = () => { const ok = $("dc-ok"); ok.disabled = !!webPw && !webPw.el.value && !skipWeb.checked; };
-    if (webPw) { webPw.el.addEventListener("input", dlgOk); skipWeb.addEventListener("change", dlgOk); }
-    let dry = null;
-    try { dry = await api("POST", "/api/config?dryRun=1", patch); } catch (e) { if (e.status !== 400 || !webPw) throw e; }
-    if (webPw) setTimeout(dlgOk, 0);  // after confirmDlg reset the button
+    const dry = await api("POST", "/api/config?dryRun=1", patch);
     if (!await confirmDlg({ title: "Import configuration?", text: n + " setting" + (n === 1 ? "" : "s") + " from " + f.name +
       " differ from the current ones and will be replaced. Stored passwords are kept." +
       (dry && dry.restartRequired ? " The ESP restarts to apply them." : "") +
       (dry && dry.netTrial ? " The new network settings must be confirmed from the new address within 2 minutes." : ""), ok: "Import", extra })) return;
     for (const x of pw) if (x.el.value) patch[x.k] = x.el.value;
-    if (webPw && skipWeb.checked) { delete patch["web.user"]; delete patch["web.password"]; }
     if (utf8Len(JSON.stringify(patch)) > 8000) throw new Error("Too many differences for one request; edit them under Settings");
     const res = await api("POST", "/api/config", patch);
     const restart = !!(res && res.restartRequired);
@@ -2025,15 +1998,6 @@ $("cfg-import").addEventListener("change", async () => {
     if (restart) expectRestart("Configuration import");
   });
 });
-
-// Export with passwords (needs the web login)
-$("cfg-export-secrets").addEventListener("click", (e) => simpleAction(e.currentTarget,
-  { title: "Export with passwords?", text: "The file contains the web, MQTT and WiFi passwords in clear text. Keep it safe.", ok: "Export" },
-  "GET", "/api/config/export?secrets=1", undefined, "Export downloaded", null, (d) => {
-    const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" })), download: "vdmot-config-secrets.json" });
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  }));
 
 // Files on the ESP (LittleFS)
 const KIND_TXT = { stm_image: "STM image", upload_part: "aborted upload", log: "event log", internal: "internal",

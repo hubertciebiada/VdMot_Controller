@@ -341,7 +341,6 @@ bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
   localTimeValue(jw, "next", s.nextCalibLocal, s.nextCalibEpoch > 0);
   jw.endObject();
 
-  jw.kv("auth", s.authEnabled);
   jw.kv("lastEventSeq", s.lastEventSeq);
   jw.key("config");
   jw.beginObject();
@@ -834,22 +833,6 @@ const RouteDef kRoutes[] = {
 
 constexpr size_t kNameMax = sizeof(RouteMatch::name) - 1;
 
-bool isReadRoute(ApiRoute r) {
-  switch (r) {
-    case ApiRoute::Status:
-    case ApiRoute::Valves:
-    case ApiRoute::ValveProfile:
-    case ApiRoute::Sensors:
-    case ApiRoute::Events:
-    case ApiRoute::Motor:
-    case ApiRoute::StmFlashStatus:
-    case ApiRoute::ImportReport:
-      return true;
-    default:
-      return false;
-  }
-}
-
 // "1".."12" without leading zeros -> 0-based valve.
 bool valveSegment(const char* s, size_t len, uint8_t& valve) {
   uint32_t v = 0;
@@ -900,7 +883,7 @@ bool matchPattern(const char* pattern, const char* rest, size_t len, RouteMatch&
 
 }  // namespace
 
-RouteMatch matchApiRoute(HttpMethod method, const char* path, size_t len, bool protectRead) {
+RouteMatch matchApiRoute(HttpMethod method, const char* path, size_t len) {
   RouteMatch result;
   static const char kPrefix[] = "/api/";
   constexpr size_t kPrefixLen = sizeof kPrefix - 1;
@@ -917,7 +900,6 @@ RouteMatch matchApiRoute(HttpMethod method, const char* path, size_t len, bool p
     pathKnown = true;
     if (r.method != method) continue;
     m.route = r.route;
-    m.needsAuth = r.route != ApiRoute::Health && !(isReadRoute(r.route) && !protectRead);
     return m;
   }
   if (pathKnown) result.route = ApiRoute::MethodNotAllowed;

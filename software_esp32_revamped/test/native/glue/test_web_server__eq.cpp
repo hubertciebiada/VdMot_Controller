@@ -1,7 +1,7 @@
 // Tests of src/web_server.cpp for what real clients and the real heap can do: bytes pipelined
-// after a body, multipart framing the library parses only for a handler that is not trivial, a
-// login lock that ends between the guard and the login check, and a request marked busy for one
-// file that owns the upload with the next, also when the heap hands its address out again.
+// after a body, multipart framing the library parses only for a handler that is not trivial, and
+// a request marked busy for one file that owns the upload with the next, also when the heap hands
+// its address out again.
 #include <memory>
 #include <string>
 
@@ -34,19 +34,6 @@ Request apiPost(const std::string& url, const std::string& body,
 Request apiUpload(const std::string& url, const std::string& name, const std::string& data) {
   Request r = fakes::http::upload(url, name, data);
   r.header("X-VdMot", "1");
-  return r;
-}
-
-void setLogin(const char* user, const char* password) {
-  vdm::Config& c = sib::storage().active;
-  vdm::copyString(c.web.user, sizeof c.web.user, user);
-  vdm::copyString(c.web.password, sizeof c.web.password, password);
-  ++sib::storage().revision;
-}
-
-Request withAuth(Request r, bool right = true) {
-  // admin:secret12 / admin:wrong
-  r.header("Authorization", right ? "Basic YWRtaW46c2VjcmV0MTI=" : "Basic YWRtaW46d3Jvbmc=");
   return r;
 }
 
@@ -191,29 +178,4 @@ TEST_CASE("web guard: a refused multipart body is skipped, whatever follows its 
   CHECK(r.code == 409);
   CHECK(r.body == errorBody("busy", "upload or flash running"));
   CHECK(sib::storage().uploadBegins.empty());
-}
-
-// ---------------------------------------------------------------- login
-
-TEST_CASE("web auth: a lock that ends between the guard and the login check answers retry") {
-  glue::begin();
-  setLogin("admin", "secret12");
-  start();
-  const Request wrong = withAuth(apiPost(kTarget1, "{\"target\":5}"), false);
-  for (int i = 0; i < 10; ++i) REQUIRE(fakes::http::perform(wrong).code == 401);  // 60 s lock
-  fakes::advanceMs(59999);
-  // The guard reads the clock at the headers and again when the body is in: locked both times.
-  // The login check right after reads it 1 ms later, when the lock is over.
-  int reads = 0;
-  sib::app().onNowMs = [&reads] {
-    if (++reads == 3) fakes::advanceMs(1);
-  };
-  const Response r =
-      fakes::http::perform(withAuth(apiUpload("/api/stm/images", "fw.bin", "abc")));
-  sib::app().onNowMs = nullptr;
-  CHECK(reads == 4);  // the fourth books the login
-  CHECK(r.code == 503);
-  CHECK(r.body == errorBody("retry", "state changed"));
-  CHECK(sib::storage().uploadBegins.empty());
-  CHECK(fakes::http::perform(withAuth(apiPost(kTarget1, "{\"target\":6}"))).code == 202);
 }

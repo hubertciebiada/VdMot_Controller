@@ -1,5 +1,5 @@
 // Tests of src/web_server.cpp, request side: response slots and the error buffer, the marks of
-// refused bodies, the login and its limiter, the request guard, JSON input and the upload limits.
+// refused bodies, the request guard, JSON input and the upload limits.
 #include <sdkconfig.h>
 
 #include <memory>
@@ -43,19 +43,6 @@ Request apiDel(const std::string& url) {
 Request apiUpload(const std::string& url, const std::string& name, const std::string& data) {
   Request r = fakes::http::upload(url, name, data);
   r.header("X-VdMot", "1");
-  return r;
-}
-
-void setLogin(const char* user, const char* password) {
-  vdm::Config& c = sib::storage().active;
-  vdm::copyString(c.web.user, sizeof c.web.user, user);
-  vdm::copyString(c.web.password, sizeof c.web.password, password);
-  ++sib::storage().revision;
-}
-
-Request withAuth(Request r, bool right = true) {
-  // admin:secret12 / admin:wrong
-  r.header("Authorization", right ? "Basic YWRtaW46c2VjcmV0MTI=" : "Basic YWRtaW46d3Jvbmc=");
   return r;
 }
 
@@ -169,71 +156,11 @@ TEST_CASE("web body: a body to a path outside /api/ is refused, also while one i
   CHECK(a.finish().code == 202);
 }
 
-// ---------------------------------------------------------------- login
+// ---------------------------------------------------------------- guard
 
-TEST_CASE("web auth: one-character user and password turn the login on") {
+TEST_CASE("web guard: the longest client address is logged in full") {
   glue::begin();
-  setLogin("u", "p");
   start();
-  CHECK(fakes::http::perform(apiPost(kTarget1, "{\"target\":5}")).code == 401);
-  Request right = apiPost(kTarget1, "{\"target\":5}");
-  right.header("Authorization", "Basic dTpw");  // u:p
-  CHECK(fakes::http::perform(right).code == 202);
-  CHECK(fakes::http::perform(fakes::http::get("/api/status")).body.find("\"auth\":true,") !=
-        std::string::npos);
-}
-
-TEST_CASE("web auth: the login needs both a user and a password") {
-  glue::begin();
-  setLogin("admin", "");
-  start();
-  CHECK(fakes::http::perform(apiPost(kTarget1, "{\"target\":5}")).code == 202);
-  setLogin("", "secret12");
-  CHECK(fakes::http::perform(apiPost(kTarget1, "{\"target\":6}")).code == 202);
-  CHECK(fakes::http::perform(fakes::http::get("/api/status")).body.find("\"auth\":false,") !=
-        std::string::npos);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthFailed).empty());
-}
-
-TEST_CASE("web auth: a successful login clears the failures of its address") {
-  glue::begin();
-  setLogin("admin", "secret12");
-  start();
-  const Request wrong = withAuth(apiPost(kTarget1, "{\"target\":5}"), false);
-  for (int i = 0; i < 9; ++i) CHECK(fakes::http::perform(wrong).code == 401);
-  CHECK(fakes::http::perform(withAuth(apiPost(kTarget1, "{\"target\":5}"))).code == 202);
-  CHECK(fakes::http::perform(wrong).code == 401);
-  const std::vector<vdm::Event> failed = sib::logger().withCode(vdm::EventCode::AuthFailed);
-  REQUIRE(failed.size() == 10);
-  CHECK(failed[8].arg1 == 9);
-  CHECK(failed[9].arg1 == 1);
-  for (const vdm::Event& e : failed) CHECK(e.arg2 == 0);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthLocked).empty());
-}
-
-TEST_CASE("web auth: a public request does not clear the failures") {
-  glue::begin();
-  setLogin("admin", "secret12");
-  start();
-  const Request wrong = withAuth(apiPost(kTarget1, "{\"target\":5}"), false);
-  for (int i = 0; i < 9; ++i) CHECK(fakes::http::perform(wrong).code == 401);
-  CHECK(fakes::http::perform(withAuth(fakes::http::get("/api/status"))).code == 200);
-  CHECK(fakes::http::perform(wrong).code == 401);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthFailed).back().arg1 == 10);
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthLocked).size() == 1);
-  CHECK(fakes::http::perform(wrong).code == 429);
-}
-
-TEST_CASE("web auth: the longest client address is logged in full") {
-  glue::begin();
-  setLogin("admin", "secret12");
-  start();
-  Request wrong = withAuth(apiPost(kTarget1, "{\"target\":5}"), false);
-  wrong.remoteIp = 0xFFFFFFFF;
-  CHECK(fakes::http::perform(wrong).code == 401);
-  const std::vector<vdm::Event> failed = sib::logger().withCode(vdm::EventCode::AuthFailed);
-  REQUIRE(failed.size() == 1);
-  CHECK(std::string(failed[0].text) == "255.255.255.255");
   Request refused = fakes::http::post(kTarget1, "{\"target\":5}");
   refused.remoteIp = 0xFFFFFFFF;
   CHECK(fakes::http::perform(refused).code == 403);
@@ -243,26 +170,6 @@ TEST_CASE("web auth: the longest client address is logged in full") {
   CHECK(ev[0].arg1 == 3);
   CHECK(ev[0].arg2 == 0);
 }
-
-TEST_CASE("web auth: 401 and 429 answers without memory become 500, nothing runs") {
-  glue::begin();
-  setLogin("admin", "secret12");
-  start();
-  fakes::http::server().failNextResponse = true;
-  Response r = fakes::http::perform(apiPost(kTarget1, "{\"target\":5}"));
-  CHECK(r.code == 500);
-  CHECK(r.sends == 1);
-  const Request wrong = withAuth(apiPost(kTarget1, "{\"target\":5}"), false);
-  for (int i = 0; i < 10; ++i) CHECK(fakes::http::perform(wrong).code == 401);
-  fakes::http::server().failNextResponse = true;
-  r = fakes::http::perform(withAuth(apiPost(kTarget1, "{\"target\":5}")));
-  CHECK(r.code == 500);
-  CHECK(r.sends == 1);
-  CHECK(sib::app().submitted.empty());
-  CHECK(fakes::http::server().violations.empty());
-}
-
-// ---------------------------------------------------------------- guard
 
 TEST_CASE("web guard: a POST without a body needs no content type, a one-byte body does") {
   glue::begin();
@@ -279,9 +186,8 @@ TEST_CASE("web guard: a POST without a body needs no content type, a one-byte bo
   CHECK(sib::ota().restartRequests.size() == 1);
 }
 
-TEST_CASE("web guard: an oversized body is refused before the login is checked") {
+TEST_CASE("web guard: an oversized body is refused, legacy alias or API") {
   glue::begin();
-  setLogin("admin", "secret12");
   start();
   Response r = fakes::http::perform(fakes::http::post("/setvalve", std::string(8193, ' ')));
   CHECK(r.code == 413);
@@ -289,7 +195,25 @@ TEST_CASE("web guard: an oversized body is refused before the login is checked")
   r = fakes::http::perform(apiPost("/api/config", std::string(8193, ' ')));
   CHECK(r.code == 413);
   CHECK(r.body == errorBody("too_large", "body"));
-  CHECK(sib::logger().withCode(vdm::EventCode::AuthFailed).empty());
+  CHECK(sib::app().submitted.empty());
+}
+
+TEST_CASE("web guard: an oversized body never takes the body buffer") {
+  glue::begin();
+  start();
+  const Request big[] = {fakes::http::post("/setvalve", std::string(8193, ' ')),
+                         apiPost("/api/config", std::string(8193, ' '))};
+  for (const Request& b : big) {
+    CAPTURE(b.url);
+    Exchange a(b);
+    a.sendBody(4000);  // the refused body is still arriving
+    // another request's body gets the buffer meanwhile
+    CHECK(fakes::http::perform(apiPost(kTarget1, "{\"target\":5}")).code == 202);
+    const Response& r = a.finish();
+    CHECK(r.code == 413);
+    CHECK(r.body == errorBody("too_large", "body"));
+  }
+  CHECK(sib::app().submitted.size() == 2);
 }
 
 TEST_CASE("web guard: /setvalve reads a body of 8192 bytes") {

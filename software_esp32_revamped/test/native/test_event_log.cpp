@@ -59,7 +59,7 @@ const CodeRow kTable[] = {
     {EventCode::MqttDisconnected, 203, "mqtt_disconnected", Severity::Warning, kWarn},
     {EventCode::MqttCommandRejected, 204, "mqtt_command_rejected", Severity::Warning, kWarn},
     {EventCode::HaDiscoverySent, 205, "ha_discovery_sent", Severity::Info, kWarn},
-    {EventCode::AuthFailed, 206, "auth_failed", Severity::Warning, kWarn},
+    {EventCode::AuthFailed, 206, "auth_failed", Severity::Warning, kNo},  // retired
     {EventCode::NetTrialStarted, 207, "net_trial_started", Severity::Info, kNo},
     {EventCode::NetTrialConfirmed, 208, "net_trial_confirmed", Severity::Info, kNo},
     {EventCode::NetTrialReverted, 209, "net_trial_reverted", Severity::Warning, kWarn},
@@ -67,7 +67,7 @@ const CodeRow kTable[] = {
     {EventCode::NetReachable, 211, "net_reachable", Severity::Info, kNo},
     {EventCode::NetInterfaceRestart, 212, "net_interface_restart", Severity::Warning, kWarn},
     {EventCode::RequestRefused, 213, "request_refused", Severity::Warning, kWarn},
-    {EventCode::AuthLocked, 214, "auth_locked", Severity::Warning, kWarn},
+    {EventCode::AuthLocked, 214, "auth_locked", Severity::Warning, kNo},  // retired
     {EventCode::LinkUp, 300, "link_up", Severity::Info, kWarn},
     {EventCode::LinkDegraded, 301, "link_degraded", Severity::Info, kWarn},
     {EventCode::LinkDown, 302, "link_down", Severity::Error, kWarn},
@@ -198,7 +198,7 @@ TEST_CASE("eventMqttNames lists every published code in registry order") {
   for (const CodeRow& r : kTable) {
     if (r.mqtt != EventMqtt::No) expected.push_back(r.name);
   }
-  REQUIRE(expected.size() == 82);
+  REQUIRE(expected.size() == 80);
   const char* names[100] = {};
   CHECK(eventMqttNames(names, 100) == expected.size());
   for (size_t i = 0; i < expected.size(); ++i) {

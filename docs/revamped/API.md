@@ -40,23 +40,12 @@ rest_command:
     payload: '{"target": {{ target }}}'
 ```
 
-## Authentication
+## No login
 
-- HTTP Basic auth, enabled when **both** `web.user` and `web.password` are set
-  (Settings → Web). Without them every endpoint is open (as in the legacy
-  firmware).
-- With auth enabled, every change (POST/DELETE) and the config, image list,
-  file list and log need credentials. The read-only GETs `status`, `valves`,
-  `valves/{n}/profile`, `sensors`, `events`, `stm/motor`, `stm/flash` and
-  `import-report` stay public unless `web.protectRead` is on. `GET /api/health`
-  and the dashboard files (`/`, `/app.js`, `/app.css`) are always public.
-- Wrong or missing credentials: `401` with `WWW-Authenticate: Basic realm="VdMot"`;
-  failures are logged (`auth_failed`).
-- Lockout per client address (8 addresses tracked): 10 failures within 60 s
-  lock that address for 1 min, the next lockout 5 min, every later one 15 min;
-  a successful login forgets the address. Locked: `429` with `Retry-After: <s>`
-  and `{"error":"locked","detail":"too many failed logins from this address, retry in <n> s"}`;
-  event `auth_locked`.
+There is no login (the web login went in 2.1.0): every endpoint answers
+without credentials, and an `Authorization` header is ignored. Keep the device
+in a network that only trusted clients reach; the guard above still keeps web
+pages of other sites out.
 
 ## Conventions
 
@@ -75,9 +64,7 @@ Error codes:
 | Status | error | When |
 |---|---|---|
 | 400 | `bad_request`, `invalid` (detail = key path), `out_of_range`, `unknown_key`, `confirm_required`, `invalid_image`, `bad_path`, `bad_name` | invalid request |
-| 401 | – | credentials needed |
 | 403 | `host_not_allowed`, `origin_not_allowed`, `header_required` | guard |
-| 403 | `auth_required` | `?secrets=1` without web login |
 | 403 | `protected` | file that cannot be deleted |
 | 404 | `not_found` | unknown path, image, file, profile, import report |
 | 405 | `method_not_allowed` | wrong method |
@@ -93,7 +80,6 @@ Error codes:
 | 411 | `length_required` | upload without Content-Length |
 | 413 | `too_large` | body or file too large |
 | 415 | `unsupported_media_type` | wrong Content-Type |
-| 429 | `locked` | login lockout |
 | 500 | `internal`, `io_error`, `nvs` | device error |
 | 503 | `busy` | both response buffers in use (nothing applied); retry |
 | 503 | `queue_full` | STM command queue full |
@@ -104,18 +90,18 @@ Error codes:
 
 ### Status and data
 
-| Method | Path | Auth | Response |
-|---|---|---|---|
-| GET | `/api/health` | never | health document (below) |
-| GET | `/api/status` | read | status document (below) |
-| GET | `/api/valves` | read | `{"valves":[...]}`, always 12 entries (below) |
-| GET | `/api/valves/{n}/profile` | read | `{"valve":n,"count":k,"samples":[[count,current_0.1mA],...]}`; `404` when none |
-| GET | `/api/sensors` | read | `{"temps":[...],"volts":[...]}`: per slot `slot`, `name`, `id`, `active`, `onBus`, `temp` (temps, °C incl. offset, null = failed) or `value` (volts, `(raw/100 + offset) × factor`, null = failed), `raw`, `age`, `valve` |
-| GET | `/api/events` | read | query `since` (seq, default 0), `minSeverity` (`debug`/`info`/`warning`/`error`/`critical`), `valve` (1..12), `limit` (1..50, default 50). Response `{"first","last","next","dropped","events":[...]}`; pass `next` as `since` to poll |
-| GET | `/api/stm/motor` | read | `{"motor":{"lowC","highC","startOnPower","noOfMinCount","maxCalReps"},"learnMovements":n,"breakaway":{...}\|null,"known":bool}` |
-| GET | `/api/stm/flash` | read | flasher state (below) |
-| GET | `/api/import-report` | read | legacy import report (below); `404` when there is none |
-| GET | `/api/log` | yes | `text/plain`, previous + current log file (the log is flushed first) |
+| Method | Path | Response |
+|---|---|---|
+| GET | `/api/health` | health document (below) |
+| GET | `/api/status` | status document (below) |
+| GET | `/api/valves` | `{"valves":[...]}`, always 12 entries (below) |
+| GET | `/api/valves/{n}/profile` | `{"valve":n,"count":k,"samples":[[count,current_0.1mA],...]}`; `404` when none |
+| GET | `/api/sensors` | `{"temps":[...],"volts":[...]}`: per slot `slot`, `name`, `id`, `active`, `onBus`, `temp` (temps, °C incl. offset, null = failed) or `value` (volts, `(raw/100 + offset) × factor`, null = failed), `raw`, `age`, `valve` |
+| GET | `/api/events` | query `since` (seq, default 0), `minSeverity` (`debug`/`info`/`warning`/`error`/`critical`), `valve` (1..12), `limit` (1..50, default 50). Response `{"first","last","next","dropped","events":[...]}`; pass `next` as `since` to poll |
+| GET | `/api/stm/motor` | `{"motor":{"lowC","highC","startOnPower","noOfMinCount","maxCalReps"},"learnMovements":n,"breakaway":{...}\|null,"known":bool}` |
+| GET | `/api/stm/flash` | flasher state (below) |
+| GET | `/api/import-report` | legacy import report (below); `404` when there is none |
+| GET | `/api/log` | `text/plain`, previous + current log file (the log is flushed first) |
 
 `/api/status`:
 - `station` (first member);
@@ -136,7 +122,7 @@ Error codes:
   `learnTime` (STM time trigger in s, or null);
 - `calibration`: `active`, `lastScheduled`, `nextSlot`, `next` (local ISO time
   or null);
-- `auth`, `lastEventSeq`;
+- `lastEventSeq`;
 - `config`: `{"source":"stored|imported|defaults|defaults_after_error|backup","repairs":<mask>,"newerSchema":bool}`;
 - `importReport`: true while a legacy import report is stored.
 
@@ -233,8 +219,7 @@ to open a valve at once use assembly or change its failsafe position.
 | GET | `/api/config` | – | full config, secrets replaced by `wifiPasswordSet` / `passwordSet` flags |
 | POST | `/api/config` | partial config with the same structure, optional `"clearSecrets":true` | 200 with the new config plus `"restartRequired":bool,"netTrial":bool`; `400 {"error":"invalid","detail":"<key path>"}` |
 | POST | `/api/config?dryRun=1` | same | 200 `{"restartRequired":bool,"netTrial":bool}`, nothing saved |
-| GET | `/api/config/export` | – | config as download `vdmot-config.json` (no secrets) |
-| GET | `/api/config/export?secrets=1` | – | with passwords, `vdmot-config-secrets.json`; only with web login enabled (`403 auth_required` otherwise) |
+| GET | `/api/config/export` | – | config as download `vdmot-config.json`; never with a secret (a `secrets` query parameter is ignored) |
 | POST | `/api/stm/motor` | any of `motor` (all five values unless read already), `learnMovements` (0 or 50..65534), `breakaway` `{enable,stepPct 0..100,maxmA 20..60}` (protocol 2+) | 202 |
 | POST | `/api/system/network/confirm` | – | 202: keep the network settings on trial; `409 no_trial` |
 | POST | `/api/system/network/revert` | – | 202: go back to the previous network settings now; `409 no_trial` |
@@ -250,6 +235,11 @@ back to the old ones. With jumper X20 an ESP restart also resets the STM
 (INSTALL.md). MQTT settings reconnect MQTT; the failsafe settings are pushed to
 the STM at once.
 
+Keys of removed settings are accepted with any value and ignored, so an
+export of an older firmware imports unchanged; they never appear in an export
+or in `GET /api/config`: `web.user`, `web.password`, `web.passwordSet`,
+`web.protectRead` (the web login, removed in 2.1.0).
+
 New config keys in 2.1: `web.allowedHosts`, `mqtt.rootTopic`, `mqtt.clientId`,
 `mqtt.discoveryPrefix`, `failsafe.timeoutMin` (0 = off, or 5..1440, default 60),
 `valves.N.failsafePct` (0..100, 255 = hold, default 50), `valves.N.topic`,
@@ -259,7 +249,7 @@ knows.
 
 Example:
 ```sh
-curl -u admin:secret -X POST http://vdmot/api/config \
+curl -X POST http://vdmot/api/config \
   -H 'X-VdMot: 1' -H 'Content-Type: application/json' \
   -d '{"calib":{"dayMask":9,"hour":3,"minute":15}}'
 ```
@@ -302,7 +292,7 @@ waits for its validation (`GET /api/health` → `ota.remainS`).
 
 ```sh
 # ESP update from the command line
-curl -u admin:secret -H 'X-VdMot: 1' -F "file=@VdMot-Revamped_2.1.0-revamped_ESP32-WT32-ETH01.bin" \
+curl -H 'X-VdMot: 1' -F "file=@VdMot-Revamped_2.1.0-revamped_ESP32-WT32-ETH01.bin" \
   "http://vdmot/api/ota/esp?md5=$(md5sum VdMot-Revamped_2.1.0-revamped_ESP32-WT32-ETH01.bin | cut -d' ' -f1)"
 ```
 
@@ -338,7 +328,6 @@ request guard; `tools/test_mock_api.py` checks it.
 python3 software_esp32_revamped/tools/mock_api.py --port 8080            # protocol 2 STM
 python3 software_esp32_revamped/tools/mock_api.py --proto 1              # legacy STM 1.4.x
 python3 software_esp32_revamped/tools/mock_api.py --proto 3              # STM 2.1: failsafe lease, stop, safe mode
-python3 software_esp32_revamped/tools/mock_api.py --auth admin:secret    # with Basic auth
 python3 software_esp32_revamped/tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
 python3 software_esp32_revamped/tools/mock_api.py --import-report        # a legacy import report
 python3 software_esp32_revamped/tools/mock_api.py --station west --station-name "Dom Północ"

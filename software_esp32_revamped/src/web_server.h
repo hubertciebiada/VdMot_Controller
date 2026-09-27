@@ -1,12 +1,12 @@
 // HTTP server (AsyncWebServer on port 80): gzip-embedded dashboard, the
-// /api/* JSON API (DESIGN.md "HTTP API", binding), Basic auth, uploads for
-// ESP OTA and STM images. Handlers run in the AsyncTCP task: they never
-// block on the STM, never touch the UART, NVS writes go through
-// storage::applyConfig, STM actions through app::submit.
+// /api/* JSON API (DESIGN.md "HTTP API", binding), uploads for ESP OTA and
+// STM images. Handlers run in the AsyncTCP task: they never block on the
+// STM, never touch the UART, NVS writes go through storage::applyConfig,
+// STM actions through app::submit.
 //
 // Request size limits are enforced before the library buffers anything: a
-// guard handler answers oversized, unauthenticated or conflicting uploads
-// and bodies without parsing them (DESIGN.md "Persistence and memory").
+// guard handler answers oversized or conflicting uploads and bodies
+// without parsing them (DESIGN.md "Persistence and memory").
 #pragma once
 
 #include <stddef.h>

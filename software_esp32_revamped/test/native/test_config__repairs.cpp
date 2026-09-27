@@ -201,10 +201,6 @@ TEST_CASE("sanitize: each cross-field repair alone sets exactly its bit") {
        [](const Config& c) { return c.net.iface == NetInterface::Auto; }},
       {kRepairSyslog, "syslog.level", [](Config& c) { c.syslog.level = 1; },
        [](const Config& c) { return c.syslog.level == 0; }},
-      {kRepairWebNoPassword, "web.password", [](Config& c) { strcpy(c.web.user, "u"); },
-       [](const Config& c) { return c.web.user[0] == '\0' && c.web.password[0] == '\0'; }},
-      {kRepairWebNoUser, "web.user", [](Config& c) { strcpy(c.web.password, "p"); },
-       [](const Config& c) { return c.web.user[0] == '\0' && c.web.password[0] == '\0'; }},
       {kRepairMqttHost, "mqtt.mode", [](Config& c) { c.mqtt.mode = MqttMode::Mqtt; },
        [](const Config& c) { return c.mqtt.mode == MqttMode::Off; }},
       {kRepairMinDelay, "mqtt.minDelayS",
@@ -277,8 +273,6 @@ TEST_CASE("sanitize: the cross-field rules keep what is valid (boundaries)") {
   c.net.iface = NetInterface::Wifi;
   c.syslog.level = 3;
   c.syslog.server = 9;
-  strcpy(c.web.user, "u");
-  strcpy(c.web.password, "p");
   c.mqtt.mode = MqttMode::MqttHa;
   strcpy(c.mqtt.host, "b");
   c.mqtt.publishIntervalS = 20;
@@ -450,7 +444,7 @@ TEST_CASE("sanitize: fuzzed configs always end valid and stay put on a second pa
         case 2: strcpy(c.net.ssid, pick(strs)); strcpy(c.net.wifiPassword, pick(strs)); break;
         case 3: c.net.iface = static_cast<NetInterface>(rng() % 4); break;
         case 4: c.syslog.level = static_cast<uint8_t>(rng() % 5); c.syslog.server = rng() % 2; break;
-        case 5: strcpy(c.web.user, pick(strs)); strcpy(c.web.password, pick(strs)); break;
+        case 5: strcpy(c.mqtt.user, pick(strs)); strcpy(c.mqtt.password, pick(strs)); break;
         case 6: c.mqtt.mode = static_cast<MqttMode>(rng() % 3); strcpy(c.mqtt.host, pick(strs)); break;
         case 7: c.mqtt.minDelayS = static_cast<uint16_t>(rng() % 30); c.mqtt.publishIntervalS = static_cast<uint16_t>(rng() % 30); break;
         case 8: c.mqtt.separate = rng() % 2; c.mqtt.germanDecimal = rng() % 2; break;
@@ -538,16 +532,16 @@ TEST_CASE("decode: a newer base schema is read by its schema-1 prefix (C-5)") {
 TEST_CASE("decode: value damage is repaired and reported, the blob itself stays Ok") {
   Config c;
   c.net.dhcp = false;  // static without an address: repaired to DHCP
-  strcpy(c.web.user, "admin");
+  c.syslog.level = 2;  // without a server: syslog off
   const std::vector<uint8_t> b = encode(c);
   Config out;
   DecodeInfo info;
   CHECK(decodeConfig(b.data(), b.size(), out, &info) == DecodeResult::Ok);
-  CHECK(info.repairs.mask == (kRepairStaticIp | kRepairWebNoPassword));
+  CHECK(info.repairs.mask == (kRepairStaticIp | kRepairSyslog));
   CHECK(info.repairs.count == 2);
   CHECK(std::string(info.repairs.first) == "net.dhcp");
   CHECK(out.net.dhcp);
-  CHECK(out.web.user[0] == '\0');
+  CHECK(out.syslog.level == 0);
 }
 
 TEST_CASE("loadConfigBlobs: ext records that break V2 are repaired after the ext (C-10)") {

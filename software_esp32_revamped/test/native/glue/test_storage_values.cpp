@@ -370,13 +370,13 @@ TEST_CASE("storage import: legacy integers of every width are read") {
 TEST_CASE("storage import: legacy strings are read whole, an over-long one is rejected") {
   glue::begin();
   fakes::nvs().setStr("sysCfg", "stName", "Legacy");
-  fakes::nvs().setStr("netCfg", "userName", std::string(65, 'u'));
+  fakes::nvs().setStr("netCfg", "timeServer", std::string(65, 'h'));
   const Load l = load();
   CHECK(l.src == storage::LoadSource::Imported);
   CHECK(std::string(l.cfg.station) == "Legacy");
-  CHECK(l.cfg.web.user[0] == '\0');
+  CHECK(std::string(l.cfg.time.ntpServer) == "pool.ntp.org");
   CHECK(l.report.imported == 1);
-  CHECK(std::string(l.report.firstRejected) == "netCfg/userName");
+  CHECK(std::string(l.report.firstRejected) == "netCfg/timeServer");
 }
 
 TEST_CASE("storage import: a legacy blob of exactly its size is read") {

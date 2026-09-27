@@ -152,12 +152,11 @@
       <h3>Backup</h3>
       <div class="row">
         <a class="btn" href="/api/config/export" download="vdmot-config.json">Export config</a>
-        <button type="button" id="cfg-export-secrets">Export with passwords&hellip;</button>
         <a class="btn" href="/api/log" download="vdmot-events.log">Export log</a>
         <label class="btn" for="cfg-import">Import config&hellip;</label>
         <input type="file" id="cfg-import" accept=".json,application/json" class="sr">
       </div>
-      <p class="small muted" style="margin-top:8px">Exports contain passwords only with "Export with passwords" (needs the web login); an import keeps the stored ones.</p>
+      <p class="small muted" style="margin-top:8px">Exports contain no passwords; an import keeps the stored ones.</p>
     </div>
     <div class="panel">
       <h3>Files</h3>

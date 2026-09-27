@@ -56,9 +56,6 @@ struct SyslogConfig {
 };
 
 struct WebConfig {
-  char user[kSecretMax + 1] = {0};      // auth enabled iff user AND password non-empty
-  char password[kSecretMax + 1] = {0};
-  bool protectRead = false;             // also require auth for GET /api/* (not "/")
   // Host header values the request guard accepts besides the interface IP
   // and the host name: "" or 1..4 entries separated by ','.
   char allowedHosts[kAllowedHostsMax + 1] = {0};
@@ -152,8 +149,7 @@ void setDefaults(Config& c);
 //  - ssid set -> wifiPassword "" (open network) or 8..63 chars; iface Wifi
 //    -> ssid set;
 //  - syslog level > 0 -> server != 0 and port != 0;
-//  - web: user and password both empty or both non-empty; user without ':'
-//    (HTTP Basic); ssid and secrets printable text (ASCII or UTF-8);
+//  - ssid and secrets printable text (ASCII or UTF-8);
 //  - mqtt mode != Off -> host valid (isHostName or IPv4), port != 0;
 //    minDelayS <= publishIntervalS; mode MqttHa -> separate == true;
 //  - names: isSafeName (station 1..20, others 0..10); duplicate non-empty
@@ -199,13 +195,15 @@ const char* setResultName(SetResult r);
 //   "valves.3.name", "temps.12.offset" (float C, rounded to 0.1),
 //   "temps.12.id" ("hh-..." or "" to clear), "calib.dayMask", ...
 // The complete key list is DESIGN.md "Config schema". Secrets
-// ("*.password", "net.wifiPassword") are write-only; an empty string for a
-// secret means "unchanged" unless `clearSecrets` is true.
+// ("mqtt.password", "net.wifiPassword") are write-only; an empty string for
+// a secret means "unchanged" unless `clearSecrets` is true.
 // So that an exported document can be posted back unchanged, "schema" 1..
 // kConfigJsonSchema (a 2.0.0 export says 1) and the export's "<secret>Set"
-// booleans ("net.wifiPasswordSet", "web.passwordSet", "mqtt.passwordSet")
-// are accepted as no-ops. Paths are at most 64 chars; array indices are
-// 1..N without leading zeros.
+// booleans ("net.wifiPasswordSet", "mqtt.passwordSet") are accepted as
+// no-ops. The keys of removed settings ("web.user", "web.password",
+// "web.passwordSet", "web.protectRead") are accepted with any value and
+// ignored, so an export of an older firmware still imports. Paths are at
+// most 64 chars; array indices are 1..N without leading zeros.
 SetResult setConfigValue(Config& c, const char* path, const ConfigValue& v, bool clearSecrets);
 
 // ---------------------------------------------------------------- JSON patch
@@ -242,10 +240,6 @@ const char* patchResultName(PatchResult r);
 // characters and invalid sequences are out of range).
 PatchResult applyConfigJson(Config& c, const char* json, size_t len, char* path, size_t pathCap);
 
-// Secrets in the export: Flags writes "<key>Set":true/false instead of the
-// value (e.g. "passwordSet"); Clear writes the secret itself and no
-// "...Set" member (downloaded backups).
-enum class SecretMode : uint8_t { Flags, Clear };
 // What POST /api/config reports about a saved document.
 struct ApplyInfo {
   bool restartRequired = false;  // configRestartReasons() != 0
@@ -253,10 +247,11 @@ struct ApplyInfo {
 };
 // JSON export in the same key structure as setConfigValue, e.g.
 // {"schema":2,"station":"VdMot","net":{...},"valves":[{"name":..},...],...}.
+// Never a secret: "<key>Set":true/false stands in for its value (e.g.
+// "passwordSet"), and the keys of removed settings are left out.
 // apply != nullptr appends "restartRequired" and "netTrial" as the last two
 // members of the root object. Returns jw.ok().
-bool writeConfigJson(JsonWriter& jw, const Config& c, SecretMode secrets = SecretMode::Flags,
-                     const ApplyInfo* apply = nullptr);
+bool writeConfigJson(JsonWriter& jw, const Config& c, const ApplyInfo* apply = nullptr);
 
 // ---------------------------------------------------------------- helpers
 
@@ -291,21 +286,25 @@ bool mqttTopicConfigChanged(const Config& a, const Config& b);
 // NVS `cfg` blob: magic "VDMC", u16 kConfigBaseSchema, u16 payload length,
 // payload (explicit little-endian field-by-field encoding, strings as u8
 // length + bytes), u32 CRC32 of everything before it. Never a raw struct
-// dump. Holds exactly the fields of ESP 2.0.0 in their order.
+// dump. Holds exactly the fields of ESP 2.0.0 in their order; a setting
+// removed since keeps its place with its neutral value (web.user "",
+// web.password "", web.protectRead false) and is skipped when decoded.
 constexpr size_t kConfigBlobMax = 4096;
 // Returns bytes written, 0 when cap is too small.
 size_t encodeConfig(const Config& c, uint8_t* out, size_t cap);
 
 enum class DecodeResult : uint8_t { Ok, TooShort, BadMagic, BadCrc, UnsupportedSchema, Invalid };
 
-// Repairs that make a loaded config valid (sanitizeConfig).
+// Repairs that make a loaded config valid (sanitizeConfig). The mask is
+// external (/api/status config.repairs, event config_repaired): the bit of a
+// rule that is gone stays unused.
 enum RepairBit : uint32_t {
   kRepairField = 1u << 0,         // a field outside its per-field rule was reset to its default
   kRepairStaticIp = 1u << 1,      // incomplete static IP -> dhcp
   kRepairWifiPassword = 1u << 2,  // ssid with a 1..7 byte password -> WiFi credentials cleared
   kRepairWifiIface = 1u << 3,     // iface WiFi without ssid -> auto
   kRepairSyslog = 1u << 4,        // level > 0 without server -> 0
-  kRepairWebNoPassword = 1u << 5, // web user without password -> both cleared
+  // 1u << 5: web user without password (web login, removed in 2.1.0)
   kRepairMqttHost = 1u << 6,      // mode != off without host -> off
   kRepairMinDelay = 1u << 7,      // minDelayS > publishIntervalS -> publishIntervalS
   kRepairHaSeparate = 1u << 8,    // HA mode without separate -> mode MQTT
@@ -314,7 +313,7 @@ enum RepairBit : uint32_t {
   kRepairSlotIds = 1u << 11,      // duplicate temp/volt ids -> later id cleared
   kRepairSlotActive = 1u << 12,   // active slot without id -> inactive
   kRepairTopics = 1u << 13,       // duplicate valve segment by an override -> later override cleared
-  kRepairWebNoUser = 1u << 14,    // web password without user -> both cleared
+  // 1u << 14: web password without user (web login, removed in 2.1.0)
   kRepairHaIds = 1u << 15,        // equal HA ids (V3) -> the later name (or override) cleared
 };
 struct Repairs {

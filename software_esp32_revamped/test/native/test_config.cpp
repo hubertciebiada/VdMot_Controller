@@ -121,9 +121,6 @@ Config fullConfig() {
   REQUIRE(set(c, "syslog.level", I(3)) == SetResult::Ok);
   REQUIRE(set(c, "syslog.server", S("10.0.0.9")) == SetResult::Ok);
   REQUIRE(set(c, "syslog.port", I(1514)) == SetResult::Ok);
-  REQUIRE(set(c, "web.user", S("admin")) == SetResult::Ok);
-  REQUIRE(set(c, "web.password", S("pa ss\"w")) == SetResult::Ok);
-  REQUIRE(set(c, "web.protectRead", B(true)) == SetResult::Ok);
   // Plain MQTT: HA mode needs separate topics and the decimal point.
   REQUIRE(set(c, "mqtt.mode", I(1)) == SetResult::Ok);
   REQUIRE(set(c, "mqtt.host", S("broker.lan")) == SetResult::Ok);
@@ -509,7 +506,7 @@ TEST_CASE("config: integer conversion corner cases") {
 }
 
 TEST_CASE("config: every bool key and its conversions") {
-  const char* keys[] = {"net.dhcp",         "web.protectRead",     "mqtt.separate",
+  const char* keys[] = {"net.dhcp",         "mqtt.separate",
                         "mqtt.allTemps",    "mqtt.pathAsRoot",     "mqtt.upTime",
                         "mqtt.onChange",    "mqtt.retained",       "mqtt.plainText",
                         "mqtt.diag",        "mqtt.germanDecimal",  "mqtt.newDiag",
@@ -669,10 +666,6 @@ TEST_CASE("config: network strings, hosts and time zone") {
   CHECK(set(c, "time.tzPosix", S("<+0330>-3:30")) == SetResult::Ok);
 
   const std::string u64(64, 'u');
-  CHECK(set(c, "web.user", S(u64.c_str())) == SetResult::Ok);
-  CHECK(set(c, "web.user", S((u64 + "u").c_str())) == SetResult::OutOfRange);
-  CHECK(set(c, "web.user", S("a:b")) == SetResult::OutOfRange);
-  CHECK(set(c, "web.user", S("a b")) == SetResult::Ok);
   CHECK(set(c, "mqtt.user", S(u64.c_str())) == SetResult::Ok);
   CHECK(set(c, "mqtt.user", S((u64 + "u").c_str())) == SetResult::OutOfRange);
   CHECK(set(c, "mqtt.user", S("a:b")) == SetResult::Ok);
@@ -681,12 +674,12 @@ TEST_CASE("config: network strings, hosts and time zone") {
 
 TEST_CASE("config: secrets are write-only and cleared only on request") {
   Config c;
-  CHECK(set(c, "web.password", S("pw1")) == SetResult::Ok);
-  CHECK(std::string(c.web.password) == "pw1");
-  CHECK(set(c, "web.password", S("")) == SetResult::Ok);
-  CHECK(std::string(c.web.password) == "pw1");
-  CHECK(set(c, "web.password", S(""), true) == SetResult::Ok);
-  CHECK(std::string(c.web.password).empty());
+  CHECK(set(c, "mqtt.password", S("pw1")) == SetResult::Ok);
+  CHECK(std::string(c.mqtt.password) == "pw1");
+  CHECK(set(c, "mqtt.password", S("")) == SetResult::Ok);
+  CHECK(std::string(c.mqtt.password) == "pw1");
+  CHECK(set(c, "mqtt.password", S(""), true) == SetResult::Ok);
+  CHECK(std::string(c.mqtt.password).empty());
 
   const std::string p63(63, 'p');
   CHECK(set(c, "net.wifiPassword", S(p63.c_str())) == SetResult::Ok);
@@ -701,11 +694,9 @@ TEST_CASE("config: secrets are write-only and cleared only on request") {
   CHECK(set(c, "mqtt.password", S("\x7f")) == SetResult::OutOfRange);
   CHECK(set(c, "mqtt.password", S("a:b \"c\"")) == SetResult::Ok);
   CHECK(set(c, "mqtt.password", I(3)) == SetResult::WrongType);
-  CHECK(set(c, "web.password", S((p64 + "p").c_str())) == SetResult::OutOfRange);
 
   // Export flags are accepted as no-ops (bool only).
   const Config before = c;
-  CHECK(set(c, "web.passwordSet", B(false)) == SetResult::Ok);
   CHECK(set(c, "net.wifiPasswordSet", B(true)) == SetResult::Ok);
   CHECK(set(c, "mqtt.passwordSet", B(true)) == SetResult::Ok);
   CHECK(sameConfig(c, before));
@@ -721,10 +712,10 @@ TEST_CASE("config: secrets are write-only and cleared only on request") {
   CHECK(set(n, "net.wifiPassword", S("12345678")) == SetResult::Ok);
   CHECK(set(n, "net.ssid", S(std::string(32, 's').c_str())) == SetResult::Ok);
   CHECK(std::string(n.net.wifiPassword) == "12345678");
-  CHECK(set(n, "web.user", S(std::string(64, 'u').c_str())) == SetResult::Ok);
-  CHECK(set(n, "web.password", S(std::string(64, 'p').c_str())) == SetResult::Ok);
-  CHECK(std::string(n.web.user) == std::string(64, 'u'));
-  CHECK_FALSE(n.web.protectRead);
+  CHECK(set(n, "mqtt.user", S(std::string(64, 'u').c_str())) == SetResult::Ok);
+  CHECK(set(n, "mqtt.password", S(std::string(64, 'p').c_str())) == SetResult::Ok);
+  CHECK(std::string(n.mqtt.user) == std::string(64, 'u'));
+  CHECK(n.mqtt.keepAliveS == 60);
   // A one-char secret counts as set in the export.
   Config o;
   CHECK(set(o, "mqtt.password", S("x")) == SetResult::Ok);
@@ -896,15 +887,6 @@ TEST_CASE("config: validation reports every cross-field rule with its path") {
   CHECK(validatePath(c) == "OK");
   c.syslog.level = 0;
   c.syslog.server = 0;
-
-  strcpy(c.web.user, "u");
-  CHECK(validatePath(c) == "web.password");
-  strcpy(c.web.password, "p");
-  CHECK(validatePath(c) == "OK");
-  c.web.user[0] = '\0';
-  CHECK(validatePath(c) == "web.user");
-  c.web.password[0] = '\0';
-  CHECK(validatePath(c) == "OK");
 
   c.mqtt.mode = MqttMode::Mqtt;
   CHECK(validatePath(c) == "mqtt.host");
@@ -1085,11 +1067,6 @@ TEST_CASE("config: validation rejects out-of-range stored fields") {
   }
   {
     Config c;
-    strcpy(c.web.user, "a:b");
-    CHECK(validatePath(c) == "web.user");
-  }
-  {
-    Config c;
     c.mqtt.keepAliveS = 4;
     CHECK(validatePath(c) == "mqtt.keepAliveS");
   }
@@ -1232,7 +1209,7 @@ TEST_CASE("config: JSON export of the defaults (golden)") {
       "\"time\":{\"ntpServer\":\"pool.ntp.org\",\"tzName\":\"Europe/Berlin\","
       "\"tzPosix\":\"CET-1CEST,M3.5.0,M10.5.0/3\"},"
       "\"syslog\":{\"level\":0,\"server\":\"0.0.0.0\",\"port\":514},"
-      "\"web\":{\"user\":\"\",\"passwordSet\":false,\"protectRead\":false,\"allowedHosts\":\"\"},"
+      "\"web\":{\"allowedHosts\":\"\"},"
       "\"mqtt\":{\"mode\":0,\"host\":\"\",\"port\":1883,\"user\":\"\",\"passwordSet\":false,"
       "\"keepAliveS\":60,\"publishIntervalS\":10,\"minDelayS\":5,\"separate\":true,"
       "\"allTemps\":true,\"pathAsRoot\":false,\"upTime\":true,\"onChange\":true,"
@@ -1267,8 +1244,7 @@ TEST_CASE("config: JSON export of set values") {
   CHECK(j.find("\"iface\":2,\"dhcp\":false,\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
                "\"gateway\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"ssid\":\"My Wifi\","
                "\"wifiPasswordSet\":true,\"reconnectTimeoutMin\":17") != std::string::npos);
-  CHECK(j.find("\"web\":{\"user\":\"admin\",\"passwordSet\":true,\"protectRead\":true,"
-               "\"allowedHosts\":\"\"}") != std::string::npos);
+  CHECK(j.find("\"web\":{\"allowedHosts\":\"\"}") != std::string::npos);
   CHECK(j.find("\"mode\":1,\"host\":\"broker.lan\",\"port\":8883,\"user\":\"mq\","
                "\"passwordSet\":true,\"keepAliveS\":30,\"publishIntervalS\":120,\"minDelayS\":7,"
                "\"separate\":false,\"allTemps\":false,\"pathAsRoot\":true,\"upTime\":false,"
@@ -1285,8 +1261,7 @@ TEST_CASE("config: JSON export of set values") {
                "\"failsafe\":{\"timeoutMin\":60},\"persistLog\":false}") != std::string::npos);
   // The keys of the cfgx blob.
   const std::string x = exportJson(fullConfigExt());
-  CHECK(x.find("\"protectRead\":true,\"allowedHosts\":\"vdmot.lan, 192.168.1.9\"}") !=
-        std::string::npos);
+  CHECK(x.find("\"web\":{\"allowedHosts\":\"vdmot.lan, 192.168.1.9\"}") != std::string::npos);
   CHECK(x.find("\"haDiscoveryOnConnect\":false,\"rootTopic\":\"VdMotFBH\","
                "\"clientId\":\"VdMot-east-6c1e51\",\"discoveryPrefix\":\"ha/discovery\"}") !=
         std::string::npos);
@@ -1301,7 +1276,6 @@ TEST_CASE("config: JSON export of set values") {
   CHECK(x.find("\"failsafe\":{\"timeoutMin\":1440}") != std::string::npos);
   // Secrets never appear.
   CHECK(j.find("secret123") == std::string::npos);
-  CHECK(j.find("pa ss") == std::string::npos);
   CHECK(j.find("mqpw") == std::string::npos);
 }
 
@@ -1362,12 +1336,16 @@ TEST_CASE("config: JSON export fails cleanly on a small buffer") {
 TEST_CASE("config: patch round trip of an export") {
   const Config full = fullConfig();
   const std::string j = exportJson(full);
+  // Secrets are not exported: the import keeps the ones of its target (an
+  // ssid without password is an open network).
   Config c;
-  // Secrets are not exported: without them the import fails validation
-  // (web user without password; an ssid without password is an open network).
   std::string path;
-  CHECK(patch(c, j, &path) == PatchResult::Invalid);
-  CHECK(path == "web.password");
+  CHECK(patch(c, j, &path) == PatchResult::Ok);
+  CHECK(path.empty());
+  Config noSecrets = full;
+  noSecrets.net.wifiPassword[0] = '\0';
+  noSecrets.mqtt.password[0] = '\0';
+  CHECK(sameConfig(c, noSecrets));
 
   Config d = full;  // same secrets present -> exact round trip
   CHECK(patch(d, j, &path) == PatchResult::Ok);
@@ -1376,10 +1354,7 @@ TEST_CASE("config: patch round trip of an export") {
 
   Config e;
   std::string withSecrets = j;
-  withSecrets.insert(1,
-                     "\"net\":{\"wifiPassword\":\"secret123\"},"
-                     "\"web\":{\"password\":\"pa ss\\\"w\"},"
-                     "\"mqtt\":{\"password\":\"mqpw\"},");
+  withSecrets.insert(1, "\"net\":{\"wifiPassword\":\"secret123\"},\"mqtt\":{\"password\":\"mqpw\"},");
   CHECK(patch(e, withSecrets, &path) == PatchResult::Ok);
   CHECK(sameConfig(e, full));
 }
@@ -1441,17 +1416,14 @@ TEST_CASE("config: patch paths, nesting forms and clearSecrets") {
 
   // clearSecrets anywhere at the root, applied before the secrets.
   Config s;
-  strcpy(s.web.user, "u");
-  strcpy(s.web.password, "p");
-  CHECK(patch(s, "{\"web\":{\"password\":\"\"}}") == PatchResult::Ok);
-  CHECK(std::string(s.web.password) == "p");
-  CHECK(patch(s, "{\"web\":{\"password\":\"\",\"user\":\"\"},\"clearSecrets\":true}") ==
-        PatchResult::Ok);
-  CHECK(std::string(s.web.password).empty());
-  strcpy(s.web.user, "u");
-  strcpy(s.web.password, "p");
-  CHECK(patch(s, "{\"clearSecrets\":false,\"web\":{\"password\":\"\"}}") == PatchResult::Ok);
-  CHECK(std::string(s.web.password) == "p");
+  strcpy(s.mqtt.password, "p");
+  CHECK(patch(s, "{\"mqtt\":{\"password\":\"\"}}") == PatchResult::Ok);
+  CHECK(std::string(s.mqtt.password) == "p");
+  CHECK(patch(s, "{\"mqtt\":{\"password\":\"\"},\"clearSecrets\":true}") == PatchResult::Ok);
+  CHECK(std::string(s.mqtt.password).empty());
+  strcpy(s.mqtt.password, "p");
+  CHECK(patch(s, "{\"clearSecrets\":false,\"mqtt\":{\"password\":\"\"}}") == PatchResult::Ok);
+  CHECK(std::string(s.mqtt.password) == "p");
   CHECK(patch(s, "{\"clearSecrets\":1}", &path) == PatchResult::WrongType);
   CHECK(path == "clearSecrets");
   CHECK(patch(s, "{\"clearSecrets\":\"true\"}", &path) == PatchResult::WrongType);
@@ -1459,9 +1431,9 @@ TEST_CASE("config: patch paths, nesting forms and clearSecrets") {
   CHECK(patch(s, "{\"web\":{\"clearSecrets\":true}}", &path) == PatchResult::UnknownKey);
   CHECK(path == "web.clearSecrets");
   // Last root clearSecrets wins.
-  CHECK(patch(s, "{\"clearSecrets\":true,\"clearSecrets\":false,\"web\":{\"password\":\"\"}}") ==
+  CHECK(patch(s, "{\"clearSecrets\":true,\"clearSecrets\":false,\"mqtt\":{\"password\":\"\"}}") ==
         PatchResult::Ok);
-  CHECK(std::string(s.web.password) == "p");
+  CHECK(std::string(s.mqtt.password) == "p");
 }
 
 TEST_CASE("config: patch string decoding") {
@@ -1472,17 +1444,17 @@ TEST_CASE("config: patch string decoding") {
   CHECK(std::string(c.station) == "AB_x");
   CHECK(patch(c, "{\"time\":{\"tzName\":\"a\\/b\"}}") == PatchResult::Ok);
   CHECK(std::string(c.time.tzName) == "a/b");
-  CHECK(patch(c, "{\"web\":{\"user\":\"q\\\"\",\"password\":\"\\\\\"}}") == PatchResult::Ok);
-  CHECK(std::string(c.web.user) == "q\"");
-  CHECK(std::string(c.web.password) == "\\");
+  CHECK(patch(c, "{\"mqtt\":{\"user\":\"q\\\"\",\"password\":\"\\\\\"}}") == PatchResult::Ok);
+  CHECK(std::string(c.mqtt.user) == "q\"");
+  CHECK(std::string(c.mqtt.password) == "\\");
   // Control characters decode fine but fail the field rules.
   const char* rejected[] = {"\\n", "\\r", "\\t", "\\b", "\\f", "\\u0000", "\\u007f",
-                            "\\u0085", "\xc2\x85", "\xc3", ":"};
+                            "\\u0085", "\xc2\x85", "\xc3"};
   for (const char* r : rejected) {
     CAPTURE(r);
-    CHECK(patch(c, std::string("{\"web\":{\"user\":\"a") + r + "\"}}", &path) ==
+    CHECK(patch(c, std::string("{\"mqtt\":{\"user\":\"a") + r + "\"}}", &path) ==
           PatchResult::OutOfRange);
-    CHECK(path == "web.user");
+    CHECK(path == "mqtt.user");
   }
   // UTF-8, raw or escaped, is text.
   const char* accepted[][2] = {{"\\u00e4", "\xc3\xa4"},
@@ -1491,9 +1463,9 @@ TEST_CASE("config: patch string decoding") {
                                {"\xc3\xa4", "\xc3\xa4"}};
   for (const auto& a : accepted) {
     CAPTURE(a[0]);
-    CHECK(patch(c, std::string("{\"web\":{\"user\":\"a") + a[0] + "\"}}", &path) ==
+    CHECK(patch(c, std::string("{\"mqtt\":{\"user\":\"a") + a[0] + "\"}}", &path) ==
           PatchResult::Ok);
-    CHECK(std::string(c.web.user) == std::string("a") + a[1]);
+    CHECK(std::string(c.mqtt.user) == std::string("a") + a[1]);
   }
   // Keys are decoded too.
   CHECK(patch(c, "{\"c\\u0061lib\":{\"\\u0068our\":7}}") == PatchResult::Ok);
@@ -1568,11 +1540,11 @@ TEST_CASE("config: patch hex escapes and invalid strings before a closing brace"
   CHECK(patch(c, "{\"calib.hour\":{\"a\\u0000\":5}}", &path) == PatchResult::UnknownKey);
   CHECK(c.calib.hour == 0);
   // clearSecrets first, secrets after it.
-  strcpy(c.web.user, "u");
-  strcpy(c.web.password, "p");
-  CHECK(patch(c, "{\"clearSecrets\":true,\"web\":{\"user\":\"\",\"password\":\"\"}}") ==
+  strcpy(c.mqtt.user, "u");
+  strcpy(c.mqtt.password, "p");
+  CHECK(patch(c, "{\"clearSecrets\":true,\"mqtt\":{\"user\":\"\",\"password\":\"\"}}") ==
         PatchResult::Ok);
-  CHECK(std::string(c.web.password).empty());
+  CHECK(std::string(c.mqtt.password).empty());
 }
 
 TEST_CASE("config: patch number forms") {
@@ -1767,7 +1739,7 @@ TEST_CASE("config: binary encoding layout and round trip") {
   Config fb;
   CHECK(decodeConfig(f.data(), f.size(), fb) == DecodeResult::Ok);
   CHECK(sameConfig(fb, full));
-  CHECK(std::string(fb.web.password) == "pa ss\"w");  // secrets are persisted
+  CHECK(std::string(fb.mqtt.password) == "mqpw");  // secrets are persisted
   CHECK(std::string(fb.net.wifiPassword) == "secret123");
   CHECK(fb.volts[7].factor == 0.01f);
   CHECK(fb.temps[0].offset == -15);
@@ -2599,9 +2571,12 @@ TEST_CASE("config: V3 HA ids are unique among valves and active slots (C-1b)") {
   CHECK(validatePath(m) == "OK");
 }
 
-TEST_CASE("config: the cfg blob stays the 2.0.0 blob (C-2)") {
-  // fullConfig() encoded by the 2.0.0 encoder (58632d6).
-  static const uint8_t kGolden200[] = {
+namespace {
+
+// fullConfig() with the web login set (user "admin", password "pa ss\"w",
+// protectRead) encoded by the 2.0.0 encoder (58632d6): the blob of 2.0.0, and
+// of 2.1 builds that still had the web login.
+const uint8_t kGolden200[] = {
       0x56, 0x44, 0x4d, 0x43, 0x01, 0x00, 0x00, 0x03, 0x0a, 0x48, 0x65, 0x69, 0x7a, 0x75,
       0x6e, 0x67, 0x20, 0x4f, 0x47, 0x02, 0x00, 0xc0, 0xa8, 0x01, 0x32, 0xff, 0xff, 0xff,
       0x00, 0xc0, 0xa8, 0x01, 0x01, 0x08, 0x08, 0x08, 0x08, 0x07, 0x4d, 0x79, 0x20, 0x57,
@@ -2659,17 +2634,143 @@ TEST_CASE("config: the cfg blob stays the 2.0.0 blob (C-2)") {
       0x80, 0xbe, 0x0a, 0xd7, 0x23, 0x3c, 0x01, 0x56, 0x26, 0x11, 0x22, 0x33, 0x44, 0x55,
       0x66, 0x29, 0x7f, 0x17, 0x3b, 0x00, 0xc0, 0xc3, 0x24, 0xb0,
   };
-  const std::vector<uint8_t> golden(kGolden200, kGolden200 + sizeof kGolden200);
-  CHECK(encode(fullConfig()) == golden);
-  // The keys added later do not touch it.
-  CHECK(encode(fullConfigExt()) == golden);
-  // C-3: the 2.0.0 blob needs no repair; the new keys are defaults.
+
+const std::vector<uint8_t> kGolden(kGolden200, kGolden200 + sizeof kGolden200);
+
+// The web login in kGolden200: user, password (u8 length + bytes), protectRead.
+const std::vector<uint8_t> kStoredLogin = {5,   'a', 'd', 'm', 'i', 'n', 7, 'p',
+                                           'a', ' ', 's', 's', '"', 'w', 1};
+
+// `blob` with the one occurrence of `from` replaced by `to`; payload length
+// and CRC fixed.
+std::vector<uint8_t> spliced(std::vector<uint8_t> blob, const std::vector<uint8_t>& from,
+                             const std::vector<uint8_t>& to) {
+  const auto at = std::search(blob.begin(), blob.end(), from.begin(), from.end());
+  REQUIRE(at != blob.end());
+  REQUIRE(std::search(at + 1, blob.end(), from.begin(), from.end()) == blob.end());
+  const auto pos = at - blob.begin();
+  blob.erase(at, at + static_cast<long>(from.size()));
+  blob.insert(blob.begin() + pos, to.begin(), to.end());
+  const size_t payload = blob.size() - 12;
+  blob[6] = static_cast<uint8_t>(payload);
+  blob[7] = static_cast<uint8_t>(payload >> 8);
+  fixCrc(blob);
+  return blob;
+}
+
+// A stored web login: u8 length + user, u8 length + password, protectRead.
+std::vector<uint8_t> login(const std::string& user, const std::string& password, uint8_t read) {
+  std::vector<uint8_t> v = {static_cast<uint8_t>(user.size())};
+  v.insert(v.end(), user.begin(), user.end());
+  v.push_back(static_cast<uint8_t>(password.size()));
+  v.insert(v.end(), password.begin(), password.end());
+  v.push_back(read);
+  return v;
+}
+
+DecodeResult decodeBlob(const std::vector<uint8_t>& b, Config& out, DecodeInfo* info = nullptr) {
+  return decodeConfig(b.data(), b.size(), out, info);
+}
+
+}  // namespace
+
+TEST_CASE("config: a stored web login loads without a repair and is dropped (C-2)") {
+  // C-3: the 2.0.0 blob needs no repair; the keys of the ext blob are defaults.
   Config back;
   DecodeInfo info;
-  CHECK(decodeConfig(golden.data(), golden.size(), back, &info) == DecodeResult::Ok);
+  CHECK(decodeBlob(kGolden, back, &info) == DecodeResult::Ok);
   CHECK(info.repairs.mask == 0);
+  CHECK(info.repairs.count == 0);
   CHECK_FALSE(info.newerSchema);
   CHECK(sameConfig(back, fullConfig()));
+  // Every login the older firmware could store, also a half one it would
+  // have repaired and the longest values: read by their layout, nothing kept.
+  const std::vector<uint8_t> logins[] = {
+      login("", "", 0),
+      login("u", "", 1),
+      login("", "p", 0),
+      login("a:b", "pw", 1),
+      login(std::string(64, 'u'), std::string(64, 'p'), 1),
+  };
+  for (const std::vector<uint8_t>& l : logins) {
+    CAPTURE(l.size());
+    Config o;
+    CHECK(decodeBlob(spliced(kGolden, kStoredLogin, l), o, &info) == DecodeResult::Ok);
+    CHECK(info.repairs.mask == 0);
+    CHECK(sameConfig(o, fullConfig()));
+  }
+}
+
+TEST_CASE("config: a damaged stored web login is structural damage, as in 2.0.0") {
+  // A string of 65 bytes does not fit the 2.0.0 field, a flag above 1 is no
+  // bool, a NUL inside a string is damage: the whole blob is Invalid.
+  const std::vector<uint8_t> damaged[] = {
+      login(std::string(65, 'u'), "p", 0),
+      login("u", std::string(65, 'p'), 0),
+      login("u", "p", 2),
+      login(std::string("u\0v", 3), "p", 0),
+      login("u", std::string("p\0q", 3), 0),
+  };
+  for (const std::vector<uint8_t>& l : damaged) {
+    CAPTURE(l.size());
+    Config o = fullConfig();
+    CHECK(decodeBlob(spliced(kGolden, kStoredLogin, l), o) == DecodeResult::Invalid);
+    CHECK(sameConfig(o, Config{}));
+  }
+}
+
+TEST_CASE("config: the cfg blob keeps the 2.0.0 layout with a neutral web login (C-2)") {
+  // The login is written as user "", password "" and protectRead false at its
+  // 2.0.0 place, so a rollback reads the blob with the login off.
+  const std::vector<uint8_t> neutral = spliced(kGolden, kStoredLogin, {0, 0, 0});
+  CHECK(encode(fullConfig()) == neutral);
+  // The keys added later do not touch it.
+  CHECK(encode(fullConfigExt()) == neutral);
+  // Round trip.
+  Config back;
+  DecodeInfo info;
+  CHECK(decodeBlob(neutral, back, &info) == DecodeResult::Ok);
+  CHECK(info.repairs.mask == 0);
+  CHECK(sameConfig(back, fullConfig()));
+  CHECK(encode(back) == neutral);
+}
+
+TEST_CASE("config: the keys of the removed web login are accepted and ignored") {
+  const Config before = fullConfigExt();
+  const std::string longText(200, 'x');
+  const ConfigValue values[] = {S("admin"), S(""), S("a:b"), S(longText.c_str()),
+                                B(true), B(false), I(7), F(1.5), N()};
+  for (const char* path : {"web.user", "web.password", "web.passwordSet", "web.protectRead"}) {
+    for (const ConfigValue& v : values) {
+      CAPTURE(path);
+      Config c = before;
+      CHECK(set(c, path, v) == SetResult::Ok);
+      CHECK(set(c, path, v, true) == SetResult::Ok);
+      CHECK(sameConfig(c, before));
+    }
+  }
+  // Only a secret had an export flag.
+  Config c = before;
+  CHECK(set(c, "web.userSet", B(true)) == SetResult::UnknownKey);
+  CHECK(set(c, "web.protectReadSet", B(true)) == SetResult::UnknownKey);
+  CHECK(set(c, "web.passwordSett", B(true)) == SetResult::UnknownKey);
+  CHECK(set(c, "web.users", S("a")) == SetResult::UnknownKey);
+  // The web object of an older export (also one with the secrets) imports.
+  std::string path;
+  CHECK(patch(c,
+              "{\"web\":{\"user\":\"admin\",\"passwordSet\":true,\"protectRead\":true,"
+              "\"allowedHosts\":\"heating.lan\"}}",
+              &path) == PatchResult::Ok);
+  CHECK(std::string(c.web.allowedHosts) == "heating.lan");
+  CHECK(patch(c, "{\"web\":{\"user\":\"u\",\"password\":\"pw\"},\"clearSecrets\":true}", &path) ==
+        PatchResult::Ok);
+  Config expect = before;
+  strcpy(expect.web.allowedHosts, "heating.lan");
+  CHECK(sameConfig(c, expect));
+  // They are never exported.
+  const std::string j = exportJson(c);
+  CHECK(j.find("\"web\":{\"allowedHosts\":\"heating.lan\"},\"mqtt\":") != std::string::npos);
+  CHECK(j.find("protectRead") == std::string::npos);
 }
 
 namespace {
@@ -3253,7 +3354,7 @@ TEST_CASE("config: what changes the MQTT topics") {
       {"volt offset", [](Config& c) { c.volts[7].offset = 3.0f; }, false},
       {"volt factor", [](Config& c) { c.volts[7].factor = 3.0f; }, false},
       {"volt unit", [](Config& c) { strcpy(c.volts[7].unit, "A"); }, false},
-      {"web", [](Config& c) { c.web.protectRead = false; }, false},
+      {"web", [](Config& c) { strcpy(c.web.allowedHosts, "h"); }, false},
       {"net", [](Config& c) { c.net.reconnectTimeoutMin = 1; }, false},
       {"calib", [](Config& c) { c.calib.hour = 1; }, false},
       {"persistLog", [](Config& c) { c.persistLog = true; }, false},
@@ -3269,72 +3370,47 @@ TEST_CASE("config: what changes the MQTT topics") {
   }
 }
 
-TEST_CASE("config: JSON export with secrets and the apply members (C-9)") {
+TEST_CASE("config: JSON export without secrets and the apply members (C-9)") {
   Config c;
   strcpy(c.net.wifiPassword, "w\"1");
-  strcpy(c.web.user, "u");
-  strcpy(c.web.password, "pw");
+  strcpy(c.mqtt.password, "pw");
   const std::string flags = exportJson(c);
   CHECK(flags.find("\"wifiPasswordSet\":true") != std::string::npos);
+  CHECK(flags.find("\"user\":\"\",\"passwordSet\":true,\"keepAliveS\":60") != std::string::npos);
   CHECK(flags.find("pw") == std::string::npos);
-  static char buf[8192];
-  JsonWriter jw(buf, sizeof buf);
-  REQUIRE(writeConfigJson(jw, c, SecretMode::Clear));
-  const std::string clear(buf, jw.length());
-  CHECK(clear.find("Set\"") == std::string::npos);
-  CHECK(clear.find("\"ssid\":\"\",\"wifiPassword\":\"w\\\"1\",\"reconnectTimeoutMin\":5") !=
-        std::string::npos);
-  CHECK(clear.find("\"web\":{\"user\":\"u\",\"password\":\"pw\",\"protectRead\":false,") !=
-        std::string::npos);
-  CHECK(clear.find("\"user\":\"\",\"password\":\"\",\"keepAliveS\":60") != std::string::npos);
-  CHECK(clear.compare(clear.size() - 18, 18, "\"persistLog\":true}") == 0);
-  // Golden: the defaults with SecretMode::Clear are the Flags document (golden
-  // above) with the secrets in place of the flags.
-  std::string expect = exportJson(Config{});
-  auto replaceAll = [](std::string& s, const std::string& from, const std::string& to) {
-    for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) {
-      s.replace(at, from.size(), to);
-    }
-  };
-  replaceAll(expect, "\"wifiPasswordSet\":false", "\"wifiPassword\":\"\"");
-  replaceAll(expect, "\"passwordSet\":false", "\"password\":\"\"");
-  JsonWriter jd(buf, sizeof buf);
-  REQUIRE(writeConfigJson(jd, Config{}, SecretMode::Clear));
-  CHECK(std::string(buf, jd.length()) == expect);
-  // A cleartext export posts back to the same config.
-  Config back;
-  std::string path;
-  CHECK(patch(back, clear, &path) == PatchResult::Ok);
-  CHECK(sameConfig(back, c));
+  CHECK(flags.find("w\\\"1") == std::string::npos);
 
+  static char buf[8192];
   auto endsWith = [](const std::string& s, const std::string& t) {
     return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0;
   };
   ApplyInfo apply;
   apply.restartRequired = true;
   JsonWriter ja(buf, sizeof buf);
-  REQUIRE(writeConfigJson(ja, c, SecretMode::Flags, &apply));
+  REQUIRE(writeConfigJson(ja, c, &apply));
   const std::string a(buf, ja.length());
   CHECK(endsWith(a, "\"persistLog\":true,\"restartRequired\":true,\"netTrial\":false}"));
   apply.restartRequired = false;
   apply.netTrial = true;
   JsonWriter jb(buf, sizeof buf);
-  REQUIRE(writeConfigJson(jb, c, SecretMode::Flags, &apply));
+  REQUIRE(writeConfigJson(jb, c, &apply));
   const std::string b(buf, jb.length());
   CHECK(endsWith(b, "\"persistLog\":true,\"restartRequired\":false,\"netTrial\":true}"));
   // The apply members are not config keys.
+  Config back;
+  std::string path;
   CHECK(patch(back, a, &path) == PatchResult::UnknownKey);
   CHECK(path == "restartRequired");
 }
 
 TEST_CASE("config: export and patch round trip with every key") {
   const Config full = fullConfigExt();
-  static char buf[8192];
-  JsonWriter jw(buf, sizeof buf);
-  REQUIRE(writeConfigJson(jw, full, SecretMode::Clear));
+  // The export carries no secret: they are posted along.
+  std::string doc = exportJson(full);
+  doc.insert(1, "\"net\":{\"wifiPassword\":\"secret123\"},\"mqtt\":{\"password\":\"mqpw\"},");
   Config c;
   std::string path;
-  CHECK(patch(c, std::string(buf, jw.length()), &path) == PatchResult::Ok);
+  CHECK(patch(c, doc, &path) == PatchResult::Ok);
   CHECK(path.empty());
   CHECK(sameConfig(c, full));
 }

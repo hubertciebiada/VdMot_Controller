@@ -32,6 +32,7 @@ recovery steps: see INSTALL.md.
   broker is often down get failsafe moves; set `failsafe.timeoutMin` to 0 to
   switch it off.
 - STM: `stdet x` with x != 255 answers `stdet err` (was an empty `stdet`).
+- ESP: no web login: every endpoint answers without credentials (see Removed).
 
 ### Added
 - ESP: failsafe lease (`slhbt`, `slcfg`, `sfspo`, `glcfg`) with the settings
@@ -52,9 +53,8 @@ recovery steps: see INSTALL.md.
   the running STM, board choice in blank mode, `409 board_mismatch` /
   `board_required`), blank-mode completion without a false error, one more
   session at 57600 baud after a failed sync.
-- ESP: `GET /api/health` (public), network trial with
-  `POST /api/system/network/confirm|revert`, config export with passwords
-  (`?secrets=1`, only with web login), file list and delete (`/api/files`),
+- ESP: `GET /api/health`, network trial with
+  `POST /api/system/network/confirm|revert`, file list and delete (`/api/files`),
   legacy import report (`/api/import-report`), `POST /api/valves/{n}/stop`,
   `POST /api/valves/stop`, `POST /api/stm/safe-mode/leave`, `?dryRun=1` and
   `restartRequired`/`netTrial` for `POST /api/config`.
@@ -124,8 +124,7 @@ recovery steps: see INSTALL.md.
 - ESP, HA: `/HADiscovery.cfg` is kept as the list of published topics (legacy
   format), so the legacy "delete discovery" removes the new entities after a
   rollback; every run prunes stale topics.
-- ESP, HTTP: failed logins lock per client address (1, 5, 15 min); 429 with
-  `Retry-After`. Body limit 8 KB. Targets with a fraction are rounded half up.
+- ESP, HTTP: body limit 8 KB. Targets with a fraction are rounded half up.
 - ESP: the event log file is written every 5 min, Warning+ within 10 s.
 - ESP: factory reset by GPIO2 needs **5 s** at boot and works once per fitting of
   the jumper.
@@ -165,6 +164,15 @@ recovery steps: see INSTALL.md.
 - ESP: late sensor replies could complete another request.
 
 ### Removed
+- ESP: the web login: HTTP Basic auth with `web.user`, `web.password` and
+  `web.protectRead`, the per-address lockout (`429`), the `auth` member of
+  `/api/status`, and the export with passwords (`?secrets=1` is ignored: an
+  export never carries a secret). Events `auth_failed` (206) and
+  `auth_locked` (214) are no longer raised; their numbers stay reserved.
+  `POST /api/config` accepts the old keys and ignores them, so an older export
+  still imports; the legacy import ignores `netCfg/userName` and
+  `netCfg/userPwd`. The stored settings keep their layout: a rollback reads
+  the login as off.
 - ESP: `/HADiscovery.cfg` is no longer renamed to `.done`.
 - ESP, HA: the entity `diag_stm_uptime` (replaced by `diag_stm_started`).
 

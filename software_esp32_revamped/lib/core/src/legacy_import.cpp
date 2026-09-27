@@ -39,6 +39,8 @@ struct DroppedKey {
 };
 const DroppedKey kDropped[] = {
     {"sysCfg", "CF"},
+    {"netCfg", "userName"},  // the web login (removed in 2.1.0)
+    {"netCfg", "userPwd"},
     {"protCfg", "brokerInterval"},
     {"protCfg", "brokerMQTO"},
     {"protCfg", "brokerMQToPos"},
@@ -227,8 +229,6 @@ class Importer {
     stringKey("netCfg", "ssid", "net.ssid");
     stringKey("netCfg", "pwd", "net.wifiPassword");
     intKey("netCfg", "netConnTO", "net.reconnectTimeoutMin");
-    stringKey("netCfg", "userName", "web.user");
-    stringKey("netCfg", "userPwd", "web.password");
     stringKey("netCfg", "timeServer", "time.ntpServer");
     int64_t level;
     if (readInt("netCfg", "syslogEnable", level)) {
@@ -555,11 +555,10 @@ class Importer {
       const char* key;
     };
     static const Bit kKeys[] = {
-        {kRepairStaticIp, "netCfg", "dhcp"},         {kRepairWifiPassword, "netCfg", "pwd"},
-        {kRepairWifiIface, "netCfg", "ethwifi"},     {kRepairSyslog, "netCfg", "syslogEnable"},
-        {kRepairWebNoPassword, "netCfg", "userPwd"}, {kRepairWebNoUser, "netCfg", "userName"},
-        {kRepairMqttHost, "protCfg", "brokerIp"},    {kRepairMinDelay, "protCfg", "brokerMD"},
-        {kRepairHaSeparate, "protCfg", "dataProt"},  {kRepairHaDecimal, "protCfg", "brokerMQF"},
+        {kRepairStaticIp, "netCfg", "dhcp"},        {kRepairWifiPassword, "netCfg", "pwd"},
+        {kRepairWifiIface, "netCfg", "ethwifi"},    {kRepairSyslog, "netCfg", "syslogEnable"},
+        {kRepairMqttHost, "protCfg", "brokerIp"},   {kRepairMinDelay, "protCfg", "brokerMD"},
+        {kRepairHaSeparate, "protCfg", "dataProt"}, {kRepairHaDecimal, "protCfg", "brokerMQF"},
     };
     for (const Bit& b : kKeys) {
       if ((r.mask & b.bit) != 0) rejected(b.ns, b.key);

@@ -42,7 +42,7 @@ const GonePath kGone[] = {
     {"/testPO", "removed: messenger"},
     {"/testEmail", "removed: messenger"},
     {"/ssidinfo", "removed: WiFi scan"},
-    {"/auth", "removed: HTTP Basic auth is used"},
+    {"/auth", "removed: web login"},
 };
 
 bool pathIs(const char* path, size_t len, const char* want) {
@@ -64,7 +64,7 @@ void writeTemp(JsonWriter& jw, bool valid, int32_t tenths) {
 
 }  // namespace
 
-LegacyMatch matchLegacyRoute(HttpMethod m, const char* path, size_t len, bool protectRead) {
+LegacyMatch matchLegacyRoute(HttpMethod m, const char* path, size_t len) {
   LegacyMatch r;
   if (path == nullptr) return r;
   struct Alias {
@@ -85,7 +85,6 @@ LegacyMatch matchLegacyRoute(HttpMethod m, const char* path, size_t len, bool pr
       return r;
     }
     r.route = a.route;
-    r.needsAuth = a.route == LegacyRoute::SetValve || protectRead;
     return r;
   }
   for (const GonePath& g : kGone) {
