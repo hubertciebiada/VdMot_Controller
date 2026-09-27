@@ -1,7 +1,6 @@
 #include "net.h"
 
 #include <Arduino.h>
-#include <ESPmDNS.h>
 #include <ETH.h>
 #include <WiFi.h>
 #include <esp_attr.h>
@@ -76,7 +75,6 @@ vdm::NetTrial gTrial;
 vdm::NetConfig gTrialPrev;     // settings before the running trial
 vdm::NetConfig gArmedPrev;     // previous settings of the record armed during this boot
 bool gArmedThisBoot = false;
-bool gMdnsStarted = false;
 uint32_t gSyncSeen = 0;
 bool gTimeSyncedOnce = false;
 int64_t gClockRefEpoch = 0;  // wall clock at the previous service() call
@@ -386,7 +384,7 @@ void publishHealth(uint32_t nowMs) {
 void begin(vdm::Config& cfg) {
   beginTrial(cfg, millis());
   gCfg = cfg;
-  // DHCP/mDNS need a host name; the station name may hold spaces and UTF-8.
+  // DHCP needs a host name; the station name may hold spaces and UTF-8.
   vdm::buildHostname(cfg.station, gHostname, sizeof gHostname);
   gStaticIp = !cfg.net.dhcp;
   gWatchdog.configure(cfg.net.reconnectTimeoutMin);
@@ -411,10 +409,6 @@ void service(uint32_t nowMs, bool mqttConnected) {
 
   const Info i = info();
   const bool up = i.state != vdm::NetState::Down;
-  if (up && !gMdnsStarted) {
-    gMdnsStarted = MDNS.begin(gHostname);
-    if (gMdnsStarted) MDNS.addService("http", "tcp", 80);
-  }
 
   // End-to-end reachability: evidence, gateway probe, Lost/Regained.
   gReach.update(up, i.gateway, nowMs);

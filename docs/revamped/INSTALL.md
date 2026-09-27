@@ -84,7 +84,9 @@ Recommended order: **ESP first, then STM.**
    helps if something is not taken over.
 2. Connect the device by Ethernet. This firmware has no WiFi: a controller
    that is reached over WiFi only has no network after the update (the new
-   image then rolls back after 15 min, step 1.4).
+   image then rolls back after 15 min, step 1.4). It announces no mDNS name
+   either: open the dashboard by its IP address or by a name your local DNS
+   serves.
 3. Expect every valve to calibrate once after the STM update (see step 2).
 4. MQTT: the client id changes to `<host>-<mac6>` (MQTT.md): update broker
    ACLs keyed on the old id first.

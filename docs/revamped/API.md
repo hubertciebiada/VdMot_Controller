@@ -14,7 +14,7 @@ failing check answers:
 
 | Check | Rule | Answer |
 |---|---|---|
-| Host | absent is fine. Port and a trailing `.` are ignored. An IPv4 must be the address the request came in on, the device's IP, or an IPv4 listed in `web.allowedHosts`; a name must be the device's host name (`<name>` or `<name>.local`, case-insensitive) or a name listed in `web.allowedHosts`. IPv6 literals fail | `403 host_not_allowed`, detail `<host>: use <device IP> or add the name to web.allowedHosts` |
+| Host | absent is fine. Port and a trailing `.` are ignored. An IPv4 must be the address the request came in on, the device's IP, or an IPv4 listed in `web.allowedHosts`; a name must be the device's host name (`<name>` or `<name>.local`, case-insensitive; the device announces no mDNS name, so they work when a local DNS serves them) or a name listed in `web.allowedHosts`. IPv6 literals fail | `403 host_not_allowed`, detail `<host>: use <device IP> or add the name to web.allowedHosts` |
 | Origin | absent is fine; `null` fails; `http(s)://<host>` must pass the Host rule | `403 origin_not_allowed` |
 | X-VdMot | every POST and DELETE on `/api/*` (uploads included) needs the header `X-VdMot: 1`. Not needed for GET/HEAD and for `POST /setvalve` | `403 header_required` |
 | Content-Type | a POST with a body that is not an upload must be `application/json`; uploads must be `multipart/form-data` | `415 unsupported_media_type` |

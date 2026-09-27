@@ -44,8 +44,9 @@ struct HostPolicy {
 // Host rule: absent/empty ok. One ":<1..5 digits>" suffix and one trailing
 // '.' are stripped; a dotted IPv4 must equal localIp, ifaceIp or an IPv4
 // entry of `allowed` (address 0 never matches); a name must equal
-// (case-insensitive) hostname, hostname + ".local" or a name entry of
-// `allowed`. Anything else (IPv6 literals included) fails.
+// (case-insensitive) hostname, hostname + ".local" (the device announces no
+// mDNS name, but a local DNS may serve it) or a name entry of `allowed`.
+// Anything else (IPv6 literals included) fails.
 bool hostAllowed(const char* host, size_t len, const HostPolicy& p);
 // Origin rule: "http://" or "https://" (case-insensitive) followed by a
 // non-empty host part without '/' that hostAllowed() accepts. "null" fails.

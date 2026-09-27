@@ -1,6 +1,6 @@
 // Network: Ethernet (LAN8720) only, DHCP or static, hostname = station
-// name, SNTP with the POSIX TZ string, mDNS. Event-driven (the ETH events
-// update the state); service() runs the reconnect policy from the app task.
+// name, SNTP with the POSIX TZ string. Event-driven (the ETH events update
+// the state); service() runs the reconnect policy from the app task.
 #pragma once
 
 #include <stdint.h>
@@ -24,8 +24,8 @@ struct Info {
 // into `cfg` (an interrupted network trial).
 void begin(vdm::Config& cfg);
 
-// App task, every second: state/IP refresh (NetUp/NetDown events), mDNS
-// announce, end-to-end reachability (gateway ping every 60 s, evidence,
+// App task, every second: state/IP refresh (NetUp/NetDown events),
+// end-to-end reachability (gateway ping every 60 s, evidence,
 // NetUnreachable / NetReachable), the network trial, and the NetWatchdog
 // (legacy netConnTO): Ethernet restart after reconnectTimeoutMin, then
 // ota::requestRestart(2) with a wait growing per restart of one outage.

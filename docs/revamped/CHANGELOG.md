@@ -35,6 +35,7 @@ recovery steps: see INSTALL.md.
 - ESP: Ethernet only: WiFi is gone, a controller reached over WiFi only has no
   network after the update (see Removed).
 - ESP: no web login: every endpoint answers without credentials (see Removed).
+- ESP: no mDNS: `<name>.local` resolves only through a local DNS (see Removed).
 
 ### Added
 - ESP: failsafe lease (`slhbt`, `slcfg`, `sfspo`, `glcfg`) with the settings
@@ -166,6 +167,9 @@ recovery steps: see INSTALL.md.
 - ESP: late sensor replies could complete another request.
 
 ### Removed
+- ESP: mDNS (`MDNS.begin`, the `_http._tcp` service): the device is reached by
+  its IP address or a name a local DNS serves; the request guard still
+  accepts `<name>` and `<name>.local`.
 - ESP: WiFi: `net.iface` (the choice auto/Ethernet/WiFi and the WiFi fallback
   after 30 s without Ethernet), `net.ssid`, `net.wifiPassword`, the `wifi`
   state and `rssi` of `/api/status`, and the WiFi part of the network

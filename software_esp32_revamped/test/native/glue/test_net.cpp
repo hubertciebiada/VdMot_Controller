@@ -183,9 +183,8 @@ TEST_CASE("net service: Ethernet with an address is up, NetUp names the address"
   const vdm::Event e = sib::logger().withCode(vdm::EventCode::NetUp).at(0);
   CHECK(e.arg1 == static_cast<int32_t>(vdm::NetState::Ethernet));
   CHECK(std::string(e.text) == "192.168.1.7");
-  REQUIRE(fakes::net().mdnsBegins.size() == 1);
-  CHECK(fakes::net().mdnsBegins[0] == net::hostname());
-  CHECK(fakes::net().mdnsServices == std::vector<std::string>{"http tcp 80"});
+  CHECK(fakes::net().mdnsBegins.empty());  // no mDNS: a local DNS names the device
+  CHECK(fakes::net().mdnsServices.empty());
   fakes::net().fire(ARDUINO_EVENT_ETH_DISCONNECTED);
   net::service(3000, false);
   CHECK_FALSE(net::isUp());

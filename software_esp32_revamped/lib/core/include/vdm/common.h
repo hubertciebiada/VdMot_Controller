@@ -115,7 +115,7 @@ bool isPrintableText(const char* s, size_t len);
 // map them to '_' like the legacy firmware (buildSegment).
 bool isSafeName(const char* s, size_t maxLen, bool allowEmpty);
 
-// Network host name (DHCP, mDNS, syslog) derived from the station name:
+// Network host name (DHCP, syslog) derived from the station name:
 // ASCII letters, digits, '-' and '_' are kept, every run of other bytes
 // (spaces, UTF-8, punctuation) becomes one '-', leading/trailing '-' are
 // dropped, at most cap - 1 chars. "VdMot" when nothing is left. Returns the

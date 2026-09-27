@@ -204,7 +204,7 @@ TEST_CASE("UTF-8 text and the name policy") {
   }
 }
 
-TEST_CASE("buildHostname: a DHCP/mDNS name from the station name") {
+TEST_CASE("buildHostname: a DHCP host name from the station name") {
   const char* const cases[][2] = {
       {"VdMot", "VdMot"},
       {"VdMot_FBH-2", "VdMot_FBH-2"},

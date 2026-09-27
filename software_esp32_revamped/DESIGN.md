@@ -137,7 +137,7 @@ Rules for module implementers:
 | `stm_service` | app-task side of the link: scheduled calibration, desired-target NVS saver, `flushForRestart()` |
 | `mqtt_client` | PubSubClient, LWT, publishing, discovery, inbound commands, regulator state |
 | `web_server` | AsyncWebServer, guard, assets, API, legacy aliases, uploads |
-| `net` | Ethernet (Arduino `ETH`), SNTP/TZ, mDNS, reachability, network watchdog, network trial |
+| `net` | Ethernet (Arduino `ETH`), SNTP/TZ, reachability, network watchdog, network trial |
 | `storage` | NVS `vdmrev`, legacy NVS reader, LittleFS, config load with backup and repair, files |
 | `logger` | event ring, serial mirror, file flush and rotation, syslog |
 | `ota` | ESP OTA upload, rollback validation, restart sequence |
@@ -440,7 +440,7 @@ and written back). JSON `schema` = `kConfigJsonSchema` 2; import accepts 1..2.
 | Key | Type | Range / rule | Default | Legacy source |
 |---|---|---|---|---|
 | `schema` | int | read-only | 2 | - |
-| `station` | string | 1..20 bytes, `isSafeName` (UTF-8 and spaces allowed like legacy; DHCP/mDNS/syslog use `buildHostname`) | `VdMot` | `sysCfg/stName` ("" -> `VdMot` + `mqtt.rootTopic` `VdMotFBH`) |
+| `station` | string | 1..20 bytes, `isSafeName` (UTF-8 and spaces allowed like legacy; DHCP/syslog use `buildHostname`) | `VdMot` | `sysCfg/stName` ("" -> `VdMot` + `mqtt.rootTopic` `VdMotFBH`) |
 | `net.dhcp` | bool | | true | `netCfg/dhcp` |
 | `net.ip` | IPv4 | non-zero when !dhcp | 0.0.0.0 | `netCfg/staticIp` |
 | `net.mask` | IPv4 | contiguous, non-zero when !dhcp | 0.0.0.0 | `netCfg/mask` |
