@@ -135,6 +135,17 @@ recovery steps: see INSTALL.md.
   (static fields under DHCP) no longer restart the ESP.
 - ESP: the imported legacy syslog level 1..3 becomes level 3 (debug).
 - ESP: a static IP without DNS uses the gateway as DNS.
+- ESP: about 28 KB more free heap on the WT32-ETH01, every function kept.
+  Static DRAM 64.3 -> 54.5 KB: the buffers of rare work (MQTT subscriptions,
+  the discovery key, the legacy temps blob, the last_good copy, the HA event
+  types) are built one at a time, borrowed or taken from the heap for the
+  moment. Boot allocations 60.4 -> 48.0 KB: two whole config copies stay
+  instead of seven, the other readers keep their parts or copy the config
+  for the moment of a reload. The gateway ping session (~2.7 KB) exists only
+  while its probe runs. Task stacks after a static analysis of the firmware:
+  stm 6656, app 7168, mqtt 7168, AsyncTCP 8960 B (were 6144, 8192, 8192,
+  10240 B). An open LittleFS file holds 1.4 KB instead of 5 KB (512 B stdio
+  buffer instead of 4 KB).
 
 ### Fixed
 - ESP: 2.1.0-revamped-rc1 did not start on hardware: the working
@@ -146,7 +157,7 @@ recovery steps: see INSTALL.md.
   left, Ethernet dropped received frames, the emac_rx task overflowed its
   stack). The event log RAM ring holds 32 events in the firmware build (the
   file keeps the history), the web server allocates its working set and its
-  response slots in the first request, and AsyncTCP's task stack is 10 KB
+  response slots in the first request, and AsyncTCP's task stack is 8960 B
   instead of 16 KB.
 - ESP: the web server kept these buffers (~58 KB) until the next reboot, so
   one visit of the dashboard left a WT32-ETH01 with 28.9 KB of heap. It gives

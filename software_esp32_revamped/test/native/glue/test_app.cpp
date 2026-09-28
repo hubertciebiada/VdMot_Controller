@@ -53,15 +53,15 @@ TEST_CASE("app setup: tasks of the binding table") {
   const std::vector<fakes::TaskRecord>& t = fakes::rtos().tasks;
   REQUIRE(t.size() == 3);
   CHECK(t[0].name == "stm");
-  CHECK(t[0].stackBytes == 6144);
+  CHECK(t[0].stackBytes == 6656);
   CHECK(t[0].priority == 5);
   CHECK(t[0].core == 1);
   CHECK(t[1].name == "app");
-  CHECK(t[1].stackBytes == 8192);
+  CHECK(t[1].stackBytes == 7168);
   CHECK(t[1].priority == 3);
   CHECK(t[1].core == 1);
   CHECK(t[2].name == "mqtt");
-  CHECK(t[2].stackBytes == 8192);
+  CHECK(t[2].stackBytes == 7168);
   CHECK(t[2].priority == 2);
   CHECK(t[2].core == 1);
 }
@@ -289,12 +289,13 @@ TEST_CASE("app readHealth: our tasks at once, library tasks once found by a reso
   app::readHealth(h);
   REQUIRE(h.taskCount == 3);
   CHECK(std::string(h.tasks[0].name) == "stm");
-  CHECK(h.tasks[0].stackBytes == 6144);
+  CHECK(h.tasks[0].stackBytes == 6656);
   CHECK(h.tasks[0].minFreeBytes == 2100);
   CHECK(std::string(h.tasks[1].name) == "app");
-  CHECK(h.tasks[1].stackBytes == 8192);
+  CHECK(h.tasks[1].stackBytes == 7168);
   CHECK(h.tasks[1].minFreeBytes == 3200);
   CHECK(std::string(h.tasks[2].name) == "mqtt");
+  CHECK(h.tasks[2].stackBytes == 7168);
   CHECK(h.tasks[2].minFreeBytes == 4100);
   r.extraHandles["arduino_events"] = handle(0x9020);
   runAppTask(101);  // one sample after 10 s
@@ -433,7 +434,7 @@ TEST_CASE("app task: a low stack high-water mark is reported once per task") {
   glue::begin();
   app::setup();
   fakes::Rtos& r = fakes::rtos();
-  r.stackHighWater["stm"] = 767;
+  r.stackHighWater["stm"] = 831;  // just below 6656 / 8
   r.stackHighWater["app"] = 5000;
   r.stackHighWater["mqtt"] = 5000;
   r.stackHighWater["async_tcp"] = app::kAsyncTcpStackBytes / 8 - 1;  // just below the threshold
@@ -443,8 +444,8 @@ TEST_CASE("app task: a low stack high-water mark is reported once per task") {
   const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::StackLow);
   REQUIRE(ev.size() == 2);
   CHECK(std::string(ev[0].text) == "stm");
-  CHECK(ev[0].arg1 == 767);
-  CHECK(ev[0].arg2 == 6144);
+  CHECK(ev[0].arg1 == 831);
+  CHECK(ev[0].arg2 == 6656);
   CHECK(std::string(ev[1].text) == "async_tcp");
   CHECK(ev[1].arg1 == static_cast<int32_t>(app::kAsyncTcpStackBytes / 8 - 1));
   CHECK(ev[1].arg2 == static_cast<int32_t>(app::kAsyncTcpStackBytes));

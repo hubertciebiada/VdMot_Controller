@@ -131,7 +131,7 @@ Error codes:
 ```json
 {"ok":true,"version":"2.1.0-revamped","uptime":1234,
  "heap":{"free":142336,"min":118420,"largest":90100,"minLargest":65536},
- "tasks":[{"name":"stm","stack":6144,"minFree":2100},{"name":"app","stack":8192,"minFree":3200}],
+ "tasks":[{"name":"stm","stack":6656,"minFree":2100},{"name":"app","stack":7168,"minFree":3200}],
  "net":{"ip":true,"reachable":true,"proven":true,"pingArmed":true,"evidence":"ping","evidenceAgeS":12,"ifaceRestarts":0,"trial":null},
  "ota":null,
  "log":{"persist":true,"backlog":3,"flushes":12,"lastFlushAgeS":40,"lost":0,"failures":0}}

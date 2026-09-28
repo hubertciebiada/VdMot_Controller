@@ -773,8 +773,8 @@ class Device:
     def health_doc(self):
         return {"ok": True, "version": self.esp_version, "uptime": self.now_up(),
                 "heap": {"free": 142336, "min": 118420, "largest": 90100, "minLargest": 65536},
-                "tasks": [{"name": "stm", "stack": 6144, "minFree": 2100}, {"name": "app", "stack": 8192, "minFree": 3200},
-                          {"name": "mqtt", "stack": 6144, "minFree": 2400}],
+                "tasks": [{"name": "stm", "stack": 6656, "minFree": 2100}, {"name": "app", "stack": 7168, "minFree": 3200},
+                          {"name": "mqtt", "stack": 7168, "minFree": 2400}],
                 "net": {"ip": True, "reachable": True, "proven": True, "pingArmed": True, "evidence": "ping",
                         "evidenceAgeS": 12, "ifaceRestarts": 0,
                         "trial": {"remainS": max(0, int(self.trial["until"] - time.time()))} if self.trial else None},

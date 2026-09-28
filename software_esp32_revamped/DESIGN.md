@@ -146,13 +146,17 @@ Rules for module implementers:
 
 | Task | Created by | Core | Prio | Stack | TWDT | Loop | Runs |
 |---|---|---|---|---|---|---|---|
-| `stm` | app::setup | 1 | 5 | 6144 B | yes | 2 ms (`vTaskDelay(2)`) | commands in, UART RX, parse, link policy, target delivery, planner, lease client, reset gate, UART TX, flasher, health events, snapshot publish, RTC copies of targets and lease |
-| `app` | app::setup | 1 | 3 | 8192 B | yes | 100 ms | config apply, every 1 s: net service + web start, web idle release (`web::service`), OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver), heap guard; every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
-| `mqtt` | app::setup | 1 | 2 | 8192 B | yes | 20 ms connected, 100 ms connecting, 500 ms off | connect/back-off, `loop()`, publishing, discovery (one message per pass), events, inbound commands |
-| `async_tcp` | AsyncTCP lib | 0 | lib default (3) | 10240 B (patched, `app::kAsyncTcpStackBytes`) | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
+| `stm` | app::setup | 1 | 5 | 6656 B | yes | 2 ms (`vTaskDelay(2)`) | commands in, UART RX, parse, link policy, target delivery, planner, lease client, reset gate, UART TX, flasher, health events, snapshot publish, RTC copies of targets and lease |
+| `app` | app::setup | 1 | 3 | 7168 B | yes | 100 ms | config apply, every 1 s: net service + web start, web idle release (`web::service`), OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver), heap guard; every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
+| `mqtt` | app::setup | 1 | 2 | 7168 B | yes | 20 ms connected, 100 ms connecting, 500 ms off | connect/back-off, `loop()`, publishing, discovery (one message per pass), events, inbound commands |
+| `async_tcp` | AsyncTCP lib | 0 | lib default (3) | 8960 B (patched, `app::kAsyncTcpStackBytes`) | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
 | sys event | ESP-IDF | 0 | IDF | IDF | no | event driven | `net` ETH event callback (only sets flags) |
 | `loopTask` | Arduino | 1 | 1 | - | - | - | runs `setup()`, then deletes itself |
 
+- Stack sizes: from a static stack analysis of the ELF, the deepest call
+  chains with LittleFS commits and ESP-IDF error logs through vfprintf
+  included (async_tcp ~7.1 KB); `StackLow` (section 9) reports a task that
+  gets closer than max(512 B, stack / 8).
 - Task watchdog: `esp_task_wdt_init(30 s, panic=true)`; `stm`, `app` and
   `mqtt` subscribe and reset it every loop, `mqtt` also after every publish.
   A missed feed ends in a panic reboot with reason TASK_WDT, reported by the
@@ -650,8 +654,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   28.9 KB free. Every AsyncTCP callback into `web_server` holds a recursive
   mutex while it runs, the release takes it without waiting, and a busy
   slot, a body, an upload or a log download keeps the buffers. AsyncTCP's
-  task stack is 10 KB (`app::kAsyncTcpStackBytes`, patched in by
-  `tools/patch_libs.py`; deepest handler path ~4.3 KB by the ELF, 3.4 KB
+  task stack is 8960 B (`app::kAsyncTcpStackBytes`, patched in by
+  `tools/patch_libs.py`; static worst case ~7.1 KB by the ELF, 3.4 KB
   measured).
 - Heap figures (`/api/health`, `low_heap`, `heap_fragmented`) count the 8-bit
   capable heap, not the IRAM that only 32-bit accesses reach.
@@ -665,9 +669,10 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   written name by name, the legacy import reads the temps blob (1.5 KB) into
   the config blob buffer of storage, and the last_good copy takes its 1 KiB
   chunk buffer from the heap for each pass (a pass without one copies
-  nothing). Our statics above 256 B are long-lived state: the command queue,
-  the MQTT event limiter, inbound queue, button gate, scheduler, calibration
-  tracker and published values, the image index.
+  nothing). Our statics take 9.3 KB of the 54.5 KB static DRAM (the rest is
+  ESP-IDF and the libraries); those above 256 B are long-lived state: the
+  command queue, the MQTT event limiter, inbound queue, button gate,
+  scheduler, calibration tracker and published values, the image index.
 - Every LittleFS file the firmware reads or writes gets a 512 B stdio buffer
   (`storage::kFileBufferSize`, `File::setBufferSize()` right after the open)
   instead of the 4 KB Arduino's VFS takes at its first I/O: an open file

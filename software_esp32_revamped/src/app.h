@@ -27,16 +27,17 @@ struct TaskSpec {
   unsigned priority;
   int core;
 };
-// Binding task table (DESIGN.md). AsyncTCP's own task runs on core 0.
-constexpr TaskSpec kStmTask{"stm", 6144, 5, 1};
-constexpr TaskSpec kAppTask{"app", 8192, 3, 1};
-constexpr TaskSpec kMqttTask{"mqtt", 8192, 2, 1};
+// Binding task table (DESIGN.md). AsyncTCP's own task runs on core 0. The
+// sizes follow a static stack analysis of the ELF: the deepest call chains,
+// LittleFS commits and ESP-IDF error logs through vfprintf included.
+constexpr TaskSpec kStmTask{"stm", 6656, 5, 1};
+constexpr TaskSpec kAppTask{"app", 7168, 3, 1};
+constexpr TaskSpec kMqttTask{"mqtt", 7168, 2, 1};
 // AsyncTCP's task runs every web handler. The library creates it with 16 KB;
-// tools/patch_libs.py reads this value and patches it in. Deepest path found
-// in the ELF (entry frames along direct calls): ~0.5 KB library + ~3.8 KB
-// handler (API request -> auth -> event log -> vsnprintf); 3.4 KB measured
-// at the high-water mark on a WT32-ETH01.
-constexpr uint32_t kAsyncTcpStackBytes = 10240;
+// tools/patch_libs.py reads this value and patches it in. Static worst case
+// by the ELF ~7.1 KB (an earlier ~4.3 KB counted direct calls only); 3.4 KB
+// measured at the high-water mark on a WT32-ETH01.
+constexpr uint32_t kAsyncTcpStackBytes = 8960;
 // Task watchdog: every task above subscribes and must feed it at least this
 // often; the ESP panics (and reboots, reason TASK_WDT) otherwise.
 constexpr uint32_t kTaskWdtTimeoutS = 30;
