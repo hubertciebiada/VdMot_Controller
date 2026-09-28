@@ -10,8 +10,11 @@ the ESP, the tooling and a summary of the STM.
 
 Review release: failsafe, persistence across restarts, rollback-proof Home
 Assistant entities, a hardened HTTP API and many fixes of both firmwares. The
-new ESP needs an STM **1.4.0** or newer. Upgrade order, rollback and the new
-recovery steps: see INSTALL.md.
+ESP runs on Ethernet only, without a web login and mDNS, gives the web
+server's buffers back 30 s after the last request and restarts in a
+controlled way when a leak keeps the heap below 12 KB. The new ESP needs an
+STM **1.4.0** or newer. Upgrade order, rollback and the new recovery steps:
+see INSTALL.md.
 
 ### Changed (breaking)
 - ESP, HTTP API: every POST/DELETE on `/api/*` needs the header `X-VdMot: 1`,
