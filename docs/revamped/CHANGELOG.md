@@ -6,6 +6,22 @@ The STM entries of each release are in
 [software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md); this file lists
 the ESP, the tooling and a summary of the STM.
 
+## [2.1.2-revamped]
+
+Hotfix of 2.1.1 for the ESP: a failed allocation in AsyncTCP no longer
+panics the controller. The STM firmware is unchanged; its image differs
+from 2.1.1 only in the version string and needs no update.
+
+### Fixed
+- ESP: AsyncTCP dereferenced its `lwip_event_packet_t` allocations without
+  a NULL check and panicked under concurrent connections (reproduced: 10
+  parallel GETs rebooted the controller in about 35 s). A failed allocation
+  now drops the event or defers the receive (lwIP delivers the data again)
+  instead of crashing, and the accept path allocates its client with
+  `std::nothrow` and closes the connection instead of calling `abort()`.
+  The guards are patched into the library at build time
+  (`tools/patch_libs.py`).
+
 ## [2.1.1-revamped]
 
 Hotfix of 2.1.0 for the ESP: the web server keeps its buffers again. The STM
