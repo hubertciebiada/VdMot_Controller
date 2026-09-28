@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bound the memory one HTTP request can take in AsyncWebServer_WT32_ETH01,
-and size AsyncTCP's task stack.
+size AsyncTCP's task stack and guard AsyncTCP's event allocations.
 
 The pinned library (1.6.2) keeps request data in Strings without limits:
 a header line grows until a newline arrives, every header and every
@@ -25,6 +25,17 @@ AsyncTCP 1.1.1 creates its task ("async_tcp", every web handler runs there)
 with a fixed 16 KB stack; the script puts in app::kAsyncTcpStackBytes of
 src/app.h (the heap of the WT32-ETH01 needs the difference). A file patched
 with another value fails the build: delete .pio/libdeps to patch it again.
+
+AsyncTCP 1.1.1 also allocates every lwIP event packet with malloc() and
+writes to it without a NULL check, so a failed allocation under memory
+pressure (concurrent connections) panics the lwIP thread. The script guards
+every allocation: an event without heap is dropped (the callback returns
+ERR_OK as if it had queued it), received data without heap is refused with
+ERR_MEM and stays with lwIP, which delivers it again, a FIN without heap
+still closes the pcb in the lwIP thread (the client object is not told and
+stays allocated), and a purge request without heap purges the queue inline.
+The accept path creates the client with new (std::nothrow), so the
+library's own NULL branch (close the pcb) runs instead of abort().
 
 Runs as a PlatformIO post script (lib_deps are installed while the build
 script runs, after the pre scripts; compilation starts after the post
@@ -193,6 +204,74 @@ def async_tcp_edits(stack: int) -> list[tuple[str, str]]:
     )]
 
 
+ASYNC_TCP_ALLOC_MARKER = "VDM-PATCH-ASYNC-TCP-ALLOC v1"
+ASYNC_TCP_ALLOC = "    lwip_event_packet_t * e = (lwip_event_packet_t *)malloc(sizeof(lwip_event_packet_t));\n"
+
+
+def async_tcp_guard(anchor: str, on_null: str, why: str) -> tuple[str, str]:
+    """One lwIP callback: the NULL check follows its malloc, anchor is the line after the malloc."""
+    return (
+        ASYNC_TCP_ALLOC + anchor,
+        ASYNC_TCP_ALLOC + f"    if (!e) {{ {on_null} }}  // {ASYNC_TCP_ALLOC_MARKER}: {why}\n" + anchor,
+    )
+
+
+ASYNC_TCP_ALLOC_EDITS = [
+    (
+        '#include "Arduino.h"\n',
+        '#include "Arduino.h"\n'
+        f"#include <new>  // {ASYNC_TCP_ALLOC_MARKER}: std::nothrow\n",
+    ),
+    # A purge request (_tcp_clear_events) precedes the delete of a client; without
+    # the purge its queued events would reach the freed object, so it runs inline.
+    async_tcp_guard("    e->event = LWIP_TCP_CLEAR;\n",
+                    "_remove_events_with_arg(arg); return ERR_OK;", "no heap, purged inline"),
+    async_tcp_guard("    e->event = LWIP_TCP_CONNECTED;\n", "return ERR_OK;", "no heap, event dropped"),
+    async_tcp_guard("    e->event = LWIP_TCP_POLL;\n", "return ERR_OK;", "no heap, event dropped"),
+    # Data is refused (lwIP keeps it as refused_data and delivers it again, the
+    # window stays closed until then); a FIN closes the pcb in the lwIP thread as
+    # the queued path does below, only the client object is not told.
+    (
+        ASYNC_TCP_ALLOC +
+        "    e->arg = arg;\n"
+        "    if(pb){\n",
+        ASYNC_TCP_ALLOC +
+        f"    if (!e) {{  // {ASYNC_TCP_ALLOC_MARKER}: no heap\n"
+        "        if (!pb) {\n"
+        "            AsyncClient::_s_lwip_fin(arg, pcb, err);  // FIN: close the pcb, the client is not told\n"
+        "            return ERR_OK;\n"
+        "        }\n"
+        "        return ERR_MEM;  // data: lwIP keeps pb and delivers it again\n"
+        "    }\n"
+        "    e->arg = arg;\n"
+        "    if(pb){\n",
+    ),
+    async_tcp_guard("    e->event = LWIP_TCP_SENT;\n", "return ERR_OK;", "no heap, event dropped"),
+    async_tcp_guard("    e->event = LWIP_TCP_ERROR;\n", "return;", "no heap, event dropped"),
+    async_tcp_guard('    //ets_printf("+DNS: name=%s ipaddr=0x%08x arg=%x\\n", name, ipaddr, arg);\n',
+                    "return;", "no heap, event dropped"),
+    async_tcp_guard("    e->event = LWIP_TCP_ACCEPT;\n",
+                    "return ERR_OK;", "no heap, event dropped, the client stays allocated"),
+    (
+        "        AsyncClient *c = new AsyncClient(pcb);\n",
+        f"        AsyncClient *c = new (std::nothrow) AsyncClient(pcb);  // {ASYNC_TCP_ALLOC_MARKER}: NULL, not abort()\n",
+    ),
+]
+
+
+def verify_async_tcp_alloc(path: str) -> None:
+    """Every event allocation is followed by its NULL check and the accept path cannot abort()."""
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        lines = f.read().replace("\r\n", "\n").split("\n")
+    unguarded = [i + 1 for i, line in enumerate(lines)
+                 if "malloc(sizeof(lwip_event_packet_t))" in line
+                 and not (i + 1 < len(lines) and lines[i + 1].lstrip().startswith("if (!e) {"))]
+    if unguarded:
+        raise RuntimeError(f"{path}: event allocation without NULL check at line(s) {unguarded}")
+    if re.search(r"\bnew AsyncClient\(", "\n".join(lines)):
+        raise RuntimeError(f"{path}: new AsyncClient() without std::nothrow")
+
+
 def patch_file(path: str, edits, marker: str = MARKER) -> bool:
     """Returns True when the file was changed. Raises on a missing anchor."""
     with open(path, "r", encoding="utf-8", newline="") as f:
@@ -235,7 +314,10 @@ def patch(libdeps_env_dir: str, project_dir: str) -> list[str]:
     marker = f"{ASYNC_TCP_MARKER} {stack} "
     if ASYNC_TCP_MARKER in text and marker not in text:
         raise RuntimeError(f"{path}: patched with another stack size; delete .pio/libdeps")
-    if patch_file(path, async_tcp_edits(stack), marker):
+    stack_patched = patch_file(path, async_tcp_edits(stack), marker)
+    alloc_patched = patch_file(path, ASYNC_TCP_ALLOC_EDITS, ASYNC_TCP_ALLOC_MARKER)
+    verify_async_tcp_alloc(path)
+    if stack_patched or alloc_patched:
         changed.append(f"{ASYNC_TCP_LIB}/src/AsyncTCP.cpp")
     return changed
 
