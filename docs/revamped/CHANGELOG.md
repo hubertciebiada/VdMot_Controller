@@ -6,6 +6,24 @@ The STM entries of each release are in
 [software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md); this file lists
 the ESP, the tooling and a summary of the STM.
 
+## [2.1.1-revamped]
+
+Hotfix of 2.1.0 for the ESP: the web server keeps its buffers again. The STM
+firmware is unchanged; its image differs from 2.1.0 only in the version
+string and needs no update.
+
+### Changed
+- ESP: the web server keeps its buffers (the handlers' working set, ~34 KB,
+  and the response slots, 12 KB each) from the first request until the next
+  restart, as before 2.1.0. With the other savings of 2.1.0 a WT32-ETH01
+  keeps about 80 KB free after a visit of the dashboard.
+
+### Fixed
+- ESP: a controller on 2.1.0 restarted with a panic 14.5 h after the update,
+  about a minute after a web request. The prime suspect is the release of the
+  web buffers 30 s after the last request, which 2.1.1 withdraws; the cause
+  is not confirmed (no backtrace).
+
 ## [2.1.0-revamped]
 
 Review release: failsafe, persistence across restarts, rollback-proof Home

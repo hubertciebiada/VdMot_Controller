@@ -11,6 +11,10 @@ All notable changes to this project will be documented in this file.
 
 ### Removed
 
+## [2.1.1-revamped]
+No changes: the version follows the ESP hotfix (docs/revamped/CHANGELOG.md).
+An STM on 2.1.0-revamped needs no update.
+
 ## [2.1.0-revamped]
 Unofficial VdMot Revamped release (see docs/revamped). Protocol 3; details in
 PROTOCOL_V2.md. The v1 request and reply bytes are unchanged except `stdet x`
