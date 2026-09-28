@@ -143,6 +143,7 @@ class ListPort : public vdm::DiscoveryPort {
   bool listOpen() override {
     if (!storage::fsReady()) return false;
     read_ = LittleFS.open(kListFile, FILE_READ);
+    read_.setBufferSize(storage::kFileBufferSize);
     return static_cast<bool>(read_);
   }
   int listRead() override { return read_ ? read_.read() : -1; }
@@ -150,6 +151,7 @@ class ListPort : public vdm::DiscoveryPort {
   bool listBegin() override {
     if (!storage::fsReady()) return false;
     write_ = LittleFS.open(kListTmp, FILE_WRITE);
+    write_.setBufferSize(storage::kFileBufferSize);
     return static_cast<bool>(write_);
   }
   bool listWrite(const char* topic) override {

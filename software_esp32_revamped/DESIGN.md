@@ -668,6 +668,12 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   nothing). Our statics above 256 B are long-lived state: the command queue,
   the MQTT event limiter, inbound queue, button gate, scheduler, calibration
   tracker and published values, the image index.
+- Every LittleFS file the firmware reads or writes gets a 512 B stdio buffer
+  (`storage::kFileBufferSize`, `File::setBufferSize()` right after the open)
+  instead of the 4 KB Arduino's VFS takes at its first I/O: an open file
+  holds about 1.4 KB (with the 512 B file cache of LittleFS and the handles)
+  instead of 5 KB. Opens without I/O (directory listings, the check before a
+  delete) get none: stdio allocates no buffer for them.
 - No other per-operation heap: PubSubClient's buffer is set once (2304 B,
   discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;

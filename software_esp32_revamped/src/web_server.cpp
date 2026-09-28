@@ -961,6 +961,7 @@ void handleImportReport(AsyncWebServerRequest* req) {
   if (!storage::hasImportReport()) return sendError(req, 404, "not_found", "no import report");
   fs::File f = LittleFS.open(storage::kImportReportFile, FILE_READ);
   if (!f) return sendError(req, 404, "not_found", "no import report");
+  f.setBufferSize(storage::kFileBufferSize);
   const int slot = acquireSlot();
   if (slot < 0) {
     f.close();
@@ -1008,6 +1009,7 @@ size_t fillLog(uint8_t* buf, size_t maxLen) {
         ++gLog.part;
         continue;
       }
+      gLog.file.setBufferSize(storage::kFileBufferSize);
     }
     const size_t n = gLog.file.read(buf, maxLen);
     if (n > 0) return n;

@@ -300,6 +300,7 @@ bool FileImage::open(const char* name) {
   if (name == nullptr || !imagePath(name, false, path, sizeof path)) return false;
   file_ = LittleFS.open(path, FILE_READ);
   if (!file_) return false;
+  file_.setBufferSize(kFileBufferSize);
   size_ = static_cast<uint32_t>(file_.size());
   pos_ = 0;
   return true;

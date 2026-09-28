@@ -349,6 +349,28 @@ TEST_CASE("littlefs: open modes, parents, rename, remove, capacity") {
   CHECK(names == std::vector<std::string>{"big.bin", "c.txt", "d"});
 }
 
+TEST_CASE("littlefs: a buffer size before the first I/O is recorded, a late one leaves it unbuffered") {
+  glue::begin();
+  REQUIRE(LittleFS.begin(false));
+  File f = LittleFS.open("/a.txt", FILE_WRITE);
+  CHECK(f.setBufferSize(512));
+  CHECK(f.write('x') == 1);
+  f.close();
+  CHECK_FALSE(f.setBufferSize(512));  // closed
+  f = LittleFS.open("/a.txt", FILE_READ);
+  CHECK(f.read() == 'x');
+  CHECK(f.setBufferSize(256));  // after the read: too late
+  f.close();
+  f = LittleFS.open("/a.txt", FILE_READ);
+  CHECK(f.seek(1));  // a seek is I/O as well
+  f.close();
+  File dir = LittleFS.open("/");
+  CHECK_FALSE(dir.setBufferSize(512));
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{"/a.txt", 512}, {"/a.txt", 256}});
+  CHECK(fakes::fs().unbuffered == std::vector<std::string>{"/a.txt", "/a.txt"});
+}
+
 // ---------------------------------------------------------------- UART, GPIO, network, MQTT
 
 TEST_CASE("uart: bytes arrive at their time and a full RX ring drops the rest") {

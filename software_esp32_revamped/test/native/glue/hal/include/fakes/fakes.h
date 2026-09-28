@@ -230,6 +230,10 @@ struct Fs {
   int renames = 0;
   int removes = 0;
   int openHandles = 0;                   // File objects currently open
+  // stdio buffers: every File::setBufferSize() on an open file (path, size), and the files read,
+  // written or sought before one was set (Arduino takes the size right after the open only)
+  std::vector<std::pair<std::string, size_t>> bufferSizes;
+  std::vector<std::string> unbuffered;
   // Called with the path before every write to an open file (another task running meanwhile).
   std::function<void(const std::string& path)> onWrite;
 

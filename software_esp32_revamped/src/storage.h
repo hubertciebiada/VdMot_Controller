@@ -33,6 +33,17 @@ constexpr const char* kKeyFactoryLatch = "frLatch";  // u8 1 = factory reset don
 constexpr const char* kKeyOtaStm = "otaStm";     // u8 1 = STM link up at the ESP OTA upload
 constexpr const char* kKeyHaLayout = "haLayout"; // u8 2 = the 2.1 discovery layout was published
 
+// stdio buffer of every LittleFS file the firmware reads or writes, set with
+// File::setBufferSize() right after the open: Arduino's VFS takes 4 KB (the
+// st_blksize of LittleFS) at the first I/O of each open file otherwise.
+// 512 B is the LittleFS cache (CONFIG_LITTLEFS_CACHE_SIZE), the unit in which
+// it reads and programs the flash anyway, so a larger buffer would save VFS
+// calls only: STM image reads of 256 B blocks take one refill per two blocks,
+// log appends of lines up to 161 B one write per three lines or more, the
+// image upload in HTTP chunks of up to 1460 B goes through in 512 B writes,
+// and the byte reads of the discovery list one read per 512 B.
+constexpr size_t kFileBufferSize = 512;
+
 // LittleFS files of the config backup and the legacy import report.
 constexpr const char* kBackupBase = "/sys/cfg.bak";
 constexpr const char* kBackupExt = "/sys/cfgx.bak";

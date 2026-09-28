@@ -23,6 +23,8 @@ struct FileHandle {
   size_t pos = 0;
   std::vector<std::string> children;  // directories: full paths of the direct children
   size_t next = 0;
+  bool buffered = false;  // setBufferSize() before any I/O
+  bool io = false;        // read, written or sought
   ~FileHandle() {
     if (open) --fs().openHandles;
   }
@@ -52,6 +54,12 @@ bool isDir(const std::string& path) {
 bool nodeExists(const std::string& path) { return path == "/" || g_fs.nodes.count(path) != 0; }
 
 size_t blocksOf(size_t bytes, size_t block) { return bytes == 0 ? 1 : (bytes + block - 1) / block; }
+
+// The first I/O of a file without a buffer size: stdio would take its default buffer.
+void noteIo(FileHandle& h) {
+  if (!h.io && !h.buffered) g_fs.unbuffered.push_back(h.path);
+  h.io = true;
+}
 
 std::vector<std::string> childrenOf(const std::string& dir) {
   std::vector<std::string> out;
@@ -167,6 +175,7 @@ size_t File::write(uint8_t c) { return write(&c, 1); }
 size_t File::write(const uint8_t* buf, size_t size) {
   fakes::Fs& f = fakes::fs();
   if (!h_ || !h_->open || !h_->canWrite || size == 0) return 0;
+  fakes::noteIo(*h_);
   if (f.onWrite) f.onWrite(h_->path);
   if (f.shouldFail("write", h_->path)) return 0;
   std::vector<uint8_t>& data = f.nodes[h_->path].data;
@@ -202,6 +211,7 @@ int File::read() {
 
 int File::peek() {
   if (available() <= 0) return -1;
+  fakes::noteIo(*h_);
   return fakes::fs().nodes[h_->path].data[h_->pos];
 }
 
@@ -210,6 +220,7 @@ void File::flush() {}
 size_t File::read(uint8_t* buf, size_t size) {
   fakes::Fs& f = fakes::fs();
   if (!h_ || !h_->open || !h_->canRead || h_->dir) return 0;
+  fakes::noteIo(*h_);
   if (f.shouldFail("read", h_->path)) return 0;
   auto it = f.nodes.find(h_->path);
   if (it == f.nodes.end()) return 0;
@@ -223,6 +234,7 @@ size_t File::read(uint8_t* buf, size_t size) {
 
 bool File::seek(uint32_t pos, SeekMode mode) {
   if (!h_ || !h_->open || h_->dir) return false;
+  fakes::noteIo(*h_);
   if (fakes::fs().shouldFail("seek", h_->path)) return false;
   const size_t sz = size();
   size_t base = 0;
@@ -240,7 +252,13 @@ size_t File::size() const {
   return it == fakes::fs().nodes.end() ? 0 : it->second.data.size();
 }
 
-bool File::setBufferSize(size_t) { return true; }
+// Like VFSFileImpl::setBufferSize(): false for a directory or a closed file.
+bool File::setBufferSize(size_t size) {
+  if (!h_ || !h_->open || h_->dir) return false;
+  fakes::fs().bufferSizes.emplace_back(h_->path, size);
+  if (!h_->io) h_->buffered = true;
+  return true;
+}
 
 void File::close() {
   if (h_ && h_->open) {

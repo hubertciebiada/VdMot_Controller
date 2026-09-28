@@ -208,6 +208,9 @@ TEST_CASE("storage image upload: the part file becomes the image and is indexed"
   CHECK(fakes::fs().read("/stm/fw.bin") == data);
   CHECK_FALSE(fakes::fs().exists("/stm/fw.bin.part"));
   CHECK_FALSE(storage::imageUploadActive());
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{"/stm/fw.bin.part", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
 }
 
 TEST_CASE("storage image upload: bad names, last_good, busy, too many images") {
@@ -244,6 +247,10 @@ TEST_CASE("storage images: delete, and the last_good copy after a flash") {
   storage::requestLastGoodCopy("fw");
   storage::service();
   CHECK(fakes::fs().read("/stm/last_good.bin") == img);
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes ==
+        Sizes{{"/stm/fw.bin", 512}, {"/stm/last_good.bin.part", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
   storage::ImageEntry e;
   REQUIRE(storage::findImage("last_good", e));
   CHECK(e.size == 3000);
@@ -268,6 +275,9 @@ TEST_CASE("storage FileImage: reads at offsets, refuses reads past the end") {
   img.close();
   CHECK(img.size() == 0);
   CHECK_FALSE(img.open("missing"));
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{"/stm/fw.bin", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
 }
 
 TEST_CASE("storage names: image name rules and paths") {

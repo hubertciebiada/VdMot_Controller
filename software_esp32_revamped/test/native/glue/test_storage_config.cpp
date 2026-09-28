@@ -118,6 +118,10 @@ TEST_CASE("storage load: backup files equal to NVS are not written again") {
   storeBackup(c);
   const Load l = load();
   CHECK(l.src == storage::LoadSource::Stored);
+  // compared with small stdio buffers
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{"/sys/cfg.bak", 512}, {"/sys/cfgx.bak", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
   storage::setActiveConfig(l.cfg);
   const int writes = fakes::fs().writeOpens;
   storage::service();
@@ -270,6 +274,9 @@ TEST_CASE("storage load: an unusable cfg is replaced by the backup, NVS rewritte
   REQUIRE(ev.size() == 1);
   CHECK(ev[0].arg1 == static_cast<int32_t>(vdm::DecodeResult::BadCrc));
   CHECK(sib::logger().events.size() == 1);
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{"/sys/cfg.bak", 512}, {"/sys/cfgx.bak", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
 }
 
 TEST_CASE("storage load: a backup without cfgx.bak restores the base and removes cfgx") {
@@ -462,6 +469,10 @@ TEST_CASE("storage save: both blobs saved, the backup written by service()") {
   storage::service();
   CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(withExt("S"))));
   CHECK(fakes::fs().read("/sys/cfgx.bak") == str(extOf(withExt("S"))));
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes ==
+        Sizes{{"/sys/cfg.bak.tmp", 512}, {"/sys/cfgx.bak.tmp", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
 }
 
 TEST_CASE("storage save: no backup while a network trial runs, written after it") {

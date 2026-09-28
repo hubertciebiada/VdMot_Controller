@@ -262,6 +262,12 @@ TEST_CASE("logger file: the file rotates to events.1.log at 64 KiB") {
   logger::flush();
   CHECK(fakes::fs().read("/log/events.1.log") == old);
   CHECK(logFile() == line);
+  // both opens of the log file got the small stdio buffer before any I/O
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{"/log/events.log", storage::kFileBufferSize},
+                                         {"/log/events.log", storage::kFileBufferSize}});
+  CHECK(fakes::fs().unbuffered.empty());
+  CHECK(storage::kFileBufferSize == 512);
 }
 
 TEST_CASE("logger file: a line that just fits is appended without a rotation") {

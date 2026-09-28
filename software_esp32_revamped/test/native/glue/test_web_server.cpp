@@ -746,6 +746,9 @@ TEST_CASE("WG-14: the import report is streamed and dismissed") {
   CHECK(r.code == 200);
   CHECK(r.contentType == "application/json");
   CHECK(r.body == report);
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes == Sizes{{storage::kImportReportFile, 512}});
+  CHECK(fakes::fs().unbuffered.empty());
   r = fakes::http::perform(apiDel("/api/import-report"));
   CHECK(r.code == 204);
   CHECK(sib::storage().importReportDismissals == 1);
@@ -895,12 +898,18 @@ TEST_CASE("WG-18: every served request reports its client; /api/log flushes firs
   CHECK(sib::net().inboundHttp ==
         std::vector<uint32_t>{0x1401A8C0u, 0x1501A8C0u, 0x1601A8C0u});
   fakes::fs().mounted = true;
+  fakes::fs().put("/log/events.1.log", "#0 old\n");
   fakes::fs().put("/log/events.log", "#1 line\n");
   fakes::http::Exchange log(fakes::http::get("/api/log"));
   CHECK(sib::logger().flushRequests == 1);
   const Response& lr = log.finish();
   CHECK(lr.code == 200);
-  CHECK(lr.body == "#1 line\n");
+  CHECK(lr.body == "#0 old\n#1 line\n");
+  // both files read with small stdio buffers
+  using Sizes = std::vector<std::pair<std::string, size_t>>;
+  CHECK(fakes::fs().bufferSizes ==
+        Sizes{{"/log/events.1.log", 512}, {"/log/events.log", 512}});
+  CHECK(fakes::fs().unbuffered.empty());
 }
 
 // ---------------------------------------------------------------- STM support and v3 routes

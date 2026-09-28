@@ -888,6 +888,14 @@ TEST_CASE("mqtt discovery: a renamed valve loses its old config first (W4-8)") {
   CHECK(list.find("valves_state_New") != std::string::npos);
   CHECK(list.find("valves_state_Old") == std::string::npos);
   CHECK(fakes::mqtt().cleanSession);
+  // the list is read and written with small stdio buffers
+  CHECK(fakes::fs().unbuffered.empty());
+  std::set<std::string> paths;
+  for (const auto& b : fakes::fs().bufferSizes) {
+    CHECK(b.second == storage::kFileBufferSize);
+    paths.insert(b.first);
+  }
+  CHECK(paths == std::set<std::string>{"/HADiscovery.cfg", "/HADiscovery.cfg.tmp"});
 }
 
 TEST_CASE("mqtt discovery: manual runs in mode 1, none automatic (E24-2)") {

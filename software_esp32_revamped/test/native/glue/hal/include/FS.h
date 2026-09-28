@@ -3,7 +3,9 @@
 //   - rename() replaces the target (lfs_rename), remove() of a missing file fails;
 //   - writes stop at the capacity (totalBytes, 4 KiB blocks per file, like LittleFS);
 //   - File::name() is the base name (2.x), openNextFile() lists the direct children;
-//   - fakes::fs().fail(op, path) makes the next operation of that kind on that path fail.
+//   - fakes::fs().fail(op, path) makes the next operation of that kind on that path fail;
+//   - setBufferSize() is recorded (fakes::fs().bufferSizes); a file read, written or sought
+//     before it is listed in fakes::fs().unbuffered.
 #pragma once
 
 #include <stddef.h>

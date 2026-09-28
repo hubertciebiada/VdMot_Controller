@@ -351,6 +351,7 @@ void serviceCopy() {
     }
     gCopy.src = LittleFS.open(src, FILE_READ);
     if (!gCopy.src) return;
+    gCopy.src.setBufferSize(kFileBufferSize);
     if (fsFree() < gCopy.src.size() + 16 * 1024) {
       gCopy.src.close();
       logger::log(vdm::EventCode::StmFlashFailed, vdm::kNoValve, 0, 0, "last_good: no space");
@@ -361,6 +362,7 @@ void serviceCopy() {
       // with the file created
       FsLock lock;
       gCopy.dst = LittleFS.open(part, FILE_WRITE);
+      gCopy.dst.setBufferSize(kFileBufferSize);
       gCopy.running = static_cast<bool>(gCopy.dst);
     }
     if (!gCopy.running) {
@@ -417,6 +419,7 @@ size_t readFile(const char* path, uint8_t* out, size_t cap) {
   if (!LittleFS.exists(path)) return 0;
   fs::File f = LittleFS.open(path, FILE_READ);
   if (!f) return 0;
+  f.setBufferSize(kFileBufferSize);
   const size_t len = f.size();
   const bool ok = len <= cap && f.read(out, len) == len;
   f.close();
@@ -426,6 +429,7 @@ size_t readFile(const char* path, uint8_t* out, size_t cap) {
 bool writeFile(const char* path, const uint8_t* data, size_t len) {
   fs::File f = LittleFS.open(path, FILE_WRITE);
   if (!f) return false;
+  f.setBufferSize(kFileBufferSize);
   const bool ok = f.write(data, len) == len;
   f.close();
   return ok;
@@ -436,6 +440,7 @@ bool sameFile(const char* path, const uint8_t* data, size_t len) {
   if (!LittleFS.exists(path)) return false;
   fs::File f = LittleFS.open(path, FILE_READ);
   if (!f) return false;
+  f.setBufferSize(kFileBufferSize);
   bool same = f.size() == len;
   uint8_t chunk[64];
   for (size_t pos = 0; same && pos < len;) {
@@ -981,6 +986,7 @@ ImageResult imageUploadBegin(const char* name, size_t announcedBytes) {
   if (fsFree() < announcedBytes + kFsReserve) return ImageResult::NoSpace;
   gUpload.file = LittleFS.open(path, FILE_WRITE);
   if (!gUpload.file) return ImageResult::Io;
+  gUpload.file.setBufferSize(kFileBufferSize);
   vdm::copyString(gUpload.name, sizeof gUpload.name, clean);
   gUpload.written = 0;
   gUpload.crc = 0;
@@ -1085,6 +1091,7 @@ bool FileImage::open(const char* name) {
   if (name == nullptr || !imagePath(name, false, path, sizeof path)) return false;
   file_ = LittleFS.open(path, FILE_READ);
   if (!file_) return false;
+  file_.setBufferSize(kFileBufferSize);
   size_ = static_cast<uint32_t>(file_.size());
   pos_ = 0;
   return true;

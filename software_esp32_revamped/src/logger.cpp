@@ -124,6 +124,7 @@ int32_t appendLine(FileSink& s, const char* line, size_t len) {
   if (!s.file) {
     s.file = LittleFS.open(kLogFile, FILE_APPEND);
     if (!s.file) return kStepOpen;
+    s.file.setBufferSize(storage::kFileBufferSize);
   }
   for (;;) {
     const vdm::LogFileStep step =
@@ -137,6 +138,7 @@ int32_t appendLine(FileSink& s, const char* line, size_t len) {
     s.rotationBlocked = !LittleFS.rename(kLogFile, kLogFileOld);
     s.file = LittleFS.open(kLogFile, FILE_APPEND);
     if (!s.file) return kStepRotate;
+    s.file.setBufferSize(storage::kFileBufferSize);
   }
   return s.file.write(reinterpret_cast<const uint8_t*>(line), len) == len ? kStepOk : kStepWrite;
 }
