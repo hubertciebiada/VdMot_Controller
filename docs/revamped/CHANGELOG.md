@@ -6,6 +6,37 @@ The STM entries of each release are in
 [software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md); this file lists
 the ESP, the tooling and a summary of the STM.
 
+## [2.1.3-revamped]
+
+Hotfix of 2.1.2 for the ESP: AsyncTCP no longer panics under concurrent
+connections. The STM firmware is unchanged; its image differs from 2.1.2
+only in the version string and needs no update.
+
+### Fixed
+- ESP: under concurrent connections AsyncTCP 1.1.1 leaked its closed slots
+  (one per connection, given back only on the peer's FIN) and, once all 16
+  were taken, wrote `_closed_slots[-1]` out of bounds: a panic after 16
+  closes from our side (timeouts, aborts), which is about 35 s of 10
+  parallel GETs or hours of normal use (it fits the 2.1.0 crash a minute
+  after a web request). Confirmed on hardware: `esp.resetReason` of the
+  next boot is `panic`. Its event queue also blocked on an unbounded send,
+  a deadlock of the lwIP thread and the async task found in review. The
+  build-time patch (`tools/patch_libs.py`) caps connections at 4 through
+  the listen backlog (a SYN beyond it waits in the peer's TCP instead of
+  being reset), releases the slot on every close path, bounds every send
+  into the event queue to 10 ms and drops the event instead (received
+  data stays with lwIP and is delivered again), and guards the callbacks
+  against a client that is already gone.
+
+### Known limitation
+- ESP: under sustained abnormal concurrent HTTP load (minutes of many
+  parallel clients) a rarer panic in AsyncTCP 1.1.1 remains: on the load
+  test the controller served about 2100 requests in about 3 minutes before
+  it. Normal use (Home Assistant over MQTT, the dashboard's sequential
+  requests) does not trigger it, and the controller restarts on its own
+  in about 4 s. The full fix is a web server on `esp_http_server` instead
+  of AsyncTCP (future work).
+
 ## [2.1.2-revamped]
 
 Hotfix of 2.1.1 for the ESP: a failed allocation in AsyncTCP no longer
