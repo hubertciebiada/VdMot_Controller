@@ -420,6 +420,7 @@ struct Net {
   // ping (esp_ping)
   std::vector<std::unique_ptr<PingSession>> pings;
   esp_err_t pingNewResult = ESP_OK;
+  esp_err_t pingStartResult = ESP_OK;  // esp_ping_start() of a valid session
   std::deque<bool> pingAnswers;  // scripted: true = reply, false = timeout
   bool pingDefault = true;       // when pingAnswers is empty
   uint32_t pingTimeMs = 3;       // reply time (ESP_PING_PROF_TIMEGAP)

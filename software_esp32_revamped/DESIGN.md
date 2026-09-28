@@ -637,7 +637,9 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   buffer (2 KB) and the published valve states (1.6 KB) of `mqtt`; and the
   event ring 32 x 48 B (`logger::begin`). The 2.5 KB copies of a config
   reload (`app`, `stm_link`, `mqtt`) and of a network trial revert (`net`)
-  live on the heap only for that moment.
+  live on the heap only for that moment, the session of a gateway probe (a
+  task with 2 KB stack and a socket, about 2.7 KB) for a second or two per
+  minute (section 16).
 - Web server: its working set (~34 KB in 15 blocks, the largest the 8 KB
   POST body buffer: snapshot, status and config copies, views, the health
   text) and the response slots 2 x 12 KB get their buffers in the first
@@ -1035,7 +1037,12 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   (probe every 60 s), the MQTT session, an SNTP sync, an HTTP request from a
   LAN peer, a DHCP lease. The staleness check (150 s without evidence) is
   armed only by a ping reply, so a gateway without ICMP keeps the IP-only
-  behaviour. Events 210/211.
+  behaviour. Events 210/211. Each probe gets an `esp_ping` session of its
+  own, whose task (2 KB stack) and socket exist only while it runs: its
+  reply or timeout callback marks the end, the app task deletes the session
+  in the next `net::service()` (never the ping task itself; a session
+  without a report goes after 10 s), and a probe that falls due meanwhile
+  waits for that.
 - Network watchdog (`NetWatchdog`, legacy `netConnTO`): `reconnectTimeoutMin`
   minutes (default 5) without reachability -> restart Ethernet (event 212,
   once per outage); after another `reconnectTimeoutMin` ×

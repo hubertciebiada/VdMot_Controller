@@ -379,6 +379,42 @@ TEST_CASE("network: events reach the registered callbacks") {
   CHECK(static_cast<uint32_t>(ETH.localIP()) == 0x0701A8C0u);
 }
 
+namespace {
+int g_pingSuccess = 0;
+int g_pingTimeout = 0;
+int g_pingEnd = 0;
+}  // namespace
+
+TEST_CASE("network: a ping session answers only while started, pingStartResult refuses a start") {
+  glue::begin();
+  esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+  cfg.count = 1;
+  esp_ping_callbacks_t cbs = {};
+  cbs.on_ping_success = [](esp_ping_handle_t, void*) { ++g_pingSuccess; };
+  cbs.on_ping_timeout = [](esp_ping_handle_t, void*) { ++g_pingTimeout; };
+  cbs.on_ping_end = [](esp_ping_handle_t, void*) { ++g_pingEnd; };
+  esp_ping_handle_t h = nullptr;
+  REQUIRE(esp_ping_new_session(&cfg, &cbs, &h) == ESP_OK);
+  fakes::net().pingStep();  // not started: no answer
+  CHECK(g_pingSuccess + g_pingTimeout == 0);
+  fakes::net().pingStartResult = ESP_FAIL;
+  CHECK(esp_ping_start(h) == ESP_FAIL);
+  fakes::net().pingStep();
+  CHECK(g_pingSuccess + g_pingTimeout == 0);
+  fakes::net().pingStartResult = ESP_OK;
+  fakes::net().pingAnswers = {false};
+  CHECK(esp_ping_start(h) == ESP_OK);
+  fakes::net().pingStep();
+  CHECK(g_pingTimeout == 1);
+  CHECK(g_pingEnd == 1);
+  fakes::net().pingStep();  // the batch of one echo is over
+  CHECK(g_pingTimeout == 1);
+  CHECK(esp_ping_delete_session(h) == ESP_OK);
+  CHECK(esp_ping_start(h) == ESP_ERR_INVALID_ARG);
+  CHECK(fakes::journalOf("ping.") ==
+        std::vector<std::string>{"ping.new 0.0.0.0", "ping.start", "ping.delete"});
+}
+
 TEST_CASE("mqtt: publish needs a session and room in the buffer, loop delivers one message") {
   glue::begin();
   WiFiClient net;

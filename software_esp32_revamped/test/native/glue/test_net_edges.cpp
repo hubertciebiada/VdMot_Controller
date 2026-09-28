@@ -296,6 +296,104 @@ TEST_CASE("net reachability: a new gateway gets a new ping session") {
   CHECK(fakes::find("ping.delete") < fakes::find("ping.new 192.168.1.254"));
 }
 
+TEST_CASE("net reachability: a probe due while the previous one runs waits for its report") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  ethernetUp(kIp, kGw);
+  fakes::setMs(1000);
+  net::service(1000, false);  // the probe is sent, the ping task has not answered yet
+  REQUIRE(fakes::net().pings.size() == 1);
+  const uint32_t gw2 = IPAddress(192, 168, 1, 254);
+  fakes::net().ethGateway = gw2;
+  fakes::net().fire(ARDUINO_EVENT_ETH_GOT_IP);  // the new gateway makes the next probe due
+  fakes::setMs(2000);
+  net::service(2000, false);
+  CHECK(fakes::net().pings.size() == 1);  // no second session while the first one runs
+  CHECK_FALSE(fakes::net().pings[0]->deleted);
+  fakes::net().pingStep();  // the reply of the first probe
+  tick(3000);
+  REQUIRE(fakes::net().pings.size() == 2);
+  CHECK(fakes::net().pings[0]->deleted);
+  CHECK(fakes::net().pings[1]->config.target_addr.u_addr.ip4.addr == gw2);
+  CHECK(fakes::find("ping.delete") < fakes::find("ping.new 192.168.1.254"));
+  CHECK(net::health(3000).evidence == vdm::NetEvidence::GatewayPing);  // the old reply counts
+}
+
+TEST_CASE("net reachability: a probe that times out goes in the next pass, like one with a reply") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  ethernetUp(kIp, kGw);
+  fakes::net().pingAnswers = {false};
+  tick(1000);  // the probe times out
+  REQUIRE(fakes::net().pings.size() == 1);
+  CHECK_FALSE(fakes::net().pings[0]->deleted);
+  tick(2000);
+  CHECK(fakes::net().pings[0]->deleted);
+  CHECK(net::health(2000).evidence == vdm::NetEvidence::DhcpLease);  // a timeout is no evidence
+}
+
+TEST_CASE("net reachability: a session without a report is dropped after 10 s") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  ethernetUp(kIp, kGw);
+  for (uint32_t t = 1000; t <= 10000; t += 1000) {  // the ping task never reports
+    fakes::setMs(t);
+    net::service(t, false);
+  }
+  fakes::setMs(10999);
+  net::service(10999, false);
+  REQUIRE(fakes::net().pings.size() == 1);
+  CHECK_FALSE(fakes::net().pings[0]->deleted);
+  fakes::setMs(11000);
+  net::service(11000, false);
+  CHECK(fakes::net().pings[0]->deleted);
+  tick(60000);
+  CHECK(fakes::net().pings.size() == 1);  // the next probe keeps its cadence
+  tick(61000);
+  CHECK(fakes::net().pings.size() == 2);
+}
+
+TEST_CASE("net reachability: a session that does not start goes at once, the next probe tries again") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  ethernetUp(kIp, kGw);
+  fakes::net().pingStartResult = ESP_FAIL;
+  tick(1000);
+  REQUIRE(fakes::net().pings.size() == 1);
+  CHECK(fakes::net().pings[0]->deleted);
+  CHECK(fakes::journalOf("ping.") == std::vector<std::string>{"ping.new 192.168.1.1", "ping.delete"});
+  tick(2000);
+  CHECK(fakes::net().pings.size() == 1);  // the failed probe counts as sent
+  fakes::net().pingStartResult = ESP_OK;
+  tick(61000);
+  REQUIRE(fakes::net().pings.size() == 2);
+  tick(62000);
+  CHECK(net::health(62000).evidence == vdm::NetEvidence::GatewayPing);
+  CHECK(fakes::net().pings[1]->deleted);
+}
+
+TEST_CASE("net reachability: a session that cannot be created is tried again at the next probe") {
+  glue::begin();
+  vdm::Config c = config();
+  net::begin(c);
+  ethernetUp(kIp, kGw);
+  fakes::net().pingNewResult = ESP_ERR_NO_MEM;
+  tick(1000);
+  tick(2000);
+  CHECK(fakes::net().pings.empty());
+  fakes::net().pingNewResult = ESP_OK;
+  tick(60000);
+  CHECK(fakes::net().pings.empty());
+  tick(61000);
+  REQUIRE(fakes::net().pings.size() == 1);
+  tick(62000);
+  CHECK(net::health(62000).evidence == vdm::NetEvidence::GatewayPing);
+}
+
 TEST_CASE("net reachability: the evidence age in whole seconds") {
   glue::begin();
   vdm::Config c = config();

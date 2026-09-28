@@ -414,6 +414,7 @@ esp_err_t esp_ping_delete_session(esp_ping_handle_t hdl) {
 esp_err_t esp_ping_start(esp_ping_handle_t hdl) {
   fakes::PingSession* s = fakes::sessionOf(hdl);
   if (s == nullptr || s->deleted) return ESP_ERR_INVALID_ARG;
+  if (fakes::net().pingStartResult != ESP_OK) return fakes::net().pingStartResult;
   s->started = true;
   s->stopped = false;
   s->ended = false;

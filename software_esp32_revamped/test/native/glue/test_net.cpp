@@ -269,8 +269,13 @@ TEST_CASE("net reachability: a static address is not proven by its GOT_IP, the g
   CHECK(h.pingArmed);
   CHECK(h.evidence == vdm::NetEvidence::GatewayPing);
   CHECK(net::otaNetOk());
-  CHECK(fakes::net().pings.size() == 1);  // one session, restarted per probe
-  CHECK(fakes::journalOf("ping.start").size() == 2);
+  // A session per probe, deleted by the pass after its report.
+  REQUIRE(fakes::net().pings.size() == 2);
+  CHECK(fakes::net().pings[0]->deleted);
+  CHECK(fakes::net().pings[1]->deleted);
+  CHECK(fakes::journalOf("ping.") ==
+        std::vector<std::string>{"ping.new 192.168.1.1", "ping.start", "ping.delete",
+                                 "ping.new 192.168.1.1", "ping.start", "ping.delete"});
 }
 
 TEST_CASE("net watchdog: gateway silent -> unreachable, interface restart, ESP restart") {

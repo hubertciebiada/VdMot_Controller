@@ -31,6 +31,9 @@ namespace {
 
 constexpr int64_t kMinValidEpoch = 1577836800;  // 2020-01-01: before that SNTP has not run
 constexpr uint32_t kLoopbackNet = 127;          // 127.x.x.x (first octet in the low byte)
+// A probe reports within 1 s (the reply or the timeout); a session that has not
+// reported by then is dropped, so a lost report cannot stop the probes.
+constexpr uint32_t kPingSessionMaxMs = 10000;
 
 // NetWatchdog restarts of the outage in progress, kept across software
 // restarts (RTC slow memory is not cleared by esp_restart() or a panic;
@@ -59,6 +62,7 @@ volatile uint32_t gSyncCount = 0;
 volatile uint32_t gLastSyncEpoch = 0;
 volatile uint32_t gGotIpCount = 0;
 volatile uint32_t gPingReplies = 0;
+volatile bool gPingDone = false;  // the probe of gPing reported (reply or timeout)
 volatile uint32_t gInboundCount = 0;
 volatile bool gConfirmRequest = false;
 volatile bool gRevertRequest = false;
@@ -86,8 +90,8 @@ uint32_t gClockRefMs = 0;
 uint32_t gGotIpSeen = 0;
 uint32_t gPingSeen = 0;
 uint32_t gInboundSeen = 0;
-esp_ping_handle_t gPing = nullptr;
-uint32_t gPingTarget = 0;
+esp_ping_handle_t gPing = nullptr;  // the session of the probe in flight
+uint32_t gPingStartMs = 0;
 // Hostname buffer: the ETH driver keeps the pointer until DHCP runs.
 char gHostname[vdm::kStationNameMax + 1] = "VdMot";
 
@@ -96,7 +100,12 @@ void onTimeSync(struct timeval* tv) {
   gSyncCount = gSyncCount + 1;
 }
 
-void onPingSuccess(esp_ping_handle_t, void*) { gPingReplies = gPingReplies + 1; }
+void onPingSuccess(esp_ping_handle_t, void*) {
+  gPingReplies = gPingReplies + 1;
+  gPingDone = true;
+}
+
+void onPingTimeout(esp_ping_handle_t, void*) { gPingDone = true; }
 
 bool ethUp() { return gEthLink && (gEthIp || gStaticIp); }
 
@@ -202,31 +211,45 @@ bool checkTimeSync(uint32_t nowMs) {
   return synced;
 }
 
-// One ICMP echo to the gateway (esp_ping, own task); the reply counts as
-// evidence in a later service() call. A session that cannot start is tried
-// again at the next probe.
-void probeGateway(uint32_t gateway) {
-  if (gPing != nullptr && gPingTarget != gateway) {
+// The session of a probe that reported goes: a session owns a task (2 KB of
+// stack) and a socket, needed only while its probe runs. The app task deletes
+// it, never the ping task; esp_ping_delete_session() only marks it, and the
+// ping task frees itself within a second.
+void endProbe(uint32_t nowMs) {
+  if (gPing == nullptr) return;
+  if (!gPingDone && vdm::elapsedMs(nowMs, gPingStartMs) < kPingSessionMaxMs) return;
+  esp_ping_delete_session(gPing);
+  gPing = nullptr;
+}
+
+// One ICMP echo to the gateway in a session of its own (esp_ping, own task);
+// the reply counts as evidence in a later service() call. False while the
+// previous probe still runs: the probe stays due. A session that cannot
+// start is tried again at the next probe.
+bool probeGateway(uint32_t gateway, uint32_t nowMs) {
+  if (gPing != nullptr) return false;
+  esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+  cfg.count = 1;
+  cfg.timeout_ms = 1000;
+  cfg.interval_ms = 1000;
+  cfg.data_size = 32;
+  cfg.target_addr.u_addr.ip4.addr = gateway;  // same byte order as the legacy uint32
+  cfg.target_addr.type = IPADDR_TYPE_V4;
+  esp_ping_callbacks_t cbs = {};
+  cbs.on_ping_success = onPingSuccess;
+  cbs.on_ping_timeout = onPingTimeout;
+  gPingDone = false;
+  if (esp_ping_new_session(&cfg, &cbs, &gPing) != ESP_OK) {
+    gPing = nullptr;
+    return true;
+  }
+  if (esp_ping_start(gPing) != ESP_OK) {
     esp_ping_delete_session(gPing);
     gPing = nullptr;
+    return true;
   }
-  if (gPing == nullptr) {
-    esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
-    cfg.count = 1;
-    cfg.timeout_ms = 1000;
-    cfg.interval_ms = 1000;
-    cfg.data_size = 32;
-    cfg.target_addr.u_addr.ip4.addr = gateway;  // same byte order as the legacy uint32
-    cfg.target_addr.type = IPADDR_TYPE_V4;
-    esp_ping_callbacks_t cbs = {};
-    cbs.on_ping_success = onPingSuccess;
-    if (esp_ping_new_session(&cfg, &cbs, &gPing) != ESP_OK) {
-      gPing = nullptr;
-      return;
-    }
-    gPingTarget = gateway;
-  }
-  esp_ping_start(gPing);
+  gPingStartMs = nowMs;
+  return true;
 }
 
 // Watchdog stage 1: restart Ethernet. False while the driver handle is not
@@ -440,10 +463,8 @@ void service(uint32_t nowMs, bool mqttConnected) {
   // End-to-end reachability: evidence, gateway probe, Lost/Regained.
   gReach.update(up, i.gateway, nowMs);
   noteEvidence(nowMs, mqttConnected, synced);
-  if (gReach.probeDue(nowMs)) {
-    probeGateway(i.gateway);
-    gReach.onProbeSent(nowMs);
-  }
+  endProbe(nowMs);
+  if (gReach.probeDue(nowMs) && probeGateway(i.gateway, nowMs)) gReach.onProbeSent(nowMs);
   reportReachability(nowMs);
 
   serviceTrial(nowMs, up);
