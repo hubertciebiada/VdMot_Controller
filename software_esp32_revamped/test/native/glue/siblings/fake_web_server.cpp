@@ -13,9 +13,4 @@ void begin() {
 
 bool started() { return sib::web().started; }
 
-void service(uint32_t nowMs) {
-  sib::web().services.push_back(nowMs);
-  fakes::note("web.service " + std::to_string(nowMs));
-}
-
 }  // namespace web

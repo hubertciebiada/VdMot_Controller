@@ -9,8 +9,6 @@
 #include <algorithm>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
 #include <new>
 #include <sdkconfig.h>
 #include <string.h>
@@ -36,10 +34,9 @@ namespace web {
 
 namespace {
 
-// Handlers, body/upload callbacks and disconnect callbacks run in the AsyncTCP
-// task; only the idle release (service()) runs in the app task, and it frees
-// buffers only while it holds gLock, which every callback holds while it
-// runs. So the statics need no other locking.
+// Everything below is only touched by the AsyncTCP task (all handlers,
+// body/upload callbacks and disconnect callbacks run there), so the statics
+// need no locking among themselves.
 
 constexpr const char* kJson = "application/json";
 constexpr uint32_t kSensorStaleMs = 60000;
@@ -50,32 +47,6 @@ constexpr size_t kHealthBufSize = 1024;
 AsyncWebServer gServer(80);
 bool gStarted = false;
 
-// Idle release. Every callback of the library into this file (handlers,
-// body/upload data, disconnects, the log filler) holds gLock while it runs
-// and marks the activity; service() takes gLock without waiting (a callback
-// holding it is activity anyway), so it never frees what a callback uses.
-// What outlives its callback keeps the buffers (idle()): a busy slot, which
-// the library reads until the disconnect, the body being collected, an
-// upload, a log download. A request waiting between two callbacks holds
-// nothing else: its next callback allocates what it needs again
-// (refreshConfig(), allocWork(), acquireSlot()). Recursive: the library calls
-// the log filler from inside send(), i.e. inside handleLog().
-StaticSemaphore_t gLockStorage;
-SemaphoreHandle_t gLock = nullptr;
-bool gActive = false;        // a callback ran since service() looked (under gLock)
-uint32_t gLastActiveMs = 0;  // app task: when service() last saw activity
-
-class Lock {
- public:
-  Lock() {
-    xSemaphoreTakeRecursive(gLock, portMAX_DELAY);
-    gActive = true;
-  }
-  ~Lock() { xSemaphoreGiveRecursive(gLock); }
-  Lock(const Lock&) = delete;
-  Lock& operator=(const Lock&) = delete;
-};
-
 struct Slot {
   char* buf;
   bool busy;
@@ -83,9 +54,9 @@ struct Slot {
 Slot gSlots[kResponseSlots];
 
 // Working set of the request handlers, about 34 KB. Each part gets its buffer
-// in the first request after a release (refreshConfig()); service() frees
-// them with the slot buffers after kIdleReleaseMs idle (web_server.h).
-// Separate allocations, none larger than the body buffer.
+// in the first request (refreshConfig()) and keeps it, like the response slots
+// (web_server.h): without a web client the heap keeps these bytes. Separate
+// allocations, none larger than the body buffer.
 using BodyBuf = ObjArray<char, kMaxBodySize + 1>;  // JSON body, one at a time
 using ValveViews = ObjArray<vdm::ValveView, vdm::kValveCount>;
 using TempViews = ObjArray<vdm::SensorView, 2 * vdm::kTempSlotCount>;  // slots + unconfigured
@@ -115,12 +86,6 @@ template <typename T>
 bool allocOnce(T*& p) {
   if (p == nullptr) p = new (std::nothrow) T();
   return p != nullptr;
-}
-
-template <typename T>
-void release(T*& p) {
-  delete p;
-  p = nullptr;
 }
 
 // Every part, or false: the request is answered 503.
@@ -184,43 +149,8 @@ uint32_t gCfgRevision = UINT32_MAX;
 vdm::RepeatLimiter gRefusedLimiter;  // RequestRefused once per verdict per 60 s
 char gHostname[vdm::kStationNameMax + 1] = {};   // buildHostname(gCfgPtr->station)
 
-// Nothing in flight holds a buffer: no busy slot, no body, upload or log
-// download.
-bool idle() {
-  for (const Slot& s : gSlots) {
-    if (s.busy) return false;
-  }
-  return gBodyOwner == nullptr && gUpload.owner == nullptr && gLog.owner == nullptr;
-}
-
-// Every web buffer back to the heap; the next request allocates the working
-// set again and reloads the config into it.
-void releaseWork() {
-  release(gBodyBuf);
-  release(gSnapPtr);
-  release(gCfgPtr);
-  release(gPatchPtr);
-  release(gDocPtr);
-  release(gValveViewsPtr);
-  release(gTempViewsPtr);
-  release(gVoltViewsPtr);
-  release(gEventsPtr);
-  release(gImagesPtr);
-  release(gFilesPtr);
-  release(gHealthPtr);
-  release(gStatusPtr);
-  release(gHealthBufPtr);
-  release(gGuardDetailPtr);
-  for (Slot& s : gSlots) {
-    delete[] s.buf;
-    s.buf = nullptr;
-  }
-  gCfgRevision = UINT32_MAX;
-}
-
-// First step of every request (GuardHandler::canHandle -> refusal()) and of
-// every callback that may follow an idle release: the working set, then the
-// config. false: no memory for the working set.
+// First step of every request (GuardHandler::canHandle -> refusal()): the
+// working set, then the config. false: no memory for the working set.
 bool refreshConfig() {
   if (!allocWork()) return false;
   const uint32_t rev = storage::configRevision();
@@ -241,7 +171,7 @@ int acquireSlot() {
   for (size_t i = 0; i < kResponseSlots; ++i) {
     Slot& s = gSlots[i];
     if (s.busy) continue;
-    // First use since the start or the last idle release (web_server.h).
+    // First use: the buffer is kept from now on (web_server.h).
     if (s.buf == nullptr) s.buf = new (std::nothrow) char[kResponseSlotSize];
     if (s.buf == nullptr) continue;
     s.busy = true;
@@ -267,10 +197,7 @@ void sendSlot(AsyncWebServerRequest* req, int code, int slot, size_t len,
   }
   res->addHeader("Cache-Control", "no-store");
   if (attachment != nullptr) res->addHeader("Content-Disposition", attachment);
-  req->onDisconnect([slot]() {
-    Lock lock;
-    releaseSlot(slot);
-  });
+  req->onDisconnect([slot]() { releaseSlot(slot); });
   req->send(res);
 }
 
@@ -306,10 +233,7 @@ void clearMark(AsyncWebServerRequest* req) {
 
 // Only for a request that owns nothing else (its onDisconnect is free).
 void mark(AsyncWebServerRequest* req, uint16_t code, const char* error) {
-  req->onDisconnect([req]() {
-    Lock lock;
-    clearMark(req);
-  });
+  req->onDisconnect([req]() { clearMark(req); });
   for (Mark& m : gMarks) {
     if (m.req == nullptr || m.req == req) {
       m = Mark{req, code, error};
@@ -482,14 +406,12 @@ void keepGuardHeaders(AsyncWebServerRequest* req) {
 class GuardHandler : public AsyncWebHandler {
  public:
   bool canHandle(AsyncWebServerRequest* req) override {
-    Lock lock;
     Refusal r;
     if (!refusal(req, r)) return false;
     keepGuardHeaders(req);
     return true;
   }
   void handleRequest(AsyncWebServerRequest* req) override {
-    Lock lock;
     net::noteInboundHttp(remoteIp(req));
     Refusal r;
     if (!refusal(req, r)) return sendError(req, 503, "retry", "state changed");
@@ -985,8 +907,8 @@ void handleHealth(AsyncWebServerRequest* req) {
   vdm::JsonWriter jw(gHealthBufPtr->data(), kHealthBufSize);
   if (!vdm::writeHealthJson(jw, *gHealthPtr)) return sendError(req, 500, "internal", "health");
   // A copy: with a const char* the library keeps the pointer and reads the
-  // buffer until the response is sent, which holds no slot, so an idle
-  // release could free the buffer under it.
+  // buffer until the response is sent, which holds no slot, so the next
+  // health request could overwrite the text under it.
   AsyncWebServerResponse* res = req->beginResponse(200, kJson, String(gHealthBufPtr->data()));
   if (res == nullptr) return req->send(500);
   res->addHeader("Cache-Control", "no-store");
@@ -1026,17 +948,14 @@ void handleLog(AsyncWebServerRequest* req) {
   gLog.owner = req;
   gLog.part = 0;
   AsyncWebServerResponse* res = req->beginChunkedResponse(
-      "text/plain; charset=utf-8", [](uint8_t* buf, size_t maxLen, size_t) -> size_t {
-        Lock lock;
-        return fillLog(buf, maxLen);
-      });
+      "text/plain; charset=utf-8",
+      [](uint8_t* buf, size_t maxLen, size_t) -> size_t { return fillLog(buf, maxLen); });
   if (res == nullptr) {
     closeLogStream();
     return sendError(req, 500, "internal", "log");
   }
   res->addHeader("Content-Disposition", "attachment; filename=\"vdmot-events.log\"");
   req->onDisconnect([req]() {
-    Lock lock;
     if (gLog.owner == req) closeLogStream();
   });
   req->send(res);
@@ -1500,7 +1419,6 @@ void beginUpload(AsyncWebServerRequest* req, UploadKind kind, const String& file
   clearMark(req);
   // Client gone before the request completed: abort and free the state.
   req->onDisconnect([req]() {
-    Lock lock;
     if (gUpload.owner != req) return;
     failUpload(499, "client disconnected");
     resetUpload();
@@ -1522,12 +1440,7 @@ void beginUpload(AsyncWebServerRequest* req, UploadKind kind, const String& file
 
 void onUpload(AsyncWebServerRequest* req, const String& filename, size_t index, uint8_t* data,
               size_t len, bool final) {
-  // Fails only after an idle release (a running upload keeps the working
-  // set), before this request owns anything.
-  if (!refreshConfig()) {
-    if (index == 0) mark(req, 503, "busy");
-    return;
-  }
+  refreshConfig();
   const vdm::RouteMatch m = route(req);
   const UploadKind kind = m.route == vdm::ApiRoute::StmImageUpload ? UploadKind::StmImage
                           : m.route == vdm::ApiRoute::EspOta       ? UploadKind::EspOta
@@ -1696,7 +1609,6 @@ void handleNonApi(AsyncWebServerRequest* req, bool hasBody) {
 class ApiHandler : public AsyncWebHandler {
  public:
   bool canHandle(AsyncWebServerRequest* req) override {
-    Lock lock;
     req->addInterestingHeader("Origin");
     req->addInterestingHeader("X-VdMot");
     req->addInterestingHeader("If-None-Match");
@@ -1706,9 +1618,8 @@ class ApiHandler : public AsyncWebHandler {
   }
 
   void handleRequest(AsyncWebServerRequest* req) override {
-    Lock lock;
     net::noteInboundHttp(remoteIp(req));
-    if (!refreshConfig()) {  // an idle release since the guard allocated at the headers
+    if (!refreshConfig()) {  // the guard answers first; kept for safety
       if (gBodyOwner == req) gBodyOwner = nullptr;
       return sendError(req, 503, "busy", "out of memory");
     }
@@ -1726,17 +1637,10 @@ class ApiHandler : public AsyncWebHandler {
 
   void handleBody(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index,
                   size_t total) override {
-    Lock lock;
     if (index == 0) {
       clearMark(req);
       if (gBodyOwner != nullptr && gBodyOwner != req) {
         mark(req, 409, "busy");
-        return;
-      }
-      // The guard allocated the buffer at the headers; an idle release may
-      // have come since.
-      if (!allocWork()) {
-        mark(req, 503, "busy");
         return;
       }
       gBodyOwner = req;
@@ -1745,7 +1649,6 @@ class ApiHandler : public AsyncWebHandler {
       gBodyBuf->data()[0] = '\0';
       // Client gone mid-body: free the buffer for the next request.
       req->onDisconnect([req]() {
-        Lock lock;
         if (gBodyOwner == req) gBodyOwner = nullptr;
       });
     }
@@ -1761,7 +1664,6 @@ class ApiHandler : public AsyncWebHandler {
 
   void handleUpload(AsyncWebServerRequest* req, const String& filename, size_t index,
                     uint8_t* data, size_t len, bool final) override {
-    Lock lock;
     onUpload(req, filename, index, data, len, final);
   }
 
@@ -1775,7 +1677,6 @@ ApiHandler gApi;
 
 void begin() {
   if (gStarted) return;
-  gLock = xSemaphoreCreateRecursiveMutexStatic(&gLockStorage);
   gServer.addHandler(&gGuard);  // the first request allocates the working set
   gServer.addHandler(&gApi);
   gServer.begin();
@@ -1783,16 +1684,5 @@ void begin() {
 }
 
 bool started() { return gStarted; }
-
-void service(uint32_t nowMs) {
-  if (!gStarted || xSemaphoreTakeRecursive(gLock, 0) != pdTRUE) return;
-  if (gActive) {
-    gActive = false;
-    gLastActiveMs = nowMs;
-  } else if (idle() && vdm::elapsedMs(nowMs, gLastActiveMs) >= kIdleReleaseMs) {
-    releaseWork();
-  }
-  xSemaphoreGiveRecursive(gLock);
-}
 
 }  // namespace web
