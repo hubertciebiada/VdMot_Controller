@@ -32,10 +32,11 @@ only in the version string and needs no update.
 - ESP: under sustained abnormal concurrent HTTP load (minutes of many
   parallel clients) a rarer panic in AsyncTCP 1.1.1 remains: on the load
   test the controller served about 2100 requests in about 3 minutes before
-  it. Normal use (Home Assistant over MQTT, the dashboard's sequential
-  requests) does not trigger it, and the controller restarts on its own
-  in about 4 s. The full fix is a web server on `esp_http_server` instead
-  of AsyncTCP (future work).
+  it. Normal use (Home Assistant over MQTT, the dashboard with at most 4
+  requests at a time) has not triggered it so far, and the controller
+  restarts on its own in about 4 s. The full fix is a web server on
+  `esp_http_server` instead of AsyncTCP (future work). Analysis and load
+  tests: [web-server-stability.md](web-server-stability.md).
 
 ## [2.1.2-revamped]
 

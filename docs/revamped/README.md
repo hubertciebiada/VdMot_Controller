@@ -151,5 +151,6 @@ Fixes for the legacy `software_esp32` (no features) are kept apart on
 - [CHANGELOG.md](CHANGELOG.md)
 - [software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md): UART protocol 2 and 3
 - [software_esp32_revamped/DESIGN.md](../../software_esp32_revamped/DESIGN.md): ESP design (internals)
+- [web-server-stability.md](web-server-stability.md): the ESP web server under concurrent connections: the AsyncTCP panic, the 2.1.3 fix, the residual, the next step
 - [mutation-stm32.md](mutation-stm32.md), [mutation-stm32-glue.md](mutation-stm32-glue.md),
   [mutation-esp32.md](mutation-esp32.md), [mutation-esp32-glue.md](mutation-esp32-glue.md)
