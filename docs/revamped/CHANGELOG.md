@@ -6,6 +6,15 @@ The STM entries of each release are in
 [software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md); this file lists
 the ESP, the tooling and a summary of the STM.
 
+## [Unreleased]
+
+### Fixed
+- ESP: the rare panic of the web server under parallel requests, the known
+  limitation of 2.1.3 and 2.1.4. The web server library dropped the headers
+  no handler asked for with a use after free, which crashed when the lwIP
+  thread reused the freed block in between; `tools/patch_libs.py` patches it
+  (web-server-stability.md).
+
 ## [2.1.4-revamped]
 
 Dashboard release of the ESP: the valve card explains its states and shows

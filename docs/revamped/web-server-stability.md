@@ -2,9 +2,10 @@
 
 Scope: the ESP32 (WT32-ETH01) web server, built on `AsyncTCP` 1.1.1 +
 `AsyncWebServer_WT32_ETH01` 1.6.2. This note records the concurrent-connection
-reboot found in 2.1.x, the analysis behind the 2.1.3 fix, what remains, and the
-recommended full fix. What each release changed is in
-[CHANGELOG.md](CHANGELOG.md) (2.1.1, 2.1.2, 2.1.3).
+reboot found in 2.1.x, the analysis behind the 2.1.3 fix, the use after free
+behind the panic that remained after it, and the recommended full fix. What
+each release changed is in [CHANGELOG.md](CHANGELOG.md) (2.1.1, 2.1.2, 2.1.3,
+Unreleased).
 
 ## Symptom
 
@@ -57,8 +58,8 @@ The deterministic fast crash is gone; the panic is not. The load-test runs on
 | 6 (re-run) | no panic in the 60 s of the run, 847 requests |
 | 10 | panic after 176 s, about 2100 requests |
 
-These three runs are all the data; the residual is probabilistic, and its cause
-is not identified (see the open defects below).
+These three runs were all the data of 2.1.3; the residual is probabilistic.
+Its cause was found later: see "Root cause of the residual panic" below.
 
 In normal use no reboot has been observed so far: one controller on 2.1.3 ran
 10.5 h without a reboot (from 2026-09-28 21:23 UTC, read on 2026-09-29 07:51
@@ -76,8 +77,36 @@ cap; loading the page fetches `app.css` and `app.js` in parallel after
 uses MQTT, not HTTP. After a reboot the controller is back in ~4 s and restores
 the valve targets from RTC/NVS.
 
-The residual is accepted as a known limitation of the `AsyncTCP` stack for
-2.1.x (CHANGELOG 2.1.3).
+The residual was accepted as a known limitation in 2.1.3 and 2.1.4
+(CHANGELOG 2.1.3).
+
+## Root cause of the residual panic
+
+A test build that keeps the cause of a panic in RTC memory (a wrapper of
+`esp_panic_handler`, never part of a release) caught the residual on a
+WT32-ETH01 under 3 parallel clients: `LoadProhibited` in the `async_tcp`
+task, `EXCVADDR` = the controller's own IP address, backtrace `strlen` ←
+`String::String` ← `AsyncWebServerRequest::_removeNotInterestingHeaders()` ←
+`_parseLine()` ← `_onData()` ← `AsyncClient::_recv()`.
+
+`_removeNotInterestingHeaders()` runs for every request once its headers are
+parsed and drops the headers no handler registered. The firmware registers
+`Origin`, `X-VdMot`, `If-None-Match` and the MD5 headers, so a browser request
+drops most of its headers. The library calls `_headers.remove(header)` inside a
+range-for over `_headers`: `remove()` deletes the node the iterator stands on,
+and the next step of the loop reads `next` from the freed node. Nothing happens
+while the block keeps its old bytes. When the lwIP thread (priority 18, the
+same core as `async_tcp`) preempts the loop in between and takes the block for
+a packet, the loop follows a pointer made of packet bytes, here the IP address
+of a packet header. That is why the panic needs parallel traffic and comes at
+random; more heap traffic on that core (WiFi scanning) makes it likelier.
+
+`patch_libs.py` (marker `VDM-PATCH-WEB-HEADERS`) replaces the loop with
+`remove_first()` calls, one header per pass from the start of the list, and
+fails the build if the library still removes inside the loop. With the fix,
+the same test build (WiFi scanning next to Ethernet) ran 300 s with 3 clients
+(3833 requests) and 600 s with 10 clients (7898 requests) without a panic;
+without the fix it had panicked after 143 s with 3 clients.
 
 ## Suggested improvements
 
@@ -106,9 +135,10 @@ Ordered by impact.
      timeout. If a path without any timer exists, four such peers make the web
      server unreachable until a restart (the cap is 4), and this item ranks
      first; the fix would be to re-arm the RX timeout after `send()`.
-3. **Diagnosability:** the only post-mortem signal today is
+3. **Diagnosability:** the only post-mortem signal of a release is
    `esp_reset_reason()`. A core-dump partition or an RTC breadcrumb of the
-   faulting PC would let a future crash be pinpointed without serial access.
+   faulting PC would let a future crash be pinpointed without serial access;
+   the breadcrumb of a test build found the residual panic above.
 4. **Defense in depth:** bound simultaneous connections at the application layer
    as well, and review the lwIP socket/pcb limits (16 active TCP pcbs, 16
    sockets). With `framework = arduino` those limits are precompiled into the

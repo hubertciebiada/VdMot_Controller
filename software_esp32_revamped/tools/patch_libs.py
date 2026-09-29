@@ -69,6 +69,17 @@ all 16 were taken the constructor and _lwip_fin wrote before the array
 (_closed_slot == -1). Every end of a pcb releases its slot now and -1 is
 never used as an index.
 
+The web server library dropped the headers no handler asked for
+(_removeNotInterestingHeaders, every request) with remove() inside a
+range-for over the same list: remove() deletes the node the iterator stands
+on, and the next step reads its next pointer from freed memory. When the
+lwIP thread preempts the async task in between and takes that block for a
+packet, the loop follows a pointer made of packet bytes (a LoadProhibited
+panic in async_tcp, EXCVADDR = the controller's own IP address). Concurrent
+requests and WiFi make that likelier; a panic captured under concurrent load
+on a WT32-ETH01 had exactly this backtrace. The loop now removes with
+remove_first(), one header per pass from the start of the list.
+
 Runs as a PlatformIO post script (lib_deps are installed while the build
 script runs, after the pre scripts; compilation starts after the post
 scripts). Idempotent: an already patched file is left alone. Any anchor
@@ -615,6 +626,37 @@ def verify_async_tcp_slots(path: str) -> None:
         raise RuntimeError(f"{path}: _closed_slots[_closed_slot] written without the -1 check")
 
 
+WEB_HEADERS_MARKER = "VDM-PATCH-WEB-HEADERS v1"
+
+WEB_HEADERS_EDITS = [
+    # _removeNotInterestingHeaders(): remove() inside the range-for deleted the node the
+    # iterator stood on, and ++ read its next pointer from freed memory.
+    (
+        "  for (const auto& header : _headers)\n"
+        "  {\n"
+        "    if (!_interestingHeaders.containsIgnoreCase(header->name().c_str()))\n"
+        "    {\n"
+        "      _headers.remove(header);\n"
+        "    }\n"
+        "  }\n",
+        f"  // {WEB_HEADERS_MARKER}: one remove_first() per header, each from the start of the\n"
+        "  // list; remove() inside a range-for freed the node the iterator stood on\n"
+        "  while (_headers.remove_first([this](AsyncWebHeader * const &h)\n"
+        "  { return !_interestingHeaders.containsIgnoreCase(h->name().c_str()); }))\n"
+        "  {\n"
+        "  }\n",
+    ),
+]
+
+
+def verify_web_headers(path: str) -> None:
+    """No header is removed from _headers while a loop walks it."""
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        text = f.read().replace("\r\n", "\n")
+    if "_headers.remove(header)" in text:
+        raise RuntimeError(f"{path}: _removeNotInterestingHeaders() removes inside its range-for")
+
+
 def patch_file(path: str, edits, marker: str = MARKER) -> bool:
     """Returns True when the file was changed. Raises on a missing anchor."""
     with open(path, "r", encoding="utf-8", newline="") as f:
@@ -645,11 +687,13 @@ def patch(libdeps_env_dir: str, project_dir: str) -> list[str]:
     if not os.path.isdir(src):
         raise RuntimeError(f"{src}: library not installed")
     changed = []
-    for name, edits in (("AsyncWebServer_WT32_ETH01.h", HEADER_EDITS),
-                        ("WebRequest.cpp", SOURCE_EDITS)):
+    for name, edits, marker in (("AsyncWebServer_WT32_ETH01.h", HEADER_EDITS, MARKER),
+                                ("WebRequest.cpp", SOURCE_EDITS, MARKER),
+                                ("WebRequest.cpp", WEB_HEADERS_EDITS, WEB_HEADERS_MARKER)):
         path = os.path.join(src, name)
-        if patch_file(path, edits):
+        if patch_file(path, edits, marker) and f"{LIB}/src/{name}" not in changed:
             changed.append(f"{LIB}/src/{name}")
+    verify_web_headers(os.path.join(src, "WebRequest.cpp"))
     stack = async_tcp_stack(project_dir)
     path = os.path.join(libdeps_env_dir, ASYNC_TCP_LIB, "src", "AsyncTCP.cpp")
     with open(path, "r", encoding="utf-8", newline="") as f:
