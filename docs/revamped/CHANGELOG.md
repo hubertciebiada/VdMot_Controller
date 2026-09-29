@@ -6,6 +6,32 @@ The STM entries of each release are in
 [software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md); this file lists
 the ESP, the tooling and a summary of the STM.
 
+## [2.1.4-revamped]
+
+Dashboard release of the ESP: the valve card explains its states and shows
+the loop temperatures. The STM firmware is unchanged; its image differs
+from 2.1.3 only in the version string and needs no update.
+
+### Added
+- Dashboard: every chip of a valve card (state, calibration, target
+  delivery, failsafe, health flags) explains itself in a tooltip, on hover,
+  on keyboard focus and on a tap (touch screens have no hover).
+- Dashboard: the valve card shows Supply (sensor 1), Return (sensor 2) and
+  their ΔT in a row above the diagnostics instead of a line of text; a
+  failed reading is "no reading" in the warning colour. Settings names the
+  columns "Sensor 1 (supply)" and "Sensor 2 (return)".
+- `tools/loadtest.py`: the read-only load test of the web server, and
+  `docs/revamped/web-server-stability.md`, the analysis of the AsyncTCP
+  panic behind 2.1.1 to 2.1.3.
+
+### Changed
+- API.md and MQTT.md: `temp1`/`temp2` of a valve are the supply and the
+  return of its heating loop.
+
+### Known limitation
+- Unchanged from 2.1.3: the rarer AsyncTCP panic under sustained abnormal
+  concurrent HTTP load remains.
+
 ## [2.1.3-revamped]
 
 Hotfix of 2.1.2 for the ESP: AsyncTCP no longer panics under concurrent

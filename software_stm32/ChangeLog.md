@@ -11,6 +11,10 @@ All notable changes to this project will be documented in this file.
 
 ### Removed
 
+## [2.1.4-revamped]
+No changes: the version follows the ESP release (docs/revamped/CHANGELOG.md).
+An STM on 2.1.0-revamped up to 2.1.3-revamped needs no update.
+
 ## [2.1.3-revamped]
 No changes: the version follows the ESP hotfix (docs/revamped/CHANGELOG.md).
 An STM on 2.1.0-revamped, 2.1.1-revamped or 2.1.2-revamped needs no update.
