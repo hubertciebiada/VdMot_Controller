@@ -1,20 +1,20 @@
 # VdMot Revamped: build, install, upgrade, recovery
 
-> Unofficial firmware (fork of VdMot_Controller). Version **2.1.0-revamped**.
+> Unofficial firmware (fork of VdMot_Controller). Version **2.1.4-revamped**.
 > Read this page completely before flashing.
 
 ## 1. Which files
 
-A GitHub release (tag `v2.1.0-revamped`) contains:
+A GitHub release (tag `v2.1.4-revamped`) contains:
 
 | File | For |
 |---|---|
-| `VdMot-Revamped_2.1.0-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
-| `VdMot-Revamped_2.1.0-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it (produced as in the hc-version CI) |
-| `VdMot-Revamped_2.1.0-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
-| `VdMot-Revamped_2.1.0-revamped_STM32F411_C1.bin` | F411, hardware C1 |
-| `VdMot-Revamped_2.1.0-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
-| `VdMot-Revamped_2.1.0-revamped_STM32F401_C1.bin` | F401, hardware C1 |
+| `VdMot-Revamped_2.1.4-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
+| `VdMot-Revamped_2.1.4-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it (produced as in the hc-version CI) |
+| `VdMot-Revamped_2.1.4-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
+| `VdMot-Revamped_2.1.4-revamped_STM32F411_C1.bin` | F411, hardware C1 |
+| `VdMot-Revamped_2.1.4-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
+| `VdMot-Revamped_2.1.4-revamped_STM32F401_C1.bin` | F401, hardware C1 |
 | `SHA256SUMS`, `manifest.json` | checksums and asset list |
 
 Check the download: `sha256sum -c SHA256SUMS --ignore-missing`.
@@ -42,7 +42,7 @@ in the `platformio.ini` files).
 cd software_stm32
 pio run -e STM32F411_release_C2          # -> .pio/build/STM32F411_release_C2/firmware.bin
 
-# ESP32 (env wt32-eth01_revamped; wt32-eth01_revamped_dev = debug build, version 2.1.0-revamped-dev)
+# ESP32 (env wt32-eth01_revamped; wt32-eth01_revamped_dev = debug build, version 2.1.4-revamped-dev)
 cd software_esp32_revamped
 pio run -e wt32-eth01_revamped           # -> .pio/build/wt32-eth01_revamped/firmware.bin
 
@@ -52,7 +52,7 @@ bash tools/native/docker.sh test esp32
 bash tools/native/docker.sh mutate esp32 --files lib/core/src/lease_client.cpp
 
 # Package local builds like a release
-python3 tools/release/package.py --tag v2.1.0-revamped --from-builds . --out dist
+python3 tools/release/package.py --tag v2.1.4-revamped --from-builds . --out dist
 ```
 
 The ESP build generates `src/generated/web_assets.h` (gzipped dashboard) on
@@ -96,13 +96,13 @@ Recommended order: **ESP first, then STM.**
 ### Step 1: ESP
 1. Open the legacy web UI → firmware update (`http://<device>/update`), or on
    2.0.0 Maintenance → ESP firmware, and upload
-   `VdMot-Revamped_2.1.0-revamped_ESP32-WT32-ETH01.bin`.
+   `VdMot-Revamped_2.1.4-revamped_ESP32-WT32-ETH01.bin`.
 2. The ESP restarts into the new firmware. On the first boot after the legacy
    firmware it imports the legacy settings once (event `config_imported` with
    the number of imported and rejected keys; details under Maintenance →
    import report) and starts with the same IP settings. A 2.0.0 installation
    keeps its settings.
-3. Open `http://<device>/`. The header shows ESP `2.1.0-revamped` and the STM
+3. Open `http://<device>/`. The header shows ESP `2.1.4-revamped` and the STM
    version with its protocol.
 4. Leave it running. The new image is marked valid (event `app_marked_valid`)
    after 2 minutes in which all of these held without interruption:
@@ -118,6 +118,11 @@ Recommended order: **ESP first, then STM.**
    refused while the running image still waits (`GET /api/health` → `ota`
    shows the checks and the time left).
 
+   This trial needs a bootloader with rollback support (section 5). Check it
+   right after the restart: while the image waits, `ota` is an object; `null`
+   from the first seconds means the image was not put on trial and runs as
+   valid at once, with nothing to fall back to.
+
 ### Step 2: STM
 1. Dashboard → Maintenance → STM firmware: upload the STM image (max
    512 KiB). The table shows its size, CRC32, version, board revision and the
@@ -127,7 +132,7 @@ Recommended order: **ESP first, then STM.**
    ESP waits up to 60 s for the new application). The valves do not move while
    flashing. If the STM does not answer at 115200 baud, one more session runs
    at 57600 baud.
-3. Afterwards the header shows STM `2.1.0-revamped_C2` (or `_C1`) with
+3. Afterwards the header shows STM `2.1.4-revamped_C2` (or `_C1`) with
    `proto 3`, and the valve cards show the extended data (last move, early
    stops, rejected commands, flags, failsafe). The image is kept as
    `last_good.bin`.
@@ -225,7 +230,9 @@ once. A static IP without DNS uses the gateway as DNS server.
 - [ ] Home Assistant: existing entities still work; climate/window/control entities of the
       legacy firmware are gone; new entities appear; birth message and last will retained.
 - [ ] `rest_command`s and scripts send `X-VdMot: 1` (API.md).
-- [ ] Events: `app_marked_valid` logged a few minutes after the update.
+- [ ] Events: `app_marked_valid` logged a few minutes after the update. It never
+      comes (and `ota` in `GET /api/health` was `null` right after the restart):
+      this controller has no automatic rollback, see section 5.
 - [ ] Settings → calibration schedule (weekday mask, hour, minute) as wanted. With a
       schedule the STM's own time trigger is switched off.
 - [ ] Maintenance → Export config, keep the file.
@@ -238,7 +245,23 @@ Otherwise, after 15 min, it marks itself invalid and the bootloader starts the
 previous image. This needs a bootloader with rollback support: the
 Arduino-ESP32 2.x bootloader of the legacy builds has it enabled; an older
 bootloader flashed long ago by USB may not, and then no automatic rollback
-happens.
+happens. An OTA update never replaces the bootloader; only a USB-serial flash
+writes it.
+
+How to tell: right after the restart into the new image, `GET /api/health` →
+`ota` is an object (the checks and the time left) until the image is marked
+valid, and the event log gets `app_marked_valid`. When `ota` is `null` from
+the first seconds and `app_marked_valid` never comes, the image was not put on
+trial: it runs as valid at once, and an image that does not come up needs the
+USB-serial recovery (section 6). Both controllers this firmware is tested on
+behave like that: none of the ESP updates in their event logs (2.1.0 to
+2.1.4) went through the trial.
+
+Getting the rollback on such a controller means writing a bootloader with
+rollback support once over USB-serial (offset `0x1000`); the bootloaders of
+the Arduino-ESP32 2.0.7 core this firmware is built with have it
+(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). This has not been tried on a
+controller yet, so there is no tested procedure here.
 
 **Downgrade ESP to legacy.** Dashboard → Maintenance → ESP firmware update:
 upload the legacy `ESP32_firmware.bin` (any valid ESP32 application image is
@@ -286,7 +309,7 @@ meantime are replaced by the values last written by 2.1.
 
 | Problem | Remedy |
 |---|---|
-| New ESP image does not come up | wait 15 min for the automatic rollback; power-cycle if it hangs |
+| New ESP image does not come up | wait 15 min for the automatic rollback; power-cycle if it hangs. Without a bootloader with rollback support (section 5) there is no rollback: use USB-serial as in "ESP does not boot at all" |
 | Wrong network settings, device unreachable | wait: without "Keep" the previous settings come back after about 2 min (at most about 5 min including the restarts). As a last resort use the factory reset |
 | Factory reset | fit a jumper from **GPIO2 to GND** and power up; keep it for **5 s** while the ESP boots, then remove it. Erases only the new firmware's settings (namespace `vdmrev`); legacy settings are not imported again. The device starts with defaults (DHCP, station `VdMot`, host name `VdMot`). The reset happens once per fitting: while the jumper stays fitted, later boots keep the settings (event `factory_reset_skipped`) |
 | ESP does not boot at all | USB-serial (3.3 V) on the WT32-ETH01 header, IO0 to GND while powering up, then `esptool.py --chip esp32 erase_region 0xe000 0x2000` (otadata, so app0 boots) and `esptool.py --chip esp32 write_flash 0x10000 <image>.bin`. Do not erase NVS if you want to keep the settings |
