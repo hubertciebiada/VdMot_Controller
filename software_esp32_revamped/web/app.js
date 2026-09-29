@@ -214,6 +214,76 @@ async function busy(btn, fn) {
   try { return await fn(); } catch (e) { fail(e); return undefined; } finally { if (btn) btn.disabled = false; }
 }
 
+// Tooltips: an element with data-tip shows the text in one shared bubble on
+// hover, on keyboard focus and on a click or tap (touch screens have no
+// hover). A click or tap keeps it open until the next click or Escape.
+const tipBox = $("tip");
+let tipFor = null, tipPinned = false, tipTimer = 0;
+function tipShow(el, pinned) {
+  clearTimeout(tipTimer);
+  if (!el.dataset.tip) return;
+  if (tipFor && tipFor !== el) tipFor.removeAttribute("aria-describedby");
+  tipFor = el;
+  tipPinned = pinned;
+  el.setAttribute("aria-describedby", "tip");
+  setText(tipBox, el.dataset.tip);
+  tipBox.hidden = false;
+  tipPlace();
+}
+function tipHide() {
+  clearTimeout(tipTimer);
+  if (!tipFor) return;
+  tipFor.removeAttribute("aria-describedby");
+  tipFor = null;
+  tipPinned = false;
+  tipBox.hidden = true;
+}
+// Below the element, above it when the viewport has no room below; never off-screen.
+function tipPlace() {
+  if (!tipFor.isConnected || !tipFor.getClientRects().length) { tipHide(); return; }
+  tipBox.style.left = tipBox.style.top = "0px";  // measured at full width, not squeezed at its last place
+  const r = tipFor.getBoundingClientRect(), b = tipBox.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+  const up = r.bottom + 6 + b.height > vh - 8 && r.top - 6 - b.height >= 8;
+  tipBox.style.left = Math.max(8, Math.min(r.left + r.width / 2 - b.width / 2, vw - b.width - 8)) + "px";
+  tipBox.style.top = (up ? r.top - 6 - b.height : r.bottom + 6) + "px";
+}
+// An open bubble follows the text (valve cards refresh every 3 s).
+function setTip(el, t) {
+  if (el.dataset.tip === t) return;
+  el.dataset.tip = t;
+  if (tipFor === el) { setText(tipBox, t); tipPlace(); }
+}
+const tipTarget = (e) => e.target instanceof Element ? e.target.closest("[data-tip]") : null;
+document.addEventListener("pointerover", (e) => {
+  const el = tipTarget(e);
+  if (e.pointerType !== "mouse" || tipPinned || !el || el === tipFor) return;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => tipShow(el, false), 300);
+});
+document.addEventListener("pointerout", (e) => {
+  const el = tipTarget(e);
+  if (e.pointerType !== "mouse" || tipPinned || !el || el.contains(e.relatedTarget)) return;
+  if (tipFor === el) tipHide(); else clearTimeout(tipTimer);
+});
+document.addEventListener("focusin", (e) => {
+  const el = tipTarget(e);
+  if (!el || tipPinned) return;
+  let keyboard = true;  // without :focus-visible every focus shows it
+  try { keyboard = el.matches(":focus-visible"); } catch { /* old browser */ }
+  if (keyboard) tipShow(el, false);
+});
+document.addEventListener("focusout", (e) => { if (!tipPinned && tipFor === e.target) tipHide(); });
+document.addEventListener("click", (e) => {
+  const el = tipTarget(e);
+  if (el && !(tipPinned && tipFor === el)) tipShow(el, true);
+  else tipHide();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") tipHide(); });
+window.addEventListener("scroll", () => { if (tipFor) tipPlace(); }, { capture: true, passive: true });
+window.addEventListener("resize", () => { if (tipFor) tipPlace(); });
+window.addEventListener("hashchange", tipHide);
+
 // ------------------------------------------------------------------ theme
 
 const THEMES = ["auto", "light", "dark"];
@@ -463,12 +533,58 @@ const cards = [];
 const STATE_CLS = { idle: "ok", opening: "info", closing: "info", connected: "info", fullopen: "info",
   failed: "err", blocked: "err", invalid: "err", novalve: "warn", unknown: "warn", nodata: "" };
 const STATE_TXT = { nodata: "no data", fullopen: "full open", novalve: "no valve" };
-const HEALTH = { blocked: ["blocked", "err"], failed: ["failed", "err"], noValve: ["no valve", "warn"],
-  calibRetries: ["calibration retries", "warn"], earlyStop: ["early stop", "warn"],
-  cmdRejected: ["commands rejected", "warn"], stale: ["no fresh data", "warn"],
-  targetUnconfirmed: ["target not confirmed", "warn"], tempFailed: ["sensor failed", "warn"],
-  calEarlyStop: ["early end stop since calibration", "warn"], calLastFailed: ["last calibration failed", "err"],
-  strokeShort: ["stroke close to minCounts: calibration may fail", "warn"] };
+// Tooltips of the chips: what the STM does in a state (software_stm32 valve_codes.h,
+// PROTOCOL_V2.md) and what the ESP derives from it (DESIGN.md section 6).
+const STATE_TIP = {
+  nodata: "The ESP has no state of this valve from the STM yet: right after a start, or the STM does not answer.",
+  idle: "Motor off: the valve is at its target and waits for the next one. After Stop or a service move it stays " +
+    "where it stopped for about 5 min, or until a new target.",
+  opening: "The motor runs and opens the valve: towards its target, to an end stop, or in a calibration.",
+  closing: "The motor runs and closes the valve: towards its target, to an end stop, or in a calibration.",
+  failed: "Fault: a move ran 120 s without reaching an end stop, a calibration stroke timed out, the presence test " +
+    "measured a short, or the inrush current limit tripped. The valve is not moved and new targets are rejected " +
+    "until Calibrate clears the fault; STM 2.1 also retries by itself after 1 h, 6 h, then every 24 h.",
+  unknown: "Not tested yet (after an STM start or a new detection): the STM runs the presence test next, a short " +
+    "motor run that measures the current.",
+  novalve: "The presence test measured no motor current: no motor head is connected, or its cable is broken. " +
+    "A target that differs from the position starts the test again.",
+  fullopen: "Assembly: the valve opens fully to its end stop so the motor head can be mounted or removed. It stays " +
+    "at 100 % until a new target is set.",
+  connected: "Motor head found, calibration due: it starts with the next target change or on Calibrate and learns " +
+    "the end positions; then the valve follows its target. Also shown briefly before any requested calibration.",
+  blocked: "Every calibration pass measured a stroke shorter than minCounts: the valve pin hardly moves, probably " +
+    "stuck. New targets are rejected until Calibrate succeeds; STM 2.1 moves the valve to its failsafe position " +
+    "meanwhile and retries by itself after 1 h, 6 h, then every 24 h.",
+  invalid: "The STM reported a state this ESP firmware does not know: check that the ESP and STM firmware belong together.",
+  inactive: "Disabled in Settings: the ESP sends this valve no targets and refuses new ones from the dashboard and MQTT.",
+};
+const CAL_QUEUED_TIP = "A calibration is due. One scheduled by time, or a first calibration, starts with the next " +
+  "target change, which can take days; Calibrate starts it right away.";
+const SYNC_TIP = {
+  pending: "The ESP has a target the STM does not have yet and sends it at the next chance (STM 1.x only after " +
+    "a running calibration).",
+  await_ack: "The target was sent to the STM; waiting for its acknowledgement.",
+  await_verify: "The STM acknowledged the target; the ESP reads it back to verify it.",
+  failed: "The STM did not confirm the target after 5 attempts; the ESP tries again after 5 min.",
+};
+const HEALTH = { blocked: ["blocked", "err", STATE_TIP.blocked], failed: ["failed", "err", STATE_TIP.failed],
+  noValve: ["no valve", "warn", STATE_TIP.novalve],
+  calibRetries: ["calibration retries", "warn", "A calibration needed repeated passes because a stroke came out " +
+    "shorter than minCounts (see Retries). Too many short passes mark the valve blocked."],
+  earlyStop: ["early stop", "warn", "Since the ESP started, a move hit an end stop well before the expected travel " +
+    "(see Early stops). Two early stops in a row start a calibration."],
+  cmdRejected: ["commands rejected", "warn", "Since the ESP started, the STM did not execute target changes " +
+    "because the valve was failed or blocked (see Rejected)."],
+  stale: ["no fresh data", "warn", "No data from the STM for this valve for over 60 s: the values shown may be old."],
+  targetUnconfirmed: ["target not confirmed", "warn", SYNC_TIP.failed],
+  tempFailed: ["sensor failed", "warn", "An assigned temperature sensor gives no valid reading: -127 °C (no answer), " +
+    "85 °C (no conversion) or out of range."],
+  calEarlyStop: ["early end stop since calibration", "warn", "A move ended at an early end stop since the last " +
+    "successful calibration; the next successful calibration clears this."],
+  calLastFailed: ["last calibration failed", "err", "The last calibration did not succeed; the event log has the " +
+    "reason. Calibrate tries again."],
+  strokeShort: ["stroke close to minCounts: calibration may fail", "warn", "The shorter calibration stroke is under " +
+    "1.2 × minCounts. A calibration whose strokes stay under minCounts marks the valve blocked."] };
 const STOP_TXT = { none: "–", target: "target reached", endstop: "end stop", early_endstop: "early end stop",
   timeout: "timeout", undercurrent: "no motor current", safety_overcurrent: "over-current limit", aborted: "aborted" };
 const SYNC_TXT = { pending: "target pending", await_ack: "sending target", await_verify: "verifying target",
@@ -487,9 +603,9 @@ function kvItem(label) {
 function buildCard(i) {
   const c = { i };
   c.name = h("span");
-  c.state = h("span", { class: "chip" });
-  c.cal = h("span", { class: "chip info", hidden: true, text: "calibrating" });
-  c.sync = h("span", { class: "chip warn", hidden: true });
+  c.state = h("span", { class: "chip", tabindex: 0 });
+  c.cal = h("span", { class: "chip info", hidden: true, text: "calibrating", tabindex: 0 });
+  c.sync = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
   c.pos = h("span", { class: "big num" });
   c.tgt = h("span", { class: "muted" });
   c.bar = h("i");
@@ -502,7 +618,7 @@ function buildCard(i) {
   c.temps = h("p", { class: "temps" });
   c.flags = h("div", { class: "flags" });
   const inId = "tg-" + i;
-  c.fs = h("span", { class: "chip warn", hidden: true });
+  c.fs = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
   c.input = h("input", { id: inId, type: "text", inputmode: "decimal", min: 0, max: 100, step: "any",
     "aria-label": "Target for valve " + i + " in percent" });
   c.input.addEventListener("input", () => { c.dirty = true; });
@@ -533,13 +649,21 @@ function updateCard(c, v) {
   const key = typeof v.stateKey === "string" ? v.stateKey : "invalid";
   setText(c.name, v.name || "Valve " + c.i);
   setChip(c.state, v.active ? STATE_TXT[key] || key : "inactive", v.active ? STATE_CLS[key] || "" : "");
+  setTip(c.state, v.active ? STATE_TIP[key] || STATE_TIP.invalid : STATE_TIP.inactive);
   const ext = v.ext && typeof v.ext === "object" ? v.ext : null;
   // ext.calState is the phase only (0 idle, 1 requested, 2 running); the flags are separate.
   c.cal.hidden = !(v.calibrating || (ext && ext.calState > 0));
-  if (!c.cal.hidden) setText(c.cal, v.calibrating || (ext && ext.calState >= 2) ? "calibrating" : "calibration queued");
+  if (!c.cal.hidden) {
+    const running = v.calibrating || (ext && ext.calState >= 2);
+    setText(c.cal, running ? "calibrating" : "calibration queued");
+    setTip(c.cal, running ? "Calibration requested or running. " + ACTION_TXT.calibrate[1] : CAL_QUEUED_TIP);
+  }
   const syncTxt = v.active ? SYNC_TXT[v.sync] : undefined;
   c.sync.hidden = !syncTxt;
-  if (syncTxt) setChip(c.sync, syncTxt, v.sync === "failed" ? "err" : "warn");
+  if (syncTxt) {
+    setChip(c.sync, syncTxt, v.sync === "failed" ? "err" : "warn");
+    setTip(c.sync, SYNC_TIP[v.sync]);
+  }
   const pos = isNum(v.pos) ? Math.max(0, Math.min(100, v.pos)) : null;
   setText(c.pos, pos === null ? "–" : pos + " %");
   setText(c.tgt, isNum(v.target) ? "target " + v.target + " %" + (v.targetSource && v.targetSource !== "none" ?
@@ -577,13 +701,21 @@ function updateCard(c, v) {
   if (c.fk !== fk) {
     c.fk = fk;
     c.flags.textContent = "";
-    for (const f of flags) c.flags.append(h("span", { class: "chip " + HEALTH[f][1], text: HEALTH[f][0] }));
+    for (const f of flags) {
+      c.flags.append(h("span", { class: "chip " + HEALTH[f][1], text: HEALTH[f][0], tabindex: 0, "data-tip": HEALTH[f][2] }));
+    }
   }
   c.flags.hidden = !flags.length;
   const fs = v.failsafe && typeof v.failsafe === "object" ? v.failsafe : null;
   c.fs.hidden = !fs || (fs.state !== "lease" && fs.state !== "blocked");
-  if (!c.fs.hidden) setChip(c.fs, "failsafe " + (fs.state === "blocked" ? "(blocked) " : "") + (isNum(fs.pct) ? fs.pct + " %" : "hold"),
-    fs.state === "blocked" ? "err" : "warn");
+  if (!c.fs.hidden) {
+    setChip(c.fs, "failsafe " + (fs.state === "blocked" ? "(blocked) " : "") + (isNum(fs.pct) ? fs.pct + " %" : "hold"),
+      fs.state === "blocked" ? "err" : "warn");
+    const at = isNum(fs.pct) ? "goes to its failsafe position, " + fs.pct + " %" : "stays where it is (failsafe hold)";
+    setTip(c.fs, fs.state === "blocked" ? "The valve is blocked, so it " + at + ", instead of following its target." :
+      "No live regulator (MQTT broker or Home Assistant) for longer than the failsafe timeout, so the valve " + at +
+      ". Its target applies again once the regulator is back.");
+  }
   c.el.classList.toggle("bad", !!v.active && (key === "blocked" || key === "failed"));
   c.el.classList.toggle("off", !v.active);
   if (!c.dirty && document.activeElement !== c.input) c.input.value = isNum(v.target) ? v.target : "";
@@ -623,6 +755,7 @@ function renderValves() {
   }
   updateValveFilterNames();
   renderSummary();
+  if (tipFor) tipPlace();  // its chip may be gone or hidden, or the cards moved
 }
 $("show-inactive").addEventListener("change", () => { lsSet("vdm.inactive", $("show-inactive").checked ? "1" : ""); renderValves(); });
 $("show-inactive").checked = lsGet("vdm.inactive") === "1";

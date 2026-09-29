@@ -59,6 +59,14 @@ a { color: var(--accent); }
 .chip.warn::before { border-radius: 1px; }
 .chip.err::before { border-radius: 0; transform: rotate(45deg); }
 
+/* tooltips (data-tip, app.js) */
+[data-tip] { cursor: help; }
+/* iOS delivers a tap on a plain element to the document only with a pointer cursor */
+@media (hover: none) { [data-tip] { cursor: pointer; } }
+.tipbox { position: fixed; left: 0; top: 0; z-index: 25; max-width: min(340px, calc(100vw - 16px)); padding: 6px 10px;
+  border-radius: 6px; background: var(--fg); color: var(--bg); font-size: 13px; line-height: 1.4;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%); }
+
 nav.tabs { display: flex; gap: 2px; overflow-x: auto; padding: 0 12px; background: var(--card);
   border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 3; scrollbar-width: none; }
 nav.tabs a { padding: 10px 10px 8px; color: var(--muted); text-decoration: none; white-space: nowrap;
@@ -209,4 +217,4 @@ dialog p { margin: 0; }
   nav.tabs a { padding: 10px 7px 8px; font-size: 14px; }
 }
 @media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .4s; } }
-@media (forced-colors: active) { .chip, .meter { border: 1px solid CanvasText; } .meter > i { background: Highlight; } }
+@media (forced-colors: active) { .chip, .meter, .tipbox { border: 1px solid CanvasText; } .meter > i { background: Highlight; } }
