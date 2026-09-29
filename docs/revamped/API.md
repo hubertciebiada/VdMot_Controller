@@ -160,8 +160,8 @@ Valve entry (`/api/valves`):
 - `health`: `blocked`, `failed`, `noValve`, `calibRetries`, `earlyStop`,
   `cmdRejected`, `stale`, `targetUnconfirmed`, `tempFailed`, `failsafe`,
   `strokeShort` (a calibration stroke close to minCounts).
-- `sensors`: `sensor` 1 or 2 (temp1/temp2), `slot` = config slot, `temp` null
-  when failed.
+- `sensors`: `sensor` 1 or 2 (temp1/temp2: the supply and the return of the
+  valve's heating loop), `slot` = config slot, `temp` null when failed.
 - `ext` is null with a protocol 1 STM; `ext.v3` is null below protocol 3
   (flag and fault names: PROTOCOL_V2.md). `lastMove.peak` is in mA here (MQTT
   uses 0.1 mA).

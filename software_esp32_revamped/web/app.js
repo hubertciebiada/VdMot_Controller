@@ -567,6 +567,7 @@ const SYNC_TIP = {
   await_verify: "The STM acknowledged the target; the ESP reads it back to verify it.",
   failed: "The STM did not confirm the target after 5 attempts; the ESP tries again after 5 min.",
 };
+const TEMP_BAD = "-127 °C (no answer), 85 °C (no conversion) or out of range";
 const HEALTH = { blocked: ["blocked", "err", STATE_TIP.blocked], failed: ["failed", "err", STATE_TIP.failed],
   noValve: ["no valve", "warn", STATE_TIP.novalve],
   calibRetries: ["calibration retries", "warn", "A calibration needed repeated passes because a stroke came out " +
@@ -577,8 +578,7 @@ const HEALTH = { blocked: ["blocked", "err", STATE_TIP.blocked], failed: ["faile
     "because the valve was failed or blocked (see Rejected)."],
   stale: ["no fresh data", "warn", "No data from the STM for this valve for over 60 s: the values shown may be old."],
   targetUnconfirmed: ["target not confirmed", "warn", SYNC_TIP.failed],
-  tempFailed: ["sensor failed", "warn", "An assigned temperature sensor gives no valid reading: -127 °C (no answer), " +
-    "85 °C (no conversion) or out of range."],
+  tempFailed: ["sensor failed", "warn", "An assigned temperature sensor gives no valid reading: " + TEMP_BAD + "."],
   calEarlyStop: ["early end stop since calibration", "warn", "A move ended at an early end stop since the last " +
     "successful calibration; the next successful calibration clears this."],
   calLastFailed: ["last calibration failed", "err", "The last calibration did not succeed; the event log has the " +
@@ -600,6 +600,17 @@ function kvItem(label) {
   return [h("div", null, h("dt", { text: label }), dd), dd];
 }
 
+// Sensor 1 of a valve is the supply of its heating loop, sensor 2 the return.
+function showLoopTemp(t, x, role) {
+  t.div.hidden = !x;
+  if (!x) return;
+  const ok = isNum(x.temp);
+  setText(t.dd, ok ? x.temp.toFixed(1) + " °C" : "no reading");
+  t.dd.classList.toggle("bad", !ok);
+  setTip(t.div, (ok ? "" : "No valid reading: " + TEMP_BAD + ". ") + role + " of the loop: sensor " + x.sensor +
+    " of this valve, " + (x.name || "unnamed") + " (slot " + x.slot + ")" + (ok ? "; the reading includes the slot's offset." : "."));
+}
+
 function buildCard(i) {
   const c = { i };
   c.name = h("span");
@@ -615,7 +626,14 @@ function buildCard(i) {
   const dl = h("dl", { class: "kv" });
   for (const [label, key] of items) { const [div, dd] = kvItem(label); dl.append(div); c[key] = dd; }
   c.last = h("p", { class: "lastmove" });
-  c.temps = h("p", { class: "temps" });
+  c.temps = h("dl", { class: "kv temps" });
+  for (const [label, key] of [["Supply", "tSup"], ["Return", "tRet"], ["ΔT", "tDelta"]]) {
+    const [div, dd] = kvItem(label);
+    div.setAttribute("tabindex", 0);
+    c.temps.append(div);
+    c[key] = { div, dd };
+  }
+  setTip(c.tDelta.div, "Supply minus return of the loop (1 K = 1 °C).");
   c.flags = h("div", { class: "flags" });
   const inId = "tg-" + i;
   c.fs = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
@@ -639,7 +657,7 @@ function buildCard(i) {
       c.state, c.cal, c.sync, c.fs),
     h("div", { class: "pos" }, c.pos, c.tgt),
     h("div", { class: "meter", role: "presentation" }, c.bar, c.mark),
-    dl, c.last, c.temps, c.flags,
+    c.temps, dl, c.last, c.flags,
     h("div", { class: "actions" }, h("span", { class: "row" }, c.input, h("span", { "aria-hidden": "true" }, "%")),
       c.btns));
   return c;
@@ -691,8 +709,11 @@ function updateCard(c, v) {
     c.last.className = "lastmove muted";
   }
   const sensors = Array.isArray(v.sensors) ? v.sensors : [];
-  setText(c.temps, sensors.map((x) => "T" + (x.sensor === 2 ? 2 : 1) + " " + (x.name || "slot " + x.slot) + " " +
-    (isNum(x.temp) ? x.temp.toFixed(1) + " °C" : "no reading")).join(", "));
+  const sup = sensors.find((x) => x.sensor !== 2), ret = sensors.find((x) => x.sensor === 2);
+  showLoopTemp(c.tSup, sup, "Supply");
+  showLoopTemp(c.tRet, ret, "Return");
+  c.tDelta.div.hidden = !sup || !ret;
+  setText(c.tDelta.dd, sup && ret && isNum(sup.temp) && isNum(ret.temp) ? (sup.temp - ret.temp).toFixed(1) + " K" : "–");
   c.temps.hidden = !sensors.length;
   const flags = Array.isArray(v.health) ? v.health.filter((f) => HEALTH[f]) : [];
   if (ext && ext.calEarlyStop === true) flags.push("calEarlyStop");
@@ -1337,7 +1358,8 @@ function buildSettings() {
   mapSel = [];
   const vrows = [];
   for (let i = 1; i <= VALVES; i++) {
-    const s1 = h("select", { "aria-label": "Valve " + i + " sensor 1" }), s2 = h("select", { "aria-label": "Valve " + i + " sensor 2" });
+    const s1 = h("select", { "aria-label": "Valve " + i + " sensor 1 (supply)" }),
+      s2 = h("select", { "aria-label": "Valve " + i + " sensor 2 (return)" });
     mapSel[i] = { s1, s2, orig1: 0, orig2: 0 };
     vrows.push(h("tr", null, h("td", { text: i }),
       h("td", null, makeField(CF, ["valves." + i + ".name", "Valve " + i + " name", "str", 0, 10, "safe"], true)),
@@ -1347,7 +1369,7 @@ function buildSettings() {
       h("td", null, makeField(CF, ["valves." + i + ".topic", "Valve " + i + " MQTT topic", "str", 0, 10, "seg"], true))));
   }
   form.append(tableGroup("Valves", "Names are used in MQTT topics and must be unique. Sensor changes are sent to the STM separately after the configuration is saved. Failsafe %: position when the regulator is silent (Hold keeps the position). MQTT topic: empty = from the name.",
-    ["#", "Name", "Active", "Sensor 1", "Sensor 2", "Failsafe %", "MQTT topic"], vrows));
+    ["#", "Name", "Active", "Sensor 1 (supply)", "Sensor 2 (return)", "Failsafe %", "MQTT topic"], vrows));
   const trows = [];
   for (let i = 1; i <= TEMP_SLOTS; i++) {
     const p = "temps." + i + ".";

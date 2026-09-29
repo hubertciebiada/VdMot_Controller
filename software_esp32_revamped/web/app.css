@@ -128,7 +128,11 @@ label.inline { display: inline-flex; align-items: center; gap: 6px; }
 dl.kv { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 10px; margin: 0 0 8px; }
 dl.kv dt { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 dl.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
-.lastmove, .temps { font-size: 13px; margin: 4px 0; }
+.lastmove { font-size: 13px; margin: 4px 0; }
+/* supply and return of the loop (sensors 1 and 2), above the diagnostics */
+dl.kv.temps { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+dl.kv.temps dd { font-size: 16px; font-weight: 600; }
+dl.kv.temps dd.bad { color: var(--warn); font-size: 13px; font-weight: 400; }
 .flags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
 .actions input[type="number"] { width: 5em; }

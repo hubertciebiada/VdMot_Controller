@@ -91,7 +91,7 @@ do not reconnect MQTT.
 | `<main>valves/<V>/calibration/repetitions` | failed passes of the last calibration |
 | `<main>valves/<V>/diag/meanCurrrent` (sic, three r) | learned mean current, mA |
 | `<main>valves/<V>/diag/openCount`, `closeCount`, `deadZoneCount`, `moves` | calibration counts, dead zone, moves since the last calibration |
-| `<main>valves/<V>/temp1`, `temp2` | assigned sensor temperature incl. offset, `21.5` or `failed` |
+| `<main>valves/<V>/temp1`, `temp2` | assigned sensor temperature incl. offset, `21.5` or `failed`; temp1 is the supply of the valve's heating loop, temp2 the return |
 | `<main>temps/<T>/id`, `<main>temps/<T>/value` | 1-Wire id; temperature or `failed` (not on the bus, invalid, or older than 60 s) |
 | `<main>sensors/<S>/id`, `value`, `unit` | DS2438 voltage sensors: `(raw/100 + offset) × factor` with 3 decimals, or `failed`; published for every configured slot with an id, active or not |
 
