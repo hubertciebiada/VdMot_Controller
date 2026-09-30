@@ -8,6 +8,12 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+## [2.1.5-revamped]
+
+ESP release: WiFi STA is back, and the rare web server panic of 2.1.3 and
+2.1.4 is fixed. The STM firmware is unchanged; its image differs from 2.1.4
+only in the version string and needs no update.
+
 ### Added
 - ESP: WiFi STA again, as in 2.0.0: `net.iface` (0 auto, 1 Ethernet, 2 WiFi),
   `net.ssid` and `net.wifiPassword` ("" for an open network, else 8..63
