@@ -277,6 +277,7 @@ const char* const kLogSteps[] = {"open", "write", "rotate", "size limit"};
 const char* const kImportFeatures[] = {"pi", "window", "messenger", "ds18Timeout", "legacyFailsafe"};
 const char* const kTrialReverts[] = {"not confirmed", "no network", "interrupted", "user",
                                      "trial not stored"};
+const char* const kIfaceSets[] = {"eth", "wifi", "eth+wifi"};
 const char* const kRefusals[] = {"host", "origin", "header", "content type"};
 const char* const kLeaseSources[] = {"STM lease", "ESP"};
 const char* const kRegulatorLoss[] = {"MQTT broker disconnected", "Home Assistant offline"};
@@ -311,8 +312,8 @@ void addName(Text& t, char set, int32_t v) {
   const char* s = "unknown";
   switch (set) {
     case 'r': s = resetReasonName(v); break;
-    case 'i':  // the interface of net_up / net_down, and the interfaces restarted
-    case 'j': s = v == 1 ? "eth" : "unknown"; break;
+    case 'i': s = v == 1 ? "eth" : v == 2 ? "wifi" : "unknown"; break;
+    case 'j': s = oneBased(kIfaceSets, v); break;
     case 'l': s = oneBased(kLogSteps, v); break;
     case 'q': s = oneBased(kRefusals, v); break;
     case 'c': s = oneBased(kRebootCauses, v); break;

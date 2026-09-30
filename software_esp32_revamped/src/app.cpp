@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <esp_task.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -52,19 +53,25 @@ CalibInfo gCalibInfo;
 uint32_t gCfgRevision = 0;  // the config the app task's modules follow
 
 // Tasks whose stack high-water mark is watched: ours, AsyncTCP's (created by
-// the first AsyncServer::begin) and the Arduino event task (runs net's event
-// handler); the library tasks are looked up by name until found.
+// the first AsyncServer::begin), the Arduino event task (runs net's event
+// handler and Arduino's WiFi event handling), the IDF event loop (Arduino's
+// event forwarder and the default handlers of the network interfaces) and
+// lwIP's task (DHCP, SNTP, the interface calls of those handlers); the
+// library tasks are looked up by name until found. None of them is ever
+// deleted, so a handle stays valid.
 struct MonitoredTask {
   const char* name;
   uint32_t stackBytes;
   TaskHandle_t handle;
 };
-constexpr size_t kMonitoredTasks = 5;
+constexpr size_t kMonitoredTasks = 7;
 MonitoredTask gTasks[kMonitoredTasks] = {{kStmTask.name, kStmTask.stackBytes, nullptr},
                                          {kAppTask.name, kAppTask.stackBytes, nullptr},
                                          {kMqttTask.name, kMqttTask.stackBytes, nullptr},
                                          {"async_tcp", kAsyncTcpStackBytes, nullptr},
-                                         {"arduino_events", 4096, nullptr}};
+                                         {"arduino_events", 4096, nullptr},
+                                         {"sys_evt", ESP_TASKD_EVENT_STACK, nullptr},
+                                         {"tiT", ESP_TASK_TCPIP_STACK, nullptr}};
 portMUX_TYPE gHealthMux = portMUX_INITIALIZER_UNLOCKED;  // gTasks handles, gMinLargest
 uint32_t gMinLargest = 0;
 vdm::ResourceMonitor gResources;  // app task

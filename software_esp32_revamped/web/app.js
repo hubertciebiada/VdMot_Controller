@@ -485,6 +485,7 @@ function renderStatus(st) {
   document.title = station + " · VdMot Revamped";
   let netText = net.state === "down" || !net.state ? "network down" : net.state;
   if (net.ip && net.state !== "down") netText += " " + net.ip;
+  if (net.state === "wifi" && isNum(net.rssi)) netText += " (" + net.rssi + " dBm)";
   setChip($("st-net"), netText, net.state === "down" ? "err" : "ok");
   setChip($("st-link"), "STM " + (stm.link === "suspended" ? "flashing" : stm.link || "?"), LINK_CLS[stm.link] || "");
   setChip($("st-mqtt"), "MQTT " + (mq.state || "?"), MQTT_CLS[mq.state] || "");
@@ -1091,11 +1092,14 @@ const RULE_MSG = { safe: "no + # / \" \\ or control characters",
 const GROUPS = [
   ["Station and network", "Network changes restart the ESP and must be confirmed from the new address within 2 minutes.", [
     ["station", "Station name", "str", 1, 20, "safe", "Host name, MQTT root and Home Assistant device name"],
+    ["net.iface", "Interface", "sel", [[0, "Automatic"], [1, "Ethernet"], [2, "WiFi"]]],
     ["net.dhcp", "Use DHCP", "bool"],
     ["net.ip", "Static IP address", "ip"],
     ["net.mask", "Subnet mask", "mask"],
     ["net.gateway", "Gateway", "ip"],
     ["net.dns", "DNS server", "ip", undefined, undefined, "", "0.0.0.0 = use the gateway"],
+    ["net.ssid", "WiFi SSID", "str", 0, 32, "print"],
+    ["net.wifiPassword", "WiFi password", "secret", 0, 63, "", "Empty for an open network"],
     ["net.reconnectTimeoutMin", "Restart after network loss (min)", "int", 0, 240, "", "0 = never"]]],
   ["Time", "", [
     ["time.ntpServer", "NTP server", "str", 0, 64, "host", "Empty disables time sync"],
@@ -1566,6 +1570,13 @@ function validateSettings() {
   if (!val("net.dhcp")) {
     for (const k of ["net.ip", "net.mask", "net.gateway"]) if (val(k) === "0.0.0.0") need(k, "Required without DHCP");
   }
+  const ssid = val("net.ssid");
+  const wp = CF.get("net.wifiPassword");
+  if (ssid) {
+    // Empty (not set) = open network.
+    if (wp.el.value !== "" && utf8Len(wp.el.value) < 8) need("net.wifiPassword", "8–63 bytes, or empty for an open network");
+  }
+  if (val("net.iface") === 2 && !ssid) need("net.ssid", "Required for WiFi");
   if (val("syslog.level") > 0 && val("syslog.server") === "0.0.0.0") need("syslog.server", "Required when syslog is on");
   const mode = val("mqtt.mode");
   if (mode > 0 && !val("mqtt.host")) need("mqtt.host", "Required when MQTT is on");
@@ -2088,9 +2099,9 @@ function flatten(obj, prefix, out, depth) {
 // Import sends only what differs from the current configuration, as one
 // request of at most 8000 bytes; keys this firmware does not know are skipped
 // and listed. Passwords the file does not carry can be typed in.
-const SECRETS = ["mqtt.password"];
+const SECRETS = ["mqtt.password", "net.wifiPassword"];
 // Settings this firmware no longer has; the device ignores them too.
-const REMOVED = ["net.iface", "net.ssid", "net.wifiPassword", "web.user", "web.password", "web.protectRead"];
+const REMOVED = ["web.user", "web.password", "web.protectRead"];
 $("cfg-import").addEventListener("change", async () => {
   const inp = $("cfg-import"), f = inp.files[0];
   inp.value = "";
@@ -2117,7 +2128,7 @@ $("cfg-import").addEventListener("change", async () => {
       if (getPath(doc, k + "Set") === true && !(k in patch) && getPath(cur, k + "Set") !== true) {
         const el = h("input", { type: "password", autocomplete: "new-password", id: "imp-" + k.replace(/\./g, "-") });
         pw.push({ k, el, field: h("div", { class: "field" }, h("label", { for: el.id, text: k }), el,
-          h("span", { class: "hint", text: "Without it the broker login fails" })) });
+          h("span", { class: "hint", text: k === "mqtt.password" ? "Without it the broker login fails" : "Without it the WiFi login fails" })) });
       }
     }
     const n = Object.keys(patch).length;

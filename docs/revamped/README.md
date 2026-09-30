@@ -21,7 +21,7 @@ VdMot Revamped changes both:
 | Part | Upstream 1.4.x | VdMot Revamped |
 |---|---|---|
 | STM32 | valve control, calibration | same job, hardened; calibration fixes; move diagnostics; failsafe lease; settings and calibrations kept in the EEPROM; protocol 3 (new commands only) |
-| ESP32 | `software_esp32` (PI controller, window logic, alarms, web UI) | new firmware `software_esp32_revamped`: precise valve control, failsafe, dashboard, diagnostics, event log, HA discovery. No PI controller, no alarms, no WiFi (Ethernet only) |
+| ESP32 | `software_esp32` (PI controller, window logic, alarms, web UI) | new firmware `software_esp32_revamped`: precise valve control, failsafe, dashboard, diagnostics, event log, HA discovery. No PI controller, no alarms |
 
 Compatibility between the two halves:
 - the revamped STM works with the old ESP: the v1 request and reply bytes are

@@ -137,7 +137,7 @@ Rules for module implementers:
 | `stm_service` | app-task side of the link: scheduled calibration, desired-target NVS saver, `flushForRestart()` |
 | `mqtt_client` | PubSubClient, LWT, publishing, discovery, inbound commands, regulator state |
 | `web_server` | AsyncWebServer, guard, assets, API, legacy aliases, uploads |
-| `net` | Ethernet (Arduino `ETH`), SNTP/TZ, reachability, network watchdog, network trial |
+| `net` | Ethernet (Arduino `ETH`) and WiFi STA, SNTP/TZ, reachability, network watchdog, network trial |
 | `storage` | NVS `vdmrev`, legacy NVS reader, LittleFS, config load with backup and repair, files |
 | `logger` | event ring, serial mirror, file flush and rotation, syslog |
 | `ota` | ESP OTA upload, rollback validation, restart sequence |
@@ -150,13 +150,27 @@ Rules for module implementers:
 | `app` | app::setup | 1 | 3 | 7168 B | yes | 100 ms | config apply, every 1 s: net service + web start, OTA validation, factory latch, `stm_service::service` (calibration schedule, target saver), heap guard; every 10 s: heap and stack alarms; log flush, storage service, restart sequence |
 | `mqtt` | app::setup | 1 | 2 | 7168 B | yes | 20 ms connected, 100 ms connecting, 500 ms off | connect/back-off, `loop()`, publishing, discovery (one message per pass), events, inbound commands |
 | `async_tcp` | AsyncTCP lib | 0 | lib default (3) | 8960 B (patched, `app::kAsyncTcpStackBytes`) | lib WDT (`CONFIG_ASYNC_TCP_USE_WDT=1`) | event driven | all HTTP handlers |
-| sys event | ESP-IDF | 0 | IDF | IDF | no | event driven | `net` ETH event callback (only sets flags) |
+| `arduino_events` | Arduino network init | 1 | 19 (`ESP_TASKD_EVENT_PRIO` - 1) | 4096 B (Arduino core) | no | event driven | `net::onEvent` for the ETH and WiFi events (flags, counters, the Ethernet driver handle; the Ethernet host name at `ETH_START`), Arduino's WiFi event handling (status bits; its reconnect is off, section 16) |
+| `sys_evt` | ESP-IDF default event loop | 0 | 20 (`ESP_TASKD_EVENT_PRIO`) | 2560 B (`ESP_TASKD_EVENT_STACK`: 2048 + 512) | no | event driven | Arduino's event forwarder (queues the WiFi, IP and ETH events for `arduino_events`), the default handlers of the network interfaces |
+| `tiT` | ESP-IDF lwIP | 0 | 18 (`ESP_TASK_TCPIP_PRIO`) | 3072 B (`ESP_TASK_TCPIP_STACK`: 2560 + 512) | no | event driven | lwIP: TCP/IP, DHCP, SNTP (`net`'s sync callback), the interface calls of the `sys_evt` handlers, AsyncTCP's lwIP callbacks (events queued for `async_tcp`) |
 | `loopTask` | Arduino | 1 | 1 | - | - | - | runs `setup()`, then deletes itself |
 
 - Stack sizes: from a static stack analysis of the ELF, the deepest call
   chains with LittleFS commits and ESP-IDF error logs through vfprintf
   included (async_tcp ~7.1 KB); `StackLow` (section 9) reports a task that
   gets closer than max(512 B, stack / 8).
+- Watched stacks (`/api/health` `tasks`, `StackLow`): `stm`, `app`, `mqtt`,
+  `async_tcp`, `arduino_events`, `sys_evt` and `tiT`; the library tasks are
+  looked up by name until they exist. The last three keep the sizes of the
+  Arduino core and its prebuilt ESP-IDF, which this firmware does not set.
+  Measured on a WT32-ETH01 with test builds that ran WiFi (scanning) next
+  to Ethernet, under 3 and 10 parallel HTTP clients (the most used of
+  size): `sys_evt` 1076 of 2560 B, `arduino_events` 1412 of 4096 B, `tiT`
+  1736 of 3072 B, `async_tcp` 3532 of 8960 B, `stm` 2676 of 6656 B, `app`
+  3136 of 7168 B, `mqtt` 3200 of 7168 B, `esp_timer` (not watched) 784 of
+  4608 B. On WiFi alone, connected, under the same clients: `sys_evt` 964,
+  `arduino_events` 1084, `tiT` 1656, `async_tcp` 3496 B. No watched task
+  comes close to its `StackLow` limit.
 - Task watchdog: `esp_task_wdt_init(30 s, panic=true)`; `stm`, `app` and
   `mqtt` subscribe and reset it every loop, `mqtt` also after every publish.
   A missed feed ends in a panic reboot with reason TASK_WDT, reported by the
@@ -446,11 +460,14 @@ and written back). JSON `schema` = `kConfigJsonSchema` 2; import accepts 1..2.
 |---|---|---|---|---|
 | `schema` | int | read-only | 2 | - |
 | `station` | string | 1..20 bytes, `isSafeName` (UTF-8 and spaces allowed like legacy; DHCP/syslog use `buildHostname`) | `VdMot` | `sysCfg/stName` ("" -> `VdMot` + `mqtt.rootTopic` `VdMotFBH`) |
+| `net.iface` | int | 0 auto, 1 ethernet, 2 wifi | 0 | `netCfg/ethwifi` |
 | `net.dhcp` | bool | | true | `netCfg/dhcp` |
 | `net.ip` | IPv4 | non-zero when !dhcp | 0.0.0.0 | `netCfg/staticIp` |
 | `net.mask` | IPv4 | contiguous, non-zero when !dhcp | 0.0.0.0 | `netCfg/mask` |
 | `net.gateway` | IPv4 | non-zero when !dhcp | 0.0.0.0 | `netCfg/gw` |
 | `net.dns` | IPv4 | any; 0 with a static IP = the gateway (`effectiveDns`) | 0.0.0.0 | `netCfg/dnsIp` |
+| `net.ssid` | string | 0..32 bytes printable text (ASCII or UTF-8); required when iface = wifi | "" | `netCfg/ssid` |
+| `net.wifiPassword` | secret | "" (open network) or 8..63 when ssid set | "" | `netCfg/pwd` |
 | `net.reconnectTimeoutMin` | int | 0..240 (0 = watchdog off) | 5 | `netCfg/netConnTO` |
 | `time.ntpServer` | host | 0..64, `isHostName` or IPv4; "" disables SNTP | `pool.ntp.org` | `netCfg/timeServer` |
 | `time.tzName` | string | 0..49 printable | `Europe/Berlin` | `tZCfg/tZ` |
@@ -504,15 +521,18 @@ and written back). JSON `schema` = `kConfigJsonSchema` 2; import accepts 1..2.
 | `failsafe.timeoutMin` | int | 0 (off) or 5..1440 | 60 | - (`brokerMQTO` only in the import report) |
 | `persistLog` | bool | | true | - |
 
-Removed settings (`retiredField` in `config.cpp`), gone in 2.1.0: `net.iface`,
-`net.ssid` and `net.wifiPassword` (WiFi: the ESP runs on Ethernet only), and
-`web.user`, `web.password` and `web.protectRead` (the web login). Their places
-in the `cfg` blob are kept with the neutral values 0 (auto), "", "", "", ""
-and false (section 9), so an older firmware reads Ethernet without WiFi and
-the login off after a rollback. `setConfigValue` accepts their keys and
-`net.wifiPasswordSet` and `web.passwordSet` with any value and ignores them,
-so an export of an older firmware imports unchanged; the export leaves them
-out.
+Removed settings (`retiredField` in `config.cpp`): `web.user`, `web.password`
+and `web.protectRead` (the web login, gone in 2.1.0). Their places in the `cfg`
+blob are kept with the neutral values "", "" and false (section 9), so an
+older firmware reads the login as off after a rollback. `setConfigValue`
+accepts their keys and `web.passwordSet` with any value and ignores them, so
+an export of an older firmware imports unchanged; the export leaves them out.
+
+2.1.0 to 2.1.4 ran on Ethernet only and had `net.iface`, `net.ssid` and
+`net.wifiPassword` as retired fields: written as 0 (auto), "" and "" at their
+2.0.0 places (in the `cfg` blob and in the network trial record) and dropped
+when read. So they load here without a migration; what that means for an
+upgrade and a downgrade: `docs/revamped/CHANGELOG.md`.
 
 Validation rules V1-V3 (mode 2 without `germanDecimal`; unique effective
 valve segments; unique HA ids of valves, of active temp slots with an id and
@@ -530,8 +550,8 @@ display and only writes a mapping the user changed). The STM learn time
 (`stlnt`) follows the calibration schedule (section 14).
 
 Dropped legacy keys (never imported, counted as ignored in the import
-report): `sysCfg/CF` (°C only), `netCfg/ethwifi`, `ssid` and `pwd` (WiFi),
-`netCfg/userName` and `userPwd` (the web login), `protCfg/brokerInterval`, `brokerMQTO`, `brokerMQToPos`,
+report): `sysCfg/CF` (°C only), `netCfg/userName` and `netCfg/userPwd` (the
+web login), `protCfg/brokerInterval`, `brokerMQTO`, `brokerMQToPos`,
 `brokerMQF` bit0 and bit1, all of `valvesCtrlCfg`, `msgCfg`, `motorCfg`,
 `valvesCfg/movCalib`.
 
@@ -547,9 +567,10 @@ overrides, ids); logger sinks reconfigure; the stm task reloads the active
 mask, slot ids and the failsafe settings (pushed to the STM at once, no MQTT
 reconnect). An ESP restart follows after the response only when network
 fields in use change (then on trial, section 16) or the station changes the
-host name; static fields under DHCP do not restart. With jumper X20 fitted the ESP restart also resets the STM (IO15
-strap); STM 2.1 keeps positions and targets over that warm reset, older STMs
-recalibrate.
+host name; static fields under DHCP and WiFi fields with the interface
+ethernet do not restart. With jumper X20 fitted the ESP restart also resets
+the STM (IO15 strap); STM 2.1 keeps positions and targets over that warm
+reset, older STMs recalibrate.
 
 ## 8. Legacy import
 
@@ -589,7 +610,7 @@ NVS namespace `vdmrev`:
 | `haDrop` | u8 | 1 = legacy DROP discovery entities deleted |
 | `haLayout` | u8 | 2 = the 2.1 discovery layout was published (2.0.0 migration done) |
 | `targets` | blob 46 | desired targets: "VDTG", version 1, count 12, 12 x {flags bit0 valid, pos, source}, CRC32 |
-| `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous DHCP/addresses, CRCs; the layout of the firmware with WiFi, its interface and WiFi fields written neutral and skipped when read) |
+| `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous interface/DHCP/addresses/WiFi, CRCs) |
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
 
@@ -650,6 +671,16 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   task stack is 8960 B (`app::kAsyncTcpStackBytes`, patched in by
   `tools/patch_libs.py`; static worst case ~7.1 KB by the ELF, 3.4 KB
   measured).
+- WiFi: the driver takes about 33 KB of heap while it runs. Measured on a
+  WT32-ETH01 with a test build that ran WiFi (scanning) next to Ethernet:
+  about 47 KB free when idle instead of about 80 KB; the lowest free heap
+  was 10.4 KB under 3 parallel HTTP clients and 6.4 KB under 10. On WiFi
+  alone, connected: about 50 KB free when idle, lowest 14.3 KB under 3
+  clients and 5.3 KB under 10. The heap guard restarts only below 12 KB
+  held for 60 s (section 16). Both drivers
+  run at once in the auto fallback, where the Ethernet driver stays started
+  without an IP; with the interface wifi the Ethernet driver is not
+  started, and with Ethernet up WiFi is off.
 - Heap figures (`/api/health`, `low_heap`, `heap_fragmented`) count the 8-bit
   capable heap, not the IRAM that only 32-bit accesses reach.
   Everything else is static, on a task stack or one of the short-lived heap
@@ -693,8 +724,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
 Topic tables, payloads, subscriptions, retained handling and broker settings:
 `docs/revamped/MQTT.md`. Implementation rules:
 
-- Connection: PubSubClient over WiFiClient (Arduino's TCP client, here on
-  Ethernet), MQTT 3.1.1. Client id `mqtt.clientId` or
+- Connection: PubSubClient over WiFiClient (Arduino's TCP client, on
+  Ethernet or WiFi), MQTT 3.1.1. Client id `mqtt.clientId` or
   `buildMqttClientId(station, efuse MAC)`
   (`<buildHostname cut to 16>-<mac[3..5] hex>`). `cleanSession=false`, except
   the first connect after `mqttTopicConfigChanged`. Socket timeout 5 s, TCP
@@ -838,7 +869,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 120 | config_newer_schema | Warning | W | - | base schema / unknown ext records |
 | 121 | files_removed | Info | - | - | files / KiB / name or `legacy images` |
 | 122 | heap_critical | Error | W | - | free / largest block (the heap guard's restart follows, section 16) |
-| 200 | net_up | Info | W | - | 1 eth (2 was WiFi) / - / IP |
+| 200 | net_up | Info | W | - | 1 eth, 2 wifi / - / IP |
 | 201 | net_down | Warning | W | - | interface |
 | 202 | mqtt_connected | Info | W | - | |
 | 203 | mqtt_disconnected | Warning | W | - | PubSubClient state |
@@ -850,7 +881,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 209 | net_trial_reverted | Warning | W | - | reason 1 not confirmed, 2 no network, 3 interrupted, 4 user, 5 trial not stored / 0 ok, -1 revert failed / previous address |
 | 210 | net_unreachable | Warning | W | - | s since evidence / last NetEvidence |
 | 211 | net_reachable | Info | - | - | outage s |
-| 212 | net_interface_restart | Warning | W | - | outage s / 1 eth (2 and 3 were WiFi) |
+| 212 | net_interface_restart | Warning | W | - | outage s / 1 eth, 2 wifi, 3 both |
 | 213 | request_refused | Warning | W | - | 1 host, 2 origin, 3 header, 4 content type / - / client IP |
 | 214 | auth_locked | Warning | - | - | retired with the web login (2.1.0): never raised, number and name reserved |
 | 300 | link_up | Info | W | - | |
@@ -1037,6 +1068,24 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   dashboard show the reset reason `sw` of every requested restart, and MQTT
   gets neither event: the MQTT task goes offline as soon as a restart is
   pending and publishes only the events of its own boot.
+- Interfaces (`net.iface`, applied by `net::service()` in the app task every
+  second): Ethernet (LAN8720, Arduino `ETH`) starts at boot unless the
+  interface is wifi; WiFi STA starts at boot only with the interface wifi,
+  and never without an SSID. With the interface auto WiFi is the fallback:
+  it starts after 30 s without an Ethernet IP (at once when the Ethernet
+  driver did not start) and stops once Ethernet has an IP. While WiFi
+  should run and has no IP, `WiFi.begin()` repeats with a back-off of 5 s
+  doubling to 60 s. `net` starts, (re)connects and stops WiFi (`begin()` at
+  boot, then the app task). Arduino's automatic reconnect is off
+  (`WiFi.setAutoReconnect(false)`): it calls `WiFi.begin()` on the
+  `arduino_events` task (4096 B), and after a stop that call would start
+  the whole WiFi driver there. What stays of Arduino's own reconnect is one
+  retry after the first unrequested WiFi disconnect since boot.
+  `WiFi.setHostname()` comes before `WiFi.mode()`, which hands the name to
+  the WiFi interface (2.0.0 called it after `mode()`, so DHCP over WiFi
+  sent the default `esp32-xxxxxx`); Ethernet takes it at `ETH_START`. A
+  static IP applies to either interface; the WiFi credentials stay in
+  `vdmrev` (`WiFi.persistent(false)`, nothing in the WiFi driver's NVS).
 - Network reachability (`NetReachability`): evidence = a gateway ping reply
   (probe every 60 s), the MQTT session, an SNTP sync, an HTTP request from a
   LAN peer, a DHCP lease. The staleness check (150 s without evidence) is
@@ -1048,14 +1097,16 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   without a report goes after 10 s), and a probe that falls due meanwhile
   waits for that.
 - Network watchdog (`NetWatchdog`, legacy `netConnTO`): `reconnectTimeoutMin`
-  minutes (default 5) without reachability -> restart Ethernet (event 212,
+  minutes (default 5) without reachability -> restart the interfaces that
+  run (Ethernet stop and start, WiFi reconnect; event 212,
   once per outage); after another `reconnectTimeoutMin` ×
   4^restarts minutes (capped at 24 h) -> restart the ESP (reason 2). 0
   disables both. The restart count survives software restarts in RTC memory
   and is cleared as soon as the network is reachable.
 - Network trial (`NetTrial`): a saved change with `netTrialRequired`
-  (DHCP, static fields in use) stores the previous fields in NVS `netTrial`
-  (Armed) and restarts. The next boot runs
+  (interface, DHCP, static fields in use, WiFi fields unless the interface
+  is ethernet) stores the previous fields in NVS `netTrial` (Armed) and
+  restarts. The next boot runs
   the new settings (Running) with a 120 s window from the first IP (120 s
   after boot without network); `POST /api/system/network/confirm` keeps
   them, `revert` or the timeout restores the previous fields (event 209,
@@ -1064,11 +1115,7 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   arg2 1) and starts a new one. A record that cannot be stored (Armed at
   the save, Running at boot) reverts at once to the settings in use (209
   reason 5): without it an interrupted trial would not revert. Config
-  backups are not written while a trial runs. The record keeps the layout of
-  the firmware with WiFi (interface auto, no WiFi), so a rollback reads it;
-  a record of that firmware whose settings on trial had an interface choice
-  or WiFi does not match the trial CRC here and is stale (erased, the
-  settings in use stay: they were reachable for the upgrade).
+  backups are not written while a trial runs.
 - Factory reset: GPIO2 LOW for 5 s at boot, once per fitting of the jumper
   (NVS latch `frLatch`, set after a reset that succeeded, cleared when the
   pin reads HIGH at boot or at run time; a boot with the latch set logs 113

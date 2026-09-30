@@ -108,9 +108,9 @@ Error codes:
 - `esp`: `version`, `build`, `uptime`, `resetReason`, `boots`, `heap`
   (`free`, `min`, `largest`), `flash` (`used`, `size`);
 - `time`: `valid`, `epoch`, `local`, `lastSync`;
-- `net`: `state` (`down`/`ethernet`), `ip`, `mask`, `gw`, `dns`, `mac`,
-  `hostname`, `trial` (`null` or `{"remainS":n}` while a network change is on
-  trial);
+- `net`: `state` (`down`/`ethernet`/`wifi`), `ip`, `mask`, `gw`, `dns`,
+  `mac`, `rssi` (dBm on WiFi, else `null`), `hostname`, `trial` (`null` or
+  `{"remainS":n}` while a network change is on trial);
 - `mqtt`: `state`, `rc`, `reconnects`, `publishFailures`, `clientId`,
   `haStatus` (`unknown`/`online`/`offline`);
 - `stm`: `link`, `proto`, `version`, `build`, `hwId`, `chip`, `compatible`,
@@ -217,7 +217,7 @@ to open a valve at once use assembly or change its failsafe position.
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/api/config` | – | full config, the secret replaced by the `passwordSet` flag |
+| GET | `/api/config` | – | full config, secrets replaced by `wifiPasswordSet` / `passwordSet` flags |
 | POST | `/api/config` | partial config with the same structure, optional `"clearSecrets":true` | 200 with the new config plus `"restartRequired":bool,"netTrial":bool`; `400 {"error":"invalid","detail":"<key path>"}` |
 | POST | `/api/config?dryRun=1` | same | 200 `{"restartRequired":bool,"netTrial":bool}`, nothing saved |
 | GET | `/api/config/export` | – | config as download `vdmot-config.json`; never with a secret (a `secrets` query parameter is ignored) |
@@ -238,9 +238,8 @@ the STM at once.
 
 Keys of removed settings are accepted with any value and ignored, so an
 export of an older firmware imports unchanged; they never appear in an export
-or in `GET /api/config`: `net.iface`, `net.ssid`, `net.wifiPassword`,
-`net.wifiPasswordSet` (WiFi) and `web.user`, `web.password`,
-`web.passwordSet`, `web.protectRead` (the web login), all removed in 2.1.0.
+or in `GET /api/config`: `web.user`, `web.password`, `web.passwordSet`,
+`web.protectRead` (the web login, removed in 2.1.0).
 
 New config keys in 2.1: `web.allowedHosts`, `mqtt.rootTopic`, `mqtt.clientId`,
 `mqtt.discoveryPrefix`, `failsafe.timeoutMin` (0 = off, or 5..1440, default 60),

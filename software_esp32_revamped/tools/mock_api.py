@@ -67,18 +67,17 @@ EVENT_NAMES = {
 }
 
 INT_RANGES = {
-    "net.reconnectTimeoutMin": (0, 240), "syslog.level": (0, 3), "syslog.port": (1, 65535),
+    "net.iface": (0, 2), "net.reconnectTimeoutMin": (0, 240), "syslog.level": (0, 3), "syslog.port": (1, 65535),
     "mqtt.mode": (0, 2), "mqtt.port": (1, 65535), "mqtt.keepAliveS": (5, 300), "mqtt.publishIntervalS": (2, 3600),
     "mqtt.minDelayS": (0, 3600), "calib.dayMask": (0, 127), "calib.hour": (0, 23), "calib.minute": (0, 59),
 }
 STR_RANGES = {
-    "station": (1, 20), "time.ntpServer": (0, 64), "time.tzName": (0, 49),
+    "station": (1, 20), "net.ssid": (0, 32), "time.ntpServer": (0, 64), "time.tzName": (0, 49),
     "time.tzPosix": (1, 49), "mqtt.host": (0, 64), "mqtt.user": (0, 64),
 }
-SECRETS = {"mqtt.password": 64}
+SECRETS = {"net.wifiPassword": 63, "mqtt.password": 64}
 # Keys of removed settings: accepted and ignored, so an older export still imports.
-RETIRED = {"net.iface", "net.ssid", "net.wifiPassword", "net.wifiPasswordSet",
-           "web.user", "web.password", "web.passwordSet", "web.protectRead"}
+RETIRED = {"web.user", "web.password", "web.passwordSet", "web.protectRead"}
 IP_KEYS = {"net.ip", "net.mask", "net.gateway", "net.dns", "syslog.server"}
 ONEWIRE_RE = re.compile(r"^[0-9a-fA-F]{2}(-[0-9a-fA-F]{2}){7}$")
 SAFE_BAD = re.compile(r'[+#/"\\]')
@@ -131,10 +130,14 @@ def effective_dns(n):
 
 def net_trial_required(b, a):
     """vdm::netTrialRequired (config.h)."""
-    if b["dhcp"] != a["dhcp"]:
+    if b["iface"] != a["iface"] or b["dhcp"] != a["dhcp"]:
         return True
-    return not a["dhcp"] and (any(b[k] != a[k] for k in ("ip", "mask", "gateway")) or
-                              effective_dns(b) != effective_dns(a))
+    if not a["dhcp"] and any(b[k] != a[k] for k in ("ip", "mask", "gateway")) or \
+            (not a["dhcp"] and effective_dns(b) != effective_dns(a)):
+        return True
+    if not (b["iface"] == 1 and a["iface"] == 1) and (b["ssid"] != a["ssid"] or b["wifiPassword"] != a["wifiPassword"]):
+        return True
+    return False
 
 
 def restart_reasons(b, a):
@@ -260,8 +263,8 @@ class Device:
     def _default_config(self):
         c = {
             "schema": 2, "station": f"VdMot-{self.station}",
-            "net": {"dhcp": True, "ip": "0.0.0.0", "mask": "0.0.0.0", "gateway": "0.0.0.0", "dns": "0.0.0.0",
-                    "reconnectTimeoutMin": 5},
+            "net": {"iface": 1, "dhcp": True, "ip": "0.0.0.0", "mask": "0.0.0.0", "gateway": "0.0.0.0",
+                    "dns": "0.0.0.0", "ssid": "", "wifiPassword": "", "reconnectTimeoutMin": 5},
             "time": {"ntpServer": "pool.ntp.org", "tzName": "Europe/Warsaw", "tzPosix": "CET-1CEST,M3.5.0,M10.5.0/3"},
             "syslog": {"level": 0, "server": "0.0.0.0", "port": 514},
             "web": {"allowedHosts": "localhost"},
@@ -386,7 +389,7 @@ class Device:
         m = {
             100: f"boot (reset reason {a1}, boot {a2}) {text}", 102: f"configuration saved (rev {a1}, {text})",
             106: f"ESP firmware updated ({a1} bytes)", 109: f"restart requested (reason {a1})",
-            111: "time synchronised", 200: f"network up (eth, {text})",
+            111: "time synchronised", 200: f"network up ({'ethernet' if a1 == 1 else 'wifi'}, {text})",
             202: "MQTT connected", 205: f"HA discovery sent ({a1} configs, {a2} deletes)", 300: "STM link up",
             304: "STM reset by user", 306: f"STM firmware {text} (protocol {a1})",
             311: f"STM flashing started ({a1} bytes, {text})", 312: f"STM flashed in {a1} ms, now {text}",
@@ -607,7 +610,7 @@ class Device:
                      "lastSync": int(now) - 1800},
             "net": {"state": "ethernet", "ip": net_ip, "mask": "255.255.255.0", "gw": "192.168.1.1",
                     "dns": "192.168.1.1", "mac": "A8:03:2A:6C:1E:%02X" % (0x51 if self.station == "east" else 0x52),
-                    "hostname": build_hostname(c["station"]), "trial": trial},
+                    "rssi": None, "hostname": build_hostname(c["station"]), "trial": trial},
             "mqtt": {"state": "connected" if mqtt_on else "disabled", "rc": 0, "reconnects": 2, "publishFailures": 0,
                      "clientId": c["mqtt"]["clientId"] or build_hostname(c["station"]) + "-6c1e51",
                      "haStatus": "offline" if "haoffline" in self.scenarios else "online" if mqtt_on else "unknown"},
@@ -969,6 +972,10 @@ class Device:
             for k in ("ip", "mask", "gateway"):
                 if n[k] == "0.0.0.0":
                     return f"net.{k}"
+        if n["wifiPassword"] and len(n["wifiPassword"].encode()) < 8:  # empty = open network
+            return "net.wifiPassword"
+        if n["iface"] == 2 and not n["ssid"]:
+            return "net.ssid"
         if c["syslog"]["level"] > 0 and c["syslog"]["server"] == "0.0.0.0":
             return "syslog.server"
         m = c["mqtt"]

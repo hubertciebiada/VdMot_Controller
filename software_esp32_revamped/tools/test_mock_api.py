@@ -124,18 +124,6 @@ class NoLogin(unittest.TestCase):  # M2
         self.assertEqual(r.status, 200)
         self.assertEqual(d.config["web"], {"allowedHosts": "heating.lan"})
 
-    def test_retired_wifi_keys(self):
-        d = device()
-        self.assertEqual(set(req("GET", "/api/config").json["net"]),
-                         {"dhcp", "ip", "mask", "gateway", "dns", "reconnectTimeoutMin"})
-        r = req("POST", "/api/config", {"net": {"iface": 2, "ssid": "home", "wifiPassword": "secret123",
-                                                "wifiPasswordSet": True, "reconnectTimeoutMin": 9}})
-        self.assertEqual(r.status, 200)
-        self.assertFalse(r.json["restartRequired"])
-        self.assertEqual(d.config["net"]["reconnectTimeoutMin"], 9)
-        self.assertNotIn("iface", d.config["net"])
-        self.assertNotIn("rssi", req("GET", "/api/status").json["net"])
-
 
 class Legacy(unittest.TestCase):  # M3
     def test_aliases(self):
@@ -280,6 +268,7 @@ class Answers(unittest.TestCase):  # M10
 class Validation(unittest.TestCase):  # M11
     def test_rules(self):
         device()
+        self.assertEqual(req("POST", "/api/config", {"net": {"ssid": "open"}}).status, 200)  # open WiFi
         self.assertEqual(req("POST", "/api/config", {"valves": {"1": {"name": "Küche 1"}}}).status, 200)
         self.assertEqual(req("POST", "/api/config", {"valves": {"1": {"name": "a/b"}}}).status, 400)
         self.assertEqual(req("POST", "/api/config", {"mqtt": {"password": "pässwort"}}).status, 200)
@@ -454,9 +443,9 @@ class RestartRules(unittest.TestCase):  # M24
         b["station"] = "Other"
         self.assertEqual(mock_api.restart_reasons(a, b), 2)
         b = json.loads(json.dumps(d.config))
-        b["net"]["ip"] = "192.168.1.60"  # a static field under DHCP does not matter
+        b["net"]["ssid"] = "x"  # Ethernet in both: WiFi fields do not matter
         self.assertEqual(mock_api.restart_reasons(a, b), 0)
-        b["net"]["dhcp"] = False
+        b["net"]["iface"] = 0
         self.assertEqual(mock_api.restart_reasons(a, b), 1)
 
     def test_rounding(self):

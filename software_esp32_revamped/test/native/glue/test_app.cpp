@@ -313,6 +313,20 @@ TEST_CASE("app readHealth: our tasks at once, library tasks once found by a reso
   CHECK(h.tasks[3].stackBytes == app::kAsyncTcpStackBytes);
   CHECK(h.tasks[3].minFreeBytes == 9000);
   CHECK(std::string(h.tasks[4].name) == "arduino_events");
+  // The IDF event loop and lwIP, with the stack sizes of esp_task.h.
+  r.stackHighWater["sys_evt"] = 1100;
+  r.stackHighWater["tiT"] = 1500;
+  r.extraHandles["tiT"] = handle(0x9040);
+  r.extraHandles["sys_evt"] = handle(0x9030);
+  runAppTask(101);
+  app::readHealth(h);
+  REQUIRE(h.taskCount == 7);
+  CHECK(std::string(h.tasks[5].name) == "sys_evt");
+  CHECK(h.tasks[5].stackBytes == 2560);
+  CHECK(h.tasks[5].minFreeBytes == 1100);
+  CHECK(std::string(h.tasks[6].name) == "tiT");
+  CHECK(h.tasks[6].stackBytes == 3072);
+  CHECK(h.tasks[6].minFreeBytes == 1500);
   CHECK_FALSE(sib::logger().has(vdm::EventCode::StackLow));
 }
 
@@ -429,16 +443,23 @@ TEST_CASE("app task: a low stack high-water mark is reported once per task") {
   r.stackHighWater["mqtt"] = 5000;
   r.stackHighWater["async_tcp"] = app::kAsyncTcpStackBytes / 8 - 1;  // just below the threshold
   r.extraHandles["async_tcp"] = handle(0x9010);
+  r.stackHighWater["sys_evt"] = 511;  // below the 512 B floor (2560 / 8 is less)
+  r.extraHandles["sys_evt"] = handle(0x9030);
+  r.stackHighWater["tiT"] = 512;  // at the floor: not low
+  r.extraHandles["tiT"] = handle(0x9040);
   runAppTask(101);
   runAppTask(101);
   const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::StackLow);
-  REQUIRE(ev.size() == 2);
+  REQUIRE(ev.size() == 3);
   CHECK(std::string(ev[0].text) == "stm");
   CHECK(ev[0].arg1 == 831);
   CHECK(ev[0].arg2 == 6656);
   CHECK(std::string(ev[1].text) == "async_tcp");
   CHECK(ev[1].arg1 == static_cast<int32_t>(app::kAsyncTcpStackBytes / 8 - 1));
   CHECK(ev[1].arg2 == static_cast<int32_t>(app::kAsyncTcpStackBytes));
+  CHECK(std::string(ev[2].text) == "sys_evt");
+  CHECK(ev[2].arg1 == 511);
+  CHECK(ev[2].arg2 == 2560);
 }
 
 TEST_CASE("app task: the heap guard samples every second, from 10 min on, and restarts once") {

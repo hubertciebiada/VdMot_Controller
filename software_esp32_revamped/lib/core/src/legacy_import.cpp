@@ -39,9 +39,6 @@ struct DroppedKey {
 };
 const DroppedKey kDropped[] = {
     {"sysCfg", "CF"},
-    {"netCfg", "ethwifi"},  // WiFi (removed in 2.1.0)
-    {"netCfg", "ssid"},
-    {"netCfg", "pwd"},
     {"netCfg", "userName"},  // the web login (removed in 2.1.0)
     {"netCfg", "userPwd"},
     {"protCfg", "brokerInterval"},
@@ -224,11 +221,14 @@ class Importer {
   }
 
   void importNet() {
+    intKey("netCfg", "ethwifi", "net.iface");
     intKey("netCfg", "dhcp", "net.dhcp");
     ipKey("netCfg", "staticIp", "net.ip");
     ipKey("netCfg", "mask", "net.mask");
     ipKey("netCfg", "gw", "net.gateway");
     ipKey("netCfg", "dnsIp", "net.dns");
+    stringKey("netCfg", "ssid", "net.ssid");
+    stringKey("netCfg", "pwd", "net.wifiPassword");
     intKey("netCfg", "netConnTO", "net.reconnectTimeoutMin");
     stringKey("netCfg", "timeServer", "time.ntpServer");
     int64_t level;
@@ -557,7 +557,8 @@ class Importer {
       const char* key;
     };
     static const Bit kKeys[] = {
-        {kRepairStaticIp, "netCfg", "dhcp"},        {kRepairSyslog, "netCfg", "syslogEnable"},
+        {kRepairStaticIp, "netCfg", "dhcp"},        {kRepairWifiPassword, "netCfg", "pwd"},
+        {kRepairWifiIface, "netCfg", "ethwifi"},    {kRepairSyslog, "netCfg", "syslogEnable"},
         {kRepairMqttHost, "protCfg", "brokerIp"},   {kRepairMinDelay, "protCfg", "brokerMD"},
         {kRepairHaSeparate, "protCfg", "dataProt"}, {kRepairHaDecimal, "protCfg", "brokerMQF"},
     };

@@ -31,12 +31,15 @@ constexpr size_t kAllowedHostsMax = 80;  // below the patch reader's 96: a cut s
 constexpr size_t kClientIdMax = 64;
 constexpr size_t kTopicPrefixMax = 32;
 
+enum class NetInterface : uint8_t { Auto = 0, Ethernet = 1, Wifi = 2 };
 enum class MqttMode : uint8_t { Off = 0, Mqtt = 1, MqttHa = 2 };
 
-// Ethernet only.
 struct NetConfig {
+  NetInterface iface = NetInterface::Auto;
   bool dhcp = true;
   uint32_t ip = 0, mask = 0, gateway = 0, dns = 0;  // legacy uint32 layout (parseIpv4)
+  char ssid[33] = {0};                // 1..32 chars (802.11 limit) or "" = WiFi off
+  char wifiPassword[kSecretMax + 1] = {0};  // "" (open network) or 8..63 chars (WPA2)
   uint8_t reconnectTimeoutMin = 5;    // legacy netConnTO; 0 = never restart the ESP
 };
 
@@ -143,8 +146,10 @@ void setDefaults(Config& c);
 // Validation of a whole config. Returns true when every field is within its
 // documented range and the cross-field rules hold:
 //  - static IP: when !dhcp, ip/mask/gateway non-zero and mask contiguous;
+//  - ssid set -> wifiPassword "" (open network) or 8..63 chars; iface Wifi
+//    -> ssid set;
 //  - syslog level > 0 -> server != 0 and port != 0;
-//  - secrets printable text (ASCII or UTF-8);
+//  - ssid and secrets printable text (ASCII or UTF-8);
 //  - mqtt mode != Off -> host valid (isHostName or IPv4), port != 0;
 //    minDelayS <= publishIntervalS; mode MqttHa -> separate == true;
 //  - names: isSafeName (station 1..20, others 0..10); duplicate non-empty
@@ -189,17 +194,16 @@ const char* setResultName(SetResult r);
 //   "station", "net.dhcp", "net.ip" (dotted string), "mqtt.port",
 //   "valves.3.name", "temps.12.offset" (float C, rounded to 0.1),
 //   "temps.12.id" ("hh-..." or "" to clear), "calib.dayMask", ...
-// The complete key list is DESIGN.md "Config schema". The secret
-// ("mqtt.password") is write-only; an empty string for it means "unchanged"
-// unless `clearSecrets` is true.
+// The complete key list is DESIGN.md "Config schema". Secrets
+// ("mqtt.password", "net.wifiPassword") are write-only; an empty string for
+// a secret means "unchanged" unless `clearSecrets` is true.
 // So that an exported document can be posted back unchanged, "schema" 1..
-// kConfigJsonSchema (a 2.0.0 export says 1) and the export's
-// "mqtt.passwordSet" boolean are accepted as no-ops. The keys of removed
-// settings ("net.iface", "net.ssid", "net.wifiPassword",
-// "net.wifiPasswordSet", "web.user", "web.password", "web.passwordSet",
-// "web.protectRead") are accepted with any value and ignored, so an export
-// of an older firmware still imports. Paths are at most 64 chars; array
-// indices are 1..N without leading zeros.
+// kConfigJsonSchema (a 2.0.0 export says 1) and the export's "<secret>Set"
+// booleans ("net.wifiPasswordSet", "mqtt.passwordSet") are accepted as
+// no-ops. The keys of removed settings ("web.user", "web.password",
+// "web.passwordSet", "web.protectRead") are accepted with any value and
+// ignored, so an export of an older firmware still imports. Paths are at
+// most 64 chars; array indices are 1..N without leading zeros.
 SetResult setConfigValue(Config& c, const char* path, const ConfigValue& v, bool clearSecrets);
 
 // ---------------------------------------------------------------- JSON patch
@@ -261,8 +265,9 @@ const char* mqttRootTopic(const Config& c);
 // DNS server of the network settings: with a static IP net.dns, or the
 // gateway when dns is 0; with DHCP net.dns.
 uint32_t effectiveDns(const NetConfig& n);
-// A change that can make the device unreachable (network trial): dhcp
-// differs; with !after.dhcp ip, mask, gateway or effectiveDns differ.
+// A change that can make the device unreachable (network trial): iface or
+// dhcp differ; with !after.dhcp ip, mask, gateway or effectiveDns differ;
+// ssid or wifiPassword differ unless iface is Ethernet in both.
 bool netTrialRequired(const NetConfig& before, const NetConfig& after);
 enum RestartReason : uint8_t { kRestartNetwork = 0x01, kRestartHostname = 0x02 };
 // Why applying `after` over `before` needs an ESP restart:
@@ -285,9 +290,8 @@ bool mqttTopicConfigChanged(const Config& a, const Config& b);
 // payload (explicit little-endian field-by-field encoding, strings as u8
 // length + bytes), u32 CRC32 of everything before it. Never a raw struct
 // dump. Holds exactly the fields of ESP 2.0.0 in their order; a setting
-// removed since keeps its place with its neutral value (net.iface 0 = auto,
-// net.ssid "", net.wifiPassword "", web.user "", web.password "",
-// web.protectRead false) and is skipped when decoded.
+// removed since keeps its place with its neutral value (web.user "",
+// web.password "", web.protectRead false) and is skipped when decoded.
 constexpr size_t kConfigBlobMax = 4096;
 // Returns bytes written, 0 when cap is too small.
 size_t encodeConfig(const Config& c, uint8_t* out, size_t cap);
@@ -300,8 +304,8 @@ enum class DecodeResult : uint8_t { Ok, TooShort, BadMagic, BadCrc, UnsupportedS
 enum RepairBit : uint32_t {
   kRepairField = 1u << 0,         // a field outside its per-field rule was reset to its default
   kRepairStaticIp = 1u << 1,      // incomplete static IP -> dhcp
-  // 1u << 2: WiFi password of 1..7 bytes, 1u << 3: WiFi-only without ssid
-  // (WiFi, removed in 2.1.0)
+  kRepairWifiPassword = 1u << 2,  // ssid with a 1..7 byte password -> WiFi credentials cleared
+  kRepairWifiIface = 1u << 3,     // iface WiFi without ssid -> auto
   kRepairSyslog = 1u << 4,        // level > 0 without server -> 0
   // 1u << 5: web user without password (web login, removed in 2.1.0)
   kRepairMqttHost = 1u << 6,      // mode != off without host -> off

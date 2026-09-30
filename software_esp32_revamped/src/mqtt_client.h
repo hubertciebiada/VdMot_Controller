@@ -1,8 +1,8 @@
-// MQTT task: PubSubClient over WiFiClient (Arduino's TCP client, here on
-// Ethernet), LWT on <main>status, legacy-compatible publishing
-// (vdm::PublishScheduler), new diag topics, target command subscription, HA
-// discovery iteration (one message per loop pass), rate-limited events. Owns
-// its own copies of config and snapshots.
+// MQTT task: PubSubClient over WiFiClient (works on ETH and WiFi), LWT on
+// <main>status, legacy-compatible publishing (vdm::PublishScheduler), new
+// diag topics, target command subscription, HA discovery iteration (one
+// message per loop pass), rate-limited events. Owns its own copies of
+// config and snapshots.
 #pragma once
 
 #include <stdint.h>

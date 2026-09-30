@@ -37,7 +37,7 @@ enum class Kind : uint8_t {
 
 enum class Rule : uint8_t {
   None,
-  Printable,     // isPrintableText: ASCII 0x20..0x7E and UTF-8 (secrets, like legacy)
+  Printable,     // isPrintableText: ASCII 0x20..0x7E and UTF-8 (SSIDs, secrets, like legacy)
   NoSpace,       // 0x21..0x7E
   SafeName,      // isSafeName()
   Host,          // isHostName() or dotted IPv4
@@ -124,16 +124,17 @@ constexpr Field kRootHead[] = {
              static_cast<int32_t>(kStationNameMax), Rule::SafeName),
 };
 
-// WiFi and the interface choice went in 2.1.0 (Ethernet only).
 constexpr Field kNetFields[] = {
-    retiredField("iface", Kind::U8),
+    intField("iface", Kind::U8, offsetof(NetConfig, iface), 0, 2),
     boolField("dhcp", offsetof(NetConfig, dhcp)),
     plainField("ip", Kind::Ip, offsetof(NetConfig, ip)),
     plainField("mask", Kind::Mask, offsetof(NetConfig, mask)),
     plainField("gateway", Kind::Ip, offsetof(NetConfig, gateway)),
     plainField("dns", Kind::Ip, offsetof(NetConfig, dns)),
-    retiredField("ssid", Kind::Str, 33),  // 802.11: 32 bytes + NUL
-    retiredField("wifiPassword", Kind::Secret, kSecretMax + 1),
+    strField("ssid", Kind::Str, offsetof(NetConfig, ssid), sizeof(NetConfig::ssid), 0, 32,
+             Rule::Printable),
+    strField("wifiPassword", Kind::Secret, offsetof(NetConfig, wifiPassword),
+             sizeof(NetConfig::wifiPassword), 0, 63, Rule::Printable),
     intField("reconnectTimeoutMin", Kind::U8, offsetof(NetConfig, reconnectTimeoutMin), 0, 240),
 };
 
@@ -620,6 +621,10 @@ bool storedRulesOk(const Config& c, PathOut& po) {
     if (n.mask == 0) return failAt(po, kNet, "mask");
     if (n.gateway == 0) return failAt(po, kNet, "gateway");
   }
+  const size_t pwdLen = strlen(n.wifiPassword);
+  // Empty = open network (legacy WiFi.begin(ssid, "")); WPA2 needs 8..63.
+  if (n.ssid[0] != '\0' && pwdLen > 0 && pwdLen < 8) return failAt(po, kNet, "wifiPassword");
+  if (n.iface == NetInterface::Wifi && n.ssid[0] == '\0') return failAt(po, kNet, "ssid");
 
   if (c.syslog.level > 0 && c.syslog.server == 0) return failAt(po, kSyslog, "server");
 
@@ -733,10 +738,15 @@ const char* mqttRootTopic(const Config& c) {
 uint32_t effectiveDns(const NetConfig& n) { return !n.dhcp && n.dns == 0 ? n.gateway : n.dns; }
 
 bool netTrialRequired(const NetConfig& before, const NetConfig& after) {
-  if (before.dhcp != after.dhcp) return true;
-  return !after.dhcp && (before.ip != after.ip || before.mask != after.mask ||
-                         before.gateway != after.gateway ||
-                         effectiveDns(before) != effectiveDns(after));
+  if (before.iface != after.iface || before.dhcp != after.dhcp) return true;
+  if (!after.dhcp && (before.ip != after.ip || before.mask != after.mask ||
+                      before.gateway != after.gateway ||
+                      effectiveDns(before) != effectiveDns(after))) {
+    return true;
+  }
+  if (after.iface == NetInterface::Ethernet) return false;  // the same iface in both
+  return strncmp(before.ssid, after.ssid, sizeof before.ssid) != 0 ||
+         strncmp(before.wifiPassword, after.wifiPassword, sizeof before.wifiPassword) != 0;
 }
 
 uint8_t configRestartReasons(const Config& before, const Config& after) {
@@ -1904,6 +1914,16 @@ class Repairer {
     if (!n.dhcp && (n.ip == 0 || n.mask == 0 || n.gateway == 0)) {
       n.dhcp = true;  // an incomplete static setup would leave the device unreachable
       note(kRepairStaticIp, kNet, 0, "dhcp");
+    }
+    const size_t pwdLen = strlen(n.wifiPassword);
+    if (n.ssid[0] != '\0' && pwdLen > 0 && pwdLen < 8) {  // "" = open network
+      n.ssid[0] = '\0';
+      n.wifiPassword[0] = '\0';
+      note(kRepairWifiPassword, kNet, 0, "wifiPassword");
+    }
+    if (n.iface == NetInterface::Wifi && n.ssid[0] == '\0') {
+      n.iface = NetInterface::Auto;
+      note(kRepairWifiIface, kNet, 0, "iface");
     }
     if (c_.syslog.level > 0 && c_.syslog.server == 0) {
       c_.syslog.level = 0;

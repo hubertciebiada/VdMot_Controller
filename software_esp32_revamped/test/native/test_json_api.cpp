@@ -53,7 +53,7 @@ OneWireId oid(const char* s) {
 TEST_CASE("api: state names") {
   CHECK(std::string(netStateName(NetState::Down)) == "down");
   CHECK(std::string(netStateName(NetState::Ethernet)) == "ethernet");
-  CHECK(std::string(netStateName(static_cast<NetState>(2))) == "down");  // was WiFi
+  CHECK(std::string(netStateName(NetState::Wifi)) == "wifi");
   CHECK(std::string(netStateName(static_cast<NetState>(9))) == "down");
   CHECK(std::string(mqttStateName(MqttState::Disabled)) == "disabled");
   CHECK(std::string(mqttStateName(MqttState::Connecting)) == "connecting");
@@ -72,7 +72,7 @@ TEST_CASE("api: status of an empty snapshot") {
       "\"boots\":0,\"heap\":{\"free\":0,\"min\":0,\"largest\":0},\"flash\":{\"used\":0,\"size\":0}},"
       "\"time\":{\"valid\":false,\"epoch\":null,\"local\":null,\"lastSync\":null},"
       "\"net\":{\"state\":\"down\",\"ip\":\"0.0.0.0\",\"mask\":\"0.0.0.0\",\"gw\":\"0.0.0.0\","
-      "\"dns\":\"0.0.0.0\",\"mac\":\"\",\"hostname\":\"\",\"trial\":null},"
+      "\"dns\":\"0.0.0.0\",\"mac\":\"\",\"rssi\":null,\"hostname\":\"\",\"trial\":null},"
       "\"mqtt\":{\"state\":\"disabled\",\"rc\":0,\"reconnects\":0,\"publishFailures\":0,"
       "\"clientId\":\"\",\"haStatus\":\"unknown\"},"
       "\"stm\":{\"link\":" + q(linkStateName(LinkState::Unknown)) +
@@ -111,12 +111,13 @@ TEST_CASE("api: status of a populated snapshot") {
   s.local.minute = 5;
   s.local.second = 6;
   s.lastSyncEpoch = 1790000000;
-  s.net = NetState::Ethernet;
+  s.net = NetState::Wifi;
   s.ip = 0x3201A8C0;
   s.mask = 0x00FFFFFF;
   s.gateway = 0x0101A8C0;
   s.dns = 0x08080808;
   strcpy(s.mac, "AA:BB:CC:DD:EE:FF");
+  s.wifiRssi = -67;
   strcpy(s.hostname, "VdMot \"OG\"");
   s.mqtt = MqttState::Connected;
   s.mqttRc = -2;
@@ -191,8 +192,8 @@ TEST_CASE("api: status of a populated snapshot") {
       "\"largest\":110000},\"flash\":{\"used\":987654,\"size\":1310720}},"
       "\"time\":{\"valid\":true,\"epoch\":1790000123,\"local\":\"2026-09-03T04:05:06\","
       "\"lastSync\":1790000000},"
-      "\"net\":{\"state\":\"ethernet\",\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
-      "\"gw\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"mac\":\"AA:BB:CC:DD:EE:FF\","
+      "\"net\":{\"state\":\"wifi\",\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
+      "\"gw\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"mac\":\"AA:BB:CC:DD:EE:FF\",\"rssi\":-67,"
       "\"hostname\":\"VdMot \\\"OG\\\"\",\"trial\":{\"remainS\":87}},"
       "\"mqtt\":{\"state\":\"connected\",\"rc\":-2,\"reconnects\":3,\"publishFailures\":4,"
       "\"clientId\":\"vdmot-a1b2c3\",\"haStatus\":\"offline\"},"
@@ -232,6 +233,13 @@ TEST_CASE("api: status field rules") {
   s.resetReason = 255;
   j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
   CHECK(j.find("\"resetReason\":\"unknown\"") != std::string::npos);
+
+  // rssi only on WiFi.
+  s.wifiRssi = -50;
+  s.net = NetState::Ethernet;
+  j = build([&](JsonWriter& jw) { return writeStatusJson(jw, s); });
+  CHECK(j.find("\"state\":\"ethernet\"") != std::string::npos);
+  CHECK(j.find("\"rssi\":null") != std::string::npos);
 
   // Local time only with valid time on both flags.
   s.timeValid = true;

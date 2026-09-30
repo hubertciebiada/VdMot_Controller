@@ -9,6 +9,7 @@ const char* netStateName(NetState s) {
   switch (s) {
     case NetState::Down: return "down";
     case NetState::Ethernet: return "ethernet";
+    case NetState::Wifi: return "wifi";
   }
   return "down";
 }
@@ -261,6 +262,12 @@ bool writeStatusJson(JsonWriter& jw, const StatusSnapshot& s) {
   ipValue(jw, "dns", s.dns);
   jw.key("mac");
   jw.value(s.mac, boundedLength(s.mac, sizeof s.mac - 1));
+  jw.key("rssi");
+  if (s.net == NetState::Wifi) {
+    jw.value(static_cast<int32_t>(s.wifiRssi));
+  } else {
+    jw.nullValue();
+  }
   jw.key("hostname");
   jw.value(s.hostname, boundedLength(s.hostname, sizeof s.hostname - 1));
   jw.key("trial");

@@ -19,9 +19,9 @@
 
 namespace vdm {
 
-enum class NetState : uint8_t { Down = 0, Ethernet = 1 };  // 2 was WiFi (removed in 2.1.0)
+enum class NetState : uint8_t { Down = 0, Ethernet = 1, Wifi = 2 };
 enum class MqttState : uint8_t { Disabled = 0, Connecting = 1, Connected = 2, Error = 3 };
-const char* netStateName(NetState s);    // "down","ethernet"
+const char* netStateName(NetState s);    // "down","ethernet","wifi"
 const char* mqttStateName(MqttState s);  // "disabled","connecting","connected","error"
 
 // Everything /api/status shows. Filled by the web glue from the app, net,
@@ -44,6 +44,7 @@ struct StatusSnapshot {
   NetState net = NetState::Down;
   uint32_t ip = 0, mask = 0, gateway = 0, dns = 0;
   char mac[18] = {0};
+  int8_t wifiRssi = 0;
   char hostname[kStationNameMax + 1] = {0};
   // mqtt
   MqttState mqtt = MqttState::Disabled;
@@ -86,7 +87,7 @@ struct StatusSnapshot {
 // {"esp":{"version":..,"build":..,"uptime":..,"resetReason":"..","boots":..,
 //  "heap":{"free":..,"min":..,"largest":..},"flash":{"used":..,"size":..}},
 //  "time":{"valid":..,"epoch":..,"local":"2026-09-23T14:03:05","lastSync":..},
-//  "net":{"state":"ethernet","ip":"..","mask":"..","gw":"..","dns":"..","mac":"..","hostname":".."},
+//  "net":{"state":"ethernet","ip":"..","mask":"..","gw":"..","dns":"..","mac":"..","rssi":..,"hostname":".."},
 //  "mqtt":{"state":"connected","rc":0,"reconnects":..,"publishFailures":..},
 //  "stm":{"link":"up","proto":2,"version":"2.0.0-revamped_C2","build":..,"hwId":"0x431",
 //         "chip":"STM32F411xx","compatible":true,"minVersion":"1.4.0",
@@ -103,7 +104,7 @@ struct StatusSnapshot {
 // nextCalibLocal.valid); root "config":{"source":..,"repairs":..,
 // "newerSchema":..} and "importReport" last.
 // Unknown values are null: esp.build and stm.build 0, time.epoch/local
-// while !timeValid, lastSync 0, stm.proto 0, an
+// while !timeValid, lastSync 0, net.rssi unless on WiFi, stm.proto 0, an
 // invalid stm.version, hwId/chip for hwId 0, lastScheduled <= 0, nextSlot 0.
 // resetReason is the esp_reset_reason_t name ("poweron","task_wdt",...).
 // Builders return jw.ok() (writeErrorJson: jw.complete()).

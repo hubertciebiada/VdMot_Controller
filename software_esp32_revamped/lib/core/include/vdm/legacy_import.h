@@ -16,9 +16,9 @@ class JsonWriter;
 
 // Read-only access to one legacy NVS key. Namespaces: "sysCfg", "netCfg",
 // "tZCfg", "protCfg", "valvesCfg", "tempsCfg", "voltsCfg", "Misc"; the
-// dropped keys (WiFi and the web login of "netCfg", "valvesCtrlCfg",
-// "msgCfg", "motorCfg", ...) are counted in ImportReport::ignored
-// (valvesCtrl and msgFlags are also read for the report).
+// dropped keys (the web login of "netCfg", "valvesCtrlCfg", "msgCfg",
+// "motorCfg", ...) are counted in ImportReport::ignored (valvesCtrl and
+// msgFlags are also read for the report).
 // Every method returns false when the namespace or key does not exist or
 // the stored type differs; outputs are untouched then.
 class LegacyNvsReader {
@@ -84,11 +84,11 @@ struct ImportReport {
 //    (legacy topics under "VdMotFBH/") -> station "VdMot", mqtt.rootTopic
 //    "VdMotFBH", counted as imported
 //  sysCfg/CF -> ignored (°C only)
-//  netCfg/dhcp, staticIp, mask, gw, dnsIp, timeServer, sysLogIp, sysLogPort
-//    (0 -> 514), netConnTO -> net.*, time.ntpServer, syslog.*; syslogEnable
-//    0 -> 0, 1..3 (the legacy debug verbosity) -> 3 and report.syslogDebug,
-//    others rejected; ethwifi, ssid, pwd (WiFi) and userName, userPwd (the
-//    web login) -> ignored
+//  netCfg/ethwifi, dhcp, staticIp, mask, gw, dnsIp, ssid, pwd, timeServer,
+//    sysLogIp, sysLogPort (0 -> 514), netConnTO -> net.*, time.ntpServer,
+//    syslog.*; syslogEnable 0 -> 0, 1..3 (the legacy debug verbosity) -> 3
+//    and report.syslogDebug, others rejected; userName, userPwd (the web
+//    login) -> ignored
 //  tZCfg/tZ, tZCode -> time.tzName, time.tzPosix
 //  protCfg/dataProt, brokerIp (uint32 -> dotted host), brokerPort (0 -> 1883),
 //    publishInterval (clamped 2..3600), brokerUser, brokerPwd, brokerPF
@@ -123,8 +123,9 @@ struct ImportReport {
 // Per-key validation uses setConfigValue itself; a key that fails keeps the
 // default. Afterwards sanitizeConfig() makes the result valid, each repair
 // counted as rejected under its legacy key: incomplete static IP
-// ("netCfg/dhcp"), syslog without server ("netCfg/syslogEnable"), MQTT
-// without broker ("protCfg/brokerIp"), minDelay
+// ("netCfg/dhcp"), a 1..7 char WiFi password ("netCfg/pwd"), WiFi-only
+// without ssid ("netCfg/ethwifi"), syslog without server
+// ("netCfg/syslogEnable"), MQTT without broker ("protCfg/brokerIp"), minDelay
 // above the publish interval ("protCfg/brokerMD"), HA without separate
 // topics ("protCfg/dataProt"), HA with the decimal comma
 // ("protCfg/brokerMQF"), cleared valve names and overrides

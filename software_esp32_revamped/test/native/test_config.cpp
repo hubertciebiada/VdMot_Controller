@@ -106,11 +106,14 @@ bool sameConfig(const Config& a, const Config& b) {
 Config fullConfig() {
   Config c;
   REQUIRE(set(c, "station", S("Heizung OG")) == SetResult::Ok);
+  REQUIRE(set(c, "net.iface", I(2)) == SetResult::Ok);
   REQUIRE(set(c, "net.dhcp", B(false)) == SetResult::Ok);
   REQUIRE(set(c, "net.ip", S("192.168.1.50")) == SetResult::Ok);
   REQUIRE(set(c, "net.mask", S("255.255.255.0")) == SetResult::Ok);
   REQUIRE(set(c, "net.gateway", S("192.168.1.1")) == SetResult::Ok);
   REQUIRE(set(c, "net.dns", S("8.8.8.8")) == SetResult::Ok);
+  REQUIRE(set(c, "net.ssid", S("My Wifi")) == SetResult::Ok);
+  REQUIRE(set(c, "net.wifiPassword", S("secret123")) == SetResult::Ok);
   REQUIRE(set(c, "net.reconnectTimeoutMin", I(17)) == SetResult::Ok);
   REQUIRE(set(c, "time.ntpServer", S("192.168.1.1")) == SetResult::Ok);
   REQUIRE(set(c, "time.tzName", S("Europe/Warsaw")) == SetResult::Ok);
@@ -216,6 +219,7 @@ TEST_CASE("config: defaults are the documented values and validate") {
   CHECK(kConfigBaseSchema == 1);
   CHECK(kConfigJsonSchema == 2);
   CHECK(std::string(c.station) == "VdMot");
+  CHECK(c.net.iface == NetInterface::Auto);
   CHECK(c.net.dhcp);
   CHECK(c.net.ip == 0);
   CHECK(c.net.reconnectTimeoutMin == 5);
@@ -286,13 +290,13 @@ TEST_CASE("config: setter path parsing") {
   CHECK(set(c, "nope", I(1)) == SetResult::UnknownKey);
   CHECK(set(c, "net", I(1)) == SetResult::UnknownKey);
   CHECK(set(c, "net.", I(1)) == SetResult::UnknownKey);
-  CHECK(set(c, ".net.dhcp", I(1)) == SetResult::UnknownKey);
-  CHECK(set(c, "net..dhcp", I(1)) == SetResult::UnknownKey);
-  CHECK(set(c, "net.dhcp.x", I(1)) == SetResult::UnknownKey);
+  CHECK(set(c, ".net.iface", I(1)) == SetResult::UnknownKey);
+  CHECK(set(c, "net..iface", I(1)) == SetResult::UnknownKey);
+  CHECK(set(c, "net.iface.x", I(1)) == SetResult::UnknownKey);
   CHECK(set(c, "net.nope", I(1)) == SetResult::UnknownKey);
-  CHECK(set(c, "Net.dhcp", I(1)) == SetResult::UnknownKey);
-  CHECK(set(c, "net.dhc", I(1)) == SetResult::UnknownKey);
-  CHECK(set(c, "net.dhcpp", I(1)) == SetResult::UnknownKey);
+  CHECK(set(c, "Net.iface", I(1)) == SetResult::UnknownKey);
+  CHECK(set(c, "net.ifac", I(1)) == SetResult::UnknownKey);
+  CHECK(set(c, "net.ifacee", I(1)) == SetResult::UnknownKey);
   CHECK(set(c, "station.x", S("a")) == SetResult::UnknownKey);
   CHECK(set(c, "valves", S("a")) == SetResult::UnknownKey);
   CHECK(set(c, "valves.name", S("a")) == SetResult::UnknownKey);
@@ -363,6 +367,7 @@ struct IntKey {
 };
 
 int64_t readIntKey(const Config& c, const std::string& path) {
+  if (path == "net.iface") return static_cast<int64_t>(c.net.iface);
   if (path == "net.reconnectTimeoutMin") return c.net.reconnectTimeoutMin;
   if (path == "syslog.level") return c.syslog.level;
   if (path == "syslog.port") return c.syslog.port;
@@ -382,7 +387,7 @@ int64_t readIntKey(const Config& c, const std::string& path) {
 
 TEST_CASE("config: every integer key accepts exactly its range") {
   const IntKey keys[] = {
-      {"net.reconnectTimeoutMin", 0, 240},
+      {"net.iface", 0, 2},          {"net.reconnectTimeoutMin", 0, 240},
       {"syslog.level", 0, 3},       {"syslog.port", 1, 65535},
       {"mqtt.mode", 0, 2},          {"mqtt.port", 1, 65535},
       {"mqtt.keepAliveS", 5, 300},  {"mqtt.publishIntervalS", 2, 3600},
@@ -619,6 +624,15 @@ TEST_CASE("config: item names and units") {
 
 TEST_CASE("config: network strings, hosts and time zone") {
   Config c;
+  const std::string ssid32(32, 's');
+  CHECK(set(c, "net.ssid", S(ssid32.c_str())) == SetResult::Ok);
+  CHECK(set(c, "net.ssid", S((ssid32 + "s").c_str())) == SetResult::OutOfRange);
+  CHECK(set(c, "net.ssid", S("with space")) == SetResult::Ok);
+  CHECK(set(c, "net.ssid", S("tab\t")) == SetResult::OutOfRange);
+  CHECK(set(c, "net.ssid", S("del\x7f")) == SetResult::OutOfRange);
+  CHECK(set(c, "net.ssid", S("~!")) == SetResult::Ok);
+  CHECK(set(c, "net.ssid", S("")) == SetResult::Ok);
+
   const std::string h64(64, 'h');
   CHECK(set(c, "mqtt.host", S(h64.c_str())) == SetResult::Ok);
   CHECK(set(c, "mqtt.host", S((h64 + "h").c_str())) == SetResult::OutOfRange);
@@ -667,6 +681,13 @@ TEST_CASE("config: secrets are write-only and cleared only on request") {
   CHECK(set(c, "mqtt.password", S(""), true) == SetResult::Ok);
   CHECK(std::string(c.mqtt.password).empty());
 
+  const std::string p63(63, 'p');
+  CHECK(set(c, "net.wifiPassword", S(p63.c_str())) == SetResult::Ok);
+  CHECK(set(c, "net.wifiPassword", S((p63 + "p").c_str())) == SetResult::OutOfRange);
+  CHECK(std::string(c.net.wifiPassword) == p63);
+  CHECK(set(c, "net.wifiPassword", S(""), true) == SetResult::Ok);
+  CHECK(std::string(c.net.wifiPassword).empty());
+
   const std::string p64(64, 'p');
   CHECK(set(c, "mqtt.password", S(p64.c_str())) == SetResult::Ok);
   CHECK(set(c, "mqtt.password", S((p64 + "p").c_str())) == SetResult::OutOfRange);
@@ -674,8 +695,9 @@ TEST_CASE("config: secrets are write-only and cleared only on request") {
   CHECK(set(c, "mqtt.password", S("a:b \"c\"")) == SetResult::Ok);
   CHECK(set(c, "mqtt.password", I(3)) == SetResult::WrongType);
 
-  // The export flag is accepted as a no-op (bool only).
+  // Export flags are accepted as no-ops (bool only).
   const Config before = c;
+  CHECK(set(c, "net.wifiPasswordSet", B(true)) == SetResult::Ok);
   CHECK(set(c, "mqtt.passwordSet", B(true)) == SetResult::Ok);
   CHECK(sameConfig(c, before));
   CHECK(set(c, "mqtt.passwordSet", I(1)) == SetResult::WrongType);
@@ -687,6 +709,9 @@ TEST_CASE("config: secrets are write-only and cleared only on request") {
   CHECK(set(c, "mqtt.passwordSxt", B(true)) == SetResult::UnknownKey);
   // Neighbouring fields survive a maximum-length write.
   Config n;
+  CHECK(set(n, "net.wifiPassword", S("12345678")) == SetResult::Ok);
+  CHECK(set(n, "net.ssid", S(std::string(32, 's').c_str())) == SetResult::Ok);
+  CHECK(std::string(n.net.wifiPassword) == "12345678");
   CHECK(set(n, "mqtt.user", S(std::string(64, 'u').c_str())) == SetResult::Ok);
   CHECK(set(n, "mqtt.password", S(std::string(64, 'p').c_str())) == SetResult::Ok);
   CHECK(std::string(n.mqtt.user) == std::string(64, 'u'));
@@ -834,8 +859,30 @@ TEST_CASE("config: validation reports every cross-field rule with its path") {
   c.net.gateway = 0;
   CHECK(validatePath(c) == "OK");
 
+  strcpy(c.net.ssid, "w");
+  CHECK(validatePath(c) == "OK");  // open network
+  strcpy(c.net.wifiPassword, "1");
+  CHECK(validatePath(c) == "net.wifiPassword");
+  strcpy(c.net.ssid, "wlan");
+  strcpy(c.net.wifiPassword, "1234567");
+  CHECK(validatePath(c) == "net.wifiPassword");
+  strcpy(c.net.wifiPassword, "12345678");
+  CHECK(validatePath(c) == "OK");
+  c.net.iface = NetInterface::Wifi;
+  CHECK(validatePath(c) == "OK");
+  c.net.ssid[0] = '\0';
+  CHECK(validatePath(c) == "net.ssid");
+  c.net.iface = NetInterface::Ethernet;
+  CHECK(validatePath(c) == "OK");  // password without ssid is harmless
+
   c.syslog.level = 1;
   CHECK(validatePath(c) == "syslog.server");
+  c.net.iface = NetInterface::Wifi;
+  strcpy(c.net.ssid, "w");
+  c.syslog.level = 0;
+  CHECK(validatePath(c) == "OK");  // one-char ssid counts as set
+  c.net.iface = NetInterface::Ethernet;
+  c.syslog.level = 1;
   c.syslog.server = 5;
   CHECK(validatePath(c) == "OK");
   c.syslog.level = 0;
@@ -984,6 +1031,11 @@ TEST_CASE("config: validation rejects out-of-range stored fields") {
   }
   {
     Config c;
+    c.net.iface = static_cast<NetInterface>(3);
+    CHECK(validatePath(c) == "net.iface");
+  }
+  {
+    Config c;
     uint8_t raw = 2;
     memcpy(&c.net.dhcp, &raw, 1);
     CHECK(validatePath(c) == "net.dhcp");
@@ -1103,6 +1155,9 @@ TEST_CASE("config: validation accepts every stored field at both range ends") {
   hi.syslog.port = 65535;
   hi.syslog.level = 3;
   hi.syslog.server = 1;
+  hi.net.iface = NetInterface::Wifi;
+  strcpy(hi.net.ssid, "12345678901234567890123456789012");
+  memset(hi.net.wifiPassword, 'p', 63);
   hi.mqtt.mode = MqttMode::MqttHa;
   strcpy(hi.mqtt.host, "h");
   hi.temps[0].offset = 100;
@@ -1148,8 +1203,9 @@ TEST_CASE("config: validation path buffer handling") {
 TEST_CASE("config: JSON export of the defaults (golden)") {
   std::string expected =
       "{\"schema\":2,\"station\":\"VdMot\","
-      "\"net\":{\"dhcp\":true,\"ip\":\"0.0.0.0\",\"mask\":\"0.0.0.0\","
-      "\"gateway\":\"0.0.0.0\",\"dns\":\"0.0.0.0\",\"reconnectTimeoutMin\":5},"
+      "\"net\":{\"iface\":0,\"dhcp\":true,\"ip\":\"0.0.0.0\",\"mask\":\"0.0.0.0\","
+      "\"gateway\":\"0.0.0.0\",\"dns\":\"0.0.0.0\",\"ssid\":\"\",\"wifiPasswordSet\":false,"
+      "\"reconnectTimeoutMin\":5},"
       "\"time\":{\"ntpServer\":\"pool.ntp.org\",\"tzName\":\"Europe/Berlin\","
       "\"tzPosix\":\"CET-1CEST,M3.5.0,M10.5.0/3\"},"
       "\"syslog\":{\"level\":0,\"server\":\"0.0.0.0\",\"port\":514},"
@@ -1185,9 +1241,9 @@ TEST_CASE("config: JSON export of set values") {
   const Config c = fullConfig();
   const std::string j = exportJson(c);
   CHECK(j.find("\"station\":\"Heizung OG\"") != std::string::npos);
-  CHECK(j.find("\"net\":{\"dhcp\":false,\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
-               "\"gateway\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"reconnectTimeoutMin\":17}") !=
-        std::string::npos);
+  CHECK(j.find("\"iface\":2,\"dhcp\":false,\"ip\":\"192.168.1.50\",\"mask\":\"255.255.255.0\","
+               "\"gateway\":\"192.168.1.1\",\"dns\":\"8.8.8.8\",\"ssid\":\"My Wifi\","
+               "\"wifiPasswordSet\":true,\"reconnectTimeoutMin\":17") != std::string::npos);
   CHECK(j.find("\"web\":{\"allowedHosts\":\"\"}") != std::string::npos);
   CHECK(j.find("\"mode\":1,\"host\":\"broker.lan\",\"port\":8883,\"user\":\"mq\","
                "\"passwordSet\":true,\"keepAliveS\":30,\"publishIntervalS\":120,\"minDelayS\":7,"
@@ -1219,6 +1275,7 @@ TEST_CASE("config: JSON export of set values") {
         std::string::npos);
   CHECK(x.find("\"failsafe\":{\"timeoutMin\":1440}") != std::string::npos);
   // Secrets never appear.
+  CHECK(j.find("secret123") == std::string::npos);
   CHECK(j.find("mqpw") == std::string::npos);
 }
 
@@ -1279,12 +1336,14 @@ TEST_CASE("config: JSON export fails cleanly on a small buffer") {
 TEST_CASE("config: patch round trip of an export") {
   const Config full = fullConfig();
   const std::string j = exportJson(full);
-  // The secret is not exported: the import keeps the one of its target.
+  // Secrets are not exported: the import keeps the ones of its target (an
+  // ssid without password is an open network).
   Config c;
   std::string path;
   CHECK(patch(c, j, &path) == PatchResult::Ok);
   CHECK(path.empty());
   Config noSecrets = full;
+  noSecrets.net.wifiPassword[0] = '\0';
   noSecrets.mqtt.password[0] = '\0';
   CHECK(sameConfig(c, noSecrets));
 
@@ -1295,7 +1354,7 @@ TEST_CASE("config: patch round trip of an export") {
 
   Config e;
   std::string withSecrets = j;
-  withSecrets.insert(1, "\"mqtt\":{\"password\":\"mqpw\"},");
+  withSecrets.insert(1, "\"net\":{\"wifiPassword\":\"secret123\"},\"mqtt\":{\"password\":\"mqpw\"},");
   CHECK(patch(e, withSecrets, &path) == PatchResult::Ok);
   CHECK(sameConfig(e, full));
 }
@@ -1665,7 +1724,7 @@ TEST_CASE("config: binary encoding layout and round trip") {
   // The payload starts with the station as u8 length + bytes.
   CHECK(d[8] == 5);
   CHECK(memcmp(&d[9], "VdMot", 5) == 0);
-  // net.iface (retired, neutral 0), dhcp u8, ip u32 LE.
+  // net.iface u8, dhcp u8, ip u32 LE.
   CHECK(d[14] == 0);
   CHECK(d[15] == 1);
 
@@ -1681,6 +1740,7 @@ TEST_CASE("config: binary encoding layout and round trip") {
   CHECK(decodeConfig(f.data(), f.size(), fb) == DecodeResult::Ok);
   CHECK(sameConfig(fb, full));
   CHECK(std::string(fb.mqtt.password) == "mqpw");  // secrets are persisted
+  CHECK(std::string(fb.net.wifiPassword) == "secret123");
   CHECK(fb.volts[7].factor == 0.01f);
   CHECK(fb.temps[0].offset == -15);
   CHECK(fb.net.ip == full.net.ip);
@@ -2165,9 +2225,9 @@ TEST_CASE("config: one-byte fields are stored in one byte") {
   REQUIRE(set(c, "valves.2.failsafePct", I(7)) == SetResult::Ok);
   CHECK(c.valves[1].failsafePct == 7);
   CHECK(std::string(c.valves[1].topic) == "t");
-  REQUIRE(set(c, "syslog.level", I(3)) == SetResult::Ok);
-  CHECK(c.syslog.level == 3);
-  CHECK(c.syslog.server == 0);
+  REQUIRE(set(c, "net.iface", I(2)) == SetResult::Ok);
+  CHECK(c.net.iface == NetInterface::Wifi);
+  CHECK(c.net.dhcp);
   REQUIRE(set(c, "calib.minute", I(9)) == SetResult::Ok);
   REQUIRE(set(c, "calib.hour", I(5)) == SetResult::Ok);
   REQUIRE(set(c, "calib.dayMask", I(3)) == SetResult::Ok);
@@ -2513,10 +2573,9 @@ TEST_CASE("config: V3 HA ids are unique among valves and active slots (C-1b)") {
 
 namespace {
 
-// fullConfig() with the interface WiFi, WiFi "My Wifi" / "secret123" and the
-// web login (user "admin", password "pa ss\"w", protectRead) encoded by the
-// 2.0.0 encoder (58632d6): the blob of 2.0.0, and of 2.1 builds that still
-// had WiFi and the web login.
+// fullConfig() with the web login set (user "admin", password "pa ss\"w",
+// protectRead) encoded by the 2.0.0 encoder (58632d6): the blob of 2.0.0, and
+// of 2.1 builds that still had the web login.
 const uint8_t kGolden200[] = {
       0x56, 0x44, 0x4d, 0x43, 0x01, 0x00, 0x00, 0x03, 0x0a, 0x48, 0x65, 0x69, 0x7a, 0x75,
       0x6e, 0x67, 0x20, 0x4f, 0x47, 0x02, 0x00, 0xc0, 0xa8, 0x01, 0x32, 0xff, 0xff, 0xff,
@@ -2581,11 +2640,6 @@ const std::vector<uint8_t> kGolden(kGolden200, kGolden200 + sizeof kGolden200);
 // The web login in kGolden200: user, password (u8 length + bytes), protectRead.
 const std::vector<uint8_t> kStoredLogin = {5,   'a', 'd', 'm', 'i', 'n', 7, 'p',
                                            'a', ' ', 's', 's', '"', 'w', 1};
-// The station, net.iface 2 (WiFi) and net.dhcp false of kGolden200.
-const std::vector<uint8_t> kStoredIface = {10, 'H', 'e', 'i', 'z', 'u', 'n', 'g', ' ', 'O', 'G', 2, 0};
-// net.ssid and net.wifiPassword of kGolden200.
-const std::vector<uint8_t> kStoredWifi = {7,   'M', 'y', ' ', 'W', 'i', 'f', 'i', 9,
-                                          's', 'e', 'c', 'r', 'e', 't', '1', '2', '3'};
 
 // `blob` with the one occurrence of `from` replaced by `to`; payload length
 // and CRC fixed.
@@ -2616,22 +2670,6 @@ std::vector<uint8_t> login(const std::string& user, const std::string& password,
 
 DecodeResult decodeBlob(const std::vector<uint8_t>& b, Config& out, DecodeInfo* info = nullptr) {
   return decodeConfig(b.data(), b.size(), out, info);
-}
-
-// kStoredIface with another interface byte.
-std::vector<uint8_t> iface(uint8_t v) {
-  std::vector<uint8_t> s = kStoredIface;
-  s[11] = v;
-  return s;
-}
-
-// A stored WiFi: u8 length + ssid, u8 length + password.
-std::vector<uint8_t> wifi(const std::string& ssid, const std::string& password) {
-  std::vector<uint8_t> v = {static_cast<uint8_t>(ssid.size())};
-  v.insert(v.end(), ssid.begin(), ssid.end());
-  v.push_back(static_cast<uint8_t>(password.size()));
-  v.insert(v.end(), password.begin(), password.end());
-  return v;
 }
 
 }  // namespace
@@ -2681,57 +2719,10 @@ TEST_CASE("config: a damaged stored web login is structural damage, as in 2.0.0"
   }
 }
 
-TEST_CASE("config: a stored interface choice and WiFi load without a repair and are dropped (C-2)") {
-  // Every interface byte (2.0.0 repaired one above 2) and WiFi settings the
-  // older firmware would have repaired (WiFi only without ssid, a password
-  // of 1..7 bytes), and the longest values: read by their layout only.
-  const uint8_t ifaces[] = {0, 1, 2, 3, 255};
-  for (uint8_t v : ifaces) {
-    CAPTURE(static_cast<int>(v));
-    Config o;
-    DecodeInfo info;
-    CHECK(decodeBlob(spliced(kGolden, kStoredIface, iface(v)), o, &info) == DecodeResult::Ok);
-    CHECK(info.repairs.mask == 0);
-    CHECK(sameConfig(o, fullConfig()));
-  }
-  const std::vector<uint8_t> wifis[] = {
-      wifi("", ""),
-      wifi("w", "1234567"),
-      wifi("", "x"),
-      wifi(std::string(32, 's'), std::string(64, 'p')),
-  };
-  for (const std::vector<uint8_t>& w : wifis) {
-    CAPTURE(w.size());
-    Config o;
-    DecodeInfo info;
-    CHECK(decodeBlob(spliced(kGolden, kStoredWifi, w), o, &info) == DecodeResult::Ok);
-    CHECK(info.repairs.mask == 0);
-    CHECK(sameConfig(o, fullConfig()));
-  }
-}
-
-TEST_CASE("config: a damaged stored WiFi is structural damage, as in 2.0.0") {
-  const std::vector<uint8_t> damaged[] = {
-      wifi(std::string(33, 's'), ""),
-      wifi("w", std::string(65, 'p')),
-      wifi(std::string("w\0x", 3), ""),
-      wifi("w", std::string("p\0q", 3)),
-  };
-  for (const std::vector<uint8_t>& w : damaged) {
-    CAPTURE(w.size());
-    Config o = fullConfig();
-    CHECK(decodeBlob(spliced(kGolden, kStoredWifi, w), o) == DecodeResult::Invalid);
-    CHECK(sameConfig(o, Config{}));
-  }
-}
-
-TEST_CASE("config: the cfg blob keeps the 2.0.0 layout with neutral WiFi and web login (C-2)") {
-  // The removed settings are written as interface 0 (auto), ssid "",
-  // password "", user "", password "" and protectRead false at their 2.0.0
-  // places, so a rollback reads the blob with Ethernet only and the login off.
-  std::vector<uint8_t> neutral = spliced(kGolden, kStoredLogin, {0, 0, 0});
-  neutral = spliced(neutral, kStoredWifi, {0, 0});
-  neutral = spliced(neutral, kStoredIface, iface(0));
+TEST_CASE("config: the cfg blob keeps the 2.0.0 layout with a neutral web login (C-2)") {
+  // The login is written as user "", password "" and protectRead false at its
+  // 2.0.0 place, so a rollback reads the blob with the login off.
+  const std::vector<uint8_t> neutral = spliced(kGolden, kStoredLogin, {0, 0, 0});
   CHECK(encode(fullConfig()) == neutral);
   // The keys added later do not touch it.
   CHECK(encode(fullConfigExt()) == neutral);
@@ -2744,13 +2735,12 @@ TEST_CASE("config: the cfg blob keeps the 2.0.0 layout with neutral WiFi and web
   CHECK(encode(back) == neutral);
 }
 
-TEST_CASE("config: the keys of the removed settings are accepted and ignored") {
+TEST_CASE("config: the keys of the removed web login are accepted and ignored") {
   const Config before = fullConfigExt();
   const std::string longText(200, 'x');
   const ConfigValue values[] = {S("admin"), S(""), S("a:b"), S(longText.c_str()),
                                 B(true), B(false), I(7), F(1.5), N()};
-  for (const char* path : {"net.iface", "net.ssid", "net.wifiPassword", "net.wifiPasswordSet",
-                           "web.user", "web.password", "web.passwordSet", "web.protectRead"}) {
+  for (const char* path : {"web.user", "web.password", "web.passwordSet", "web.protectRead"}) {
     for (const ConfigValue& v : values) {
       CAPTURE(path);
       Config c = before;
@@ -2761,8 +2751,6 @@ TEST_CASE("config: the keys of the removed settings are accepted and ignored") {
   }
   // Only a secret had an export flag.
   Config c = before;
-  CHECK(set(c, "net.ifaceSet", B(true)) == SetResult::UnknownKey);
-  CHECK(set(c, "net.wifiPasswordSett", B(true)) == SetResult::UnknownKey);
   CHECK(set(c, "web.userSet", B(true)) == SetResult::UnknownKey);
   CHECK(set(c, "web.protectReadSet", B(true)) == SetResult::UnknownKey);
   CHECK(set(c, "web.passwordSett", B(true)) == SetResult::UnknownKey);
@@ -2776,24 +2764,13 @@ TEST_CASE("config: the keys of the removed settings are accepted and ignored") {
   CHECK(std::string(c.web.allowedHosts) == "heating.lan");
   CHECK(patch(c, "{\"web\":{\"user\":\"u\",\"password\":\"pw\"},\"clearSecrets\":true}", &path) ==
         PatchResult::Ok);
-  // The net object of an older export, WiFi and interface included.
-  CHECK(patch(c,
-              "{\"net\":{\"iface\":2,\"dhcp\":true,\"ssid\":\"home\",\"wifiPasswordSet\":true,"
-              "\"reconnectTimeoutMin\":9}}",
-              &path) == PatchResult::Ok);
-  CHECK(patch(c, "{\"net\":{\"wifiPassword\":\"secret123\"}}", &path) == PatchResult::Ok);
   Config expect = before;
   strcpy(expect.web.allowedHosts, "heating.lan");
-  expect.net.dhcp = true;
-  expect.net.reconnectTimeoutMin = 9;
   CHECK(sameConfig(c, expect));
   // They are never exported.
   const std::string j = exportJson(c);
   CHECK(j.find("\"web\":{\"allowedHosts\":\"heating.lan\"},\"mqtt\":") != std::string::npos);
   CHECK(j.find("protectRead") == std::string::npos);
-  CHECK(j.find("iface") == std::string::npos);
-  CHECK(j.find("ssid") == std::string::npos);
-  CHECK(j.find("wifiPassword") == std::string::npos);
 }
 
 namespace {
@@ -3148,7 +3125,11 @@ TEST_CASE("config: restart reasons (C-7)") {
       {"ip with DHCP", [](Config& c) { c.net.ip = 0x0101A8C0; }, 0},
       {"mask with DHCP", [](Config& c) { c.net.mask = 0x00FFFFFF; }, 0},
       {"gateway with DHCP", [](Config& c) { c.net.gateway = 0x0501A8C0; }, 0},
+      {"iface", [](Config& c) { c.net.iface = NetInterface::Wifi; }, kRestartNetwork},
       {"dhcp", [](Config& c) { c.net.dhcp = false; }, kRestartNetwork},
+      {"ssid with Auto", [](Config& c) { strcpy(c.net.ssid, "w"); }, kRestartNetwork},
+      {"wifiPassword with Auto", [](Config& c) { strcpy(c.net.wifiPassword, "12345678"); },
+       kRestartNetwork},
       {"station Dom 1 -> Dom  1", [](Config& c) { strcpy(c.station, "Dom  1"); }, 0},
       {"station Dom 1 -> Dom_1", [](Config& c) { strcpy(c.station, "Dom_1"); }, kRestartHostname},
       {"mqtt.host", [](Config& c) { strcpy(c.mqtt.host, "b"); }, 0},
@@ -3194,6 +3175,13 @@ TEST_CASE("config: restart reasons (C-7)") {
     r.edit(after);
     CHECK(configRestartReasons(st, after) == r.reasons);
   }
+  // WiFi credentials do not matter with Ethernet before and after.
+  Config eth = st;
+  eth.net.iface = NetInterface::Ethernet;
+  Config ethWifi = eth;
+  strcpy(ethWifi.net.ssid, "w");
+  strcpy(ethWifi.net.wifiPassword, "12345678");
+  CHECK(configRestartReasons(eth, ethWifi) == 0);
   // Host names "K-che" and "Kuche".
   Config k1, k2;
   strcpy(k1.station, "K\xc3\xbc" "che");
@@ -3228,6 +3216,8 @@ TEST_CASE("config: network trial rule (C-7)") {
       {"dns", [](NetConfig& n) { n.dns = 0x08080808; }, true},
       {"dns = gateway", [](NetConfig& n) { n.dns = 0x0101A8C0; }, false},
       {"reconnect", [](NetConfig& n) { n.reconnectTimeoutMin = 9; }, false},
+      {"ssid", [](NetConfig& n) { strcpy(n.ssid, "w"); }, true},
+      {"password", [](NetConfig& n) { strcpy(n.wifiPassword, "12345678"); }, true},
   };
   for (const Row& r : rows) {
     CAPTURE(r.what);
@@ -3241,8 +3231,24 @@ TEST_CASE("config: network trial rule (C-7)") {
   d2.ip = 5;
   d2.dns = 7;
   CHECK_FALSE(netTrialRequired(dhcp, d2));
-  // Static fields count with DHCP before the change (a switch to static).
-  CHECK(netTrialRequired(d2, st));
+  // WiFi credentials do not matter when Ethernet is used before and after.
+  NetConfig e1;
+  e1.iface = NetInterface::Ethernet;
+  NetConfig e2 = e1;
+  strcpy(e2.ssid, "w");
+  strcpy(e2.wifiPassword, "12345678");
+  CHECK_FALSE(netTrialRequired(e1, e2));
+  e1.iface = NetInterface::Wifi;
+  e2.iface = NetInterface::Wifi;
+  CHECK(netTrialRequired(e1, e2));
+  strcpy(e1.ssid, "w");
+  CHECK(netTrialRequired(e1, e2));
+  strcpy(e1.wifiPassword, "12345678");
+  CHECK_FALSE(netTrialRequired(e1, e2));
+  // Bytes after the NUL are not part of the text.
+  e2.ssid[3] = 'z';
+  e2.wifiPassword[20] = 'z';
+  CHECK_FALSE(netTrialRequired(e1, e2));
 }
 
 TEST_CASE("config: effectiveDns, mqttRootTopic and itemSegment (C-8)") {
@@ -3370,10 +3376,13 @@ TEST_CASE("config: what changes the MQTT topics") {
 
 TEST_CASE("config: JSON export without secrets and the apply members (C-9)") {
   Config c;
+  strcpy(c.net.wifiPassword, "w\"1");
   strcpy(c.mqtt.password, "pw");
   const std::string flags = exportJson(c);
+  CHECK(flags.find("\"wifiPasswordSet\":true") != std::string::npos);
   CHECK(flags.find("\"user\":\"\",\"passwordSet\":true,\"keepAliveS\":60") != std::string::npos);
   CHECK(flags.find("pw") == std::string::npos);
+  CHECK(flags.find("w\\\"1") == std::string::npos);
 
   static char buf[8192];
   auto endsWith = [](const std::string& s, const std::string& t) {
@@ -3402,7 +3411,7 @@ TEST_CASE("config: export and patch round trip with every key") {
   const Config full = fullConfigExt();
   // The export carries no secret: they are posted along.
   std::string doc = exportJson(full);
-  doc.insert(1, "\"mqtt\":{\"password\":\"mqpw\"},");
+  doc.insert(1, "\"net\":{\"wifiPassword\":\"secret123\"},\"mqtt\":{\"password\":\"mqpw\"},");
   Config c;
   std::string path;
   CHECK(patch(c, doc, &path) == PatchResult::Ok);

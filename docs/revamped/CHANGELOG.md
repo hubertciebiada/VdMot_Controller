@@ -8,6 +8,41 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+### Added
+- ESP: WiFi STA again, as in 2.0.0: `net.iface` (0 auto, 1 Ethernet, 2 WiFi),
+  `net.ssid` and `net.wifiPassword` ("" for an open network, else 8..63
+  bytes), in the dashboard under Settings → Station and network. With the
+  interface auto WiFi is the fallback after 30 s without an Ethernet IP (at
+  once when the Ethernet driver did not start) and goes off again once
+  Ethernet has an IP; while WiFi has no IP it reconnects with a back-off of
+  5 s to 60 s. `/api/status` shows the state `wifi` and `rssi`, the events
+  `net_up` (200) and `net_interface_restart` (212) report WiFi as interface 2
+  (212: 3 = both), the network watchdog also reconnects WiFi, the network
+  trial covers the interface and the WiFi fields, the legacy import takes
+  `netCfg/ethwifi`, `ssid` and `pwd`, and the config repair has its two WiFi
+  rules again (repair bits 2 and 3). Unlike 2.0.0, DHCP over WiFi sends the
+  station's host name (2.0.0 sent the default `esp32-xxxxxx`), and Arduino's
+  automatic reconnect is off: it would start a stopped WiFi again on
+  Arduino's event task. WiFi takes about 33 KB of heap while it runs
+  (software_esp32_revamped/DESIGN.md sections 9 and 16).
+- ESP: the stack monitor (`/api/health` `tasks`, event 114 `stack_low`) also
+  watches the ESP-IDF event loop `sys_evt` (network events) and the lwIP task
+  `tiT` (TCP/IP, DHCP, SNTP), as it already did `arduino_events`, the task of
+  the network event handler (DESIGN.md section 3).
+
+### Changed
+- ESP: `POST /api/config` applies `net.iface`, `net.ssid` and
+  `net.wifiPassword` again instead of ignoring them. The stored settings kept
+  them at their 2.0.0 places, so nothing is migrated: settings saved by 2.1.0
+  to 2.1.4 (also by their legacy import, which runs once) hold the interface
+  auto without WiFi, and such a controller stays on Ethernet; settings last
+  saved by 2.0.0 keep their WiFi.
+- ESP: a downgrade to 2.1.0 through 2.1.4 ignores the WiFi settings (a save
+  there clears them), so a controller on WiFi only has no network after it:
+  connect it by Ethernet first. With an OTA rollback the downgraded image
+  goes back after 15 min; without one only an Ethernet cable or USB-serial
+  reaches the controller again (INSTALL.md section 5).
+
 ### Fixed
 - ESP: the rare panic of the web server under parallel requests, the known
   limitation of 2.1.3 and 2.1.4. The web server library dropped the headers
