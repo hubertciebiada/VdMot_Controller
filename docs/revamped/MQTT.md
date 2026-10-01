@@ -234,7 +234,10 @@ and once per code and valve per 10 min. Suppressed events are counted
 Discovery runs in mode 2 (MQTT + HA). It is sent on connect (if
 haDiscoveryOnConnect), when HA comes back (`<prefix>/status` goes from
 `offline` to `online`), and from Maintenance → MQTT (also in mode 1, then with
-**separate** required). Topic:
+**separate** required). After a connect, and when the STM reports other sensor
+assignments, it waits until the STM data has settled (link up, re-sync done,
+30 s for the 1-Wire lists; at most 2 min), so the set goes out once with the
+STM's sensor assignments instead of once per step of its start-up. Topic:
 `<discoveryPrefix>/<component>/<node>/<objectId>/config`, retained, where
 `<node>` is the station name made HA-safe (letters, digits, `_`, `-`;
 other characters transliterated or replaced by `_`).

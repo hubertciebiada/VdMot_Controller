@@ -29,6 +29,19 @@ the ESP, the tooling and a summary of the STM.
   more, the file system holds about a dozen). `GET /api/events` still takes
   `limit` 1..50; its buffer is sized to the 32-event ring, which no response
   could exceed anyway.
+- ESP: HA discovery after a connect waits until the STM data has settled
+  (link up, re-sync done, 30 s for the 1-Wire lists; at most 2 min), and so
+  does the run after a change of the STM's sensor assignments. 2.1.5 sent the
+  whole set (about 147 configs) up to six times within 90 s after a boot,
+  once per step of the STM start-up; the set published in the end is the
+  same. Manual runs, the run when HA comes back and the first-run cleanup of
+  mode MQTT start at once as before (docs/revamped/MQTT.md).
+- ESP: about 7 KB more free heap in the MQTT task: the discovery context and
+  payload buffer (5.4 KB) are allocated for a discovery run only (no memory:
+  the run waits for the next pass), the on-change check of a valve keeps a
+  CRC-32 of the fields it compares instead of the whole published valve
+  state (1.6 KB), and a valve profile is copied with its JSON for the diag
+  check only.
 
 ## [2.1.5-revamped]
 

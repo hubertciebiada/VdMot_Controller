@@ -1,5 +1,5 @@
-// Decisions of the MQTT task: Home Assistant status, reconnect pacing, client
-// id, inbound commands (echoes, retained leftovers, rejections), button
+// Decisions of the MQTT task: Home Assistant status, reconnect pacing, the
+// start of automatic discovery runs, client id, inbound commands (echoes, retained leftovers, rejections), button
 // confirmation and the latest target per valve. Hardware-free.
 #pragma once
 
@@ -68,6 +68,28 @@ class ReconnectPacer {
   bool connected_ = false;
   bool stable_ = false;
   uint32_t connectedMs_ = 0;
+};
+
+// The automatic HA discovery runs (after a connect, after a discovery input
+// changed) wait for settled STM inputs (StmSnapshot::sensorsSettled: link up,
+// re-sync done, sensor grace over), so the set goes out once with what the
+// STM reports instead of once per step of its start-up (2.1.5 sent it up to
+// six times in 90 s after a boot). Without an STM that settles a run starts
+// kMaxWaitMs after the first request, with the inputs known by then.
+class DiscoveryGate {
+ public:
+  static constexpr uint32_t kMaxWaitMs = 120000;
+  // A run is wanted; the wait counts from the first request.
+  void request(uint32_t nowMs);
+  // A run started (any run answers the request), or the session ended.
+  void clear() { pending_ = false; }
+  bool pending() const { return pending_; }
+  // The requested run may start now.
+  bool due(bool settled, uint32_t nowMs) const;
+
+ private:
+  bool pending_ = false;
+  uint32_t sinceMs_ = 0;
 };
 
 // W20: "<host>-<mac>" = buildHostname(station) cut to 16 chars (a '-' left at

@@ -234,8 +234,8 @@ session hands each one to the profile store of `app` (`storeProfile`, under
 the snapshot mutex), and the snapshot only counts them per valve
 (`profileSeq`). A reader copies the one profile it needs: `GET
 /api/valves/{n}/profile`, and the MQTT diag check after the count of a valve
-moved (the copy lives on the heap for that check; without memory the next
-pass checks again).
+moved (the copy and its JSON, 0.9 KB, live on the heap for that check;
+without memory the next pass checks again).
 
 Rules (R7): targets flow only from MQTT and HTTP. The ESP never invents a
 target, with two exceptions: the failsafe emulation pushes the failsafe
@@ -656,18 +656,19 @@ recorded as a gap line; failures raise `log_write_failed` (hourly at most).
 RAM budget (WT32-ETH01: 263 KB of 8-bit capable heap, measured on the
 hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
 - Allocated once at boot and never freed: the `bootAlloc()` working copies,
-  42 KB in 14 blocks (the first `bootAlloc()` hands the Bluetooth DRAM to the
+  35 KB in 11 blocks (the first `bootAlloc()` hands the Bluetooth DRAM to the
   heap, which initArduino() would do only after the constructors): the STM
   session 11.4 KB with its snapshot 3 KB, the snapshot copies of `app` and
   `mqtt` (3 KB each), the profile store of `app` (12 x 260 B, the valve
-  profiles kept once outside the snapshots, section 4), the active config of `storage` and the copy of
-  `mqtt` (2.5 KB each, the only whole `Config` copies kept), the blob
-  buffers of `storage` (4 KB `cfg`, 1.5 KB `cfgx`, 512 B kept records) and
-  its load details (196 B), the discovery context (3.4 KB), the payload
-  buffer (2 KB) and the published valve states (1.6 KB) of `mqtt`; and the
-  event ring 32 x 48 B (`logger::begin`). The 2.5 KB copies of a config
-  reload (`app`, `stm_link`, `mqtt`) and of a network trial revert (`net`)
-  live on the heap only for that moment, the session of a gateway probe (a
+  profiles kept once outside the snapshots, section 4), the active config
+  of `storage` and the copy of `mqtt` (2.5 KB each, the only whole `Config`
+  copies kept), the blob buffers of `storage` (4 KB `cfg`, 1.5 KB `cfgx`,
+  512 B kept records) and its load details (196 B); and the event ring
+  32 x 48 B (`logger::begin`). The 2.5 KB copies of a config reload (`app`,
+  `stm_link`, `mqtt`) and of a network trial revert (`net`) live on the heap
+  only for that moment, the context and payload buffer of an HA discovery
+  run (5.4 KB, section 11) for that run, the copy of a valve profile and its
+  JSON (0.9 KB) for one MQTT diag check, the session of a gateway probe (a
   task with 2 KB stack and a socket, about 2.7 KB) for a second or two per
   minute (section 16).
 - Web server: its working set (~9.6 KB in 5 blocks: the snapshot and config
@@ -715,8 +716,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   holds about 1.4 KB (with the 512 B file cache of LittleFS and the handles)
   instead of 5 KB. Opens without I/O (directory listings, the check before a
   delete) get none: stdio allocates no buffer for them.
-- No other per-operation heap: PubSubClient's buffer is set once (2304 B,
-  discovery payloads up to 2047 B). HTTP responses use the slot pool through
+- No other per-operation heap than the blocks named above: PubSubClient's
+  buffer is set once (2304 B, discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;
   `/api/health` writes its 1 KB text into the scratch buffer of the web
   working set. POST bodies go into a response slot. Beyond the web buffers
@@ -774,6 +775,10 @@ Topic tables, payloads, subscriptions, retained handling and broker settings:
   temps, 47..54 volts, 55 STM diagnostics. A full publish is spread over
   several loop passes, with `loop()` called between valves, so incoming
   commands are never starved. `esp_task_wdt_reset()` after every publish.
+  A valve has changed when `valveCompatKey()` (CRC-32 of the fields of
+  `kValveCompatMask`) differs from the key of its last publish; the task
+  keeps 4 B per valve instead of the published `ValveState` (a CRC
+  collision, 2^-32 per change, leaves that change to the next full publish).
 - Values: `systemState` for `common/state`, `publishedTarget` for
   `valves/<V>/target` (separate: the STM read-back, nothing while a restored
   target is not synced, the desired target during the emulation),
@@ -789,8 +794,19 @@ Entity tables and the user view: `docs/revamped/MQTT.md`. The table in
 
 - Runs in mode 2; manual runs (`POST /api/mqtt/discovery`) also in mode 1
   (publish/republish need `separate`; delete does not). Triggers: every
-  connect when `haDiscoveryOnConnect`, HA status Offline -> Online (not every
-  `online`: a retained birth would run it on every connect), manual.
+  connect when `haDiscoveryOnConnect`, a change of `discoveryInputKey`
+  (sensor assignments, published sensor segments, board tag, protocol 3),
+  HA status Offline -> Online (not every `online`: a retained birth would run
+  it on every connect), manual.
+- The automatic publish runs (connect, input change) wait for settled STM
+  inputs (`DiscoveryGate`: `sensorsSettled`, at most 120 s from the first
+  request): 2.1.5 ran the whole set up to six times in 90 s after a boot,
+  once per step of the STM start-up. The last of those runs had the settled
+  inputs, so the set published is the same. Manual runs and the HA birth
+  start at once and answer a waiting automatic run.
+- Memory: the `DiscoveryContext` (3.4 KB) and the 2 KB payload buffer are
+  one heap block for the duration of a run (no memory: the run stays
+  requested and the next pass tries again).
 - `DiscoveryRun` phases, one message per MQTT loop pass, 20 ms apart,
   `loop()` in between: (1) first run on a device (`haDrop` != 1): the legacy
   DROP list for every valve in both segment forms; migration from 2.0.0
@@ -816,8 +832,9 @@ Entity tables and the user view: `docs/revamped/MQTT.md`. The table in
   `expire_after` max(3 x publishIntervalS, 60). The valve entity gets
   `qos: 1` and, with protocol 3, `payload_stop: STOP`. The event entity lists
   `eventMqttNames()`. Payloads up to 2047 B.
-- The first-run cleanup does not wait for settled STM data: temp entities of
-  valves whose sensors are still unknown are kept (KeptUnknown).
+- The first-run cleanup of mode 1 does not wait for settled STM data (it
+  publishes no config): temp entities of valves whose sensors are still
+  unknown are kept (KeptUnknown).
 
 ## 12. HTTP API
 

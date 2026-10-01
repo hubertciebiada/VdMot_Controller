@@ -51,15 +51,6 @@ constexpr size_t kInboundPayloadMax = 33;     // longer payloads are cut (every 
 constexpr const char* kListFile = "/HADiscovery.cfg";
 constexpr const char* kListTmp = "/HADiscovery.cfg.tmp";
 
-// Fields of a valve that trigger an on-change publish.
-constexpr uint32_t kValveCompatMask = vdm::kChangeStatus | vdm::kChangePosition |
-                                      vdm::kChangeTarget | vdm::kChangeMeanCurrent |
-                                      vdm::kChangeTemp1 | vdm::kChangeTemp2 |
-                                      vdm::kChangeCounters | vdm::kChangeCalibRetries |
-                                      vdm::kChangeSensors | vdm::kChangeKnown |
-                                      vdm::kChangeSync | vdm::kChangeHealth |
-                                      vdm::kChangeFailsafe;
-
 WiFiClient gNet;
 PubSubClient gClient(gNet);
 
@@ -79,9 +70,9 @@ vdm::EventRateLimiter gEventLimiter;
 vdm::EventAggregator gAggregator;
 uint32_t gEventCursor = 0;
 
-// Last published values (on-change detection).
-using ValveStates = ObjArray<vdm::ValveState, vdm::kValveCount>;
-ValveStates& gPubValve = bootAlloc<ValveStates>();
+// Last published values (on-change detection): per valve the key of its
+// compat fields (vdm::valveCompatKey), not the whole ValveState.
+uint32_t gPubValveKey[vdm::kValveCount];
 bool gPubValveValid[vdm::kValveCount];
 struct SensorPub {
   bool valid = false;  // an entry was published since connect
@@ -178,13 +169,28 @@ class ListPort : public vdm::DiscoveryPort {
   fs::File write_;
 };
 
-vdm::DiscoveryContext& gDiscCtx = bootAlloc<vdm::DiscoveryContext>();
+// The context and the payload buffer of a discovery run (5.4 KB) live on the
+// heap for that run only: startRun() allocates them, endRun() frees them when
+// the run ends or is aborted.
+struct DiscoveryWork {
+  vdm::DiscoveryContext ctx;
+  char payload[vdm::kDiscoveryPayloadMax + 1];
+};
+DiscoveryWork* gDisc = nullptr;
 vdm::DiscoveryRun gRun;
 ListPort gPort;
 uint32_t gDiscKey = 0;
 uint32_t gDiscKeyRevision = UINT32_MAX;  // snapshot revision the key was checked at
-using PayloadBuf = ObjArray<char, vdm::kDiscoveryPayloadMax + 1>;
-PayloadBuf& gDiscPayload = bootAlloc<PayloadBuf>();  // also the profile payload
+vdm::DiscoveryGate gAutoRun;  // automatic runs wait for the STM inputs to settle
+
+// writeProfileJson() of kProfileMaxSamples samples with the largest values:
+// {"valve":12,"count":32,"samples":[[4294967295,65535],...]} is 643 bytes.
+constexpr size_t kProfileJsonMax = 643;
+// A profile copied for one check, and its JSON (on the heap for that check).
+struct ProfileWork {
+  vdm::Profile profile;
+  char json[kProfileJsonMax + 1];
+};
 
 // Inbound messages: copied by the PubSubClient callback, handled after loop().
 struct Inbound {
@@ -365,14 +371,26 @@ vdm::DiscoveryInputs discoveryInputs() {
   return in;
 }
 
-void startRun(const vdm::DiscoveryPlan& plan) {
+// False without memory for the run: the caller keeps its request for the next
+// pass. A run also answers a pending automatic one (the user's request wins).
+bool startRun(const vdm::DiscoveryPlan& plan) {
   if (gRun.running()) gRun.abort(gPort);
+  if (gDisc == nullptr) gDisc = new (std::nothrow) DiscoveryWork;
+  if (gDisc == nullptr) return false;
   const vdm::DiscoveryInputs in = discoveryInputs();
-  vdm::buildDiscoveryContext(in, gDiscCtx);
+  vdm::buildDiscoveryContext(in, gDisc->ctx);
   gDiscKey = vdm::discoveryInputKey(in);
   gDiscKeyRevision = gSnapRevision;
-  gRun.start(gDiscCtx, plan);
+  gRun.start(gDisc->ctx, plan);
+  gAutoRun.clear();
   setDiscoveryRunning(true);
+  return true;
+}
+
+void endRun() {
+  delete gDisc;
+  gDisc = nullptr;
+  setDiscoveryRunning(false);
 }
 
 // A publish run (with the first-run cleanup and the 2.0.0 migration when due).
@@ -384,37 +402,55 @@ vdm::DiscoveryPlan publishPlan() {
   return p;
 }
 
-// Manual requests run in modes 1 and 2.
-void startRequested(DiscoveryAction a) {
-  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return;
+// Manual requests run in modes 1 and 2; false: no memory, try again.
+bool startRequested(DiscoveryAction a) {
+  if (gCfg.mqtt.mode == vdm::MqttMode::Off) return true;
   vdm::DiscoveryPlan p = a == DiscoveryAction::Delete ? vdm::DiscoveryPlan{} : publishPlan();
   p.removeAll = a != DiscoveryAction::Publish;
   p.prune = a != DiscoveryAction::Delete;
-  startRun(p);
+  return startRun(p);
 }
 
-// Automatic run after a connect.
-void startOnConnect() {
+// The automatic run of a session: the publish run in HA mode (with
+// haDiscoveryOnConnect, or the 2.0.0 migration due), else the legacy cleanup
+// while it is due. false: none.
+bool autoPlan(vdm::DiscoveryPlan& out) {
   const bool ha = gCfg.mqtt.mode == vdm::MqttMode::MqttHa;
   if (ha && (gCfg.mqtt.haDiscoveryOnConnect || storage::haLayout() < 2)) {
-    startRun(publishPlan());
-  } else if (!storage::haCleanupDone()) {
-    vdm::DiscoveryPlan p;
-    p.dropLegacy = true;
-    startRun(p);
+    out = publishPlan();
+    return true;
   }
+  if (storage::haCleanupDone()) return false;
+  out = vdm::DiscoveryPlan{};
+  out.dropLegacy = true;
+  return true;
+}
+
+// After a connect: a publish run waits for the gate; the legacy cleanup of
+// mode 1 publishes no config and keeps what is not known yet, so it starts at
+// once (without memory it goes through the gate too).
+void startOnConnect(uint32_t now) {
+  vdm::DiscoveryPlan p;
+  if (!autoPlan(p)) return;
+  if (p.publish || !startRun(p)) gAutoRun.request(now);
+}
+
+// A requested automatic run starts once the STM inputs settled (or the gate
+// stopped waiting), never over a running one.
+void serviceAutoRun(uint32_t now) {
+  if (gRun.running() || !gAutoRun.due(gSnap.sensorsSettled, now)) return;
+  vdm::DiscoveryPlan p;
+  if (!autoPlan(p)) return gAutoRun.clear();
+  startRun(p);  // clears the request; without memory it stays for the next pass
 }
 
 void serviceDiscovery() {
   if (!gRun.running()) return;
-  vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
+  vdm::JsonWriter jw(gDisc->payload, sizeof gDisc->payload);
   const vdm::DiscoveryRun::Phase ph = gRun.step(gPort, jw);
-  if (ph == vdm::DiscoveryRun::Phase::Aborted) {
-    setDiscoveryRunning(false);
-    return;
-  }
+  if (ph == vdm::DiscoveryRun::Phase::Aborted) return endRun();
   if (ph != vdm::DiscoveryRun::Phase::Done) return;
-  setDiscoveryRunning(false);
+  endRun();
   const vdm::DiscoveryRun::Stats& s = gRun.stats();
   logger::log(vdm::EventCode::HaDiscoverySent, vdm::kNoValve, s.configs, s.deletes,
               s.skipped ? "skipped entities" : nullptr);
@@ -423,14 +459,15 @@ void serviceDiscovery() {
 }
 
 // A valve sensor or a published sensor segment changed after the last run
-// (the STM reports assignments only after its first 1-Wire read).
-void checkDiscoveryInputs() {
+// (the STM reports assignments only after its first 1-Wire read): another
+// automatic run, through the gate like the one after a connect.
+void checkDiscoveryInputs(uint32_t now) {
   if (gRun.running() || gCfg.mqtt.mode != vdm::MqttMode::MqttHa ||
       !gCfg.mqtt.haDiscoveryOnConnect || gDiscKeyRevision == gSnapRevision) {
     return;
   }
   gDiscKeyRevision = gSnapRevision;
-  if (vdm::discoveryInputKey(discoveryInputs()) != gDiscKey) startRun(publishPlan());
+  if (vdm::discoveryInputKey(discoveryInputs()) != gDiscKey) gAutoRun.request(now);
 }
 
 // ---------------------------------------------------------------- inbound
@@ -533,8 +570,8 @@ void onHaStatus(const vdm::InboundDecision& d) {
   const vdm::RegulatorWatch::Change ch = gRegulator.onHaStatus(p, strlen(p));
   storeHaStatus();
   if (ch == vdm::RegulatorWatch::Change::CameOnline && gCfg.mqtt.haDiscoveryOnConnect &&
-      !gRun.running()) {
-    startRun(publishPlan());
+      !gRun.running() && !startRun(publishPlan())) {
+    gAutoRun.request(app::nowMs());  // no memory now: an automatic run later
   }
 }
 
@@ -664,7 +701,7 @@ void publishValveTemp(vdm::Topic t, const char* seg, int16_t raw, uint8_t slot1)
 void publishValve(uint8_t i) {
   const vdm::ValveState& v = gSnap.valves[i];
   const char* seg = gSegments[i];
-  gPubValve[i] = v;
+  gPubValveKey[i] = vdm::valveCompatKey(v);
   gPubValveValid[i] = true;
   if (!gCfg.valves[i].active || !v.known) return;
   char buf[48];
@@ -785,7 +822,7 @@ bool slotChanged(uint8_t slot) {
   if (slot < kSlotTemp0) {
     const uint8_t i = slot - kSlotValve0;
     return !gPubValveValid[i] || gCalib.dirty(i) ||
-           (vdm::diffValve(gPubValve[i], gSnap.valves[i]) & kValveCompatMask) != 0;
+           vdm::valveCompatKey(gSnap.valves[i]) != gPubValveKey[i];
   }
   if (slot < kSlotVolt0) {
     const uint8_t i = slot - kSlotTemp0;
@@ -878,21 +915,21 @@ uint32_t profileCrc(const vdm::Profile& p) {
 void checkProfile(uint8_t i, DiagPub& d, uint8_t& budget) {
   const uint32_t seq = gSnap.profileSeq[i];
   if (seq == d.profileSeq || (budget == 0 && d.valid)) return;
-  vdm::Profile* p = new (std::nothrow) vdm::Profile;
-  if (p == nullptr) return;
-  app::readProfile(i, *p);
-  const uint32_t crc = p->count > 0 ? profileCrc(*p) : 0;
-  if (crc != d.profileCrc && d.valid && p->count > 0) {
-    // Shares the discovery buffer: both run in this task, one at a time.
-    vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
-    if (vdm::writeProfileJson(jw, *p) && jw.complete()) {
+  ProfileWork* w = new (std::nothrow) ProfileWork;
+  if (w == nullptr) return;
+  const vdm::Profile& p = w->profile;
+  app::readProfile(i, w->profile);
+  const uint32_t crc = p.count > 0 ? profileCrc(p) : 0;
+  if (crc != d.profileCrc && d.valid && p.count > 0) {
+    vdm::JsonWriter jw(w->json, sizeof w->json);
+    if (vdm::writeProfileJson(jw, p) && jw.complete()) {
       publish(vdm::Topic::DiagValveProfile, gSegments[i], jw.c_str());
     }
     --budget;
   }
   d.profileCrc = crc;
   d.profileSeq = seq;
-  delete p;
+  delete w;
 }
 
 // A counter topic of diag/mqtt: on change, at most every kCounterPaceMs.
@@ -1119,7 +1156,7 @@ bool connect(uint32_t now) {
   setState(vdm::MqttState::Connected);
   count(&Status::reconnects);
   logger::log(vdm::EventCode::MqttConnected);
-  startOnConnect();
+  startOnConnect(now);
   return true;
 }
 
@@ -1129,7 +1166,8 @@ void onDisconnected() {
   gPacer.onDropped(app::nowMs());
   if (gRun.running()) gRun.abort(gPort);
   gPort.close();
-  setDiscoveryRunning(false);
+  endRun();
+  gAutoRun.clear();  // the next connect asks again
   gAggregator.reset();
   gButtons.reset();
   gInboundCount = 0;
@@ -1200,9 +1238,11 @@ void task(void*) {
     gPacer.tick(now, true);
     if (gDiscoveryRequested) {
       gDiscoveryRequested = false;
-      startRequested(gDiscoveryAction);
+      // Without memory for the run the request stays for the next pass.
+      if (!startRequested(gDiscoveryAction)) gDiscoveryRequested = true;
     } else {
-      checkDiscoveryInputs();
+      checkDiscoveryInputs(now);
+      serviceAutoRun(now);
     }
     pump();
     serviceEvents(now);

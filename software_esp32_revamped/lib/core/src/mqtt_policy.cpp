@@ -109,6 +109,18 @@ void ReconnectPacer::tick(uint32_t nowMs, bool connected) {
 
 void ReconnectPacer::forceNow() { backoff_.reset(); }
 
+// ---------------------------------------------------------------- DiscoveryGate
+
+void DiscoveryGate::request(uint32_t nowMs) {
+  if (pending_) return;
+  pending_ = true;
+  sinceMs_ = nowMs;
+}
+
+bool DiscoveryGate::due(bool settled, uint32_t nowMs) const {
+  return pending_ && (settled || elapsedMs(nowMs, sinceMs_) >= kMaxWaitMs);
+}
+
 // ---------------------------------------------------------------- client id
 
 size_t buildMqttClientId(const char* station, const uint8_t (&mac)[6], char* out, size_t cap) {

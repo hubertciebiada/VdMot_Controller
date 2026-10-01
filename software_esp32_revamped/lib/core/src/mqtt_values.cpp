@@ -135,6 +135,50 @@ bool valveProblem(const ValveState& v) { return (v.health & kProblemMask) != 0; 
 
 bool stmOnline(LinkState s) { return s == LinkState::Up || s == LinkState::Degraded; }
 
+namespace {
+
+// The CRC-32 `crc` continued over the bytes of `field`.
+template <typename T>
+uint32_t addField(uint32_t crc, const T& field) {
+  return crc32(reinterpret_cast<const uint8_t*>(&field), sizeof field, crc);
+}
+
+}  // namespace
+
+// The fields of diffValve(), group by group, for the groups of kValveCompatMask.
+uint32_t valveCompatKey(const ValveState& v) {
+  uint32_t c = crc32(&v.status, sizeof v.status);  // kChangeStatus
+  c = addField(c, v.calibrating);
+  c = addField(c, v.position);  // kChangePosition
+  c = addField(c, v.desiredValid);  // kChangeTarget
+  c = addField(c, v.desired);
+  c = addField(c, v.meanCurrent);  // kChangeMeanCurrent
+  c = addField(c, v.temp1);  // kChangeTemp1
+  c = addField(c, v.temp2);  // kChangeTemp2
+  c = addField(c, v.moves);  // kChangeCounters
+  c = addField(c, v.openCount);
+  c = addField(c, v.closeCount);
+  c = addField(c, v.deadZone);
+  c = addField(c, v.calibRetries);  // kChangeCalibRetries
+  c = addField(c, v.sync);  // kChangeSync
+  c = addField(c, v.stmTargetKnown);
+  c = addField(c, v.stmTarget);
+  c = addField(c, v.sensorId[0].b);  // kChangeSensors
+  c = addField(c, v.sensorId[1].b);
+  c = addField(c, v.sensorSlot);
+  c = addField(c, v.health);  // kChangeHealth
+  c = addField(c, v.known);  // kChangeKnown
+  c = addField(c, v.hasV3);  // kChangeFailsafe
+  c = addField(c, v.stmFlags);
+  c = addField(c, v.fault);
+  c = addField(c, v.fsPct);
+  c = addField(c, v.drive);
+  c = addField(c, v.retries);
+  c = addField(c, v.autoRetry);
+  c = addField(c, v.fsOverride);
+  return addField(c, v.fsTarget);
+}
+
 size_t valveDisplayName(const char* configName, uint8_t idx0, char* out, size_t cap) {
   if (out == nullptr || cap == 0) return 0;
   int n;

@@ -71,6 +71,20 @@ constexpr uint16_t kProblemMask = kHealthBlocked | kHealthFailed | kHealthNoValv
 bool valveProblem(const ValveState& v);  // health & kProblemMask
 bool stmOnline(LinkState s);             // Up or Degraded
 
+// The diffValve() groups whose change publishes the compat topics of a valve
+// on change (the extended counters and the last move are diag topics).
+constexpr uint32_t kValveCompatMask = kChangeStatus | kChangePosition | kChangeTarget |
+                                      kChangeMeanCurrent | kChangeTemp1 | kChangeTemp2 |
+                                      kChangeCounters | kChangeCalibRetries | kChangeSensors |
+                                      kChangeKnown | kChangeSync | kChangeHealth |
+                                      kChangeFailsafe;
+// CRC-32 over exactly the fields of kValveCompatMask, field by field (padding
+// never counts). The MQTT task keeps it per valve instead of a copy of the
+// last published ValveState (4 B instead of 136): equal fields give equal
+// keys, and a change of any of them changes the key unless the CRC-32
+// collides (2^-32; that change then goes out with the next full publish).
+uint32_t valveCompatKey(const ValveState& v);
+
 // Display name of valve idx0 for new HA entity names: the configured name as
 // it is (UTF-8, spaces), or "Valve <n>" when empty. Returns the length (0 and
 // out = "" when it does not fit).

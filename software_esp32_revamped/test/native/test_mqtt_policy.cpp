@@ -157,6 +157,28 @@ TEST_CASE("HA status RTC record") {
   CHECK(r.crc == static_cast<uint16_t>(crc32(b, sizeof b) & 0xFFFFu));
 }
 
+TEST_CASE("DiscoveryGate: a run waits for settled inputs, at most kMaxWaitMs") {
+  DiscoveryGate g;
+  CHECK_FALSE(g.pending());
+  CHECK_FALSE(g.due(true, 0));  // nothing requested
+  g.request(1000);
+  CHECK(g.pending());
+  CHECK_FALSE(g.due(false, 1000));
+  CHECK(g.due(true, 1000));  // settled: at once
+  // unsettled: from the first request on, later requests do not move the clock
+  g.request(5000);
+  CHECK_FALSE(g.due(false, 1000 + DiscoveryGate::kMaxWaitMs - 1));
+  CHECK(g.due(false, 1000 + DiscoveryGate::kMaxWaitMs));
+  g.clear();
+  CHECK_FALSE(g.pending());
+  CHECK_FALSE(g.due(true, 1000 + DiscoveryGate::kMaxWaitMs));
+  // the next request starts a new wait, across the wrap of the clock
+  g.request(0xFFFFF000u);
+  CHECK_FALSE(g.due(false, 0xFFFFF000u + DiscoveryGate::kMaxWaitMs - 1));
+  CHECK(g.due(false, 0xFFFFF000u + DiscoveryGate::kMaxWaitMs));
+  CHECK(DiscoveryGate::kMaxWaitMs == 120000);
+}
+
 TEST_CASE("ReconnectPacer: back-off reset only after a stable connection") {
   ReconnectPacer p(2000, 60000);
   CHECK(p.due(0));

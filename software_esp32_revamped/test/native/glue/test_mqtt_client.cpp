@@ -829,6 +829,7 @@ TEST_CASE("mqtt discovery: the 2.0.0 migration runs once in HA mode (K3-3, K3-5)
   vdm::Config& c = useMqtt(vdm::MqttMode::MqttHa);
   c.mqtt.haDiscoveryOnConnect = false;
   sib::storage().haLayout = 0;
+  snap().sensorsSettled = true;  // automatic runs start at once
   mqtt::begin();
   runTask(500);
   CHECK(last("homeassistant/sensor/VdMot/diag_stm_uptime/config") == "");
@@ -863,6 +864,7 @@ TEST_CASE("mqtt discovery: a renamed valve loses its old config first (W4-8)") {
   glue::begin();
   vdm::Config& c = useMqtt(vdm::MqttMode::MqttHa);
   vdm::copyString(c.valves[0].name, sizeof c.valves[0].name, "Old");
+  snap().sensorsSettled = true;  // automatic runs start at once
   mqtt::begin();
   runTask(500);
   REQUIRE(fakes::fs().read("/HADiscovery.cfg").find("valves_state_Old") != std::string::npos);
@@ -919,6 +921,7 @@ TEST_CASE("mqtt discovery: a failed publish aborts the run, the next connect sta
   useMqtt(vdm::MqttMode::MqttHa);
   sib::storage().haCleanupDone = false;
   sib::storage().haLayout = 0;
+  snap().sensorsSettled = true;  // automatic runs start at once
   mqtt::begin();
   runTask(30);
   REQUIRE(mqtt::status().discoveryRunning);

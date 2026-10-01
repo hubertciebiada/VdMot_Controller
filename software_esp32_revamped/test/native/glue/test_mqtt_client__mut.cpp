@@ -1315,7 +1315,7 @@ TEST_CASE("mqtt discovery: the first-run cleanup in mode MQTT deletes only") {
   glue::begin();
   useMqtt(vdm::MqttMode::Mqtt);
   sib::storage().haCleanupDone = false;
-  settle(400);
+  settle(400);  // the cleanup does not wait for the STM inputs
   CHECK(sib::storage().haCleanupMarks == 1);
   CHECK(countPrefix("homeassistant/") > 0);
   for (const fakes::MqttMessage& m : fakes::mqtt().published) {
@@ -1345,6 +1345,7 @@ TEST_CASE("mqtt discovery: layout 1 runs the 2.0 cleanup on connect in HA mode")
   vdm::Config& c = useMqtt(vdm::MqttMode::MqttHa);
   c.mqtt.haDiscoveryOnConnect = false;
   sib::storage().haLayout = 1;
+  snap().sensorsSettled = true;  // automatic runs start at once
   settle(500);
   CHECK(payloads("homeassistant/sensor/VdMot/diag_stm_uptime/config") == std::vector<std::string>{""});
   CHECK(sib::storage().haLayoutSets == std::vector<uint8_t>{2});
@@ -1354,6 +1355,7 @@ TEST_CASE("mqtt discovery: changed inputs run it again after the current run") {
   glue::begin();
   useMqtt(vdm::MqttMode::MqttHa);
   vdm::StmSnapshot& s = linkUp();
+  s.sensorsSettled = true;  // automatic runs start at once
   startTracking([&](size_t passes, uint64_t) {
     if (passes == 10) {  // during the first run
       vdm::copyString(s.version.hw, sizeof s.version.hw, "C2");

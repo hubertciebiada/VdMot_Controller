@@ -1,13 +1,151 @@
 // Values published over MQTT: systemState (legacy common/state), sensor
-// slots, segments, targets, problem flag, names, calibration ends.
+// slots, segments, targets, problem flag, names, calibration ends, the
+// on-change key of a valve.
 #include <string.h>
 
+#include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "doctest.h"
 #include "vdm/mqtt_values.h"
 
 using namespace vdm;
+
+namespace {
+
+// A valve with a value in every field (none at its default).
+ValveState fullValve() {
+  ValveState v;
+  v.known = true;
+  v.lastSeenMs = 1000;
+  v.status = 3;
+  v.calibrating = true;
+  v.position = 40;
+  v.meanCurrent = 12;
+  v.temp1 = 215;
+  v.temp2 = 198;
+  v.moves = 70;
+  v.openCount = 30;
+  v.closeCount = 29;
+  v.deadZone = -4;
+  v.calibRetries = 1;
+  v.hasExtended = true;
+  v.calState = 2;
+  v.calFlags = 1;
+  v.earlyStops = 5;
+  v.cmdRejected = 6;
+  v.earlyStopsAtBoot = 2;
+  v.cmdRejectedAtBoot = 3;
+  v.lastMove.countedCounts = 100;
+  v.moveSeq = 8;
+  v.desiredValid = true;
+  v.desired = 55;
+  v.source = TargetSource::Web;
+  v.stmTargetKnown = true;
+  v.stmTarget = 50;
+  v.sync = TargetSync::Pending;
+  v.pushAttempts = 2;
+  v.lastPushMs = 900;
+  v.sensorId[0].b[0] = 0x28;
+  v.sensorId[1].b[7] = 0x11;
+  v.sensorSlot[0] = 3;
+  v.sensorSlot[1] = 4;
+  v.health = 1;
+  v.revision = 17;
+  v.hasV3 = true;
+  v.stmFlags = 2;
+  v.fault = 1;
+  v.fsPct = 30;
+  v.drive = 45;
+  v.retryS = 60;
+  v.retries = 1;
+  v.autoRetry = true;
+  v.fsOverride = true;
+  v.fsTarget = 20;
+  v.forcePush = true;
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("valveCompatKey: exactly the fields of the compat groups change the key") {
+  const ValveState base = fullValve();
+  const uint32_t key = valveCompatKey(base);
+  CHECK(valveCompatKey(fullValve()) == key);
+  using Change = std::pair<const char*, std::function<void(ValveState&)>>;
+  const std::vector<Change> changes = {
+      {"known", [](ValveState& v) { v.known = false; }},
+      {"lastSeenMs", [](ValveState& v) { ++v.lastSeenMs; }},
+      {"status", [](ValveState& v) { ++v.status; }},
+      {"calibrating", [](ValveState& v) { v.calibrating = false; }},
+      {"position", [](ValveState& v) { ++v.position; }},
+      {"meanCurrent", [](ValveState& v) { ++v.meanCurrent; }},
+      {"temp1", [](ValveState& v) { ++v.temp1; }},
+      {"temp2", [](ValveState& v) { ++v.temp2; }},
+      {"moves", [](ValveState& v) { ++v.moves; }},
+      {"openCount", [](ValveState& v) { ++v.openCount; }},
+      {"closeCount", [](ValveState& v) { ++v.closeCount; }},
+      {"deadZone", [](ValveState& v) { ++v.deadZone; }},
+      {"calibRetries", [](ValveState& v) { ++v.calibRetries; }},
+      {"hasExtended", [](ValveState& v) { v.hasExtended = false; }},
+      {"calState", [](ValveState& v) { ++v.calState; }},
+      {"calFlags", [](ValveState& v) { ++v.calFlags; }},
+      {"earlyStops", [](ValveState& v) { ++v.earlyStops; }},
+      {"cmdRejected", [](ValveState& v) { ++v.cmdRejected; }},
+      {"earlyStopsAtBoot", [](ValveState& v) { ++v.earlyStopsAtBoot; }},
+      {"cmdRejectedAtBoot", [](ValveState& v) { ++v.cmdRejectedAtBoot; }},
+      {"lastMove", [](ValveState& v) { ++v.lastMove.countedCounts; }},
+      {"moveSeq", [](ValveState& v) { ++v.moveSeq; }},
+      {"desiredValid", [](ValveState& v) { v.desiredValid = false; }},
+      {"desired", [](ValveState& v) { ++v.desired; }},
+      {"source", [](ValveState& v) { v.source = TargetSource::Mqtt; }},
+      {"stmTargetKnown", [](ValveState& v) { v.stmTargetKnown = false; }},
+      {"stmTarget", [](ValveState& v) { ++v.stmTarget; }},
+      {"sync", [](ValveState& v) { v.sync = TargetSync::Synced; }},
+      {"pushAttempts", [](ValveState& v) { ++v.pushAttempts; }},
+      {"lastPushMs", [](ValveState& v) { ++v.lastPushMs; }},
+      {"sensorId[0] first byte", [](ValveState& v) { ++v.sensorId[0].b[0]; }},
+      {"sensorId[0] last byte", [](ValveState& v) { ++v.sensorId[0].b[7]; }},
+      {"sensorId[1] first byte", [](ValveState& v) { ++v.sensorId[1].b[0]; }},
+      {"sensorId[1] last byte", [](ValveState& v) { ++v.sensorId[1].b[7]; }},
+      {"sensorSlot[0]", [](ValveState& v) { ++v.sensorSlot[0]; }},
+      {"sensorSlot[1]", [](ValveState& v) { ++v.sensorSlot[1]; }},
+      {"health", [](ValveState& v) { v.health = 0x100; }},
+      {"revision", [](ValveState& v) { ++v.revision; }},
+      {"hasV3", [](ValveState& v) { v.hasV3 = false; }},
+      {"stmFlags", [](ValveState& v) { v.stmFlags = 0x100; }},
+      {"fault", [](ValveState& v) { ++v.fault; }},
+      {"fsPct", [](ValveState& v) { ++v.fsPct; }},
+      {"drive", [](ValveState& v) { ++v.drive; }},
+      {"retryS", [](ValveState& v) { ++v.retryS; }},
+      {"retries", [](ValveState& v) { ++v.retries; }},
+      {"autoRetry", [](ValveState& v) { v.autoRetry = false; }},
+      {"fsOverride", [](ValveState& v) { v.fsOverride = false; }},
+      {"fsTarget", [](ValveState& v) { ++v.fsTarget; }},
+      {"forcePush", [](ValveState& v) { v.forcePush = false; }},
+  };
+  size_t keyed = 0;
+  for (const Change& c : changes) {
+    CAPTURE(c.first);
+    ValveState v = base;
+    c.second(v);
+    const bool compat = (diffValve(base, v) & kValveCompatMask) != 0;
+    CHECK((valveCompatKey(v) != key) == compat);
+    keyed += compat;
+  }
+  CHECK(keyed == 33);  // the fields of the compat groups (sensor ids at both ends)
+}
+
+TEST_CASE("valveCompatKey: the default valve and the padding") {
+  ValveState a;
+  ValveState b;
+  memset(static_cast<void*>(&b), 0xa5, sizeof b);  // every byte, padding included
+  b = ValveState{};                                  // the fields back at their defaults
+  CHECK(valveCompatKey(a) == valveCompatKey(b));
+  CHECK(valveCompatKey(a) != valveCompatKey(fullValve()));
+}
 
 TEST_CASE("systemState") {
   CHECK(systemState(LinkState::Up, nullptr, 0, 0) == 0);
