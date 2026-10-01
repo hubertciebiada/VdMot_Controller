@@ -8,9 +8,14 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+## [2.1.7-revamped]
+
+Dashboard release of the ESP. The STM firmware is unchanged; its image
+differs from 2.1.6 only in the version string and needs no update.
+
 ### Changed
 - Dashboard: the header and the footer show the STM version alone
-  (`2.1.6-revamped`); the board revision the STM appends (`_C2`) and the
+  (`2.1.7-revamped`); the board revision the STM appends (`_C2`) and the
   protocol moved to Maintenance → System (rows Board and Protocol).
 
 ## [2.1.6-revamped]
