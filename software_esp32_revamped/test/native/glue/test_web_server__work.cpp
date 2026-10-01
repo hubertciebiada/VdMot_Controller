@@ -1,9 +1,12 @@
 // Tests of the working set of src/web_server.cpp: the first request allocates the working set and a
 // response slot buffer and both are kept (no per-request heap growth; the idle release of 2.1.0 was
 // withdrawn in 2.1.1), a request that gets no memory is answered 503 and the next one allocates
-// what is missing. The handlers share one scratch buffer, a JSON body is received into a response
-// slot and a config patch takes its copy from the heap for the request.
+// what is missing. The handlers share one scratch buffer, a JSON body gets a heap buffer of its
+// length and a config patch its copy, both for the request.
 #include <ArduinoJson.h>
+#if defined(__SANITIZE_ADDRESS__)
+#include <sanitizer/lsan_interface.h>
+#endif
 
 #include <algorithm>
 #include <string>
@@ -183,105 +186,124 @@ TEST_CASE("web working set: slot buffers that cannot be allocated") {
   CHECK(fakes::heap().allocated.back() == web::kResponseSlotSize);
 }
 
-// ---------------------------------------------------------------- bodies in response slots
+// ---------------------------------------------------------------- bodies
 
-TEST_CASE("web body: a JSON body is received into a slot, the answer of a save goes out of it") {
+TEST_CASE("web body: bodies are answered while both response slots are busy") {
   glue::begin();
   start();
-  Exchange a(fakes::http::get("/api/status"));  // the first slot
+  Exchange a(fakes::http::get("/api/status"));  // the pollers hold both slots
+  Exchange b(fakes::http::get("/api/valves"));
+  CHECK(post(kTarget1, "{\"target\":50}").code == 202);
+  CHECK(post("/api/config?dryRun=1", "{\"mqtt\":{}}").code == 200);
+  Request legacy = fakes::http::post("/setvalve", "{\"valve\":1,\"value\":30}");
+  CHECK(fakes::http::perform(legacy).code == 200);
+  REQUIRE(sib::app().submitted.size() == 2);
+  CHECK(sib::app().submitted[1].pos == 30);
+  // a save needs a slot for its answer: refused before anything is applied
+  const Response save = post("/api/config", kSave);
+  CHECK(save.code == 503);
+  CHECK(save.body == errorBody("busy", "response buffers in use"));
+  CHECK(sib::storage().applied.empty());
+  CHECK(isStatus(a.finish()));
+  CHECK(b.finish().code == 200);
+  CHECK(post("/api/config", kSave).code == 200);
+  CHECK(sib::storage().applied.size() == 1);
+}
+
+TEST_CASE("web body: the buffer of a body has its length, for its request only") {
+  glue::begin();
+  start();
+  CHECK(isStatus(get("/api/status")));  // the working set and a slot
+  const std::string body = "{\"target\":50}";
+  const size_t before = allocations();
+  CHECK(post(kTarget1, body).code == 202);
+  REQUIRE(allocations() == before + 1);
+  CHECK(fakes::heap().allocated.back() == body.size() + 1);
+  // the answer of a save goes out of a slot, the body and the patch were heap blocks
   const size_t configs = allocationsOf(sizeof(vdm::Config));
-  const Response r = post("/api/config", kSave);  // the second slot: body, then the answer
+  const Response r = post("/api/config", kSave);
   CHECK(r.code == 200);
   CHECK(r.body.find("\"station\":\"Boiler\"") != std::string::npos);
   CHECK(r.body.find(",\"restartRequired\":false,\"netTrial\":false}") != std::string::npos);
-  REQUIRE(sib::storage().applied.size() == 1);
-  CHECK(sib::storage().applied[0].calib.hour == 4);
-  // both slots and, for this request, the patched copy
-  CHECK(allocations() == kWorkParts + 3);
+  CHECK(allocationsOf(std::string(kSave).size() + 1) >= 1);
   CHECK(allocationsOf(sizeof(vdm::Config)) == configs + 1);
-  // the end of the save gave back only its own slot: the next document goes to the second one
-  Exchange v(fakes::http::get("/api/valves"));
-  CHECK(fakes::http::perform(fakes::http::get("/api/status")).code == 503);
-  CHECK(isStatus(a.finish()));
-  CHECK(v.finish().body.rfind("{\"valves\":[", 0) == 0);
-  // the slots are free again
-  Exchange b(fakes::http::get("/api/status"));
-  Exchange c(fakes::http::get("/api/status"));
-  CHECK(isStatus(b.finish()));
-  CHECK(isStatus(c.finish()));
-  CHECK(allocations() == kWorkParts + 3);
+  CHECK(allocations() == before + 3);
+  // a body of exactly 8192 bytes is read whole (and fails to parse as a patch)
+  const Response big = post("/api/config", std::string(8192, ' '));
+  CHECK(big.code == 400);
+  CHECK(fakes::heap().allocated.back() == sizeof(vdm::Config));
+  CHECK(allocationsOf(8193) == 1);
 }
 
-TEST_CASE("web body: with both slots busy a body is refused 503 before anything runs") {
+TEST_CASE("web body: a body without memory for its buffer is refused 503, nothing runs") {
   glue::begin();
   start();
-  Exchange a(fakes::http::get("/api/status"));
-  Exchange b(fakes::http::get("/api/status"));
+  CHECK(isStatus(get("/api/status")));
+  fakes::heap().failAll = true;
   Response r = post(kTarget1, "{\"target\":50}");
   CHECK(r.code == 503);
-  CHECK(r.body == errorBody("busy", "response buffers in use"));
+  CHECK(r.body == errorBody("busy", "out of memory"));
+  r = fakes::http::perform(fakes::http::post("/setvalve", "{\"valve\":1,\"value\":30}"));
+  CHECK(r.code == 503);
+  CHECK(r.body == errorBody("busy", "out of memory"));
+  fakes::heap().failAll = false;
   CHECK(sib::app().submitted.empty());
-  CHECK(isStatus(a.finish()));
-  r = post(kTarget1, "{\"target\":50}");
-  CHECK(r.code == 202);
-  CHECK(sib::app().submitted.size() == 1);
-  CHECK(isStatus(b.finish()));
-}
-
-TEST_CASE("web body: a small answer gives the body's slot back with the request") {
-  glue::begin();
-  start();
   CHECK(post(kTarget1, "{\"target\":50}").code == 202);
-  CHECK(post(kTarget1, "{\"target\":\"x\"}").code == 400);
-  Exchange a(fakes::http::get("/api/status"));
-  Exchange b(fakes::http::get("/api/status"));
-  CHECK(isStatus(a.finish()));
-  CHECK(isStatus(b.finish()));
+  CHECK(sib::app().submitted.size() == 1);
 }
 
-TEST_CASE("web body: a client gone mid-body gives the slot back") {
+TEST_CASE("web body: a client gone mid-body frees the buffer for the next body") {
   glue::begin();
   start();
   Exchange body(apiPost("/api/config", kSave));
   body.sendBody(4);
-  Exchange a(fakes::http::get("/api/status"));  // the other slot
-  Response r = get("/api/status");
-  CHECK(r.code == 503);
-  CHECK(r.body == errorBody("busy", "response buffers in use"));
+  // another body meanwhile: 409, as before
+  Response r = post(kTarget1, "{\"target\":50}");
+  CHECK(r.code == 409);
+  CHECK(r.body == errorBody("busy", "body"));
   body.disconnect();
-  CHECK(isStatus(get("/api/status")));
   CHECK(sib::storage().applied.empty());
-  CHECK(isStatus(a.finish()));
-  // the next body is collected as usual
+  CHECK(post(kTarget1, "{\"target\":50}").code == 202);
   CHECK(post("/api/config", kSave).code == 200);
 }
 
-TEST_CASE("web body: a GET with a body answers from the body's slot") {
+#if defined(__SANITIZE_ADDRESS__)  // the sanitizer build (tests and mutation)
+TEST_CASE("web body: every body buffer goes back to the heap") {
   glue::begin();
   start();
-  Exchange a(fakes::http::get("/api/status"));
-  Request withBody = apiPost("/api/status", "{}");
-  withBody.method = HTTP_GET;
-  Exchange b(withBody);
-  const Response& rb = b.finish();
-  CHECK(isStatus(rb));
-  CHECK(allocations() == kWorkParts + 2);  // a third slot was never needed
-  CHECK(isStatus(a.finish()));
+  CHECK(isStatus(get("/api/status")));
+  CHECK(post(kTarget1, "{\"target\":50}").code == 202);    // answered
+  CHECK(post(kTarget1, "{\"target\":\"x\"}").code == 400);  // refused by the handler
+  CHECK(post("/api/config?dryRun=1", kSave).code == 200);
+  {
+    Exchange gone(apiPost("/api/config", kSave));  // the client leaves mid-body
+    gone.sendBody(4);
+    gone.disconnect();
+  }
+  CHECK(__lsan_do_recoverable_leak_check() == 0);
 }
+#endif
 
 TEST_CASE("web config: without memory for the patched copy a save answers 503, nothing applied") {
   glue::begin();
   start();
   CHECK(isStatus(get("/api/status")));  // the working set and a slot
-  fakes::heap().failAll = true;
+  // the body buffer, then no copy
+  fakes::heap().next = {true, false};
   Response r = post("/api/config", kSave);
   CHECK(r.code == 503);
   CHECK(r.body == errorBody("busy", "out of memory"));
+  fakes::heap().next = {true, false};
   r = post("/api/config?dryRun=1", kSave);
   CHECK(r.code == 503);
-  fakes::heap().failAll = false;
+  CHECK(r.body == errorBody("busy", "out of memory"));
   CHECK(sib::storage().applied.empty());
   CHECK(sib::logger().withCode(vdm::EventCode::ConfigSaved).empty());
+  // the save gave its slot back: both are free
+  Exchange a(fakes::http::get("/api/status"));
+  Exchange b(fakes::http::get("/api/status"));
+  CHECK(isStatus(a.finish()));
+  CHECK(isStatus(b.finish()));
   r = post("/api/config", kSave);
   CHECK(r.code == 200);
   CHECK(sib::storage().applied.size() == 1);

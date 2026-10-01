@@ -81,7 +81,7 @@ Error codes:
 | 413 | `too_large` | body or file too large |
 | 415 | `unsupported_media_type` | wrong Content-Type |
 | 500 | `internal`, `io_error`, `nvs` | device error |
-| 503 | `busy` | both response buffers in use (nothing applied); retry. A JSON body is received into a response buffer, so a POST with a body gets this answer too (detail `response buffers in use`), before anything is applied; a config save also when the device has no memory for the patched copy (detail `out of memory`) |
+| 503 | `busy` | both response buffers in use (nothing applied); retry. Also when the device has no memory for a request (detail `out of memory`, nothing applied): its working set, a JSON body, the patched copy of a config save |
 | 503 | `queue_full` | STM command queue full |
 | 503 | `retry` | state changed while answering; retry |
 | 503 | `unavailable` | no file system |

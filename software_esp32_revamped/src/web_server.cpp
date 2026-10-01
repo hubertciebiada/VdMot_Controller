@@ -60,8 +60,8 @@ Slot gSlots[kResponseSlots];
 // Working set of the request handlers, about 10 KB in 5 blocks. Each part gets
 // its buffer in the first request (refreshConfig()) and keeps it, like the
 // response slots (web_server.h): without a web client the heap keeps these
-// bytes. JSON bodies go into a response slot (handleBody()), a config patch
-// takes its Config copy from the heap for that request.
+// bytes. A JSON body and the Config copy of a config patch take their memory
+// from the heap for their request only.
 //
 // What a handler builds for its response (views, event, image and file lists,
 // the status and health snapshots, the health text, a profile) is dead when
@@ -116,13 +116,15 @@ T& scratch() {
   return *new (gScratchPtr->bytes) T();
 }
 
-// The JSON body of gBodyOwner (one body at a time) is received into a
-// response slot, gBodySlot: a handler consumes the body (parseBody(),
-// applyConfigJson()) before it writes its response, so the response takes
-// that slot (acquireSlot()). Without a free slot the body is refused (503).
+// The JSON body of gBodyOwner (one body at a time, 409 for another one) in a
+// heap buffer sized to its Content-Length (at most kMaxBodySize): allocated
+// by its first bytes (handleBody()), freed when the request ends or the client
+// leaves (endBody()). Most bodies are a few bytes; without memory the body is
+// refused (503). The response slots are never used for it, so a body never
+// waits for the pollers' responses.
 AsyncWebServerRequest* gBodyOwner = nullptr;
-int gBodySlot = -1;  // -1 once the response took it
 char* gBody = nullptr;
+size_t gBodyCap = 0;  // bytes gBody holds besides the terminator
 size_t gBodyLen = 0;
 bool gBodyOverflow = false;
 
@@ -184,14 +186,7 @@ uint32_t remoteIp(AsyncWebServerRequest* req) {
 
 // ---------------------------------------------------------------- responses
 
-// The slot for the response to `req`: the slot of its body when it has one
-// (consumed by then), else a free one; -1 when every slot is busy.
-int acquireSlot(AsyncWebServerRequest* req) {
-  if (req == gBodyOwner && gBodySlot >= 0) {
-    const int slot = gBodySlot;
-    gBodySlot = -1;
-    return slot;
-  }
+int acquireSlot() {
   for (size_t i = 0; i < kResponseSlots; ++i) {
     Slot& s = gSlots[i];
     if (s.busy) continue;
@@ -205,15 +200,16 @@ int acquireSlot(AsyncWebServerRequest* req) {
 }
 
 void releaseSlot(int slot) {
-  if (slot >= 0) gSlots[slot].busy = false;  // -1: a body slot the response took
+  if (slot >= 0) gSlots[slot].busy = false;  // -1: a dry run that took no slot
 }
 
-// The body of `req` ends (request answered or client gone): its slot goes
-// back to the pool unless the response took it.
+// The body of `req` ends (request answered or client gone): its buffer goes
+// back to the heap.
 void endBody(AsyncWebServerRequest* req) {
   if (gBodyOwner != req) return;
-  releaseSlot(gBodySlot);
-  gBodyOwner = nullptr;  // gBodySlot counts only for the owner
+  delete[] gBody;
+  gBody = nullptr;
+  gBodyOwner = nullptr;
 }
 
 // Sends slot content without copying; the slot is released when the client
@@ -247,7 +243,7 @@ void sendAccepted(AsyncWebServerRequest* req) { req->send(202, kJson, "{\"result
 template <typename F>
 void sendDocument(AsyncWebServerRequest* req, int code, F build,
                   const char* attachment = nullptr) {
-  const int slot = acquireSlot(req);
+  const int slot = acquireSlot();
   if (slot < 0) return sendError(req, 503, "busy", "response buffers in use");
   vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
   if (!build(jw) || !jw.complete()) {
@@ -798,7 +794,7 @@ void handleEvents(AsyncWebServerRequest* req) {
       return sendError(req, 400, "bad_request", "minSeverity");
     }
   }
-  const int slot = acquireSlot(req);
+  const int slot = acquireSlot();
   if (slot < 0) return sendError(req, 503, "busy", "response buffers in use");
   Events& events = scratch<Events>();
   // The ring may hold more text than one slot: halve the count until it fits.
@@ -924,7 +920,7 @@ void handleImportReport(AsyncWebServerRequest* req) {
   fs::File f = LittleFS.open(storage::kImportReportFile, FILE_READ);
   if (!f) return sendError(req, 404, "not_found", "no import report");
   f.setBufferSize(storage::kFileBufferSize);
-  const int slot = acquireSlot(req);
+  const int slot = acquireSlot();
   if (slot < 0) {
     f.close();
     return sendError(req, 503, "busy", "response buffers in use");
@@ -1105,11 +1101,10 @@ void handleProfileRefresh(AsyncWebServerRequest* req, uint8_t valve) {
 }
 
 // ?dryRun=1: validated like a save (applyConfigJson checks the whole
-// config), nothing stored; the answer names what a save would do. The body
-// holds a response slot, so the answer of a save always has one: a busy
-// server refused the body (503) before anything was applied. The patched
-// copy (2.5 KB) lives on the heap for this request only (no memory: 503,
-// nothing applied).
+// config), nothing stored; the answer names what a save would do. A save
+// reserves its response slot first, so a busy server answers 503 before
+// anything is applied. The patched copy (2.5 KB) lives on the heap for this
+// request only (no memory: 503, nothing applied).
 void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   bool dryRun = false;
   if (AsyncWebParameter* p = req->getParam("dryRun")) {
@@ -1117,13 +1112,19 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
     dryRun = true;
   }
   if (!hasBody || gBodyLen == 0) return sendError(req, 400, "bad_request", "JSON body required");
+  const int slot = dryRun ? -1 : acquireSlot();
+  if (!dryRun && slot < 0) return sendError(req, 503, "busy", "response buffers in use");
   vdm::Config* patch = new (std::nothrow) vdm::Config;
-  if (patch == nullptr) return sendError(req, 503, "busy", "out of memory");
+  if (patch == nullptr) {
+    releaseSlot(slot);
+    return sendError(req, 503, "busy", "out of memory");
+  }
   *patch = *gCfgPtr;
   char path[72];
   const vdm::PatchResult r = vdm::applyConfigJson(*patch, gBody, gBodyLen, path, sizeof path);
   if (r != vdm::PatchResult::Ok) {
     delete patch;
+    releaseSlot(slot);
     return sendError(req, 400, "invalid", path);
   }
   vdm::ApplyInfo info;
@@ -1137,12 +1138,19 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
              info.restartRequired ? "true" : "false", info.netTrial ? "true" : "false");
     return req->send(200, kJson, buf);
   }
-  if (!saved) return sendError(req, strcmp(path, "nvs") == 0 ? 500 : 400, "invalid", path);
+  if (!saved) {
+    releaseSlot(slot);
+    return sendError(req, strcmp(path, "nvs") == 0 ? 500 : 400, "invalid", path);
+  }
   refreshConfig();
   logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve,
               static_cast<int32_t>(storage::configRevision()), 0, "web");
-  sendDocument(req, 200,
-               [&info](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, *gCfgPtr, &info); });
+  vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
+  if (!vdm::writeConfigJson(jw, *gCfgPtr, &info)) {
+    releaseSlot(slot);
+    return sendError(req, 500, "internal", "document too large");
+  }
+  sendSlot(req, 200, slot, jw.length());
 }
 
 void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
@@ -1680,22 +1688,26 @@ class ApiHandler : public AsyncWebHandler {
         mark(req, 409, "busy", "body");
         return;
       }
-      const int slot = acquireSlot(req);  // a restarted body keeps its slot
-      if (slot < 0) {
-        mark(req, 503, "busy", "response buffers in use");
+      endBody(req);  // a body that starts again gives its buffer back first
+      // Sized to Content-Length; a larger one (refused by the guard already)
+      // only sets the overflow.
+      const size_t cap = std::min(total, kMaxBodySize);
+      char* buf = new (std::nothrow) char[cap + 1];
+      if (buf == nullptr) {
+        mark(req, 503, "busy", "out of memory");
         return;
       }
       gBodyOwner = req;
-      gBodySlot = slot;
-      gBody = gSlots[slot].buf;
+      gBody = buf;
+      gBodyCap = cap;
       gBodyLen = 0;
       gBodyOverflow = total > kMaxBodySize;
       gBody[0] = '\0';
-      // Client gone mid-body: the slot goes back to the pool.
+      // Client gone mid-body: the buffer goes back to the heap.
       req->onDisconnect([req]() { endBody(req); });
     }
     if (gBodyOwner != req || gBodyOverflow) return;
-    if (len > kMaxBodySize - gBodyLen) {
+    if (len > gBodyCap - gBodyLen) {
       gBodyOverflow = true;
       return;
     }

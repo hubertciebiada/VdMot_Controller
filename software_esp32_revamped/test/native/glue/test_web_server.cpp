@@ -613,17 +613,12 @@ TEST_CASE("WG-10: a dry run validates and answers without storing") {
   CHECK(r.code == 400);
   CHECK(r.body == errorBody("bad_request", "dryRun=1"));
   CHECK(sib::storage().applied.empty());
-  // its body needs a response slot like any other (and gives it back)
+  // a dry run needs no response slot
   fakes::http::Exchange a(fakes::http::get("/api/status"));
   fakes::http::Exchange b(fakes::http::get("/api/status"));
   r = fakes::http::perform(apiPost("/api/config?dryRun=1", "{\"calib\":{\"hour\":4}}"));
-  CHECK(r.code == 503);
-  CHECK(r.body == errorBody("busy", "response buffers in use"));
-  a.finish();
-  r = fakes::http::perform(apiPost("/api/config?dryRun=1", "{\"calib\":{\"hour\":4}}"));
   CHECK(r.code == 200);
-  fakes::http::Exchange c(fakes::http::get("/api/status"));
-  CHECK(c.finish().code == 200);
+  a.finish();
   b.finish();
 }
 

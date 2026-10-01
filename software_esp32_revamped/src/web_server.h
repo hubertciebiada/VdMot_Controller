@@ -23,11 +23,10 @@ namespace web {
 // answers 503.
 constexpr size_t kResponseSlots = 2;
 constexpr size_t kResponseSlotSize = 12 * 1024;
-// A JSON body is received into a response slot, which then carries the
-// answer: one body at a time (409 when another one arrives), 503 when no slot
-// is free, 413 when larger.
+// A JSON body is received into a heap buffer of its Content-Length for the
+// duration of its request: one body at a time (409 when another one arrives),
+// 503 when the buffer cannot be allocated, 413 when larger.
 constexpr size_t kMaxBodySize = 8192;
-static_assert(kMaxBodySize < kResponseSlotSize, "a body and its terminator fit a slot");
 // Connections the server holds at a time: tools/patch_libs.py reads this value
 // and makes it the listen backlog of AsyncTCP (lwIP drops a SYN beyond it).
 constexpr size_t kMaxConnections = 4;

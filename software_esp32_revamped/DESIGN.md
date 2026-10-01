@@ -678,8 +678,11 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   copies, the 512 B JSON document, the 3.4 KB scratch buffer the handlers
   share for their views and lists (section 12), the guard detail) and the
   response slots 2 x 12 KB get their buffers in the first request and keep
-  them (no memory: 503). A JSON body goes into a response slot, the patched
-  `Config` of `POST /api/config` lives on the heap for that request only.
+  them (no memory: 503). A JSON body (a heap buffer of its Content-Length,
+  at most 8 KB, usually a few bytes) and the patched `Config` of `POST
+  /api/config` live on the heap for their request only. (A first version of
+  this change received the body into a response slot: with three pollers
+  holding the slots, 72 % of the POSTs of a test got 503.)
   2.1.5 had a 33 KB working set (an 8 KB body buffer, a patch copy and one
   array per view) and kept 68-77 KB free after a day with web clients. 2.1.0
   gave the buffers back 30 s after the last request; 2.1.1 withdrew that
@@ -726,7 +729,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   buffer is set once (2304 B, discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;
   `/api/health` writes its 1 KB text into the scratch buffer of the web
-  working set. POST bodies go into a response slot. Beyond the web buffers
+  working set. A POST body gets a heap buffer of its length for its
+  request. Beyond the web buffers
   above, only AsyncWebServer allocates per request: its request and response
   objects (the response holds a copy of the `/api/health` document) and a
   send buffer per step, up to the free TCP send window; it frees them by the
@@ -856,22 +860,21 @@ Implementation rules:
   credentials, an `Authorization` header is ignored. The device belongs in a
   network that only trusted clients reach; the guard keeps browsers of other
   sites out.
-- Bodies: a JSON body (at most 8 KB) is received into a response slot, one
-  body at a time (409 `busy` for a second one, 503 `busy` when no slot is
-  free); the handler consumes the body before it writes its answer, so the
-  answer goes out of the same slot (a save of `POST /api/config` therefore
-  always has its slot: a busy server refuses the body before anything is
-  applied). Uploads stream straight to LittleFS (`.part` file, the write
-  result checked on every chunk, free space checked up front) or to the OTA
-  partition, never through a slot. Only one upload or flash runs at a time.
-- Responses: 2 x 12 KB slots (buffers from their first use on, section 9).
-  `/api/health` is answered outside the pool (a copy of its 1 KB text).
+- Bodies: a JSON body (at most 8 KB) is received into a heap buffer of its
+  Content-Length, allocated by its first bytes and freed when the request
+  ends or the client leaves; one body at a time (409 `busy` for a second
+  one, 503 `busy` "out of memory" when the buffer cannot be allocated). It
+  never takes a response slot. Uploads stream straight to LittleFS (`.part`
+  file, the write result checked on every chunk, free space checked up
+  front) or to the OTA partition, never through the JSON buffer. Only one
+  upload or flash runs at a time.
+- Responses: 2 x 12 KB slots (buffers from their first use on, section 9);
+  `POST /api/config` reserves its slot before applying. `/api/health` is
+  answered outside the pool (a copy of its 1 KB text).
 - Handler data (views, event, image and file lists, the status and health
   snapshots, a profile) is built in one scratch buffer of the working set:
   it is dead when the handler returns, and handlers never overlap (all run
-  in the AsyncTCP task). A handler that reads a body writes no response
-  document into the slot while it still reads the parsed JSON (ArduinoJson
-  keeps the strings in the body, zero-copy).
+  in the AsyncTCP task).
 - STM actions: `409 stm_unsupported` while `app::stmSupport()` is TooOld
   (except target, reset and flash) and for stop/safe mode below protocol 3;
   STM reset and flash start go through the reset gate (section 5).

@@ -16,19 +16,16 @@ the ESP, the tooling and a summary of the STM.
   /api/valves/{n}/profile` and the MQTT diag topic `diag/valves/<V>/profile`
   copy the one profile they need. Nothing visible changes.
 - ESP: the web server's working set shrinks from about 33 KB to about 10 KB
-  (software_esp32_revamped/DESIGN.md sections 9 and 12): a JSON body is
-  received into a response buffer, which then carries the answer, instead of
-  a separate 8 KB body buffer; the views and lists of the handlers share one
-  scratch buffer; the patched copy of a config save lives on the heap for
-  that request only. Visible in the API (docs/revamped/API.md): a POST with a
-  JSON body that arrives while both response buffers are in use is answered
-  `503 busy` (`response buffers in use`, nothing applied; before, only a
-  second concurrent body was refused, with `409 busy`, which stays), a config
-  save without memory for its copy `503 busy` (`out of memory`), and `GET
-  /api/files` lists at most 32 entries (was 48; `truncated` when there are
-  more, the file system holds about a dozen). `GET /api/events` still takes
-  `limit` 1..50; its buffer is sized to the 32-event ring, which no response
-  could exceed anyway.
+  (software_esp32_revamped/DESIGN.md sections 9 and 12): a JSON body gets a
+  heap buffer of its length for its request instead of a permanent 8 KB
+  buffer; the views and lists of the handlers share one scratch buffer; the
+  patched copy of a config save lives on the heap for that request only.
+  Visible in the API (docs/revamped/API.md): a body or a config save the
+  device has no memory for is answered `503 busy` (`out of memory`, nothing
+  applied), and `GET /api/files` lists at most 32 entries (was 48;
+  `truncated` when there are more, the file system holds about a dozen).
+  `GET /api/events` still takes `limit` 1..50; its buffer is sized to the
+  32-event ring, which no response could exceed anyway.
 - ESP: HA discovery after a connect waits until the STM data has settled
   (link up, re-sync done, 30 s for the 1-Wire lists; at most 2 min), and so
   does the run after a change of the STM's sensor assignments. 2.1.5 sent the
