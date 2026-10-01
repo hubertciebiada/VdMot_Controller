@@ -8,6 +8,14 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+## [2.1.6-revamped]
+
+ESP release: about 40 KB more free heap with the same functions (measured on
+a controller: 132 KB free after boot, at least 80 KB under parallel web load;
+2.1.5: about 90 KB and 41 to 50 KB), and one HA discovery run after a boot
+instead of up to six. The STM firmware is unchanged; its image differs from
+2.1.5 only in the version string and needs no update.
+
 ### Changed
 - ESP: about 9 KB more free heap: the valve profiles (12 x 260 B) are no longer
   part of the STM snapshot, of which the firmware holds four copies (STM task,

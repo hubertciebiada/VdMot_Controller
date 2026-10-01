@@ -1,20 +1,20 @@
 # VdMot Revamped: build, install, upgrade, recovery
 
-> Unofficial firmware (fork of VdMot_Controller). Version **2.1.5-revamped**.
+> Unofficial firmware (fork of VdMot_Controller). Version **2.1.6-revamped**.
 > Read this page completely before flashing.
 
 ## 1. Which files
 
-A GitHub release (tag `v2.1.5-revamped`) contains:
+A GitHub release (tag `v2.1.6-revamped`) contains:
 
 | File | For |
 |---|---|
-| `VdMot-Revamped_2.1.5-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
-| `VdMot-Revamped_2.1.5-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it (produced as in the hc-version CI) |
-| `VdMot-Revamped_2.1.5-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
-| `VdMot-Revamped_2.1.5-revamped_STM32F411_C1.bin` | F411, hardware C1 |
-| `VdMot-Revamped_2.1.5-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
-| `VdMot-Revamped_2.1.5-revamped_STM32F401_C1.bin` | F401, hardware C1 |
+| `VdMot-Revamped_2.1.6-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
+| `VdMot-Revamped_2.1.6-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it (produced as in the hc-version CI) |
+| `VdMot-Revamped_2.1.6-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
+| `VdMot-Revamped_2.1.6-revamped_STM32F411_C1.bin` | F411, hardware C1 |
+| `VdMot-Revamped_2.1.6-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
+| `VdMot-Revamped_2.1.6-revamped_STM32F401_C1.bin` | F401, hardware C1 |
 | `SHA256SUMS`, `manifest.json` | checksums and asset list |
 
 Check the download: `sha256sum -c SHA256SUMS --ignore-missing`.
@@ -42,7 +42,7 @@ in the `platformio.ini` files).
 cd software_stm32
 pio run -e STM32F411_release_C2          # -> .pio/build/STM32F411_release_C2/firmware.bin
 
-# ESP32 (env wt32-eth01_revamped; wt32-eth01_revamped_dev = debug build, version 2.1.5-revamped-dev)
+# ESP32 (env wt32-eth01_revamped; wt32-eth01_revamped_dev = debug build, version 2.1.6-revamped-dev)
 cd software_esp32_revamped
 pio run -e wt32-eth01_revamped           # -> .pio/build/wt32-eth01_revamped/firmware.bin
 
@@ -52,7 +52,7 @@ bash tools/native/docker.sh test esp32
 bash tools/native/docker.sh mutate esp32 --files lib/core/src/lease_client.cpp
 
 # Package local builds like a release
-python3 tools/release/package.py --tag v2.1.5-revamped --from-builds . --out dist
+python3 tools/release/package.py --tag v2.1.6-revamped --from-builds . --out dist
 ```
 
 The ESP build generates `src/generated/web_assets.h` (gzipped dashboard) on
@@ -94,7 +94,7 @@ Recommended order: **ESP first, then STM.**
 ### Step 1: ESP
 1. Open the legacy web UI → firmware update (`http://<device>/update`), or on
    2.0.0 Maintenance → ESP firmware, and upload
-   `VdMot-Revamped_2.1.5-revamped_ESP32-WT32-ETH01.bin`.
+   `VdMot-Revamped_2.1.6-revamped_ESP32-WT32-ETH01.bin`.
 2. The ESP restarts into the new firmware. On the first boot after the legacy
    firmware it imports the legacy settings once (event `config_imported` with
    the number of imported and rejected keys; details under Maintenance →
@@ -103,7 +103,7 @@ Recommended order: **ESP first, then STM.**
    installation, but settings last saved there hold no WiFi (those versions
    had none): such a controller stays on Ethernet until WiFi is set up again
    under Settings → Station and network (CHANGELOG.md).
-3. Open `http://<device>/`. The header shows ESP `2.1.5-revamped` and the STM
+3. Open `http://<device>/`. The header shows ESP `2.1.6-revamped` and the STM
    version with its protocol.
 4. Leave it running. The new image is marked valid (event `app_marked_valid`)
    after 2 minutes in which all of these held without interruption:
@@ -133,7 +133,7 @@ Recommended order: **ESP first, then STM.**
    ESP waits up to 60 s for the new application). The valves do not move while
    flashing. If the STM does not answer at 115200 baud, one more session runs
    at 57600 baud.
-3. Afterwards the header shows STM `2.1.5-revamped_C2` (or `_C1`) with
+3. Afterwards the header shows STM `2.1.6-revamped_C2` (or `_C1`) with
    `proto 3`, and the valve cards show the extended data (last move, early
    stops, rejected commands, flags, failsafe). The image is kept as
    `last_good.bin`.
