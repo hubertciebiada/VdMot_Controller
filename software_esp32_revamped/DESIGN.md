@@ -670,13 +670,16 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   live on the heap only for that moment, the session of a gateway probe (a
   task with 2 KB stack and a socket, about 2.7 KB) for a second or two per
   minute (section 16).
-- Web server: its working set (~31 KB in 16 blocks, the largest the 8 KB
-  POST body buffer: snapshot, status and config copies, views, the health
-  text, one profile) and the response slots 2 x 12 KB get their buffers in the first
-  request and keep them (no memory: 503); with the working set and one slot
-  the WT32-ETH01 keeps about 80 KB free. 2.1.0 gave them back 30 s after
-  the last request; 2.1.1 withdrew that after a controller crashed with it
-  (cause not found, no backtrace). AsyncTCP's
+- Web server: its working set (~9.6 KB in 5 blocks: the snapshot and config
+  copies, the 512 B JSON document, the 3.4 KB scratch buffer the handlers
+  share for their views and lists (section 12), the guard detail) and the
+  response slots 2 x 12 KB get their buffers in the first request and keep
+  them (no memory: 503). A JSON body goes into a response slot, the patched
+  `Config` of `POST /api/config` lives on the heap for that request only.
+  2.1.5 had a 33 KB working set (an 8 KB body buffer, a patch copy and one
+  array per view) and kept 68-77 KB free after a day with web clients. 2.1.0
+  gave the buffers back 30 s after the last request; 2.1.1 withdrew that
+  after a controller crashed with it (cause not found, no backtrace). AsyncTCP's
   task stack is 8960 B (`app::kAsyncTcpStackBytes`, patched in by
   `tools/patch_libs.py`; static worst case ~7.1 KB by the ELF, 3.4 KB
   measured).
@@ -715,8 +718,8 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
 - No other per-operation heap: PubSubClient's buffer is set once (2304 B,
   discovery payloads up to 2047 B). HTTP responses use the slot pool through
   `beginResponse_P`, and the slot is released in `onDisconnect`;
-  `/api/health` uses its own 1 KB buffer of the web working set. POST bodies
-  go into the 8 KB buffer of the web working set. Beyond the web buffers
+  `/api/health` writes its 1 KB text into the scratch buffer of the web
+  working set. POST bodies go into a response slot. Beyond the web buffers
   above, only AsyncWebServer allocates per request: its request and response
   objects (the response holds a copy of the `/api/health` document) and a
   send buffer per step, up to the free TCP send window; it frees them by the
@@ -830,13 +833,22 @@ Implementation rules:
   credentials, an `Authorization` header is ignored. The device belongs in a
   network that only trusted clients reach; the guard keeps browsers of other
   sites out.
-- Bodies: one 8 KB buffer (web working set), one body at a time; uploads
-  stream straight to LittleFS (`.part` file, the write result checked on
-  every chunk, free space checked up front) or to the OTA partition, never
-  through the JSON buffer. Only one upload or flash runs at a time.
-- Responses: 2 x 12 KB slots (buffers from their first use on, section 9);
-  `POST /api/config` reserves its slot before
-  applying. `/api/health` is answered outside the pool (1 KB).
+- Bodies: a JSON body (at most 8 KB) is received into a response slot, one
+  body at a time (409 `busy` for a second one, 503 `busy` when no slot is
+  free); the handler consumes the body before it writes its answer, so the
+  answer goes out of the same slot (a save of `POST /api/config` therefore
+  always has its slot: a busy server refuses the body before anything is
+  applied). Uploads stream straight to LittleFS (`.part` file, the write
+  result checked on every chunk, free space checked up front) or to the OTA
+  partition, never through a slot. Only one upload or flash runs at a time.
+- Responses: 2 x 12 KB slots (buffers from their first use on, section 9).
+  `/api/health` is answered outside the pool (a copy of its 1 KB text).
+- Handler data (views, event, image and file lists, the status and health
+  snapshots, a profile) is built in one scratch buffer of the working set:
+  it is dead when the handler returns, and handlers never overlap (all run
+  in the AsyncTCP task). A handler that reads a body writes no response
+  document into the slot while it still reads the parsed JSON (ArduinoJson
+  keeps the strings in the body, zero-copy).
 - STM actions: `409 stm_unsupported` while `app::stmSupport()` is TooOld
   (except target, reset and flash) and for stop/safe mode below protocol 3;
   STM reset and flash start go through the reset gate (section 5).

@@ -38,7 +38,9 @@ The accept path creates the client with new (std::nothrow), so the
 library's own NULL branch (close the pcb) runs instead of abort().
 
 Under a storm of connections the heap of the WT32-ETH01 is the limit, so
-the script caps the connections of a server at ASYNC_TCP_MAX_CONN: every
+the script caps the connections of a server at web::kMaxConnections
+(src/web_server.h, read like the stack size; the web server sizes its
+table of refused requests by it): every
 accepted connection counts against the listen backlog (tcp_backlog_delayed
 in the accept callback) until lwIP purges its pcb, and the backlog is that
 cap; a SYN beyond it is dropped by lwIP before any allocation and the
@@ -100,8 +102,6 @@ MAX_HEADERS = 32
 MAX_PARAMS = 16
 MAX_PART_LINE = 512
 MAX_FIELD = 256
-# Connections a server holds at a time (listen backlog); the peers' TCP queues the rest.
-ASYNC_TCP_MAX_CONN = 4
 # Wait for a slot in the full event queue (the lwIP thread, and the purge on the async
 # task), then the event is dropped.
 ASYNC_TCP_QUEUE_WAIT_MS = 10
@@ -242,6 +242,16 @@ def async_tcp_stack(project_dir: str) -> int:
         m = re.search(r"kAsyncTcpStackBytes = (\d+);", f.read())
     if m is None:
         raise RuntimeError("src/app.h: kAsyncTcpStackBytes not found")
+    return int(m.group(1))
+
+
+def async_tcp_max_conn(project_dir: str) -> int:
+    """web::kMaxConnections from src/web_server.h: the connections a server holds at a time
+    (listen backlog); the peers' TCP queues the rest."""
+    with open(os.path.join(project_dir, "src", "web_server.h"), "r", encoding="utf-8") as f:
+        m = re.search(r"kMaxConnections = (\d+);", f.read())
+    if m is None:
+        raise RuntimeError("src/web_server.h: kMaxConnections not found")
     return int(m.group(1))
 
 
@@ -695,13 +705,14 @@ def patch(libdeps_env_dir: str, project_dir: str) -> list[str]:
             changed.append(f"{LIB}/src/{name}")
     verify_web_headers(os.path.join(src, "WebRequest.cpp"))
     stack = async_tcp_stack(project_dir)
+    max_conn = async_tcp_max_conn(project_dir)
     path = os.path.join(libdeps_env_dir, ASYNC_TCP_LIB, "src", "AsyncTCP.cpp")
     with open(path, "r", encoding="utf-8", newline="") as f:
         text = f.read()
     marker = f"{ASYNC_TCP_MARKER} {stack} "
     if ASYNC_TCP_MARKER in text and marker not in text:
         raise RuntimeError(f"{path}: patched with another stack size; delete .pio/libdeps")
-    conn_marker = f"{ASYNC_TCP_CONN_MARKER} {ASYNC_TCP_MAX_CONN} "
+    conn_marker = f"{ASYNC_TCP_CONN_MARKER} {max_conn} "
     if ASYNC_TCP_CONN_MARKER in text and conn_marker not in text:
         raise RuntimeError(f"{path}: patched with another connection cap; delete .pio/libdeps")
     queue_marker = f"{ASYNC_TCP_QUEUE_MARKER} {ASYNC_TCP_QUEUE_WAIT_MS} "
@@ -711,13 +722,13 @@ def patch(libdeps_env_dir: str, project_dir: str) -> list[str]:
         patch_file(path, async_tcp_edits(stack), marker),
         patch_file(path, ASYNC_TCP_ALLOC_EDITS, ASYNC_TCP_ALLOC_MARKER),
         patch_file(path, ASYNC_TCP_ARG_EDITS, ASYNC_TCP_ARG_MARKER),
-        patch_file(path, async_tcp_conn_edits(ASYNC_TCP_MAX_CONN), conn_marker),
+        patch_file(path, async_tcp_conn_edits(max_conn), conn_marker),
         patch_file(path, async_tcp_queue_edits(ASYNC_TCP_QUEUE_WAIT_MS), queue_marker),
         patch_file(path, ASYNC_TCP_SLOTS_EDITS, ASYNC_TCP_SLOTS_MARKER),
     ]
     verify_async_tcp_alloc(path)
     verify_async_tcp_arg(path)
-    verify_async_tcp_conn(path, ASYNC_TCP_MAX_CONN)
+    verify_async_tcp_conn(path, max_conn)
     verify_async_tcp_queue(path, ASYNC_TCP_QUEUE_WAIT_MS)
     verify_async_tcp_slots(path)
     if any(patched):

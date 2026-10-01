@@ -627,9 +627,9 @@ TEST_CASE("web health: the document may use its whole 1024-byte buffer") {
 
 // ---------------------------------------------------------------- files
 
-TEST_CASE("web files: at most 48 entries, more are reported as truncated") {
+TEST_CASE("web files: at most 32 entries, more are reported as truncated") {
   glue::begin();
-  for (int i = 0; i < 49; ++i) {
+  for (int i = 0; i < 33; ++i) {
     vdm::FileEntry e{};
     vdm::copyString(e.path, sizeof e.path, ("/f" + std::to_string(i) + ".bin").c_str());
     e.size = 10;
@@ -639,10 +639,10 @@ TEST_CASE("web files: at most 48 entries, more are reported as truncated") {
   Response r = get("/api/files");
   CHECK(r.code == 200);
   CHECK(r.body.find("\"truncated\":true,") != std::string::npos);
-  CHECK(r.body.find("{\"path\":\"/f47.bin\",") != std::string::npos);
-  CHECK(r.body.find("{\"path\":\"/f48.bin\",") == std::string::npos);
+  CHECK(r.body.find("{\"path\":\"/f31.bin\",") != std::string::npos);
+  CHECK(r.body.find("{\"path\":\"/f32.bin\",") == std::string::npos);
   sib::storage().files.pop_back();
   r = get("/api/files");
   CHECK(r.body.find("\"truncated\":false,") != std::string::npos);
-  CHECK(r.body.find("{\"path\":\"/f47.bin\",") != std::string::npos);
+  CHECK(r.body.find("{\"path\":\"/f31.bin\",") != std::string::npos);
 }

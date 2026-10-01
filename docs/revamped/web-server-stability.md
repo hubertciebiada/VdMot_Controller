@@ -41,11 +41,13 @@ also runs in CI). Each is guarded by a marker and a build-time check that fails
 the build if an expected site is missing. None of this is in `src/`/`lib/`, so
 it is outside the mutation suites.
 
-The tunables are at the top of the script: `ASYNC_TCP_MAX_CONN` (4; it becomes
-`VDM_MAX_CONN`, the lwIP listen backlog that caps the connections of a server)
-and `ASYNC_TCP_QUEUE_WAIT_MS` (10; the longest wait of a send into the event
-queue before the event is dropped). A library already patched with other
-values fails the build; delete `.pio/libdeps` to patch it again.
+The tunables: `web::kMaxConnections` in `src/web_server.h` (4; the script
+reads it and it becomes `VDM_MAX_CONN`, the lwIP listen backlog that caps the
+connections of a server; the web server sizes its table of refused requests by
+it) and `ASYNC_TCP_QUEUE_WAIT_MS` at the top of the script (10; the longest
+wait of a send into the event queue before the event is dropped). A library
+already patched with other values fails the build; delete `.pio/libdeps` to
+patch it again.
 
 ## Result on 2.1.3
 

@@ -120,14 +120,14 @@ TEST_CASE("web body: bodies arriving while one is buffered are answered 409, eac
   CHECK(sib::app().submitted[0].pos == 5);
 }
 
-TEST_CASE("web body: one mark per TCP connection lwIP holds, none gives way") {
+TEST_CASE("web body: one mark per connection the server holds, none gives way") {
   glue::begin();
   start();
   Exchange a(apiPost(kTarget1, "{\"target\":5}"));
   a.sendBody(4);
-  // more than lwIP can hold next to the body owner
+  // as many as the server holds (the listen backlog), and the body owner next to them
   std::vector<std::unique_ptr<Exchange>> others;
-  for (int i = 0; i < CONFIG_LWIP_MAX_ACTIVE_TCP; ++i) {
+  for (size_t i = 0; i < web::kMaxConnections; ++i) {
     others.emplace_back(new Exchange(apiPost(kTarget1, "{\"target\":6}")));
     others.back()->sendBody(4);
   }

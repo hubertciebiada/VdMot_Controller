@@ -7,12 +7,13 @@
 #include <AsyncWebServer_WT32_ETH01.h>
 #include <LittleFS.h>
 #include <algorithm>
+#include <cstddef>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <new>
-#include <sdkconfig.h>
 #include <string.h>
 #include <time.h>
+#include <type_traits>
 
 #include <vdm/config.h>
 #include <vdm/file_manager.h>
@@ -40,8 +41,11 @@ namespace {
 
 constexpr const char* kJson = "application/json";
 constexpr uint32_t kSensorStaleMs = 60000;
-constexpr size_t kMaxEventsPerResponse = 50;
-constexpr size_t kMaxFilesPerResponse = 48;
+constexpr size_t kMaxEventsPerResponse = 50;  // ?limit= of GET /api/events
+// The ring holds at most logger::kEventCapacity events (32 in the firmware),
+// so no read fills more of the event buffer.
+constexpr size_t kEventsBuffer = std::min(kMaxEventsPerResponse, logger::kEventCapacity);
+constexpr size_t kMaxFilesPerResponse = 32;
 constexpr size_t kHealthBufSize = 1024;
 
 AsyncWebServer gServer(80);
@@ -53,35 +57,41 @@ struct Slot {
 };
 Slot gSlots[kResponseSlots];
 
-// Working set of the request handlers, about 34 KB. Each part gets its buffer
-// in the first request (refreshConfig()) and keeps it, like the response slots
-// (web_server.h): without a web client the heap keeps these bytes. Separate
-// allocations, none larger than the body buffer.
-using BodyBuf = ObjArray<char, kMaxBodySize + 1>;  // JSON body, one at a time
+// Working set of the request handlers, about 10 KB in 5 blocks. Each part gets
+// its buffer in the first request (refreshConfig()) and keeps it, like the
+// response slots (web_server.h): without a web client the heap keeps these
+// bytes. JSON bodies go into a response slot (handleBody()), a config patch
+// takes its Config copy from the heap for that request.
+//
+// What a handler builds for its response (views, event, image and file lists,
+// the status and health snapshots, the health text, a profile) is dead when
+// the handler returns, and handlers never overlap (they all run in the
+// AsyncTCP task, one after another), so all of it shares one scratch buffer
+// of the largest (scratch()).
 using ValveViews = ObjArray<vdm::ValveView, vdm::kValveCount>;
-using TempViews = ObjArray<vdm::SensorView, 2 * vdm::kTempSlotCount>;  // slots + unconfigured
-using VoltViews = ObjArray<vdm::SensorView, 2 * vdm::kVoltSlotCount>;
-using Events = ObjArray<vdm::Event, kMaxEventsPerResponse>;
+struct SensorViews {
+  vdm::SensorView temps[2 * vdm::kTempSlotCount];  // slots + unconfigured
+  vdm::SensorView volts[2 * vdm::kVoltSlotCount];
+};
+using Events = ObjArray<vdm::Event, kEventsBuffer>;
 using Images = ObjArray<storage::ImageEntry, storage::kImageSlots>;
 using Files = ObjArray<vdm::FileEntry, kMaxFilesPerResponse>;
-using HealthBuf = ObjArray<char, kHealthBufSize>;  // GET /api/health, outside the slots
-using GuardDetail = ObjArray<char, 160>;           // detail of the current guard refusal
-BodyBuf* gBodyBuf = nullptr;
+struct Health {  // GET /api/health, outside the slots
+  vdm::HealthSnapshot snap;
+  char text[kHealthBufSize];
+};
+constexpr size_t kScratchSize =
+    std::max({sizeof(ValveViews), sizeof(SensorViews), sizeof(Events), sizeof(Images),
+              sizeof(Files), sizeof(Health), sizeof(vdm::StatusSnapshot), sizeof(vdm::Profile)});
+struct Scratch {
+  alignas(std::max_align_t) unsigned char bytes[kScratchSize];
+};
+using GuardDetail = ObjArray<char, 160>;  // detail of the current guard refusal
 app::StmSnapshot* gSnapPtr = nullptr;
 vdm::Config* gCfgPtr = nullptr;
-vdm::Config* gPatchPtr = nullptr;
 StaticJsonDocument<512>* gDocPtr = nullptr;
-ValveViews* gValveViewsPtr = nullptr;
-TempViews* gTempViewsPtr = nullptr;
-VoltViews* gVoltViewsPtr = nullptr;
-Events* gEventsPtr = nullptr;
-Images* gImagesPtr = nullptr;
-Files* gFilesPtr = nullptr;
-vdm::HealthSnapshot* gHealthPtr = nullptr;
-vdm::StatusSnapshot* gStatusPtr = nullptr;
-HealthBuf* gHealthBufPtr = nullptr;
+Scratch* gScratchPtr = nullptr;
 GuardDetail* gGuardDetailPtr = nullptr;
-vdm::Profile* gProfilePtr = nullptr;  // GET /api/valves/{n}/profile (app::readProfile)
 
 template <typename T>
 bool allocOnce(T*& p) {
@@ -91,42 +101,47 @@ bool allocOnce(T*& p) {
 
 // Every part, or false: the request is answered 503.
 bool allocWork() {
-  bool ok = allocOnce(gBodyBuf);
-  ok = allocOnce(gSnapPtr) && ok;
+  bool ok = allocOnce(gSnapPtr);
   ok = allocOnce(gCfgPtr) && ok;
-  ok = allocOnce(gPatchPtr) && ok;
   ok = allocOnce(gDocPtr) && ok;
-  ok = allocOnce(gValveViewsPtr) && ok;
-  ok = allocOnce(gTempViewsPtr) && ok;
-  ok = allocOnce(gVoltViewsPtr) && ok;
-  ok = allocOnce(gEventsPtr) && ok;
-  ok = allocOnce(gImagesPtr) && ok;
-  ok = allocOnce(gFilesPtr) && ok;
-  ok = allocOnce(gHealthPtr) && ok;
-  ok = allocOnce(gStatusPtr) && ok;
-  ok = allocOnce(gHealthBufPtr) && ok;
-  ok = allocOnce(gGuardDetailPtr) && ok;
-  return allocOnce(gProfilePtr) && ok;
+  ok = allocOnce(gScratchPtr) && ok;
+  return allocOnce(gGuardDetailPtr) && ok;
 }
 
+// The scratch buffer as a fresh T for the calling handler.
+template <typename T>
+T& scratch() {
+  static_assert(sizeof(T) <= sizeof(Scratch::bytes), "scratch buffer too small");
+  static_assert(std::is_trivially_destructible<T>::value, "the scratch is never destroyed");
+  return *new (gScratchPtr->bytes) T();
+}
+
+// The JSON body of gBodyOwner (one body at a time) is received into a
+// response slot, gBodySlot: a handler consumes the body (parseBody(),
+// applyConfigJson()) before it writes its response, so the response takes
+// that slot (acquireSlot()). Without a free slot the body is refused (503).
+AsyncWebServerRequest* gBodyOwner = nullptr;
+int gBodySlot = -1;  // -1 once the response took it
+char* gBody = nullptr;
 size_t gBodyLen = 0;
 bool gBodyOverflow = false;
-AsyncWebServerRequest* gBodyOwner = nullptr;
 
 // Requests whose body was refused while it arrived (answered in
 // handleRequest). A mark is cleared when its request starts a new body or
 // takes over the upload (both replace the callback of mark()) and when it
 // disconnects (every request ends that way, also one that never reached
 // handleRequest), so a recycled request address never inherits a stale mark.
-// One slot per TCP connection lwIP can hold: every marked request has its own
-// (AsyncTCP runs the disconnect of a closed connection before the data that
-// arrives after it), so the table never runs full.
+// One slot per connection the server holds (kMaxConnections, the listen
+// backlog of AsyncTCP): every marked request has its own (AsyncTCP runs the
+// disconnect of a closed connection before the data that arrives after it),
+// so the table never runs full.
 struct Mark {
   AsyncWebServerRequest* req;
   uint16_t code;
   const char* error;
+  const char* detail;
 };
-Mark gMarks[CONFIG_LWIP_MAX_ACTIVE_TCP];
+Mark gMarks[kMaxConnections];
 
 // Upload in progress (STM image or ESP firmware).
 enum class UploadKind : uint8_t { None, StmImage, EspOta };
@@ -169,7 +184,14 @@ uint32_t remoteIp(AsyncWebServerRequest* req) {
 
 // ---------------------------------------------------------------- responses
 
-int acquireSlot() {
+// The slot for the response to `req`: the slot of its body when it has one
+// (consumed by then), else a free one; -1 when every slot is busy.
+int acquireSlot(AsyncWebServerRequest* req) {
+  if (req == gBodyOwner && gBodySlot >= 0) {
+    const int slot = gBodySlot;
+    gBodySlot = -1;
+    return slot;
+  }
   for (size_t i = 0; i < kResponseSlots; ++i) {
     Slot& s = gSlots[i];
     if (s.busy) continue;
@@ -183,7 +205,16 @@ int acquireSlot() {
 }
 
 void releaseSlot(int slot) {
-  if (slot >= 0) gSlots[slot].busy = false;  // -1: a dry run that took no slot
+  if (slot >= 0) gSlots[slot].busy = false;  // -1: a body slot the response took
+}
+
+// The body of `req` ends (request answered or client gone): its slot goes
+// back to the pool unless the response took it.
+void endBody(AsyncWebServerRequest* req) {
+  if (gBodyOwner != req) return;
+  releaseSlot(gBodySlot);
+  gBodySlot = -1;
+  gBodyOwner = nullptr;
 }
 
 // Sends slot content without copying; the slot is released when the client
@@ -217,7 +248,7 @@ void sendAccepted(AsyncWebServerRequest* req) { req->send(202, kJson, "{\"result
 template <typename F>
 void sendDocument(AsyncWebServerRequest* req, int code, F build,
                   const char* attachment = nullptr) {
-  const int slot = acquireSlot();
+  const int slot = acquireSlot(req);
   if (slot < 0) return sendError(req, 503, "busy", "response buffers in use");
   vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
   if (!build(jw) || !jw.complete()) {
@@ -234,11 +265,11 @@ void clearMark(AsyncWebServerRequest* req) {
 }
 
 // Only for a request that owns nothing else (its onDisconnect is free).
-void mark(AsyncWebServerRequest* req, uint16_t code, const char* error) {
+void mark(AsyncWebServerRequest* req, uint16_t code, const char* error, const char* detail) {
   req->onDisconnect([req]() { clearMark(req); });
   for (Mark& m : gMarks) {
     if (m.req == nullptr || m.req == req) {
-      m = Mark{req, code, error};
+      m = Mark{req, code, error, detail};
       return;
     }
   }
@@ -438,7 +469,7 @@ bool parseBody(AsyncWebServerRequest* req, bool hasBody) {
     return false;
   }
   gDocPtr->clear();
-  const DeserializationError e = deserializeJson(*gDocPtr, gBodyBuf->data(), gBodyLen);
+  const DeserializationError e = deserializeJson(*gDocPtr, gBody, gBodyLen);
   if (e || !gDocPtr->is<JsonObject>()) {
     sendError(req, 400, "bad_request", e ? e.c_str() : "object expected");
     return false;
@@ -516,8 +547,7 @@ bool refuseBelowV3(AsyncWebServerRequest* req) {
 
 void handleStatus(AsyncWebServerRequest* req) {
   app::readStmSnapshot(*gSnapPtr);
-  vdm::StatusSnapshot& s = *gStatusPtr;
-  s = vdm::StatusSnapshot{};
+  vdm::StatusSnapshot& s = scratch<vdm::StatusSnapshot>();
   s.espVersion = vdm::firmwareVersion();
 #ifdef VDM_BUILD_EPOCH
   s.buildEpoch = static_cast<uint32_t>(VDM_BUILD_EPOCH);
@@ -608,10 +638,11 @@ bool tempConfigured(const vdm::OneWireId& id) {
   return false;
 }
 
-void buildValveViews() {
+ValveViews& buildValveViews() {
   app::readStmSnapshot(*gSnapPtr);
+  ValveViews& views = scratch<ValveViews>();
   for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    vdm::ValveView& v = (*gValveViewsPtr)[i];
+    vdm::ValveView& v = views[i];
     v = vdm::ValveView{};
     const vdm::ValveState& st = gSnapPtr->valves[i];
     v.state = &st;
@@ -627,19 +658,21 @@ void buildValveViews() {
     }
     v.calibrationEnd.valid = mqtt::calibrationEnd(i, v.calibrationEnd);
   }
+  return views;
 }
 
 void handleValves(AsyncWebServerRequest* req) {
-  buildValveViews();
+  ValveViews& views = buildValveViews();
   const uint32_t now = app::nowMs();
-  sendDocument(req, 200, [now](vdm::JsonWriter& jw) {
-    return vdm::writeValvesJson(jw, gValveViewsPtr->data(), vdm::kValveCount, now);
+  sendDocument(req, 200, [now, &views](vdm::JsonWriter& jw) {
+    return vdm::writeValvesJson(jw, views.data(), vdm::kValveCount, now);
   });
 }
 
-// Fills (*gTempViewsPtr)/*gVoltViewsPtr; returns the counts.
-void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
+// Fills the sensor views; returns the counts.
+SensorViews& buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   app::readStmSnapshot(*gSnapPtr);
+  SensorViews& views = scratch<SensorViews>();
   const uint32_t now = app::nowMs();
   const uint8_t busTemps = std::min(gSnapPtr->tempCount, vdm::kTempSlotCount);
   const uint8_t busVolts = std::min(gSnapPtr->voltCount, vdm::kVoltSlotCount);
@@ -648,7 +681,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   for (uint8_t i = 0; i < vdm::kTempSlotCount; ++i) {
     const vdm::TempSlotConfig& c = gCfgPtr->temps[i];
     if (vdm::isZero(c.id) && !c.active && c.name[0] == '\0') continue;
-    vdm::SensorView& v = (*gTempViewsPtr)[nt++];
+    vdm::SensorView& v = views.temps[nt++];
     v = vdm::SensorView{};
     v.slot = static_cast<uint8_t>(i + 1);
     v.name = c.name;
@@ -678,7 +711,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   for (uint8_t b = 0; b < busTemps; ++b) {
     const vdm::TempReading& r = gSnapPtr->temps[b];
     if (vdm::isZero(r.id) || tempConfigured(r.id)) continue;
-    vdm::SensorView& v = (*gTempViewsPtr)[nt++];
+    vdm::SensorView& v = views.temps[nt++];
     v = vdm::SensorView{};
     v.onBus = true;
     v.id = r.id;
@@ -692,7 +725,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   for (uint8_t i = 0; i < vdm::kVoltSlotCount; ++i) {
     const vdm::VoltSlotConfig& c = gCfgPtr->volts[i];
     if (vdm::isZero(c.id) && !c.active && c.name[0] == '\0') continue;
-    vdm::SensorView& v = (*gVoltViewsPtr)[nv++];
+    vdm::SensorView& v = views.volts[nv++];
     v = vdm::SensorView{};
     v.slot = static_cast<uint8_t>(i + 1);
     v.name = c.name;
@@ -718,7 +751,7 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
     bool configured = false;
     for (const vdm::VoltSlotConfig& c : gCfgPtr->volts) configured = configured || c.id == r.id;
     if (configured) continue;
-    vdm::SensorView& v = (*gVoltViewsPtr)[nv++];
+    vdm::SensorView& v = views.volts[nv++];
     v = vdm::SensorView{};
     v.onBus = true;
     v.id = r.id;
@@ -728,13 +761,14 @@ void buildSensorViews(uint8_t& ntOut, uint8_t& nvOut) {
   }
   ntOut = nt;
   nvOut = nv;
+  return views;
 }
 
 void handleSensors(AsyncWebServerRequest* req) {
   uint8_t nt = 0, nv = 0;
-  buildSensorViews(nt, nv);
-  sendDocument(req, 200, [nt, nv](vdm::JsonWriter& jw) {
-    return vdm::writeSensorsJson(jw, gTempViewsPtr->data(), nt, gVoltViewsPtr->data(), nv);
+  const SensorViews& views = buildSensorViews(nt, nv);
+  sendDocument(req, 200, [nt, nv, &views](vdm::JsonWriter& jw) {
+    return vdm::writeSensorsJson(jw, views.temps, nt, views.volts, nv);
   });
 }
 
@@ -765,14 +799,16 @@ void handleEvents(AsyncWebServerRequest* req) {
       return sendError(req, 400, "bad_request", "minSeverity");
     }
   }
-  const int slot = acquireSlot();
+  const int slot = acquireSlot(req);
   if (slot < 0) return sendError(req, 503, "busy", "response buffers in use");
+  Events& events = scratch<Events>();
   // The ring may hold more text than one slot: halve the count until it fits.
   for (size_t max = limit; max > 0; max /= 2) {
     uint32_t next = f.sinceSeq, first = 0, last = 0, dropped = 0;
-    const size_t n = logger::read(f, gEventsPtr->data(), max, next, first, last, dropped);
+    const size_t n = logger::read(f, events.data(), std::min(max, kEventsBuffer), next, first,
+                                  last, dropped);
     vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
-    if (vdm::writeEventsJson(jw, gEventsPtr->data(), n, first, last, next, dropped) && jw.complete()) {
+    if (vdm::writeEventsJson(jw, events.data(), n, first, last, next, dropped) && jw.complete()) {
       return sendSlot(req, 200, slot, jw.length());
     }
   }
@@ -781,8 +817,8 @@ void handleEvents(AsyncWebServerRequest* req) {
 }
 
 void handleProfileGet(AsyncWebServerRequest* req, uint8_t valve) {
-  const vdm::Profile& p = *gProfilePtr;
-  app::readProfile(valve, *gProfilePtr);
+  vdm::Profile& p = scratch<vdm::Profile>();
+  app::readProfile(valve, p);
   if (p.count == 0) return sendError(req, 404, "not_found", "no profile");
   sendDocument(req, 200, [&p](vdm::JsonWriter& jw) { return vdm::writeProfileJson(jw, p); });
 }
@@ -838,10 +874,11 @@ void writeImage(vdm::JsonWriter& jw, const storage::ImageEntry& e, bool crcKnown
 }
 
 void handleImages(AsyncWebServerRequest* req) {
-  const size_t n = storage::listImages(gImagesPtr->data(), storage::kImageSlots);
-  sendDocument(req, 200, [n](vdm::JsonWriter& jw) {
+  Images& images = scratch<Images>();
+  const size_t n = storage::listImages(images.data(), storage::kImageSlots);
+  sendDocument(req, 200, [n, &images](vdm::JsonWriter& jw) {
     jw.beginArray();
-    for (size_t i = 0; i < n; ++i) writeImage(jw, (*gImagesPtr)[i], (*gImagesPtr)[i].scanned);
+    for (size_t i = 0; i < n; ++i) writeImage(jw, images[i], images[i].scanned);
     jw.endArray();
     return jw.ok();
   });
@@ -856,11 +893,12 @@ void handleConfigGet(AsyncWebServerRequest* req, bool attachment) {
 
 void handleFiles(AsyncWebServerRequest* req) {
   bool truncated = false;
-  const size_t n = storage::listFiles(gFilesPtr->data(), kMaxFilesPerResponse, truncated);
+  Files& files = scratch<Files>();
+  const size_t n = storage::listFiles(files.data(), kMaxFilesPerResponse, truncated);
   const uint32_t total = storage::fsTotal();
   const uint32_t used = storage::fsUsed();
-  sendDocument(req, 200, [n, total, used, truncated](vdm::JsonWriter& jw) {
-    return vdm::writeFilesJson(jw, gFilesPtr->data(), n, total, used, truncated);
+  sendDocument(req, 200, [n, total, used, truncated, &files](vdm::JsonWriter& jw) {
+    return vdm::writeFilesJson(jw, files.data(), n, total, used, truncated);
   });
 }
 
@@ -887,7 +925,7 @@ void handleImportReport(AsyncWebServerRequest* req) {
   fs::File f = LittleFS.open(storage::kImportReportFile, FILE_READ);
   if (!f) return sendError(req, 404, "not_found", "no import report");
   f.setBufferSize(storage::kFileBufferSize);
-  const int slot = acquireSlot();
+  const int slot = acquireSlot(req);
   if (slot < 0) {
     f.close();
     return sendError(req, 503, "busy", "response buffers in use");
@@ -905,14 +943,14 @@ void handleImportReport(AsyncWebServerRequest* req) {
 // ---------------------------------------------------------------- health
 
 void handleHealth(AsyncWebServerRequest* req) {
-  (*gHealthPtr) = vdm::HealthSnapshot{};
-  app::readHealth(*gHealthPtr);
-  vdm::JsonWriter jw(gHealthBufPtr->data(), kHealthBufSize);
-  if (!vdm::writeHealthJson(jw, *gHealthPtr)) return sendError(req, 500, "internal", "health");
+  Health& h = scratch<Health>();
+  app::readHealth(h.snap);
+  vdm::JsonWriter jw(h.text, sizeof h.text);
+  if (!vdm::writeHealthJson(jw, h.snap)) return sendError(req, 500, "internal", "health");
   // A copy: with a const char* the library keeps the pointer and reads the
   // buffer until the response is sent, which holds no slot, so the next
-  // health request could overwrite the text under it.
-  AsyncWebServerResponse* res = req->beginResponse(200, kJson, String(gHealthBufPtr->data()));
+  // request could overwrite the text under it.
+  AsyncWebServerResponse* res = req->beginResponse(200, kJson, String(h.text));
   if (res == nullptr) return req->send(500);
   res->addHeader("Cache-Control", "no-store");
   req->send(res);
@@ -1068,9 +1106,11 @@ void handleProfileRefresh(AsyncWebServerRequest* req, uint8_t valve) {
 }
 
 // ?dryRun=1: validated like a save (applyConfigJson checks the whole
-// config), nothing stored; the answer names what a save would do. A save
-// reserves its response slot first, so a busy server answers 503 before
-// anything is applied.
+// config), nothing stored; the answer names what a save would do. The body
+// holds a response slot, so the answer of a save always has one: a busy
+// server refused the body (503) before anything was applied. The patched
+// copy (2.5 KB) lives on the heap for this request only (no memory: 503,
+// nothing applied).
 void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
   bool dryRun = false;
   if (AsyncWebParameter* p = req->getParam("dryRun")) {
@@ -1078,37 +1118,32 @@ void handleConfigPatch(AsyncWebServerRequest* req, bool hasBody) {
     dryRun = true;
   }
   if (!hasBody || gBodyLen == 0) return sendError(req, 400, "bad_request", "JSON body required");
-  const int slot = dryRun ? -1 : acquireSlot();
-  if (!dryRun && slot < 0) return sendError(req, 503, "busy", "response buffers in use");
-  (*gPatchPtr) = *gCfgPtr;
+  vdm::Config* patch = new (std::nothrow) vdm::Config;
+  if (patch == nullptr) return sendError(req, 503, "busy", "out of memory");
+  *patch = *gCfgPtr;
   char path[72];
-  const vdm::PatchResult r = vdm::applyConfigJson(*gPatchPtr, gBodyBuf->data(), gBodyLen, path, sizeof path);
+  const vdm::PatchResult r = vdm::applyConfigJson(*patch, gBody, gBodyLen, path, sizeof path);
   if (r != vdm::PatchResult::Ok) {
-    releaseSlot(slot);
+    delete patch;
     return sendError(req, 400, "invalid", path);
   }
   vdm::ApplyInfo info;
-  info.restartRequired = vdm::configRestartReasons(*gCfgPtr, *gPatchPtr) != 0;
-  info.netTrial = vdm::netTrialRequired(gCfgPtr->net, gPatchPtr->net);
+  info.restartRequired = vdm::configRestartReasons(*gCfgPtr, *patch) != 0;
+  info.netTrial = vdm::netTrialRequired(gCfgPtr->net, patch->net);
+  const bool saved = dryRun || storage::applyConfig(*patch, path, sizeof path);
+  delete patch;
   if (dryRun) {
     char buf[64];
     snprintf(buf, sizeof buf, "{\"restartRequired\":%s,\"netTrial\":%s}",
              info.restartRequired ? "true" : "false", info.netTrial ? "true" : "false");
     return req->send(200, kJson, buf);
   }
-  if (!storage::applyConfig(*gPatchPtr, path, sizeof path)) {
-    releaseSlot(slot);
-    return sendError(req, strcmp(path, "nvs") == 0 ? 500 : 400, "invalid", path);
-  }
+  if (!saved) return sendError(req, strcmp(path, "nvs") == 0 ? 500 : 400, "invalid", path);
   refreshConfig();
   logger::log(vdm::EventCode::ConfigSaved, vdm::kNoValve,
               static_cast<int32_t>(storage::configRevision()), 0, "web");
-  vdm::JsonWriter jw(gSlots[slot].buf, kResponseSlotSize);
-  if (!vdm::writeConfigJson(jw, *gCfgPtr, &info)) {
-    releaseSlot(slot);
-    return sendError(req, 500, "internal", "document too large");
-  }
-  sendSlot(req, 200, slot, jw.length());
+  sendDocument(req, 200,
+               [&info](vdm::JsonWriter& jw) { return vdm::writeConfigJson(jw, *gCfgPtr, &info); });
 }
 
 void handleMotorSet(AsyncWebServerRequest* req, bool hasBody) {
@@ -1341,19 +1376,19 @@ void handleImportReportDismiss(AsyncWebServerRequest* req) {
 // ---------------------------------------------------------------- legacy aliases
 
 void handleLegacyValves(AsyncWebServerRequest* req) {
-  buildValveViews();
-  sendDocument(req, 200, [](vdm::JsonWriter& jw) {
-    return vdm::writeLegacyValvesJson(jw, gValveViewsPtr->data(), vdm::kValveCount);
+  ValveViews& views = buildValveViews();
+  sendDocument(req, 200, [&views](vdm::JsonWriter& jw) {
+    return vdm::writeLegacyValvesJson(jw, views.data(), vdm::kValveCount);
   });
 }
 
 void handleLegacySensors(AsyncWebServerRequest* req, bool temps) {
   uint8_t nt = 0, nv = 0;
-  buildSensorViews(nt, nv);
+  const SensorViews& views = buildSensorViews(nt, nv);
   const bool all = gCfgPtr->mqtt.allTemps;
-  sendDocument(req, 200, [temps, nt, nv, all](vdm::JsonWriter& jw) {
-    return temps ? vdm::writeLegacyTempsJson(jw, gTempViewsPtr->data(), nt, all)
-                 : vdm::writeLegacyVoltsJson(jw, gVoltViewsPtr->data(), nv);
+  sendDocument(req, 200, [temps, nt, nv, all, &views](vdm::JsonWriter& jw) {
+    return temps ? vdm::writeLegacyTempsJson(jw, views.temps, nt, all)
+                 : vdm::writeLegacyVoltsJson(jw, views.volts, nv);
   });
 }
 
@@ -1451,7 +1486,7 @@ void onUpload(AsyncWebServerRequest* req, const String& filename, size_t index, 
   if (kind == UploadKind::None) return;  // the guard answers everything else
   if (index == 0) {
     if (gUpload.owner != nullptr && gUpload.owner != req) {
-      mark(req, 409, "busy");
+      mark(req, 409, "busy", "upload");
       return;
     }
     if (gUpload.owner == req && gUpload.started) {
@@ -1491,7 +1526,7 @@ void onUpload(AsyncWebServerRequest* req, const String& filename, size_t index, 
 
 void finishUpload(AsyncWebServerRequest* req, vdm::ApiRoute r) {
   Mark mk;
-  if (takeMark(req, mk)) return sendError(req, mk.code, mk.error, "upload");
+  if (takeMark(req, mk)) return sendError(req, mk.code, mk.error, mk.detail);
   if (gUpload.owner != req) return sendError(req, 400, "bad_request", "no file in request");
   if (!gUpload.done && gUpload.failCode == 0) failUpload(400, "incomplete file");
   const Upload u = gUpload;
@@ -1623,19 +1658,19 @@ class ApiHandler : public AsyncWebHandler {
   void handleRequest(AsyncWebServerRequest* req) override {
     net::noteInboundHttp(remoteIp(req));
     if (!refreshConfig()) {  // the guard answers first; kept for safety
-      if (gBodyOwner == req) gBodyOwner = nullptr;
+      endBody(req);
       return sendError(req, 503, "busy", "out of memory");
     }
     const bool hasBody = gBodyOwner == req;
     Mark mk;
     if (req->contentLength() > 0 && !isUploadRoute(route(req).route) && takeMark(req, mk)) {
-      sendError(req, mk.code, mk.error, "body");
+      sendError(req, mk.code, mk.error, mk.detail);
     } else if (req->url().startsWith("/api/")) {
       handleApi(req, hasBody);
     } else {
       handleNonApi(req, hasBody);
     }
-    if (gBodyOwner == req) gBodyOwner = nullptr;
+    endBody(req);
   }
 
   void handleBody(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index,
@@ -1643,26 +1678,31 @@ class ApiHandler : public AsyncWebHandler {
     if (index == 0) {
       clearMark(req);
       if (gBodyOwner != nullptr && gBodyOwner != req) {
-        mark(req, 409, "busy");
+        mark(req, 409, "busy", "body");
+        return;
+      }
+      const int slot = acquireSlot(req);  // a restarted body keeps its slot
+      if (slot < 0) {
+        mark(req, 503, "busy", "response buffers in use");
         return;
       }
       gBodyOwner = req;
+      gBodySlot = slot;
+      gBody = gSlots[slot].buf;
       gBodyLen = 0;
       gBodyOverflow = total > kMaxBodySize;
-      gBodyBuf->data()[0] = '\0';
-      // Client gone mid-body: free the buffer for the next request.
-      req->onDisconnect([req]() {
-        if (gBodyOwner == req) gBodyOwner = nullptr;
-      });
+      gBody[0] = '\0';
+      // Client gone mid-body: the slot goes back to the pool.
+      req->onDisconnect([req]() { endBody(req); });
     }
     if (gBodyOwner != req || gBodyOverflow) return;
     if (len > kMaxBodySize - gBodyLen) {
       gBodyOverflow = true;
       return;
     }
-    memcpy(gBodyBuf->data() + gBodyLen, data, len);
+    memcpy(gBody + gBodyLen, data, len);
     gBodyLen += len;
-    gBodyBuf->data()[gBodyLen] = '\0';
+    gBody[gBodyLen] = '\0';
   }
 
   void handleUpload(AsyncWebServerRequest* req, const String& filename, size_t index,

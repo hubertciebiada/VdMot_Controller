@@ -81,7 +81,7 @@ Error codes:
 | 413 | `too_large` | body or file too large |
 | 415 | `unsupported_media_type` | wrong Content-Type |
 | 500 | `internal`, `io_error`, `nvs` | device error |
-| 503 | `busy` | both response buffers in use (nothing applied); retry |
+| 503 | `busy` | both response buffers in use (nothing applied); retry. A JSON body is received into a response buffer, so a POST with a body gets this answer too (detail `response buffers in use`), before anything is applied; a config save also when the device has no memory for the patched copy (detail `out of memory`) |
 | 503 | `queue_full` | STM command queue full |
 | 503 | `retry` | state changed while answering; retry |
 | 503 | `unavailable` | no file system |
@@ -281,7 +281,7 @@ STM.
 | POST | `/api/ota/esp` | multipart ESP32 application image; optional MD5 as query `md5`, form field `md5`, or header `X-Update-MD5` | `200 {"result":"ok","restart":true}`, restart after 1 s; error with the reason otherwise |
 | POST | `/api/system/reboot` | – | 202, ESP restart after 1 s (after the STM stored its EEPROM) |
 | POST | `/api/system/factory-reset` | `{"confirm":"factory-reset"}` | 202, erases the new firmware's settings and restarts |
-| GET | `/api/files` | – | `{"total":B,"used":B,"truncated":bool,"files":[{"path","size","kind","deletable"}]}` (LittleFS) |
+| GET | `/api/files` | – | `{"total":B,"used":B,"truncated":bool,"files":[{"path","size","kind","deletable"}]}` (LittleFS); at most 32 entries (2.1.5: 48), `truncated` when there are more |
 | DELETE | `/api/files?path=<path>` | – | `204`; `400 bad_path`; `403 protected`; `404`; `500 io_error` |
 | DELETE | `/api/import-report` | – | `204` / `404`: dismisses the import report |
 | POST | `/api/mqtt/reconnect` | – | 202 |
