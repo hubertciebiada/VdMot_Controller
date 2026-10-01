@@ -156,6 +156,19 @@ TEST_CASE("web working set: each of the parts that cannot be allocated answers 5
   if (k + 1 < kWorkParts) testkit::reboot(testkit::Reset::Software);
 }
 
+TEST_CASE("web working set: a body refused for memory is never collected, also when memory returns") {
+  glue::begin();
+  start();
+  // the first part fails at the headers; it and a slot would be there for the request itself
+  failAfter(0);
+  for (size_t i = 1; i < kWorkParts + 2; ++i) fakes::heap().next.push_back(true);
+  const Response r = post(kTarget1, "{\"target\":50}");
+  CHECK(r.code == 503);
+  CHECK(r.body == errorBody("retry", "state changed"));
+  CHECK(sib::app().submitted.empty());
+  CHECK(allocations() == kWorkParts);  // the working set, no slot: the body was skipped
+}
+
 TEST_CASE("web working set: slot buffers that cannot be allocated") {
   glue::begin();
   start();
@@ -186,7 +199,11 @@ TEST_CASE("web body: a JSON body is received into a slot, the answer of a save g
   // both slots and, for this request, the patched copy
   CHECK(allocations() == kWorkParts + 3);
   CHECK(allocationsOf(sizeof(vdm::Config)) == configs + 1);
+  // the end of the save gave back only its own slot: the next document goes to the second one
+  Exchange v(fakes::http::get("/api/valves"));
+  CHECK(fakes::http::perform(fakes::http::get("/api/status")).code == 503);
   CHECK(isStatus(a.finish()));
+  CHECK(v.finish().body.rfind("{\"valves\":[", 0) == 0);
   // the slots are free again
   Exchange b(fakes::http::get("/api/status"));
   Exchange c(fakes::http::get("/api/status"));

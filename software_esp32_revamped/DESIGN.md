@@ -132,7 +132,7 @@ Rules for module implementers:
 | Glue module | Owns |
 |---|---|
 | `main.cpp` | `setup()` -> `app::setup()`, `loop()` deletes itself, `verifyRollbackLater()` |
-| `app` | boot sequence, task creation, TWDT, command queue, STM snapshot, health data, app task (config apply, net/web start, OTA validation, stm_service, log flush, deferred restart, resource alarms, heap guard, factory latch) |
+| `app` | boot sequence, task creation, TWDT, command queue, STM snapshot and profile store, health data, app task (config apply, net/web start, OTA validation, stm_service, log flush, deferred restart, resource alarms, heap guard, factory latch) |
 | `stm_link` | Serial2, NRST; runs `StmSession` and implements its port |
 | `stm_service` | app-task side of the link: scheduled calibration, desired-target NVS saver, `flushForRestart()` |
 | `mqtt_client` | PubSubClient, LWT, publishing, discovery, inbound commands, regulator state |
@@ -687,7 +687,10 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   task stack is 8960 B (`app::kAsyncTcpStackBytes`, patched in by
   `tools/patch_libs.py`; static worst case ~7.1 KB by the ELF, 3.4 KB
   measured).
-- WiFi: the driver takes about 33 KB of heap while it runs. Measured on a
+- WiFi: the driver takes about 33 KB of heap while it runs, with dynamic
+  buffers already: Arduino-ESP32 2.0.7 starts it with dynamic TX buffers
+  and 4 static RX buffers instead of the sdkconfig's 8 + 8 static ones
+  (`WiFiGenericClass::useStaticBuffers()` is false unless set). Measured on a
   WT32-ETH01 with a test build that ran WiFi (scanning) next to Ethernet:
   about 47 KB free when idle instead of about 80 KB; the lowest free heap
   was 10.4 KB under 3 parallel HTTP clients and 6.4 KB under 10. On WiFi
@@ -709,7 +712,7 @@ hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
   written name by name, the legacy import reads the temps blob (1.5 KB) into
   the config blob buffer of storage, and the last_good copy takes its 1 KiB
   chunk buffer from the heap for each pass (a pass without one copies
-  nothing). Our statics take 9.3 KB of the 54.5 KB static DRAM (the rest is
+  nothing). Our statics take 9.3 KB of the 54.7 KB static DRAM (the rest is
   ESP-IDF and the libraries); those above 256 B are long-lived state: the
   command queue, the MQTT event limiter, inbound queue, button gate,
   scheduler, calibration tracker and published values, the image index.
@@ -1127,6 +1130,8 @@ re-pushed. On success the image is copied to `/stm/last_good.bin`.
   sent the default `esp32-xxxxxx`); Ethernet takes it at `ETH_START`. A
   static IP applies to either interface; the WiFi credentials stay in
   `vdmrev` (`WiFi.persistent(false)`, nothing in the WiFi driver's NVS).
+  `WiFi.useStaticBuffers()` stays at Arduino's default (false: dynamic TX
+  buffers, 4 static RX buffers, section 9).
 - Network reachability (`NetReachability`): evidence = a gateway ping reply
   (probe every 60 s), the MQTT session, an SNTP sync, an HTTP request from a
   LAN peer, a DHCP lease. The staleness check (150 s without evidence) is

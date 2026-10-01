@@ -110,6 +110,26 @@ TEST_CASE("mqtt discovery gate: a connect before the STM settled waits, then one
   CHECK(mqtt::status().discoveryRunning);
 }
 
+TEST_CASE("mqtt discovery gate: inputs that change and change back during a run start no other") {
+  glue::begin();
+  useHa();
+  vdm::StmSnapshot& s = linkUp();
+  s.sensorsSettled = true;
+  publishSnap();
+  mqtt::begin();
+  runTask(5);
+  REQUIRE(mqtt::status().discoveryRunning);
+  vdm::copyString(s.version.hw, sizeof s.version.hw, "C2");
+  publishSnap();
+  runTask(5);
+  REQUIRE(mqtt::status().discoveryRunning);
+  s.version.hw[0] = '\0';
+  publishSnap();
+  runTask(1000);
+  CHECK(runs() == 1);
+  CHECK_FALSE(mqtt::status().discoveryRunning);
+}
+
 TEST_CASE("mqtt discovery gate: without a settling STM the run starts 120 s after the connect") {
   glue::begin();
   useHa();

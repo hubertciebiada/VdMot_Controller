@@ -2,8 +2,8 @@
 
 Scope: `software_esp32_revamped/lib/core`, ESP32 core (pure logic).
 Target: >= 95 % overall and >= 95 % for every file.
-Result: **97.76 % overall (13157 / 13459 killed), lowest file `lib/core/src/file_manager.cpp` 95.00 %, gate passed.**
-Measured on the WiFi STA restore on top of `860c8e0` (2026-09-29), 6 workers, 46 min.
+Result: **97.76 % overall (13170 / 13472 killed), lowest file `lib/core/src/file_manager.cpp` 95.00 %, gate passed.**
+Measured on the RAM improvements on top of `bebb143` (2026-10-01), 7 workers, 51 min.
 
 Tool: `tools/mutation/mutate.py`, config `tools/mutation/esp32.json`. Every mutant is built
 with the sanitizer build of the native tests (ASan + UBSan, `-Werror`) and runs the tests of its
@@ -43,9 +43,9 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 | `lib/core/src/line_assembler.cpp` | 100.00 % | 54 | 0 | 9 | 0 | 0 | 0 |
 | `lib/core/src/link_policy.cpp` | 98.36 % | 299 | 5 | 1 | 0 | 19 | 0 |
 | `lib/core/src/log_sink.cpp` | 97.41 % | 113 | 3 | 0 | 0 | 8 | 0 |
-| `lib/core/src/mqtt_policy.cpp` | 98.33 % | 236 | 4 | 0 | 8 | 26 | 0 |
+| `lib/core/src/mqtt_policy.cpp` | 98.38 % | 243 | 4 | 0 | 8 | 26 | 0 |
 | `lib/core/src/mqtt_topics.cpp` | 99.85 % | 650 | 1 | 1 | 36 | 40 | 0 |
-| `lib/core/src/mqtt_values.cpp` | 96.51 % | 249 | 9 | 0 | 0 | 1 | 0 |
+| `lib/core/src/mqtt_values.cpp` | 96.58 % | 254 | 9 | 0 | 0 | 1 | 0 |
 | `lib/core/src/net_policy.cpp` | 97.89 % | 92 | 2 | 1 | 0 | 13 | 0 |
 | `lib/core/src/net_trial.cpp` | 98.07 % | 305 | 6 | 0 | 0 | 10 | 0 |
 | `lib/core/src/ota_policy.cpp` | 95.28 % | 101 | 5 | 0 | 0 | 4 | 0 |
@@ -54,13 +54,13 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 | `lib/core/src/restart_gate.cpp` | 100.00 % | 17 | 0 | 0 | 0 | 5 | 0 |
 | `lib/core/src/stm_codec.cpp` | 100.00 % | 983 | 0 | 0 | 0 | 200 | 0 |
 | `lib/core/src/stm_flasher.cpp` | 97.90 % | 1017 | 22 | 9 | 98 | 84 | 0 |
-| `lib/core/src/stm_session.cpp` | 98.69 % | 449 | 6 | 2 | 9 | 10 | 0 |
+| `lib/core/src/stm_session.cpp` | 98.69 % | 450 | 6 | 2 | 9 | 10 | 0 |
 | `lib/core/src/sys_health.cpp` | 96.64 % | 144 | 5 | 0 | 0 | 6 | 0 |
 | `lib/core/src/target_store.cpp` | 98.94 % | 187 | 2 | 0 | 0 | 6 | 0 |
 | `lib/core/src/valve_model.cpp` | 96.08 % | 710 | 29 | 0 | 0 | 21 | 0 |
 | `lib/core/src/version.cpp` | 96.65 % | 202 | 7 | 0 | 0 | 9 | 0 |
 | `lib/core/src/web_guard.cpp` | 99.62 % | 260 | 1 | 4 | 12 | 12 | 0 |
-| **total** | **97.76 %** | 13085 | 302 | 72 | 345 | 1005 | 0 |
+| **total** | **97.76 %** | 13098 | 302 | 72 | 345 | 1005 | 0 |
 
 ## NOMUTATE lines
 
@@ -294,20 +294,20 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 - `lib/core/src/log_sink.cpp:55:19` const `0` -> `1`
 - `lib/core/src/log_sink.cpp:66:14` rel `<` -> `<=`
 - `lib/core/src/log_sink.cpp:81:11` const `26` -> `27`
-- `lib/core/src/mqtt_policy.cpp:122:11` const `16` -> `15`
-- `lib/core/src/mqtt_policy.cpp:123:12` rel `>` -> `>=`
-- `lib/core/src/mqtt_policy.cpp:123:14` const `0` -> `1`
-- `lib/core/src/mqtt_policy.cpp:326:13` rel `>=` -> `>`
+- `lib/core/src/mqtt_policy.cpp:134:11` const `16` -> `15`
+- `lib/core/src/mqtt_policy.cpp:135:12` rel `>` -> `>=`
+- `lib/core/src/mqtt_policy.cpp:135:14` const `0` -> `1`
+- `lib/core/src/mqtt_policy.cpp:338:13` rel `>=` -> `>`
 - `lib/core/src/mqtt_topics.cpp:319:30` const `1` -> `2`
 - `lib/core/src/mqtt_values.cpp:28:25` rel `<` -> `<=`
 - `lib/core/src/mqtt_values.cpp:36:18` log `||` -> `&&`
 - `lib/core/src/mqtt_values.cpp:67:9` rel `>=` -> `>`
 - `lib/core/src/mqtt_values.cpp:108:45` rel `<` -> `<=`
-- `lib/core/src/mqtt_values.cpp:139:32` const `0` -> `1`
-- `lib/core/src/mqtt_values.cpp:160:25` rel `<` -> `<=`
-- `lib/core/src/mqtt_values.cpp:171:16` rel `<` -> `<=`
-- `lib/core/src/mqtt_values.cpp:179:16` rel `<` -> `<=`
-- `lib/core/src/mqtt_values.cpp:183:13` rel `<` -> `<=`
+- `lib/core/src/mqtt_values.cpp:183:32` const `0` -> `1`
+- `lib/core/src/mqtt_values.cpp:204:25` rel `<` -> `<=`
+- `lib/core/src/mqtt_values.cpp:215:16` rel `<` -> `<=`
+- `lib/core/src/mqtt_values.cpp:223:16` rel `<` -> `<=`
+- `lib/core/src/mqtt_values.cpp:227:13` rel `<` -> `<=`
 - `lib/core/src/net_policy.cpp:29:18` bool `false` -> `true`
 - `lib/core/src/net_policy.cpp:81:15` bool `false` -> `true`
 - `lib/core/src/net_trial.cpp:11:26` const `4` -> `5`
@@ -359,11 +359,11 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 - `lib/core/src/stm_flasher.cpp:890:51` rel `<` -> `<=`
 - `lib/core/src/stm_flasher.cpp:926:12` rel `<` -> `<=`
 - `lib/core/src/stm_session.cpp:157:52` arith `+` -> `-`
-- `lib/core/src/stm_session.cpp:632:10` negcond `(` -> `(!`
-- `lib/core/src/stm_session.cpp:751:34` log `||` -> `&&`
-- `lib/core/src/stm_session.cpp:751:66` log `||` -> `&&`
-- `lib/core/src/stm_session.cpp:753:50` log `||` -> `&&`
-- `lib/core/src/stm_session.cpp:781:14` bool `true` -> `false`
+- `lib/core/src/stm_session.cpp:635:10` negcond `(` -> `(!`
+- `lib/core/src/stm_session.cpp:754:34` log `||` -> `&&`
+- `lib/core/src/stm_session.cpp:754:66` log `||` -> `&&`
+- `lib/core/src/stm_session.cpp:756:50` log `||` -> `&&`
+- `lib/core/src/stm_session.cpp:784:14` bool `true` -> `false`
 - `lib/core/src/sys_health.cpp:11:17` rel `>` -> `>=`
 - `lib/core/src/sys_health.cpp:11:19` const `512` -> `0`
 - `lib/core/src/sys_health.cpp:11:19` const `512` -> `511`

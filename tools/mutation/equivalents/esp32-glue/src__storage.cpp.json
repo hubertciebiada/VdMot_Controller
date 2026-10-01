@@ -75,5 +75,5 @@
   {"line": 1052, "col": 14, "original": "48", "replacement": "47", "text": "char final[48];", "reason": "the buffer holds imagePath() of a normalized image name (at most 31 chars): \"/stm/\" + name + \".bin.part\" + NUL is at most 46 bytes, so 47 or 49 bytes never change the result"},
   {"line": 1052, "col": 14, "original": "48", "replacement": "49", "text": "char final[48];", "reason": "the buffer holds imagePath() of a normalized image name (at most 31 chars): \"/stm/\" + name + \".bin.part\" + NUL is at most 46 bytes, so 47 or 49 bytes never change the result"},
   {"line": 1065, "col": 22, "original": "false", "replacement": "true", "text": "gUpload.active = false;", "reason": "unreachable: putLocked() cannot fail at the end of an upload (see its false return)"},
-  {"line": 1126, "col": 10, "original": "0", "replacement": "1", "text": "pos_ = 0;", "reason": "after close() read() fails on the closed file whatever pos_ is, and open() sets pos_ = 0"}
+  {"line": 1133, "col": 10, "original": "0", "replacement": "1", "text": "pos_ = 0;", "reason": "after close() read() fails on the closed file whatever pos_ is, and open() sets pos_ = 0"}
 ]

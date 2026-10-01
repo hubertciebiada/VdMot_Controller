@@ -213,8 +213,7 @@ void releaseSlot(int slot) {
 void endBody(AsyncWebServerRequest* req) {
   if (gBodyOwner != req) return;
   releaseSlot(gBodySlot);
-  gBodySlot = -1;
-  gBodyOwner = nullptr;
+  gBodyOwner = nullptr;  // gBodySlot counts only for the owner
 }
 
 // Sends slot content without copying; the slot is released when the client
@@ -641,8 +640,8 @@ bool tempConfigured(const vdm::OneWireId& id) {
 ValveViews& buildValveViews() {
   app::readStmSnapshot(*gSnapPtr);
   ValveViews& views = scratch<ValveViews>();
-  for (uint8_t i = 0; i < vdm::kValveCount; ++i) {
-    vdm::ValveView& v = views[i];
+  for (vdm::ValveView& v : views.items) {
+    const uint8_t i = static_cast<uint8_t>(&v - views.items);
     v = vdm::ValveView{};
     const vdm::ValveState& st = gSnapPtr->valves[i];
     v.state = &st;

@@ -2,14 +2,14 @@
 
 Scope: `software_esp32_revamped/src`, ESP32 glue (Arduino code on host fakes).
 Target: >= 95 % overall and >= 95 % for every file.
-Result: **99.71 % overall (3776 / 3787 killed), lowest file `src/logger.cpp` 96.20 %, gate passed.**
-Measured on the WiFi STA restore on top of `860c8e0` (2026-09-30), 6 workers, 31 min.
+Result: **99.71 % overall (3815 / 3826 killed), lowest file `src/logger.cpp` 96.20 %, gate passed.**
+Measured on the RAM improvements on top of `bebb143` (2026-10-01), 7 workers, 34 min.
 
 Tool: `tools/mutation/mutate.py`, config `tools/mutation/esp32-glue.json`. Every mutant is built
 with the sanitizer build of the native tests (ASan + UBSan, `-Werror`) and runs the tests of its
 module first, then the whole suite. A failed test, a crash or a timeout kills the mutant.
 Not counted: stillborn mutants (they do not compile), mutants in code the native build does not
-compile, and equivalent mutants. The 371 equivalent mutants are listed with a reason in
+compile, and equivalent mutants. The 372 equivalent mutants are listed with a reason in
 `tools/mutation/equivalents/esp32-glue/`; lines marked `// NOMUTATE` get no mutants.
 
 ## Reproduce
@@ -24,17 +24,17 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 
 | file | score | killed | survived | timeout | equivalent | stillborn | not compiled |
 |---|---|---|---|---|---|---|---|
-| `src/app.cpp` | 100.00 % | 136 | 0 | 0 | 7 | 11 | 0 |
+| `src/app.cpp` | 100.00 % | 146 | 0 | 0 | 7 | 19 | 0 |
 | `src/logger.cpp` | 96.20 % | 146 | 6 | 6 | 21 | 2 | 3 |
 | `src/main.cpp` | 100.00 % | 1 | 0 | 0 | 0 | 0 | 0 |
-| `src/mqtt_client.cpp` | 99.70 % | 653 | 2 | 9 | 112 | 44 | 0 |
+| `src/mqtt_client.cpp` | 99.71 % | 675 | 2 | 9 | 117 | 26 | 0 |
 | `src/net.cpp` | 100.00 % | 359 | 0 | 0 | 34 | 6 | 0 |
 | `src/ota.cpp` | 100.00 % | 238 | 0 | 4 | 8 | 3 | 0 |
 | `src/stm_link.cpp` | 100.00 % | 72 | 0 | 2 | 1 | 6 | 0 |
 | `src/stm_service.cpp` | 100.00 % | 55 | 0 | 0 | 6 | 1 | 0 |
-| `src/storage.cpp` | 99.57 % | 691 | 3 | 7 | 77 | 85 | 0 |
-| `src/web_server.cpp` | 100.00 % | 1396 | 0 | 1 | 105 | 330 | 0 |
-| **total** | **99.71 %** | 3747 | 11 | 29 | 371 | 488 | 3 |
+| `src/storage.cpp` | 99.58 % | 704 | 3 | 7 | 77 | 70 | 0 |
+| `src/web_server.cpp` | 100.00 % | 1390 | 0 | 1 | 101 | 351 | 0 |
+| **total** | **99.71 %** | 3786 | 11 | 29 | 372 | 484 | 3 |
 
 ## Surviving mutants (11)
 
@@ -46,10 +46,10 @@ bash tools/native/docker.sh mutate-all                 # all four suites and the
 - `src/logger.cpp:140:25` retval `kStepRotate` -> `0`
 - `src/logger.cpp:186:6` negcond `(` -> `(!`
 - `src/logger.cpp:238:77` const `0` -> `1`
-- `src/mqtt_client.cpp:190:29` arith `+` -> `-`
-- `src/mqtt_client.cpp:190:31` const `1` -> `0`
-- `src/storage.cpp:195:56` const `0` -> `1`
-- `src/storage.cpp:266:33` const `48` -> `49`
-- `src/storage.cpp:504:44` bool `false` -> `true`
+- `src/mqtt_client.cpp:197:29` arith `+` -> `-`
+- `src/mqtt_client.cpp:197:31` const `1` -> `0`
+- `src/storage.cpp:213:56` const `0` -> `1`
+- `src/storage.cpp:284:33` const `48` -> `49`
+- `src/storage.cpp:525:44` bool `false` -> `true`
 
 </details>

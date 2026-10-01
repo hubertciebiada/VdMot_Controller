@@ -89,6 +89,18 @@ TEST_CASE("web body: bytes pipelined after an 8192-byte body never go past the b
   CHECK(sib::app().submitted[0].pos == 5);
 }
 
+TEST_CASE("web body: more pipelined bytes than the rest of the response slot are not stored") {
+  glue::begin();
+  start();
+  // the body fills 8192 of the 12 KB slot; the pipelined bytes after it would run past its end
+  Request r = apiPost("/api/config", std::string(8192, ' '));
+  r.segment = 4096;  // two segments, the second with the pipelined bytes
+  r.pipelined = "GET /api/status HTTP/1.1\r\n" + std::string(5000, 'x');
+  const Response res = fakes::http::perform(r);
+  CHECK(res.sends == 0);
+  CHECK(fakes::http::perform(apiPost(kTarget1, "{\"target\":5}")).code == 202);
+}
+
 TEST_CASE("web body: a mark left by an upload that went away does not answer a bodyless request") {
   glue::begin();
   start();
