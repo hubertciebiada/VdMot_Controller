@@ -8,6 +8,11 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+### Changed
+- Dashboard: the header and the footer show the STM version alone
+  (`2.1.6-revamped`); the board revision the STM appends (`_C2`) and the
+  protocol moved to Maintenance → System (rows Board and Protocol).
+
 ## [2.1.6-revamped]
 
 ESP release: about 40 KB more free heap with the same functions (measured on

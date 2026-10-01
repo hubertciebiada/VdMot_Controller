@@ -494,7 +494,7 @@ function renderStatus(st) {
   setText($("st-time"), tm.valid && tm.local ? tm.local.replace("T", " ") : "time not synced");
   setText($("st-uptime"), fmtUptime(esp.uptime));
   const espV = esp.version || "?";
-  const stmV = (stm.version || "unknown") + (isNum(stm.proto) && stm.proto > 0 ? " (proto " + stm.proto + ")" : "");
+  const stmV = stmVersion(stm.version).version || "unknown";
   setText($("st-esp"), espV);
   setText($("st-stm"), stmV);
   setText($("ft-esp"), espV + (isNum(esp.build) ? " built " + fmtEpoch(esp.build) : ""));
@@ -1764,6 +1764,12 @@ $("motor-form").addEventListener("submit", async (e) => {
 
 // ------------------------------------------------------------------ maintenance
 
+// The STM reports its version with the board revision appended
+// ("2.1.6-revamped_C2"); the header shows the version alone, System the board.
+function stmVersion(v) {
+  const m = /^(.*)_(C\d+)$/.exec(v || "");
+  return m ? { version: m[1], board: m[2] } : { version: v || "", board: "" };
+}
 function infoList(dl, rows) {
   dl.replaceChildren(...rows.filter((r) => r).flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })]));
 }
@@ -1783,7 +1789,8 @@ function renderInfo(st) {
   ]);
   const stm = st.stm || {}, ls = stm.stats || {}, gs = stm.status, rx = stm.espRx || {};
   infoList($("info-stm"), [
-    ["Firmware", (stm.version || "unknown") + (stm.compatible === false ? " (unsupported, minimum " + (stm.minVersion || "?") + ")" : "")],
+    ["Firmware", (stmVersion(stm.version).version || "unknown") + (stm.compatible === false ? " (unsupported, minimum " + (stm.minVersion || "?") + ")" : "")],
+    stmVersion(stm.version).board ? ["Board", stmVersion(stm.version).board] : null,
     ["Protocol", isNum(stm.proto) ? "v" + stm.proto : "unknown"],
     ["Chip", (stm.chip || "unknown") + (stm.hwId ? " (" + stm.hwId + ")" : "")],
     ["Link", (stm.link || "?") + ", " + fmt(ls.sent) + " sent, " + fmt(ls.timeouts) + " timeouts, " + fmt(ls.parseErrors) + " parse errors"],

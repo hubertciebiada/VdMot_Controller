@@ -104,7 +104,7 @@ Recommended order: **ESP first, then STM.**
    had none): such a controller stays on Ethernet until WiFi is set up again
    under Settings → Station and network (CHANGELOG.md).
 3. Open `http://<device>/`. The header shows ESP `2.1.6-revamped` and the STM
-   version with its protocol.
+   version (board and protocol under Maintenance → System).
 4. Leave it running. The new image is marked valid (event `app_marked_valid`)
    after 2 minutes in which all of these held without interruption:
    - the network is up and proven end to end (a gateway ping reply, the MQTT
@@ -133,10 +133,10 @@ Recommended order: **ESP first, then STM.**
    ESP waits up to 60 s for the new application). The valves do not move while
    flashing. If the STM does not answer at 115200 baud, one more session runs
    at 57600 baud.
-3. Afterwards the header shows STM `2.1.6-revamped_C2` (or `_C1`) with
-   `proto 3`, and the valve cards show the extended data (last move, early
-   stops, rejected commands, flags, failsafe). The image is kept as
-   `last_good.bin`.
+3. Afterwards the header shows STM `2.1.6-revamped` (Maintenance → System
+   adds the board `C2` or `C1` and protocol `v3`), and the valve cards show
+   the extended data (last move, early stops, rejected commands, flags,
+   failsafe). The image is kept as `last_good.bin`.
 4. On its first start after 1.x or 2.0.0 the STM takes over the motor
    settings, sensor assignment and escalation from the EEPROM; it has no
    calibration records yet, so every valve calibrates once. From then on the
