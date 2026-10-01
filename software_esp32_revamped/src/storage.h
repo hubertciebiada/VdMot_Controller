@@ -67,7 +67,8 @@ bool fsReady();
 // then save, the import report file and the removal of the legacy images.
 // `report` is filled when an import ran. `details.errorCode` receives the
 // reason for DefaultsAfterError and Backup: the vdm::DecodeResult value,
-// 100 = NVS not usable, 101 = blob unreadable, 0 = no cfg in NVS.
+// 100 = NVS not usable, 101 = blob unreadable, 102 = no memory for the blob
+// buffers (nothing read, nothing written), 0 = no cfg in NVS.
 // Logs the result (ConfigRepaired, ConfigNewerSchema, ConfigRestored,
 // ConfigImported, ImportDropped, FilesRemoved, ConfigDefaults).
 enum class LoadSource : uint8_t { Stored, Imported, Defaults, DefaultsAfterError, Backup };
@@ -90,8 +91,9 @@ vdm::CalibScheduleConfig calibConfig();
 uint32_t configRevision();          // +1 on every successful apply
 // Validates, persists (NVS cfgx, then cfg) and publishes a new config. On
 // failure nothing changes and `path` names the offending key ("nvs" when a
-// write failed). service() then copies the blobs to the backup files, not
-// while a network trial runs.
+// write failed or the 5.5 KB blob buffers could not be allocated). service()
+// then copies the blobs to the backup files, not while a network trial runs
+// (without memory for the buffers it tries again in the next pass).
 bool applyConfig(const vdm::Config& c, char* path, size_t pathCap);
 // Factory reset: erases "vdmrev" except frLatch and removes the backup and
 // import report files (legacy namespaces are left untouched but "imported"
@@ -130,7 +132,8 @@ void setHaLayout(uint8_t layout);
 
 // ---------------------------------------------------------------- files
 
-// The legacy import report (kImportReportFile).
+// The legacy import report (kImportReportFile); false when it was not
+// written (no file system, no memory for its 4 KB text, a write error).
 bool writeImportReport(const vdm::ImportReport& report);
 bool hasImportReport();
 bool dismissImportReport();  // false when there was none

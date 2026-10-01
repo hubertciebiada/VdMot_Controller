@@ -37,10 +37,6 @@ SemaphoreHandle_t gCfgMutex = nullptr;
 vdm::Config& gActive = bootAlloc<vdm::Config>();
 volatile uint32_t gRevision = 0;
 uint32_t gBootCount = 0;
-using Blob = ObjArray<uint8_t, vdm::kConfigBlobMax>;
-Blob& gBlob = bootAlloc<Blob>();  // encode/decode and legacy import scratch, guarded by gCfgMutex
-using ExtBlob = ObjArray<uint8_t, vdm::kConfigExtBlobMax>;
-ExtBlob& gExt = bootAlloc<ExtBlob>();  // the same for cfgx
 // Unknown cfgx records (a newer firmware's keys) read at boot and written back
 // by every save. Guarded by gCfgMutex.
 using Keep = ObjArray<uint8_t, vdm::kConfigExtKeepMax>;
@@ -175,14 +171,36 @@ struct FsLock : Lock {
   FsLock() : Lock(gFsMutex) {}
 };
 
+// The cfg and cfgx encode/decode buffers (4 KB + 1.5 KB; the cfg buffer is
+// also the scratch of the legacy import and the text of the import report).
+// They live on the heap only while a load, a save, a backup write or the
+// import report runs, under gCfgMutex; without memory that operation fails
+// (a save answers "nvs", a backup stays pending, the boot load takes the
+// defaults with reason 102).
+struct Blobs {
+  uint8_t base[vdm::kConfigBlobMax];
+  uint8_t ext[vdm::kConfigExtBlobMax];
+};
+class BlobScratch {
+ public:
+  BlobScratch() : p_(new (std::nothrow) Blobs) {}
+  ~BlobScratch() { delete p_; }
+  BlobScratch(const BlobScratch&) = delete;
+  BlobScratch& operator=(const BlobScratch&) = delete;
+  Blobs* get() const { return p_; }  // nullptr: no memory
+
+ private:
+  Blobs* p_;
+};
+
 // cfgx first: a cfg without its cfgx loads with the new keys at their
 // defaults, a cfgx without its cfg is never read.
-bool saveBlobLocked(const vdm::Config& c) {
-  const size_t x = vdm::encodeConfigExt(c, gExt.data(), sizeof gExt.items, gKeep.data(), gKeepLen);
-  const size_t n = vdm::encodeConfig(c, gBlob.data(), sizeof gBlob.items);
+bool saveBlobLocked(Blobs& b, const vdm::Config& c) {
+  const size_t x = vdm::encodeConfigExt(c, b.ext, sizeof b.ext, gKeep.data(), gKeepLen);
+  const size_t n = vdm::encodeConfig(c, b.base, sizeof b.base);
   const bool ok = x > 0 && n > 0 && openPrefs() &&
-                  gPrefs.putBytes(kKeyConfigExt, gExt.data(), x) == x &&
-                  gPrefs.putBytes(kKeyConfig, gBlob.data(), n) == n;
+                  gPrefs.putBytes(kKeyConfigExt, b.ext, x) == x &&
+                  gPrefs.putBytes(kKeyConfig, b.base, n) == n;
   if (ok) gBackupPending = true;
   return ok;
 }
@@ -452,11 +470,11 @@ bool sameFile(const char* path, const uint8_t* data, size_t len) {
   return same;
 }
 
-// The blobs of `c` (with the kept unknown records) into gBlob/gExt; false
-// when they do not fit. Caller holds gCfgMutex.
-bool encodeLocked(const vdm::Config& c, size_t& n, size_t& x) {
-  x = vdm::encodeConfigExt(c, gExt.data(), sizeof gExt.items, gKeep.data(), gKeepLen);
-  n = vdm::encodeConfig(c, gBlob.data(), sizeof gBlob.items);
+// The blobs of `c` (with the kept unknown records) into `b`; false when they
+// do not fit. Caller holds gCfgMutex.
+bool encodeLocked(Blobs& b, const vdm::Config& c, size_t& n, size_t& x) {
+  x = vdm::encodeConfigExt(c, b.ext, sizeof b.ext, gKeep.data(), gKeepLen);
+  n = vdm::encodeConfig(c, b.base, sizeof b.base);
   return n > 0 && x > 0;
 }
 
@@ -472,13 +490,16 @@ bool backupCut() { return !LittleFS.exists(kBackupBaseTmp) && LittleFS.exists(kB
 // that renamed nothing and left the old pair.
 void writeBackup() {
   CfgLock lock;
+  BlobScratch blobs;
+  if (blobs.get() == nullptr) return;  // no memory: still pending, the next pass tries
+  Blobs& b = *blobs.get();
   gBackupPending = false;
   // New .tmp files must not meet the ext blob of a cut write: it goes first.
   if (backupCut() && !LittleFS.rename(kBackupExtTmp, kBackupExt)) return;
   size_t n = 0;
   size_t x = 0;
-  const bool ok = encodeLocked(gActive, n, x) && writeFile(kBackupBaseTmp, gBlob.data(), n) &&
-                  writeFile(kBackupExtTmp, gExt.data(), x) &&
+  const bool ok = encodeLocked(b, gActive, n, x) && writeFile(kBackupBaseTmp, b.base, n) &&
+                  writeFile(kBackupExtTmp, b.ext, x) &&
                   LittleFS.rename(kBackupBaseTmp, kBackupBase);
   if (!ok) {
     // The ext first: a cut in between leaves cfg.bak.tmp, still a write
@@ -518,24 +539,24 @@ namespace {
 
 // The backup files as the config; on success NVS gets their bytes back.
 // Caller holds gCfgMutex.
-bool loadBackupLocked(vdm::Config& out, vdm::LoadInfo& info) {
+bool loadBackupLocked(Blobs& blob, vdm::Config& out, vdm::LoadInfo& info) {
   if (!gFsReady) return false;
-  const size_t n = readFile(kBackupBase, gBlob.data(), sizeof gBlob.items);
+  const size_t n = readFile(kBackupBase, blob.base, sizeof blob.base);
   const size_t x =
-      readFile(backupCut() ? kBackupExtTmp : kBackupExt, gExt.data(), sizeof gExt.items);
+      readFile(backupCut() ? kBackupExtTmp : kBackupExt, blob.ext, sizeof blob.ext);
   vdm::StoredBlobs b;
-  b.base = gBlob.data();
+  b.base = blob.base;
   b.baseLen = n;
-  b.ext = gExt.data();
+  b.ext = blob.ext;
   b.extLen = x;
   if (!vdm::loadConfigBlobs(b, out, info, gKeep.data(), sizeof gKeep.items)) return false;
   gKeepLen = info.extInfo.keepLen;
   if (x > 0) {
-    gPrefs.putBytes(kKeyConfigExt, gExt.data(), x);
+    gPrefs.putBytes(kKeyConfigExt, blob.ext, x);
   } else {
     gPrefs.remove(kKeyConfigExt);
   }
-  gPrefs.putBytes(kKeyConfig, gBlob.data(), n);
+  gPrefs.putBytes(kKeyConfig, blob.base, n);
   return true;
 }
 
@@ -549,16 +570,22 @@ LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, LoadDetails& 
     details.errorCode = 100;
     return LoadSource::DefaultsAfterError;
   }
+  BlobScratch blobs;
+  if (blobs.get() == nullptr) {
+    details.errorCode = 102;
+    return LoadSource::DefaultsAfterError;
+  }
+  Blobs& blob = *blobs.get();
 
   const size_t len = gPrefs.getBytesLength(kKeyConfig);
   if (len > 0) {
     details.errorCode = 101;
-    if (len <= sizeof gBlob.items && gPrefs.getBytes(kKeyConfig, gBlob.data(), len) == len) {
+    if (len <= sizeof blob.base && gPrefs.getBytes(kKeyConfig, blob.base, len) == len) {
       vdm::StoredBlobs b;
-      b.base = gBlob.data();
+      b.base = blob.base;
       b.baseLen = len;
-      b.ext = gExt.data();
-      b.extLen = loadBytesLocked(kKeyConfigExt, gExt.data(), sizeof gExt.items);
+      b.ext = blob.ext;
+      b.extLen = loadBytesLocked(kKeyConfigExt, blob.ext, sizeof blob.ext);
       if (vdm::loadConfigBlobs(b, out, details.info, gKeep.data(), sizeof gKeep.items)) {
         details.errorCode = 0;
         gKeepLen = details.info.extInfo.keepLen;
@@ -569,40 +596,42 @@ LoadSource loadStored(vdm::Config& out, vdm::ImportReport& report, LoadDetails& 
                                 details.info.ext != vdm::ExtResult::Ok;
         size_t n = 0;
         size_t x = 0;
-        gBackupPending = !extDamaged && encodeLocked(out, n, x) && gFsReady &&
-                         !(sameFile(kBackupBase, gBlob.data(), n) &&
-                           sameFile(kBackupExt, gExt.data(), x));
+        gBackupPending = !extDamaged && encodeLocked(blob, out, n, x) && gFsReady &&
+                         !(sameFile(kBackupBase, blob.base, n) &&
+                           sameFile(kBackupExt, blob.ext, x));
         return LoadSource::Stored;
       }
       details.errorCode = static_cast<uint8_t>(details.info.base);
     }
     // Never overwritten automatically without a usable backup: the next
     // explicit save replaces it.
-    if (loadBackupLocked(out, details.info)) return LoadSource::Backup;
+    if (loadBackupLocked(blob, out, details.info)) return LoadSource::Backup;
     vdm::setDefaults(out);
     return LoadSource::DefaultsAfterError;
   }
   if (gPrefs.getUChar(kKeyImported, 0) == 1) return LoadSource::Defaults;
-  if (loadBackupLocked(out, details.info)) return LoadSource::Backup;  // NVS was erased
+  if (loadBackupLocked(blob, out, details.info)) return LoadSource::Backup;  // NVS was erased
   vdm::setDefaults(out);
 
   NvsLegacyReader reader;
-  report = vdm::importLegacyConfig(reader, out, gBlob.data(), sizeof gBlob.items);
+  report = vdm::importLegacyConfig(reader, out, blob.base, sizeof blob.base);
   if (report.lastCalibEpoch > 0) gPrefs.putLong64(kKeyLastCalib, report.lastCalibEpoch);
   // "imported" only after the blob is safely stored: a failed save retries
   // the (idempotent) import on the next boot.
-  if (saveBlobLocked(out)) gPrefs.putUChar(kKeyImported, 1);
+  if (saveBlobLocked(blob, out)) gPrefs.putUChar(kKeyImported, 1);
   return report.anyLegacy ? LoadSource::Imported : LoadSource::Defaults;
 }
 
 // /sys/import.json from the report and the imported config. Caller holds
-// gCfgMutex (gBlob is the text buffer).
+// gCfgMutex (the cfg blob buffer is the text buffer; no memory: false).
 bool writeReportLocked(const vdm::ImportReport& report, const vdm::Config& c) {
   if (!gFsReady) return false;
-  char* buf = reinterpret_cast<char*>(gBlob.data());
-  vdm::JsonWriter jw(buf, sizeof gBlob.items);
+  BlobScratch blobs;
+  if (blobs.get() == nullptr) return false;
+  uint8_t* text = blobs.get()->base;
+  vdm::JsonWriter jw(reinterpret_cast<char*>(text), sizeof blobs.get()->base);
   return vdm::writeImportReportJson(jw, report, c) &&
-         writeFile(kImportReportFile, gBlob.data(), jw.length());
+         writeFile(kImportReportFile, text, jw.length());
 }
 
 void logStored(const LoadDetails& d) {
@@ -692,7 +721,8 @@ uint32_t configRevision() { return gRevision; }
 bool applyConfig(const vdm::Config& c, char* path, size_t pathCap) {
   if (!vdm::validateConfig(c, path, pathCap)) return false;
   CfgLock lock;
-  const bool ok = saveBlobLocked(c);  // sets gBackupPending
+  BlobScratch blobs;  // no memory: fails like NVS
+  const bool ok = blobs.get() != nullptr && saveBlobLocked(*blobs.get(), c);  // sets gBackupPending
   if (ok) {
     gActive = c;
     gRevision = gRevision + 1;

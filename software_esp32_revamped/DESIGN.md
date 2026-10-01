@@ -656,17 +656,20 @@ recorded as a gap line; failures raise `log_write_failed` (hourly at most).
 RAM budget (WT32-ETH01: 263 KB of 8-bit capable heap, measured on the
 hardware; 2.1.0-revamped-rc1 left 0.6-2.4 KB once the network was up):
 - Allocated once at boot and never freed: the `bootAlloc()` working copies,
-  35 KB in 11 blocks (the first `bootAlloc()` hands the Bluetooth DRAM to the
+  29 KB in 9 blocks (the first `bootAlloc()` hands the Bluetooth DRAM to the
   heap, which initArduino() would do only after the constructors): the STM
   session 11.4 KB with its snapshot 3 KB, the snapshot copies of `app` and
   `mqtt` (3 KB each), the profile store of `app` (12 x 260 B, the valve
   profiles kept once outside the snapshots, section 4), the active config
   of `storage` and the copy of `mqtt` (2.5 KB each, the only whole `Config`
-  copies kept), the blob buffers of `storage` (4 KB `cfg`, 1.5 KB `cfgx`,
-  512 B kept records) and its load details (196 B); and the event ring
-  32 x 48 B (`logger::begin`). The 2.5 KB copies of a config reload (`app`,
-  `stm_link`, `mqtt`) and of a network trial revert (`net`) live on the heap
-  only for that moment, the context and payload buffer of an HA discovery
+  copies kept), the kept unknown `cfgx` records (512 B) and the load details
+  (196 B) of `storage`; and the event ring 32 x 48 B (`logger::begin`). The
+  2.5 KB copies of a config reload (`app`, `stm_link`, `mqtt`) and of a
+  network trial revert (`net`) live on the heap only for that moment, the
+  blob buffers of `storage` (4 KB `cfg` + 1.5 KB `cfgx`, one block) for a
+  config load, save or backup write and the import report (without memory:
+  a save fails with `nvs`, a backup stays pending, the boot load takes the
+  defaults with reason 102), the context and payload buffer of an HA discovery
   run (5.4 KB, section 11) for that run, the copy of a valve profile and its
   JSON (0.9 KB) for one MQTT diag check, the session of a gateway probe (a
   task with 2 KB stack and a socket, about 2.7 KB) for a second or two per

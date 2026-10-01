@@ -42,6 +42,11 @@ the ESP, the tooling and a summary of the STM.
   CRC-32 of the fields it compares instead of the whole published valve
   state (1.6 KB), and a valve profile is copied with its JSON for the diag
   check only.
+- ESP: 5.5 KB more free heap: the config blob buffers (`cfg` 4 KB, `cfgx`
+  1.5 KB) are allocated for a config load, save, backup write or the import
+  report only. Without memory a save is answered like an NVS error (500
+  `invalid`, detail `nvs`, nothing applied), a backup waits for the next
+  pass, and the boot load takes the defaults (`config_defaults` reason 102).
 
 ## [2.1.5-revamped]
 

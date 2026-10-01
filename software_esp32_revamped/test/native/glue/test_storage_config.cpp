@@ -429,6 +429,100 @@ TEST_CASE("storage load: NVS not usable gives defaults with reason 100") {
   CHECK(storage::bootLoadDetails().errorCode == 100);
 }
 
+// ---------------------------------------------------------------- blob buffers
+
+TEST_CASE("storage blobs: a load, a save and a backup each take the buffers for the moment") {
+  glue::begin();
+  mount();
+  storeNvs(withExt("L"));
+  const size_t blobs = vdm::kConfigBlobMax + vdm::kConfigExtBlobMax;
+  const auto taken = [blobs] {
+    size_t n = 0;
+    for (size_t a : fakes::heap().allocated) n += a == blobs;
+    return n;
+  };
+  CHECK(taken() == 0);  // nothing at boot
+  REQUIRE(load().src == storage::LoadSource::Stored);
+  CHECK(taken() == 1);
+  storage::service();  // the backup of the first boot
+  CHECK(taken() == 2);
+  char path[16] = "";
+  REQUIRE(storage::applyConfig(withExt("S"), path, sizeof path));
+  CHECK(taken() == 3);
+  storage::service();
+  CHECK(taken() == 4);
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(withExt("S"))));
+}
+
+TEST_CASE("storage blobs: without memory the boot load takes the defaults, reason 102") {
+  glue::begin();
+  mount();
+  storeNvs(withExt("L"));
+  storeBackup(withExt("B"));
+  fakes::heap().failAll = true;
+  const Load l = load();
+  fakes::heap().failAll = false;
+  CHECK(l.src == storage::LoadSource::DefaultsAfterError);
+  CHECK(l.details.errorCode == 102);
+  vdm::Config defaults;
+  vdm::setDefaults(defaults);
+  CHECK(std::string(l.cfg.station) == defaults.station);
+  const std::vector<vdm::Event> ev = sib::logger().withCode(vdm::EventCode::ConfigDefaults);
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].arg1 == 102);
+  // nothing read or written: NVS and the backup keep the stored config
+  CHECK(fakes::nvs().getBlob("vdmrev", "cfg") == blobOf(withExt("L")));
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(withExt("B"))));
+  storage::service();
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(withExt("B"))));
+}
+
+TEST_CASE("storage blobs: without memory a save fails like NVS, nothing changes") {
+  glue::begin();
+  mount();
+  storage::setActiveConfig(named("A"));
+  const uint32_t rev = storage::configRevision();
+  fakes::heap().failAll = true;
+  char path[16] = "";
+  CHECK_FALSE(storage::applyConfig(withExt("B"), path, sizeof path));
+  fakes::heap().failAll = false;
+  CHECK(std::string(path) == "nvs");
+  CHECK_FALSE(fakes::nvs().has("vdmrev", "cfg"));
+  CHECK_FALSE(fakes::nvs().has("vdmrev", "cfgx"));
+  CHECK(storage::configRevision() == rev);
+  CHECK_FALSE(storage::configSavedSinceBoot());
+  vdm::Config active;
+  storage::getConfig(active);
+  CHECK(std::string(active.station) == "A");
+}
+
+TEST_CASE("storage blobs: without memory the backup stays pending for the next pass") {
+  glue::begin();
+  mount();
+  char path[16] = "";
+  REQUIRE(storage::applyConfig(withExt("S"), path, sizeof path));
+  fakes::heap().failAll = true;
+  storage::service();
+  storage::service();
+  fakes::heap().failAll = false;
+  CHECK_FALSE(fakes::fs().exists("/sys/cfg.bak"));
+  CHECK_FALSE(fakes::fs().exists("/sys/cfg.bak.tmp"));
+  storage::service();
+  CHECK(fakes::fs().read("/sys/cfg.bak") == str(blobOf(withExt("S"))));
+  CHECK(fakes::fs().read("/sys/cfgx.bak") == str(extOf(withExt("S"))));
+}
+
+TEST_CASE("storage blobs: without memory the import report is not written") {
+  glue::begin();
+  mount();
+  fakes::heap().failAll = true;
+  CHECK_FALSE(storage::writeImportReport(vdm::ImportReport{}));
+  fakes::heap().failAll = false;
+  CHECK_FALSE(storage::hasImportReport());
+  CHECK(storage::writeImportReport(vdm::ImportReport{}));
+  CHECK(storage::hasImportReport());
+}
+
 // ---------------------------------------------------------------- save and backup
 
 TEST_CASE("storage save: cfgx is written before cfg; a failing cfgx write names nvs") {
