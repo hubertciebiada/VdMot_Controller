@@ -56,8 +56,10 @@ struct TestPort : StmSessionPort {
   bool imageOk = true;
   std::vector<std::string> opened;
   int closed = 0;
+  std::vector<Profile> profiles;  // storeProfile() calls
 
   void logEvent(const Event& e) override { events.push_back(e); }
+  void storeProfile(const Profile& p) override { profiles.push_back(p); }
   uint32_t pulseReset(uint32_t nowMs) override {
     pulses.push_back(nowMs);
     if (stm) stm->reset(nowMs + 100);

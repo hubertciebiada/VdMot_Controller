@@ -494,7 +494,7 @@ TEST_CASE("web events: a count that does not fit is halved until it does") {
 
 TEST_CASE("web: a valve profile, 404 without one") {
   glue::begin();
-  vdm::Profile& p = sib::app().snapshot.profiles[1];
+  vdm::Profile& p = sib::app().profiles[1];
   p.valve = 1;
   p.count = 2;
   p.samples[0].count = 10;
@@ -509,6 +509,11 @@ TEST_CASE("web: a valve profile, 404 without one") {
   r = get("/api/valves/1/profile");
   CHECK(r.code == 404);
   CHECK(r.body == errorBody("not_found", "no profile"));
+  // one profile copied per request, the snapshot is not read
+  CHECK(sib::app().profileReads == 2);
+  r = get("/api/valves/2/profile");  // after the 404: the profile of valve 2 again
+  CHECK(r.code == 200);
+  CHECK(r.body.find("\"valve\":2,") != std::string::npos);
 }
 
 TEST_CASE("web: the motor parameters with and without breakaway") {

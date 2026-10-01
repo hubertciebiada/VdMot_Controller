@@ -65,6 +65,7 @@ class Port : public vdm::StmSessionPort {
     return app::nowMs();
   }
   void publish(const vdm::StmSnapshot& s) override { app::publishStmSnapshot(s); }
+  void storeProfile(const vdm::Profile& p) override { app::storeProfile(p); }
   void requestLastGoodCopy(const char* image) override { storage::requestLastGoodCopy(image); }
   bool restartPending() override { return ota::restartPending(); }
   void markFlashActive() override { app::markStmFlashActive(); }

@@ -23,6 +23,7 @@ struct App {
   bool submitResult = true;           // false: the queue is full
   std::deque<app::Command> toReceive;  // receive() hands these out in order
   vdm::StmSnapshot snapshot;          // readStmSnapshot()
+  vdm::Profile profiles[vdm::kValveCount];  // readProfile(); storeProfile() writes them
   uint32_t snapshotRevision = 0;
   vdm::LinkState link = vdm::LinkState::Unknown;
   bool flashActive = false;
@@ -35,6 +36,8 @@ struct App {
   std::vector<app::Command> submitted;
   vdm::StmSnapshot published;         // the last publishStmSnapshot()
   int publishes = 0;
+  std::vector<vdm::Profile> storedProfiles;  // storeProfile() calls
+  int profileReads = 0;
   int setupCalls = 0;
   int saveRequests = 0;
   std::vector<vdm::StmSaveState> saveStates;

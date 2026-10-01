@@ -127,6 +127,26 @@ TEST_CASE("stm_link task: a target command becomes an stgtp line") {
   CHECK(sent.back() == "stgtp 2 40 ");
 }
 
+TEST_CASE("stm_link task: a profile goes to the profile store, the snapshot counts it") {
+  glue::begin();
+  activeValve(2);
+  glue::FakeStm stm;
+  stm.protocol(3);
+  stm_link::begin();
+  app::Command c;
+  c.type = app::CommandType::RequestProfile;
+  c.valve = 2;
+  fakes::rtos().onDelay = [&c](uint32_t) {
+    if (fakes::nowMs() == 8000) sib::app().toReceive.push_back(c);
+  };
+  runTask(9000);
+  REQUIRE(stm.requestsOf("gprof").size() == 1);
+  REQUIRE(sib::app().storedProfiles.size() == 1);
+  CHECK(sib::app().storedProfiles[0].valve == 2);
+  CHECK(sib::app().storedProfiles[0].count == 3);
+  CHECK(sib::app().published.profileSeq[2] == 1);
+}
+
 TEST_CASE("stm_link task: a user reset pulses NRST and logs it") {
   glue::begin();
   glue::FakeStm stm;

@@ -8,6 +8,14 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+### Changed
+- ESP: about 9 KB more free heap: the valve profiles (12 x 260 B) are no longer
+  part of the STM snapshot, of which the firmware holds four copies (STM task,
+  app, web, MQTT). They are kept once in a profile store of the app module;
+  the snapshot counts the profile replies per valve, and `GET
+  /api/valves/{n}/profile` and the MQTT diag topic `diag/valves/<V>/profile`
+  copy the one profile they need. Nothing visible changes.
+
 ## [2.1.5-revamped]
 
 ESP release: WiFi STA is back, and the rare web server panic of 2.1.3 and

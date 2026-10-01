@@ -40,6 +40,9 @@ QueueHandle_t gQueue = nullptr;
 StaticSemaphore_t gSnapMutexStorage;
 SemaphoreHandle_t gSnapMutex = nullptr;
 StmSnapshot& gSnapshot = bootAlloc<StmSnapshot>();
+// The profile store (12 x 260 B), guarded by gSnapMutex like the snapshot.
+using Profiles = ObjArray<vdm::Profile, vdm::kValveCount>;
+Profiles& gProfiles = bootAlloc<Profiles>();
 volatile vdm::LinkState gLinkState = vdm::LinkState::Unknown;
 volatile bool gFlashActive = false;
 volatile uint8_t gProto = 0;
@@ -255,6 +258,23 @@ void publishStmSnapshot(const StmSnapshot& in) {
   gProto = in.proto;
   gSupport = in.support;
   gSnapRevision = in.revision;
+}
+
+void storeProfile(const vdm::Profile& p) {
+  if (gSnapMutex == nullptr || p.valve >= vdm::kValveCount) return;
+  xSemaphoreTake(gSnapMutex, portMAX_DELAY);
+  gProfiles[p.valve] = p;
+  xSemaphoreGive(gSnapMutex);
+}
+
+void readProfile(uint8_t valve, vdm::Profile& out) {
+  if (gSnapMutex == nullptr || valve >= vdm::kValveCount) {
+    out = vdm::Profile{};
+    return;
+  }
+  xSemaphoreTake(gSnapMutex, portMAX_DELAY);
+  out = gProfiles[valve];
+  xSemaphoreGive(gSnapMutex);
 }
 
 void requestStmSave() { gSaveState = vdm::StmSaveState::Waiting; }

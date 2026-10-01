@@ -1213,8 +1213,25 @@ TEST_CASE("session mut: profiles are stored per valve; stray valve states are ig
   r.stm.answers["gprof"] = [](const std::string&) { return std::string("gprof 2 2 10:5 20:6"); };
   r.command(cmd(StmCommandType::RequestProfile, 2));
   r.run(2000);
-  CHECK(r.port.last.profiles[2].count == 2);
-  CHECK(r.port.last.profiles[2].samples[1].count == 20);
+  REQUIRE(r.port.profiles.size() == 1);
+  CHECK(r.port.profiles[0].valve == 2);
+  CHECK(r.port.profiles[0].count == 2);
+  CHECK(r.port.profiles[0].samples[1].count == 20);
+  for (uint8_t v = 0; v < kValveCount; ++v) {
+    CAPTURE(v);
+    CHECK(r.port.last.profileSeq[v] == (v == 2 ? 1u : 0u));
+  }
+  // every reply counts, also one with the same profile
+  r.command(cmd(StmCommandType::RequestProfile, 2));
+  r.run(2000);
+  CHECK(r.port.profiles.size() == 2);
+  CHECK(r.port.last.profileSeq[2] == 2);
+  // a stray reply (no request outstanding) of the last valve is stored and counted too
+  r.s.onLine("gprof 11 1 10:5", 15, r.now);
+  r.run(200);
+  REQUIRE(r.port.profiles.size() == 3);
+  CHECK(r.port.profiles[2].valve == 11);
+  CHECK(r.port.last.profileSeq[11] == 1);
 }
 
 TEST_CASE("session mut: an incompatible STM is logged once without arguments") {

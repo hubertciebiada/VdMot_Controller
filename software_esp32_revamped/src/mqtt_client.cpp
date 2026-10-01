@@ -112,6 +112,7 @@ struct DiagPub {
   uint32_t earlyStops = 0;
   uint32_t cmdRejected = 0;
   uint8_t calState = 0;
+  uint32_t profileSeq = 0;  // StmSnapshot::profileSeq of the last profile check
   uint32_t profileCrc = 0;
 };
 DiagPub gPubDiag[vdm::kValveCount];
@@ -870,6 +871,30 @@ uint32_t profileCrc(const vdm::Profile& p) {
   return crc;
 }
 
+// After a gprof reply (StmSnapshot::profileSeq moved) the profile is copied from the store for
+// this check only; without memory for the copy the next pass looks again. Not retained: only new
+// profiles (CRC-32) go out, not the one known at connect, whose CRC the first pass of the valve
+// stores whatever the budget.
+void checkProfile(uint8_t i, DiagPub& d, uint8_t& budget) {
+  const uint32_t seq = gSnap.profileSeq[i];
+  if (seq == d.profileSeq || (budget == 0 && d.valid)) return;
+  vdm::Profile* p = new (std::nothrow) vdm::Profile;
+  if (p == nullptr) return;
+  app::readProfile(i, *p);
+  const uint32_t crc = p->count > 0 ? profileCrc(*p) : 0;
+  if (crc != d.profileCrc && d.valid && p->count > 0) {
+    // Shares the discovery buffer: both run in this task, one at a time.
+    vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
+    if (vdm::writeProfileJson(jw, *p) && jw.complete()) {
+      publish(vdm::Topic::DiagValveProfile, gSegments[i], jw.c_str());
+    }
+    --budget;
+  }
+  d.profileCrc = crc;
+  d.profileSeq = seq;
+  delete p;
+}
+
 // A counter topic of diag/mqtt: on change, at most every kCounterPaceMs.
 void publishPaced(vdm::Topic t, uint32_t value, bool& valid, uint32_t& last, uint32_t& lastMs,
                   uint32_t now) {
@@ -989,21 +1014,7 @@ void serviceDiag(uint32_t now) {
       publishUint(vdm::Topic::DiagValveCalState, seg, v.calState);
       d.calState = v.calState;
     }
-    const vdm::Profile& p = gSnap.profiles[i];
-    const uint32_t crc = p.count > 0 ? profileCrc(p) : 0;
-    // Not retained: only new profiles go out, not the one known at connect, whose CRC the first
-    // pass of the valve stores whatever the budget.
-    if (crc != d.profileCrc && (budget > 0 || !d.valid)) {
-      if (d.valid && p.count > 0) {
-        // Shares the discovery buffer: both run in this task, one at a time.
-        vdm::JsonWriter jw(gDiscPayload.data(), sizeof gDiscPayload.items);
-        if (vdm::writeProfileJson(jw, p) && jw.complete()) {
-          publish(vdm::Topic::DiagValveProfile, seg, jw.c_str());
-        }
-        --budget;
-      }
-      d.profileCrc = crc;
-    }
+    checkProfile(i, d, budget);
     d.valid = true;
     pump();
   }

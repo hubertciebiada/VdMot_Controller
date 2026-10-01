@@ -73,6 +73,18 @@ void publishStmSnapshot(const StmSnapshot& in) {
   a.snapshotRevision = in.revision;
 }
 
+void storeProfile(const vdm::Profile& p) {
+  sib::App& a = sib::app();
+  a.storedProfiles.push_back(p);
+  if (p.valve < vdm::kValveCount) a.profiles[p.valve] = p;
+}
+
+void readProfile(uint8_t valve, vdm::Profile& out) {
+  sib::App& a = sib::app();
+  ++a.profileReads;
+  out = valve < vdm::kValveCount ? a.profiles[valve] : vdm::Profile{};
+}
+
 void requestStmSave() {
   ++sib::app().saveRequests;
   sib::app().saveState = vdm::StmSaveState::Waiting;

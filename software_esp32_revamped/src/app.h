@@ -72,7 +72,7 @@ bool receive(Command& out);
 // The STM snapshot published by the STM task (vdm/stm_types.h).
 using StmSnapshot = vdm::StmSnapshot;
 
-// Copies the latest snapshot (~7 KB: callers keep `out` in static storage,
+// Copies the latest snapshot (~3 KB: callers keep `out` in static storage,
 // never on a task stack).
 void readStmSnapshot(StmSnapshot& out);
 // Cheap accessors (no snapshot copy).
@@ -86,6 +86,13 @@ uint8_t stmProtocol();   // 0 unknown, 1..3
 vdm::StmSupport stmSupport();
 // STM task only.
 void publishStmSnapshot(const StmSnapshot& in);
+
+// The profile store: the last gprof of every valve, kept once outside the
+// snapshot copies (StmSnapshot::profileSeq counts the replies). STM task.
+void storeProfile(const vdm::Profile& p);
+// Copies the profile of `valve` (count 0: none yet, or a valve out of
+// range); callers keep `out` off their stack like the snapshot.
+void readProfile(uint8_t valve, vdm::Profile& out);
 
 // ---------------------------------------------------------------- restart
 

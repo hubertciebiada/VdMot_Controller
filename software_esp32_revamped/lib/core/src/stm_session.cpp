@@ -484,7 +484,10 @@ void StmSession::applyReply(const Reply& rep, const RequestLine* req, uint32_t n
       onStatus(rep.status, nowMs);
       break;
     case Cmd::Gprof:
-      if (rep.profile.valve < kValveCount) snap_.profiles[rep.profile.valve] = rep.profile;
+      if (rep.profile.valve < kValveCount) {
+        port_.storeProfile(rep.profile);
+        ++snap_.profileSeq[rep.profile.valve];
+      }
       break;
     default:
       break;

@@ -33,6 +33,9 @@ struct StmSessionPort {
   // Pulses NRST (100 ms); returns the time after the pulse.
   virtual uint32_t pulseReset(uint32_t nowMs) = 0;
   virtual void publish(const StmSnapshot& s) = 0;
+  // A gprof reply (p.valve < kValveCount): the profile store of the firmware
+  // keeps it; the next snapshot counts it in profileSeq[p.valve].
+  virtual void storeProfile(const Profile& p) = 0;
   // The flashed image becomes the last good one.
   virtual void requestLastGoodCopy(const char* image) = 0;
   // An ESP restart is due (a flash would be cut).

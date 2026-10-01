@@ -107,7 +107,11 @@ struct StmSnapshot {
   uint32_t lineMalformed = 0;
   FlashStatus flash;
   char flashImage[32] = {0};
-  Profile profiles[kValveCount];  // last gprof per valve (count 0 = none)
+  // gprof replies per valve since boot. The profiles themselves (3 KB) are
+  // not part of the snapshot: the session hands each one to the port
+  // (StmSessionPort::storeProfile), and a reader copies one profile when its
+  // count here changed.
+  uint32_t profileSeq[kValveCount] = {};
   StmSupport support = StmSupport::Unknown;
   LeaseStatus lease;
   bool haveLearnTime = false;     // gtlnt (protocol 3) read

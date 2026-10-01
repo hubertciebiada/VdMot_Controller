@@ -763,7 +763,9 @@ TEST_CASE("mqtt diag: valve last move, counters, inactive and unextended valves"
 
 namespace {
 
-void setProfile(vdm::Profile& p, uint8_t valve, uint8_t n, uint32_t seed) {
+// A gprof reply: the profile goes to the store (the app fake), the snapshot `s` counts it.
+void setProfile(vdm::StmSnapshot& s, uint8_t valve, uint8_t n, uint32_t seed) {
+  vdm::Profile& p = sib::app().profiles[valve];
   p = vdm::Profile{};
   p.valve = valve;
   p.count = n;
@@ -771,6 +773,7 @@ void setProfile(vdm::Profile& p, uint8_t valve, uint8_t n, uint32_t seed) {
     p.samples[i].count = seed + i;
     p.samples[i].current = static_cast<uint16_t>(100 + i);
   }
+  ++s.profileSeq[valve];
 }
 
 }  // namespace
@@ -791,22 +794,22 @@ TEST_CASE("mqtt diag: four valve messages per pass, profiles only when new") {
   size_t phaseC = 0;
   startTracking([&](size_t passes, uint64_t) {
     if (passes == 30) {  // four new profiles, one of a single sample
-      setProfile(s.profiles[0], 0, 3, 10);
-      setProfile(s.profiles[1], 1, 3, 20);
-      setProfile(s.profiles[2], 2, 3, 30);
-      setProfile(s.profiles[3], 3, 1, 40);
+      setProfile(s, 0, 3, 10);
+      setProfile(s, 1, 3, 20);
+      setProfile(s, 2, 3, 30);
+      setProfile(s, 3, 1, 40);
       publishSnap();
       phaseA = passes;
     } else if (passes == 40) {  // valve 1 and 3 move and have new profiles, valve 2 a profile
       ++s.valves[0].moveSeq;
-      setProfile(s.profiles[0], 0, 3, 11);
-      setProfile(s.profiles[1], 1, 3, 21);
+      setProfile(s, 0, 3, 11);
+      setProfile(s, 1, 3, 21);
       ++s.valves[2].moveSeq;
-      setProfile(s.profiles[2], 2, 3, 31);
+      setProfile(s, 2, 3, 31);
       publishSnap();
       phaseB = passes;
     } else if (passes == 50) {  // a profile cleared
-      setProfile(s.profiles[0], 0, 0, 0);
+      setProfile(s, 0, 0, 0);
       publishSnap();
       phaseC = passes;
     }
@@ -837,6 +840,53 @@ TEST_CASE("mqtt diag: four valve messages per pass, profiles only when new") {
   REQUIRE(p4.size() == 1);
   CHECK(p4[0].payload == "{\"valve\":4,\"count\":1,\"samples\":[[40,100]]}");
   CHECK_FALSE(p4[0].retained);
+}
+
+TEST_CASE("mqtt diag: a profile is copied from the store only after a gprof reply") {
+  glue::begin();
+  useMqtt();
+  vdm::StmSnapshot& s = linkUp();
+  s.valves[0].hasExtended = true;
+  publishSnap();
+  settle();
+  CHECK(sib::app().profileReads == 0);  // no reply yet: nothing to copy
+  setProfile(s, 0, 2, 7);
+  publishSnap();
+  runTask(5);
+  CHECK(sib::app().profileReads == 1);
+  CHECK(payloads("VdMot/diag/valves/1/profile") ==
+        std::vector<std::string>{"{\"valve\":1,\"count\":2,\"samples\":[[7,100],[8,101]]}"});
+  // the same profile again (another reply): copied, compared, not published
+  ++s.profileSeq[0];
+  publishSnap();
+  runTask(5);
+  CHECK(sib::app().profileReads == 2);
+  CHECK(count("VdMot/diag/valves/1/profile") == 1);
+  // other snapshots copy nothing
+  ++s.valves[0].earlyStops;
+  publishSnap();
+  runTask(5);
+  CHECK(sib::app().profileReads == 2);
+}
+
+TEST_CASE("mqtt diag: without memory for the profile copy the next pass looks again") {
+  glue::begin();
+  useMqtt();
+  vdm::StmSnapshot& s = linkUp();
+  s.valves[0].hasExtended = true;
+  publishSnap();
+  settle();
+  setProfile(s, 0, 1, 5);
+  publishSnap();
+  fakes::heap().failAll = true;
+  runTask(5);
+  CHECK(sib::app().profileReads == 0);
+  CHECK(count("VdMot/diag/valves/1/profile") == 0);
+  fakes::heap().failAll = false;
+  runTask(1);
+  CHECK(sib::app().profileReads == 1);
+  CHECK(payloads("VdMot/diag/valves/1/profile") ==
+        std::vector<std::string>{"{\"valve\":1,\"count\":1,\"samples\":[[5,100]]}"});
 }
 
 TEST_CASE("mqtt diag: the valve loop ends after valve 12, whatever follows the valves") {

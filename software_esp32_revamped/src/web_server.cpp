@@ -81,6 +81,7 @@ vdm::HealthSnapshot* gHealthPtr = nullptr;
 vdm::StatusSnapshot* gStatusPtr = nullptr;
 HealthBuf* gHealthBufPtr = nullptr;
 GuardDetail* gGuardDetailPtr = nullptr;
+vdm::Profile* gProfilePtr = nullptr;  // GET /api/valves/{n}/profile (app::readProfile)
 
 template <typename T>
 bool allocOnce(T*& p) {
@@ -104,7 +105,8 @@ bool allocWork() {
   ok = allocOnce(gHealthPtr) && ok;
   ok = allocOnce(gStatusPtr) && ok;
   ok = allocOnce(gHealthBufPtr) && ok;
-  return allocOnce(gGuardDetailPtr) && ok;
+  ok = allocOnce(gGuardDetailPtr) && ok;
+  return allocOnce(gProfilePtr) && ok;
 }
 
 size_t gBodyLen = 0;
@@ -779,8 +781,8 @@ void handleEvents(AsyncWebServerRequest* req) {
 }
 
 void handleProfileGet(AsyncWebServerRequest* req, uint8_t valve) {
-  app::readStmSnapshot(*gSnapPtr);
-  const vdm::Profile& p = gSnapPtr->profiles[valve];
+  const vdm::Profile& p = *gProfilePtr;
+  app::readProfile(valve, *gProfilePtr);
   if (p.count == 0) return sendError(req, 404, "not_found", "no profile");
   sendDocument(req, 200, [&p](vdm::JsonWriter& jw) { return vdm::writeProfileJson(jw, p); });
 }

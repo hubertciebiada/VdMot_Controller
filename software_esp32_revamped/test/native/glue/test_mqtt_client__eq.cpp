@@ -152,6 +152,13 @@ void setProfile(vdm::Profile& p, uint8_t valve, uint32_t crc, uint16_t current =
            crc);
 }
 
+// The profile store of app (the sibling fake), and a gprof reply: the next snapshot counts it.
+vdm::Profile& profile(uint8_t v) { return sib::app().profiles[v]; }
+void newProfile(uint8_t v) {
+  ++snap().profileSeq[v];
+  publishSnap();
+}
+
 std::string profileJson(const vdm::Profile& p) {
   std::string samples;
   for (uint8_t i = 0; i < p.count; ++i) {
@@ -188,15 +195,15 @@ TEST_CASE("mqtt diag: a profile after an empty one goes out, also with the CRC-3
   useMqtt();
   vdm::StmSnapshot& s = linkUp();
   s.valves[0].hasExtended = true;
-  clearProfile(s.profiles[0]);
-  publishSnap();
+  clearProfile(profile(0));
+  newProfile(0);  // an empty profile known at the connect
   settle();
   REQUIRE(payloads("VdMot/diag/valves/1/profile").empty());
-  setProfile(s.profiles[0], 0, 1);
-  publishSnap();
+  setProfile(profile(0), 0, 1);
+  newProfile(0);
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/1/profile") ==
-        std::vector<std::string>{profileJson(s.profiles[0])});
+        std::vector<std::string>{profileJson(profile(0))});
 }
 
 TEST_CASE("mqtt diag: an empty profile is stored as CRC 0, not as the CRC of its bytes") {
@@ -204,16 +211,16 @@ TEST_CASE("mqtt diag: an empty profile is stored as CRC 0, not as the CRC of its
   useMqtt();
   vdm::StmSnapshot& s = linkUp();
   s.valves[0].hasExtended = true;
-  clearProfile(s.profiles[0]);
-  const uint32_t emptyBytes = crcOf(s.profiles[0]);
+  clearProfile(profile(0));
+  const uint32_t emptyBytes = crcOf(profile(0));
   REQUIRE(emptyBytes != 0);
-  publishSnap();
+  newProfile(0);
   settle();
-  setProfile(s.profiles[0], 0, emptyBytes);
-  publishSnap();
+  setProfile(profile(0), 0, emptyBytes);
+  newProfile(0);
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/1/profile") ==
-        std::vector<std::string>{profileJson(s.profiles[0])});
+        std::vector<std::string>{profileJson(profile(0))});
 }
 
 TEST_CASE("mqtt diag: a valve whose first pass ran out of budget keeps its known profile back") {
@@ -223,19 +230,20 @@ TEST_CASE("mqtt diag: a valve whose first pass ran out of budget keeps its known
   vdm::StmSnapshot& s = linkUp();
   s.valves[0].hasExtended = true;
   s.valves[1].hasExtended = true;
-  clearProfile(s.profiles[0]);
-  setProfile(s.profiles[1], 1, 1);  // known at the connect, CRC-32 1
-  publishSnap();
+  clearProfile(profile(0));
+  setProfile(profile(1), 1, 1);  // known at the connect, CRC-32 1
+  newProfile(0);
+  newProfile(1);
   settle();
   // First diag pass: protocol and link take two of the four messages, the last-move checks of
   // valves 1 and 2 the others. Valve 2 stores the CRC of its profile all the same, so no later
   // pass takes that profile for a new one.
   CHECK(payloads("VdMot/diag/valves/2/profile").empty());
-  setProfile(s.profiles[1], 1, 2);
-  publishSnap();
+  setProfile(profile(1), 1, 2);
+  newProfile(1);
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/2/profile") ==
-        std::vector<std::string>{profileJson(s.profiles[1])});
+        std::vector<std::string>{profileJson(profile(1))});
 }
 
 TEST_CASE("mqtt diag: the profile CRC-32 takes the padding for zeros, whatever it holds") {
@@ -243,28 +251,28 @@ TEST_CASE("mqtt diag: the profile CRC-32 takes the padding for zeros, whatever i
   useMqtt();
   vdm::StmSnapshot& s = linkUp();
   s.valves[0].hasExtended = true;
-  setProfile(s.profiles[0], 0, 0x5eed0001u);  // known at the connect
-  const std::string known = profileJson(s.profiles[0]);
-  publishSnap();
+  setProfile(profile(0), 0, 0x5eed0001u);  // known at the connect
+  const std::string known = profileJson(profile(0));
+  newProfile(0);
   settle();
   // The same fields with other bytes in the padding (a copy may leave anything there): not new.
-  fillPadding(s.profiles[0], 0xa5);
-  REQUIRE(crcOf(s.profiles[0]) != 0x5eed0001u);
-  REQUIRE(profileJson(s.profiles[0]) == known);
-  publishSnap();
+  fillPadding(profile(0), 0xa5);
+  REQUIRE(crcOf(profile(0)) != 0x5eed0001u);
+  REQUIRE(profileJson(profile(0)) == known);
+  newProfile(0);
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/1/profile").empty());
   // Other fields, the sample count among them, with the CRC-32 of the known profile: the
   // comparison sees the same profile.
-  setProfile(s.profiles[0], 0, 0x5eed0001u, 50, 4);
-  REQUIRE(profileJson(s.profiles[0]) != known);
-  publishSnap();
+  setProfile(profile(0), 0, 0x5eed0001u, 50, 4);
+  REQUIRE(profileJson(profile(0)) != known);
+  newProfile(0);
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/1/profile").empty());
   // Another CRC-32: a new profile, published once.
-  setProfile(s.profiles[0], 0, 0x5eed0002u, 50, 4);
-  publishSnap();
+  setProfile(profile(0), 0, 0x5eed0002u, 50, 4);
+  newProfile(0);
   runTask(5);
   CHECK(payloads("VdMot/diag/valves/1/profile") ==
-        std::vector<std::string>{profileJson(s.profiles[0])});
+        std::vector<std::string>{profileJson(profile(0))});
 }

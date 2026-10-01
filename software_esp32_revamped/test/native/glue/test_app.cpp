@@ -229,6 +229,47 @@ TEST_CASE("app snapshot: a published snapshot is what the accessors return") {
   CHECK_FALSE(app::stmFlashActive());
 }
 
+TEST_CASE("app profiles: the store keeps the last profile of every valve") {
+  glue::begin();
+  static vdm::Profile out;
+  vdm::Profile p;
+  p.valve = 3;
+  p.count = 2;
+  p.samples[1].count = 77;
+  app::storeProfile(p);  // before setup(): no store yet
+  out.count = 9;
+  app::readProfile(3, out);
+  CHECK(out.count == 0);
+  app::setup();
+  out.count = 9;
+  app::readProfile(3, out);
+  CHECK(out.count == 0);  // none yet
+  app::storeProfile(p);
+  app::readProfile(3, out);
+  CHECK(out.valve == 3);
+  CHECK(out.count == 2);
+  CHECK(out.samples[1].count == 77);
+  app::readProfile(2, out);
+  CHECK(out.count == 0);
+  p.count = 4;
+  app::storeProfile(p);  // the last one counts
+  app::readProfile(3, out);
+  CHECK(out.count == 4);
+  p.valve = 11;
+  p.count = 1;
+  app::storeProfile(p);
+  app::readProfile(11, out);
+  CHECK(out.valve == 11);
+  CHECK(out.count == 1);
+  p.valve = 12;  // out of range: ignored, read as none
+  app::storeProfile(p);
+  out.count = 9;
+  app::readProfile(12, out);
+  CHECK(out.count == 0);
+  app::readProfile(11, out);
+  CHECK(out.count == 1);
+}
+
 TEST_CASE("app: save state, calibration info and flash mark") {
   glue::begin();
   CHECK(app::stmSaveState() == vdm::StmSaveState::Idle);

@@ -16,8 +16,8 @@ using fakes::http::Request;
 using fakes::http::Response;
 
 // The working set: body, snapshot, config, patch, JSON document, valve/temp/volt views, events,
-// images, files, health snapshot, status snapshot, health text, guard detail.
-constexpr size_t kWorkParts = 15;
+// images, files, health snapshot, status snapshot, health text, guard detail, profile.
+constexpr size_t kWorkParts = 16;
 const char* const kTarget1 = "/api/valves/1/target";
 
 std::string errorBody(const std::string& code, const std::string& detail) {
@@ -146,7 +146,7 @@ TEST_CASE("web working set: each of the parts 5-9 that cannot be allocated answe
   failEachPart(5, 9);
 }
 
-TEST_CASE("web working set: each of the parts 10-14 that cannot be allocated answers 503") {
+TEST_CASE("web working set: each of the parts 10-15 that cannot be allocated answers 503") {
   failEachPart(10, kWorkParts - 1);
 }
 
