@@ -80,8 +80,89 @@ bash tools/rust/docker.sh run "cd software_esp32_rust && cargo clippy --workspac
 
 ## Idioms
 
-(Filled in by the foundation port: the shared writer and text helpers of `common.rs` and
-`json_writer.rs` that every module uses.)
+The shared helpers live in `core/src/common.rs` and `core/src/json_writer.rs`; every port uses
+them the same way.
+
+Inputs:
+
+- C++ `(const char* s, size_t len)` -> `s: &[u8]`, len = `s.len()`. A NUL inside is data unless
+  the C++ contract stops at it (`build_ha_id`, `bounded_length`).
+- C++ NUL-terminated `const char*` -> `&[u8]` read up to its end or its first NUL (`c_str(s)`):
+  Rust `f(s)` gives what C++ `f(s + NUL)` gives, also for NUL-padded C-layout arrays (NVS, RTC).
+- `strlen`/`strnlen` -> `c_str(s).len()`/`bounded_length(s, max)`; `strstr(h, n) != nullptr`
+  -> `contains_bytes(h, n)`; `strcmp`/`memcmp` -> slice `==`; prefixes -> `starts_with`.
+- A null pointer: a slice is never null. Null with a meaning of its own becomes an `Option`
+  (`jw.value(None::<&str>)` writes `null`); a C++ test of a mere null guard has no Rust form and
+  is named in a comment (`// C++ f(nullptr, ...): no Rust form`).
+
+Text members and outputs:
+
+- C++ member `char f[N + 1]` -> `Text<N>` (`heapless::Vec<u8, N>`: bytes, no NUL).
+  `copyString(f, sizeof f, src)` -> `copy_string(&mut f, src)` (false: truncated; `&mut Text<N>`
+  coerces to `&mut TextView`).
+- C++ output `char* out, size_t cap` -> `out: &mut [u8]` whose length is the C++ cap, NUL
+  included: at most `out.len() - 1` bytes of text fit, the NUL is not written, the text is
+  `&out[..n]`. The function returns the length:
+  - "length, 0 (and "") when it does not fit" -> `-> usize` (`fmt_fit` or `TextBuf::fit`);
+  - truncating `snprintf` (`n < cap ? n : cap - 1`) -> `-> usize` (`fmt_trunc`, `TextBuf::len`);
+  - `bool f(..., char* out, size_t cap)` -> `-> Option<usize>` (`TextBuf::fit_opt`).
+- Building text: `fmt_fit(out, format_args!("{}.{}", a, b))` for one `snprintf`; for several
+  steps `let mut w = TextBuf::new(out);` then `w.push(c)`, `w.push_bytes(s)`,
+  `write!(w, "{:02}-{:x}", a, b)` (core::fmt integers are printf `%u %d %02u %x`), and
+  `w.fit()`/`w.len()`/`w.fit_opt()`. Floats never go through `{:.N}`: `printf("%.*f")` is
+  `format_f64_fixed(v, decimals, out)` (glibc-exact, |v| < 2^128).
+- Tests: `char buf[16]; f(x, buf, 7)` -> `let mut buf = [0u8; 16]; f(x, &mut buf[..7])`. A C++
+  check of `buf[0] == '\0'` after a failure is the 0/None result; checks past the capacity stay.
+
+Numbers, ids, time:
+
+- C++ `bool parseX(..., T& out)` (out unchanged on failure) -> `-> Option<T>`: `parse_uint(s,
+  max)`, `parse_int(s, min, max)`, `parse_ipv4(s)`, `parse_one_wire_id(s)`. Where the C++ resets
+  `out` on failure, return the value with its validity (`parse_version(s) -> Version`, `.valid`).
+- `format_ipv4(ip, out)` (16 bytes), `format_one_wire_id(&id, out)` (24 bytes), `is_zero(&id)`,
+  `crc_valid(&id)`, `build_hostname(station, out)`, `build_ha_id(name, out)`.
+- `elapsed_ms(now, since)`, `time_reached(now, deadline)`, `Backoff::new(min, max)`. Wrapping
+  on purpose -> `wrapping_*`; saturating C++ counters -> `saturating_add`.
+
+JSON:
+
+```
+let mut buf = [0u8; 512];
+let mut jw = JsonWriter::new(&mut buf);
+jw.begin_object();
+jw.kv("valves", 12);           // JsonValue: &str, &[u8], &Text<N>, i8..i64, u8..u32, bool,
+jw.kv("name", &cfg.name);      //   Option<T> (None -> null); strings are exact bytes
+jw.key("temp");                //   (the C++ value(s, len)); key() and raw() take C strings
+jw.fixed(215, 1);              // 21.5; number(v, decimals) for doubles
+jw.end_object();
+if !jw.ok() { /* overflow or misuse */ }
+let doc = jw.as_bytes();       // or into_bytes() for the lifetime of the buffer
+```
+
+Types:
+
+- Enums with C++ values: `#[repr(u8)]`, the same discriminants, `from_raw(v) -> Option<Self>`.
+  `xName(e)` -> `x_name(e) -> &'static str`; the C++ "unknown" of an out-of-range value cannot
+  occur, its test becomes `from_raw(v) == None`.
+- Nested C++ types become module-level types named outer + inner (`ResetGate::State` ->
+  `ResetGateState`); nested constants become associated constants (`ResetGate::POLL_MS`).
+- A class with member initialisers implements `Default` (manually where a value is not zero);
+  constructors with arguments are `new(...)`.
+
+Tests and mutation:
+
+- Generators (`test_support`, bit-exact with the C++ tests): `std::mt19937 rng(S)` ->
+  `Rng::new(S)` (`next_u32()`, `below(n)` = `rng() % n`); `srand(S)`/`rand()` ->
+  `CRand::new(S).rand()` (glibc); `seed = seed * A + C` -> `Lcg::new(S, A, C).next_state()`
+  (`Lcg::numerical_recipes`, `Lcg::ansi_c`). `assert_text(got, "want")` prints bytes escaped.
+- C++ unsigned wrap in tests (`s + 4999u`) -> `s.wrapping_add(4999)`; std types in tests come
+  from `use std::{vec::Vec, string::String, format, vec}` (the crate is `no_std`).
+- No doctests in `core` (every mutant would compile them).
+- cargo-mutants also mutates constant expressions (`-500`, `24 * 60`): test the constants.
+  Avoid code with equivalent mutants: `|` of disjoint bits (use `+`, a table or a decoder),
+  `if a > b { a } else { b }` (use `max`), a bound both branches treat alike. Loop over slices
+  instead of index arithmetic, and let test helpers that loop until done assert progress: a
+  mutant that stops the progress must fail, not hang until the 20 s timeout.
 
 ## Mutation gate
 

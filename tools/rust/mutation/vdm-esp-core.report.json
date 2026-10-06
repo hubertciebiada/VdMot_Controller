@@ -1,0 +1,101 @@
+{
+ "cargo_mutants_version": "27.1.0",
+ "file_threshold": 95.0,
+ "files": {
+  "core/src/common.rs": {
+   "equivalent": 0,
+   "killed": 295,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 9
+  },
+  "core/src/factory_reset.rs": {
+   "equivalent": 0,
+   "killed": 9,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 2
+  },
+  "core/src/failsafe.rs": {
+   "equivalent": 0,
+   "killed": 50,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 0
+  },
+  "core/src/image_store.rs": {
+   "equivalent": 0,
+   "killed": 19,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 0
+  },
+  "core/src/json_writer.rs": {
+   "equivalent": 0,
+   "killed": 118,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 6
+  },
+  "core/src/line_assembler.rs": {
+   "equivalent": 0,
+   "killed": 31,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 3
+  },
+  "core/src/net_policy.rs": {
+   "equivalent": 0,
+   "killed": 89,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 2
+  },
+  "core/src/ota_policy.rs": {
+   "equivalent": 0,
+   "killed": 53,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 2
+  },
+  "core/src/reset_gate.rs": {
+   "equivalent": 0,
+   "killed": 23,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 0
+  },
+  "core/src/version.rs": {
+   "equivalent": 0,
+   "killed": 62,
+   "missed": [],
+   "score": 100.0,
+   "survived": 0,
+   "timeout": 0,
+   "unviable": 0
+  }
+ },
+ "package": "vdm-esp-core",
+ "passed": true,
+ "score": 100.0,
+ "threshold": 95.0,
+ "workspace": "software_esp32_rust"
+}
