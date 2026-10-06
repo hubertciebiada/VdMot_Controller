@@ -15,6 +15,7 @@ pub mod eeprom;
 pub mod eeprom24;
 pub mod hal;
 pub mod i2c_bus;
+pub mod main_loop;
 pub mod motor;
 pub mod onewire;
 pub mod ow_devices;

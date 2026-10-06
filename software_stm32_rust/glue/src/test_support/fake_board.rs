@@ -31,6 +31,8 @@ pub enum Ev {
     Delay(u32),
     DelayUs(u32),
     Reload,
+    /// `Wire.begin()` on I2C1 (SDA PB7, SCL PB6)
+    WireBegin,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +40,10 @@ pub struct Event {
     pub seq: u32,
     pub kind: Ev,
 }
+
+/// Panic payload of a stub that ends an endless loop of the glue (C++ `stub::Stop`).
+#[derive(Debug)]
+pub struct Stop;
 
 const OUTS: usize = 10;
 
@@ -375,15 +381,15 @@ impl System for FakeSystem {
     }
 }
 
-/// The panics that end a boot ([`SystemReset`], [`WatchdogReset`]) print nothing; every other
-/// panic keeps the default message. Installed once for the whole test binary.
+/// The panics that end a boot ([`SystemReset`], [`WatchdogReset`], [`Stop`]) print nothing; every
+/// other panic keeps the default message. Installed once for the whole test binary.
 fn quiet_expected_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let default = std::panic::take_hook();
         std::panic::set_hook(std::boxed::Box::new(move |info| {
             let p = info.payload();
-            if p.is::<SystemReset>() || p.is::<WatchdogReset>() {
+            if p.is::<SystemReset>() || p.is::<WatchdogReset>() || p.is::<Stop>() {
                 return;
             }
             default(info);
