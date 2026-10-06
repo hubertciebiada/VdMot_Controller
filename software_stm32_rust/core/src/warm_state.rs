@@ -184,3 +184,6 @@ pub fn restore_valve(w: &WarmValve, calibrated: bool) -> RestoredValve {
     }
     r
 }
+
+#[cfg(test)]
+mod tests;

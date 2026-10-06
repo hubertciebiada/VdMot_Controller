@@ -132,3 +132,6 @@ pub fn format_lease_config<B: Storage>(
 pub fn format_learn_time<B: Storage>(out: &mut BufWriter<B>, seconds: u32) -> bool {
     ReplyLine::new(out, b"gtlnt").u(seconds).done()
 }
+
+#[cfg(test)]
+mod tests;

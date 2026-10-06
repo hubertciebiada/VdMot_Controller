@@ -34,3 +34,6 @@ pub fn count_uart_errors(c: &mut UartErrorCounters, hal_error_code: u32, ring_fu
         c.dropped = c.dropped.wrapping_add(1);
     }
 }
+
+#[cfg(test)]
+mod tests;

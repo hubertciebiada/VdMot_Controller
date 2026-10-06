@@ -60,3 +60,6 @@ impl RetryBackoff {
         self.interval
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -57,3 +57,6 @@ pub fn filter_temperature(t: &mut TempTrack, raw128: i16) -> i32 {
     }
     TEMP_FAILED_TENTHS
 }
+
+#[cfg(test)]
+mod tests;

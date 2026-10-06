@@ -106,3 +106,6 @@ pub fn count_reset(cell: &mut ResetCounterCell, reason: BootReason) -> u32 {
     cell.check = !cell.count;
     cell.count
 }
+
+#[cfg(test)]
+mod tests;

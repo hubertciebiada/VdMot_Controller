@@ -59,3 +59,6 @@ impl TempRefresh {
         now_ms.wrapping_sub(self.last_cycle_ms) / 1000
     }
 }
+
+#[cfg(test)]
+mod tests;

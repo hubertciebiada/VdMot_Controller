@@ -117,3 +117,8 @@ pub fn reset_guard_clear(c: &mut ResetGuardCell) {
     clear_window(c);
     seal(c);
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_mut;

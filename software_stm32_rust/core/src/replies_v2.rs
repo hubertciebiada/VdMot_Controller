@@ -278,3 +278,6 @@ pub fn format_indexed_result<B: Storage>(
     }
     line.text(b"err").u(u32::from(error_code)).done()
 }
+
+#[cfg(test)]
+mod tests;
