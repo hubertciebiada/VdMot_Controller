@@ -1,0 +1,23 @@
+[package]
+name = "vdm-stm-boot"
+description = "VdMot Revamped STM32: boot window, reset capture and ID block layout (port of software_stm32/src/otasupport.cpp and sysstat_capture_reset)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vdm-stm-core = { path = "../core" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# B3 (docs/rust/GLUE-DESIGN-STM.md §5.1): the boot stage cannot panic. These lints keep the
+# panic paths out of the source; the firmware's boot probe proves it on the linked image.
+[lints.clippy]
+indexing_slicing = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+arithmetic_side_effects = "deny"

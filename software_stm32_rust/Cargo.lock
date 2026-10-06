@@ -34,8 +34,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "vdm-stm-boot"
+version = "2.2.0-revamped"
+dependencies = [
+ "vdm-stm-core",
+]
+
+[[package]]
 name = "vdm-stm-core"
-version = "2.1.7-revamped"
+version = "2.2.0-revamped"
 dependencies = [
  "heapless",
 ]
