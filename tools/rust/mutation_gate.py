@@ -8,8 +8,10 @@ of every file reach the thresholds (95 % each, as for the C++ suites).
 
 Equivalent mutants are listed in tools/rust/mutation/equivalents/<package>.json or, one file per
 module, in tools/rust/mutation/equivalents/<package>/<module>.json:
-    [{"file": "src/common.rs", "function": "elapsed_ms",
+    [{"file": "core/src/common.rs", "function": "elapsed_ms",
       "mutation": "replace elapsed_ms -> u32 with 0", "reason": "..."}]
+"file" is relative to the workspace root, as cargo-mutants names it. "function" is "" for a
+mutant outside any function (cargo-mutants also mutates the expressions of const items).
 "mutation" is the cargo-mutants name without its "file:line:col: " prefix, so an entry survives
 edits that move the code. Every entry needs a reason. An entry that matches no mutant is
 reported as stale (and fails the gate, so the list cannot rot).
@@ -35,7 +37,9 @@ def load_equivalents(path):
     with open(path, encoding="utf-8") as f:
         entries = json.load(f)
     for e in entries:
-        missing = [k for k in ("file", "function", "mutation", "reason") if not e.get(k)]
+        missing = [k for k in ("file", "mutation", "reason") if not e.get(k)]
+        if not isinstance(e.get("function"), str):
+            missing.append("function")
         if missing:
             sys.exit("%s: entry %r lacks %s" % (path, e, ", ".join(missing)))
     return entries
