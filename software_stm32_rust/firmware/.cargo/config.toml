@@ -1,0 +1,6 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# cortex-m-rt's link.x includes memory.x (build.rs: memory/f401.x or f411.x + memory/vdm.x)
+rustflags = ["-C", "link-arg=-Tlink.x"]

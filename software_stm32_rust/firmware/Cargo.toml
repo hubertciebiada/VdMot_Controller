@@ -1,0 +1,66 @@
+# VdMot Revamped STM32 firmware: the boot stage registers, the embassy adapters and the
+# linker scripts of the four images (docs/rust/GLUE-DESIGN-STM.md §1.2, §5, §6). Not a member
+# of the workspace in ../Cargo.toml: it builds only for thumbv7em-none-eabihf and has its own
+# lock file. The version of the image is the workspace version (build.rs writes the ID block).
+#
+#   cargo build --release --features f401,c2      one image (f401|f411 x c1|c2)
+#   cargo build --release --no-default-features --features f401,c2,boot-probe
+#                                                 the panic-free link probe of the boot stage
+[package]
+name = "vdm-stm-fw"
+edition = "2021"
+rust-version = "1.90"
+license = "GPL-3.0-only"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "vdm-stm-fw"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+default = ["app", "terminal"]
+# chip: exactly one
+f401 = ["stm32-metapac/stm32f401cc", "embassy-stm32?/stm32f401cc"]
+f411 = ["stm32-metapac/stm32f411ce", "embassy-stm32?/stm32f411ce"]
+# board revision: exactly one (MUX level, marker VDM-HW:C1 / VDM-HW:C2)
+c1 = []
+c2 = []
+# version suffix -dev, build field = build time (the C++ development envs)
+dev = []
+# the application stage on embassy-stm32 (the four images); off only in the boot probe
+app = ["dep:embassy-stm32", "dep:embassy-time"]
+# debug terminal on USART6 (§4.2); TODO(glue): the terminal port
+terminal = []
+# link probe of B3: boot stage and fault handlers only, with a panic handler that does not
+# exist, so any panic path left in them fails the link
+boot-probe = []
+
+[dependencies]
+vdm-stm-boot = { path = "../boot" }
+vdm-stm-core = { path = "../core" }
+cortex-m = { version = "=0.7.9", features = ["critical-section-single-core"] }
+cortex-m-rt = "=0.7.7"
+# the boot stage and the fault handlers use the PAC directly, so the probe links without
+# embassy; the version is the one embassy-stm32 0.6.0 depends on
+stm32-metapac = { version = "=21.0.0", features = ["rt"] }
+embassy-stm32 = { version = "=0.6.0", optional = true, default-features = false, features = ["rt", "exti", "unstable-pac", "time-driver-tim5"] }
+embassy-time = { version = "=0.5.1", optional = true }
+
+[build-dependencies]
+# the ID block layout (vdm_stm_boot::id_block)
+vdm-stm-boot = { path = "../boot" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 2
+incremental = false
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"

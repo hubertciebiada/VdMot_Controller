@@ -9,6 +9,9 @@
 #                                                       cargo mutants on one package, then the
 #                                                       per-file gate (tools/rust/mutation_gate.py)
 #   tools/rust/docker.sh gate <workspace> <package>     the gate on the last mutate run only
+#   tools/rust/docker.sh fw                             the four STM32 images and the boot probes
+#                                                       -> software_stm32_rust/firmware/images/
+#                                                       (tools/rust/stm/build_images.sh)
 #   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
 #
 # Environment: VDM_MUTATION_JOBS (default 4), VDM_RUST_IMAGE (default
@@ -109,12 +112,18 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
     check_workspace "$ws"
     in_container "python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcomes /target/mutants/$ws/$pkg/mutants.out/outcomes.json"
     ;;
+  fw)
+    in_container "set -e
+      exec 8>/target/stm-fw.lock
+      if ! flock -n 8; then echo 'waiting for another firmware build in this checkout' >&2; flock 8; fi
+      bash tools/rust/stm/build_images.sh"
+    ;;
   run)
     shift
     in_container "$*"
     ;;
   *)
-    sed -n '2,19p' "$0" >&2
+    sed -n '2,21p' "$0" >&2
     exit 2
     ;;
 esac

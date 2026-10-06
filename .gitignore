@@ -7,6 +7,9 @@
 ## native unit test builds (CMake) ########
 software_stm32/build/
 
+## Rust STM32 images (tools/rust/docker.sh fw) ########
+software_stm32_rust/firmware/images/
+
 ## mutation tool: local kill cache and reports ########
 tools/mutation/*.cache.json
 tools/mutation/*.report.json

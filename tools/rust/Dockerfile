@@ -9,4 +9,11 @@ RUN rustup component add clippy rustfmt \
  && apt-get update \
  && apt-get install -y --no-install-recommends python3 \
  && rm -rf /var/lib/apt/lists/*
+# STM32 images: llvm-objcopy (ELF -> .bin), llvm-nm/llvm-objdump for the image check; the
+# toolchain's own LLVM tools, so they follow RUST_VERSION
+RUN rustup component add llvm-tools \
+ && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy" /usr/local/bin/llvm-objcopy \
+ && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump" /usr/local/bin/llvm-objdump \
+ && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-nm" /usr/local/bin/llvm-nm \
+ && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-size" /usr/local/bin/llvm-size
 WORKDIR /src
