@@ -195,7 +195,8 @@ pub fn position_after_end_stop(
     let pct = counted.checked_div(scaler).unwrap_or(0);
     let delta = pct.min(100);
     let start = u32::from(start);
-    // both results are at most 100 (start is a u8)
+    // both results fit a u8; a close from a start above 100 stays above 100 like in the C++
+    // (the firmware's start is 0..100)
     if dir == DIR_CLOSE {
         return start.saturating_sub(delta) as u8;
     }
