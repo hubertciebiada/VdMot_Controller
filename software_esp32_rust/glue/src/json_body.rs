@@ -1186,3 +1186,5 @@ fn make_float(m: f64, e: i32) -> f64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_golden;
