@@ -1,0 +1,86 @@
+# ESP-IDF configuration of the Rust firmware (WT32-ETH01: ESP32-D0WD, LAN8720, 4 MB flash, no
+# PSRAM). The devices keep the bootloader of their first serial flash (Arduino-ESP32, IDF 4.4
+# era, no app rollback) and the partition table at 0x8000: this image has to run under both.
+
+# Flash: like the C++ images (DIO, 80 MHz, 4 MB: image header bytes 2..3 = 0x02 0x2f)
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# Chip: no PSRAM, 240 MHz, every silicon revision
+# CONFIG_SPIRAM is not set
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32_REV_MIN_0=y
+CONFIG_XTAL_FREQ_AUTO=y
+
+# The bootloader of the devices arms the RTC watchdog (9 s, Arduino's sdkconfig) before it starts
+# the app. ESP-IDF 5.5 disables it before app_main (esp_system/startup_funcs.c,
+# init_disable_rtc_wdt) only while BOOTLOADER_WDT_DISABLE_IN_USER_CODE is unset: with it set, an
+# app that does not feed it resets every 9 s. BOOTLOADER_WDT_ENABLE keeps the 9 s right across the
+# slow clock switch of the startup (esp32/clk.c).
+CONFIG_BOOTLOADER_WDT_ENABLE=y
+# CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE is not set
+CONFIG_BOOTLOADER_WDT_TIME_MS=9000
+# Must stay off: an app with SRAM1 as IRAM does not boot under a bootloader older than the option.
+# CONFIG_ESP_SYSTEM_ESP32_SRAM1_REGION_AS_IRAM is not set
+# The safety net of an OTA is the boot guard of the app (src/boot_guard.rs), not the bootloader:
+# esp_ota_set_boot_partition() writes otadata without a NEW state that a rollback-capable
+# bootloader would turn into PENDING_VERIFY.
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set
+
+# Panic: print and reboot; watchdogs on
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=0
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+
+# Tasks (Arduino 2.0.7: FreeRTOS at 1000 Hz)
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# Size: optimise for size, no assert texts, IDF logs only from warnings up, no error-name table
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+# CONFIG_ESP_ERR_TO_NAME_LOOKUP is not set
+# CONFIG_HTTPD_WS_SUPPORT is not set
+
+# Ethernet: ESP32 EMAC (LAN8720, RMII, clock in on GPIO0) and OpenETH for Espressif QEMU
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_ESP32_EMAC=y
+CONFIG_ETH_USE_OPENETH=y
+
+# WiFi: STA only, nothing in the driver's NVS (the C++ firmware: WiFi.persistent(false))
+# CONFIG_ESP_WIFI_NVS_ENABLED is not set
+# CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
+
+# HTTP server (the C++ firmware's limits of Arduino 2.0.7)
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# LittleFS: read and write the images of Arduino-ESP32 2.0.7's LittleFS (its tools/sdk/esp32/
+# sdkconfig) and never upgrade the on-disk version (2.0) that it can mount
+CONFIG_LITTLEFS_MAX_PARTITIONS=3
+CONFIG_LITTLEFS_PAGE_SIZE=256
+CONFIG_LITTLEFS_OBJ_NAME_LEN=64
+CONFIG_LITTLEFS_READ_SIZE=128
+CONFIG_LITTLEFS_WRITE_SIZE=128
+CONFIG_LITTLEFS_LOOKAHEAD_SIZE=128
+CONFIG_LITTLEFS_CACHE_SIZE=512
+CONFIG_LITTLEFS_BLOCK_CYCLES=512
+CONFIG_LITTLEFS_USE_MTIME=y
+CONFIG_LITTLEFS_MTIME_USE_SECONDS=y
+# CONFIG_LITTLEFS_USE_ONLY_HASH is not set
+# CONFIG_LITTLEFS_SPIFFS_COMPAT is not set
+# CONFIG_LITTLEFS_FLUSH_FILE_EVERY_WRITE is not set
+CONFIG_LITTLEFS_MULTIVERSION=y
+CONFIG_LITTLEFS_DISK_VERSION_2_0=y

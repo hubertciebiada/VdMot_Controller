@@ -20,6 +20,8 @@ software_stm32_rust/
   (same shape: core = software_stm32/lib/core, glue = software_stm32/src/*.cpp,
    firmware on embassy-stm32, target thumbv7em-none-eabihf)
 tools/rust/      Dockerfile, docker.sh (tests, mutation), mutation_gate.py, mutation/
+tools/rust/esp/  Dockerfile, docker.sh (ESP32 firmware: build, size, QEMU), image_size.py,
+                 qemu/harness.py (end-to-end checks with the devices' bootloader)
 ```
 
 Commands (repo root, Docker needed):
@@ -29,6 +31,33 @@ bash tools/rust/docker.sh test software_esp32_rust
 bash tools/rust/docker.sh mutate software_esp32_rust vdm-esp-core --file core/src/common.rs
 bash tools/rust/docker.sh run "cd software_esp32_rust && cargo clippy --workspace --all-targets"
 ```
+
+ESP32 firmware (repo root, Docker needed; the first build fetches ESP-IDF into the volume
+`vdmot-esp-idf`):
+
+```
+bash tools/rust/esp/docker.sh build                 app image of the default build (WiFi)
+bash tools/rust/esp/docker.sh size nowifi           size against the 1,228,800 B budget
+bash tools/rust/esp/docker.sh qemu                  boot guard, OTA and LittleFS checks in QEMU
+```
+
+## ESP32 firmware: what an OTA update from the C++ firmware depends on
+
+The devices are updated by OTA only: the bootloader of their first serial flash (Arduino-ESP32,
+ESP-IDF 4.4 era, no app rollback) and the partition table stay. Binding for the firmware crate:
+
+- The image header is DIO, 80 MHz, 4 MB, chip revision v0.0 and up (`sdkconfig.defaults`);
+  `partitions.csv` is the devices' table and never changes.
+- `BOOTLOADER_WDT_DISABLE_IN_USER_CODE` stays unset (the app disables the 9 s RTC watchdog of the
+  bootloader) and `ESP_SYSTEM_ESP32_SRAM1_REGION_AS_IRAM` stays off (an older bootloader cannot
+  boot such an app).
+- The boot guard (`firmware/src/boot_guard.rs`) runs first in `main`; it is the only rollback
+  the devices have. An image that fails before `main` (ESP-IDF startup) cannot be rolled back.
+- NVS is never erased, whatever its init error (`EspDefaultNvsPartition::take()` would erase it:
+  use `take_with(false)`); the C++ settings live there. ESP-IDF 4.4 and 5.5 use the same NVS page
+  version (0xfe).
+- LittleFS keeps on-disk version 2.0 (`LITTLEFS_MULTIVERSION`, `LITTLEFS_DISK_VERSION_2_0`), so the
+  C++ firmware can still mount it after a switch back; a failed mount never formats.
 
 ## Contract parity
 

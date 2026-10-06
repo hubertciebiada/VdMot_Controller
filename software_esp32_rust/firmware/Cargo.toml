@@ -1,0 +1,59 @@
+# VdMot Revamped ESP32 firmware in Rust: the target crate (xtensa-esp32-espidf, ESP-IDF through
+# esp-idf-svc). Not a member of the host workspace (../Cargo.toml): own toolchain ("esp", see
+# rust-toolchain.toml), built in the container of tools/rust/esp/docker.sh.
+#
+# Today this is the risk spike of the port (src/main.rs): the drivers and services the firmware
+# needs, the boot guard (src/boot_guard.rs) and a realistic image size.
+[package]
+name = "vdm-esp-fw"
+version = "2.1.7-revamped-rust-spike"
+edition = "2021"
+rust-version = "1.90"
+license = "GPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "vdm-esp-fw"
+harness = false
+test = false
+bench = false
+
+[features]
+default = ["wifi"]
+# WiFi STA driver (initialised, not connected); off for the size comparison without WiFi
+wifi = []
+# Espressif QEMU: OpenETH MAC instead of the LAN8720 on the ESP32 EMAC (tools/rust/esp/qemu)
+qemu = []
+# boot guard tests: the image panics right after the guard counted its boot; the confirmation
+# deadline is 60 s instead of 15 min
+fail-boot = []
+short-deadline = []
+
+[dependencies]
+esp-idf-svc = { version = "=0.53.0" }
+esp-idf-hal = { version = "=0.47.0" }
+esp-idf-sys = { version = "=0.38.1" }
+
+[build-dependencies]
+embuild = { version = "=0.33.5" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+[profile.dev]
+# the debug profile is not used for images (size); keep it buildable
+opt-level = "s"
+panic = "abort"
+
+[package.metadata.esp-idf-sys]
+esp_idf_version = "v5.5.5"
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
+
+# LittleFS of Arduino-ESP32 2.0.7 (label "spiffs", mounted at /littlefs), see sdkconfig.defaults.
+# esp-idf-sys binds esp_littlefs.h itself when the component is in the build.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "joltwallet/littlefs", version = "==1.22.3" }
