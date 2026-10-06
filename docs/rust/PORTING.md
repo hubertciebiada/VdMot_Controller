@@ -26,7 +26,7 @@ Commands (repo root, Docker needed):
 
 ```
 bash tools/rust/docker.sh test software_esp32_rust
-bash tools/rust/docker.sh mutate software_esp32_rust vdm-esp-core --file src/common.rs
+bash tools/rust/docker.sh mutate software_esp32_rust vdm-esp-core --file core/src/common.rs
 bash tools/rust/docker.sh run "cd software_esp32_rust && cargo clippy --workspace --all-targets"
 ```
 
@@ -164,6 +164,19 @@ Tests and mutation:
   instead of index arithmetic, and let test helpers that loop until done assert progress: a
   mutant that stops the progress must fail, not hang until the 20 s timeout.
 
+### STM core additions
+
+- `BufWriter<B>` and `LineAssembler<B>` work over `B: Storage`; `StaticBufWriter<N>` and
+  `StaticLineAssembler<N>` own their array (`Default`). C++ `(buf, cap)` becomes
+  `new(&mut buf[..cap])`; N bytes hold N - 1 characters, the text is `as_bytes()`/`line()`.
+- Out-parameters that the C++ always writes stay `&mut T`; C++ default arguments become explicit
+  parameters with the doc line "C++ default for x: y".
+- A nested type whose name clashes with the prelude gets the outer name (`PresenceTest::Result`
+  -> `PresenceResult`); inheritance becomes a field (`ConfigImage.layout`).
+- `.noinit` records are `#[repr(C)]` with `offset_of!` asserts, and their CRC runs over an
+  explicit little-endian serialization, so C++ and Rust read each other's warm state.
+- Cases of `test_fuzz.cpp` go to `<module>/tests_fuzz.rs`.
+
 ## Mutation gate
 
 - `cargo-mutants` per package through `tools/rust/docker.sh mutate`, then
@@ -173,4 +186,6 @@ Tests and mutation:
   `tools/rust/mutation/equivalents/<package>.json` with a reason. Code that cannot run gets
   `#[cfg_attr(test, mutants::skip)]` with a comment that says why (`mutants` is a
   dev-dependency, the attribute exists only in test builds).
-- Reports: `tools/rust/mutation/<package>.report.json`.
+- Reports: `tools/rust/mutation/<package>.report.json` (not committed, like the C++ reports).
+- cargo-mutants also mutates `const` expressions: derived contract constants get a test that pins
+  their value. `--file` globs with a `/` match from the workspace root (`core/src/x.rs`).

@@ -15,7 +15,8 @@
 # vdmot-rust:<hash of the Dockerfile>).
 #
 # Each checkout (git worktree) has its own target volume, so parallel worktrees never share
-# build directories. The cargo registry is one shared volume. Mutation runs of all checkouts
+# build directories; `run` builds into /target/run, never into the checkout. The cargo registry
+# is one shared volume. Mutation runs of all checkouts
 # (Rust and C++, tools/native/docker.sh) share one lock: a second run waits for the first.
 set -euo pipefail
 
@@ -42,6 +43,7 @@ in_container() {
   docker run --rm --init -v "$HOST_ROOT:/src" -v "$TARGET_VOLUME:/target" \
     -v "$CARGO_VOLUME:/cargo-cache" -v "$LOCKS_VOLUME:/locks" -w /src \
     -e CARGO_HOME_CACHE=/cargo-cache -e PYTHONDONTWRITEBYTECODE=1 -e CARGO_TERM_COLOR=never \
+    -e CARGO_TARGET_DIR=/target/run \
     "$IMAGE" bash -c "
       mkdir -p /cargo-cache/registry /cargo-cache/git
       ln -sfn /cargo-cache/registry /usr/local/cargo/registry
@@ -94,7 +96,7 @@ cd $ws
 out=/target/mutants/$ws/$pkg
 mkdir -p \$out
 set +e
-cargo mutants --package $pkg --jobs $MUTATION_JOBS --output \$out --no-shuffle$(quote_args "$@")
+env -u CARGO_TARGET_DIR cargo mutants --package $pkg --jobs $MUTATION_JOBS --output \$out --no-shuffle$(quote_args "$@")
 rc=\$?
 set -e
 # 0 all caught, 2 missed mutants, 3 timeouts: the gate decides; anything else is an error
