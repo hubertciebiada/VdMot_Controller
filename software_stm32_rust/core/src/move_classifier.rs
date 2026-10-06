@@ -232,3 +232,10 @@ impl EarlyStopRun {
         self.run
     }
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_mut;
+#[cfg(test)]
+mod tests_partial;

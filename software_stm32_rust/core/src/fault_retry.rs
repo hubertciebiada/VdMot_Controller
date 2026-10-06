@@ -93,3 +93,6 @@ impl FaultRetry {
         self.remaining_s = s.remaining_s;
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -58,3 +58,8 @@ pub fn sanitize_learn_movements(stored: u16) -> u16 {
         LEARN_MOVEMENTS_DEFAULT
     }
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_countdown;

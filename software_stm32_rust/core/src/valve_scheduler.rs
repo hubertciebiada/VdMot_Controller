@@ -399,3 +399,8 @@ impl ValveScheduler {
         self.latch.get(usize::from(valve)).is_some_and(|l| l.valid)
     }
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_mut;

@@ -41,3 +41,6 @@ pub fn reject_target(
     }
     change
 }
+
+#[cfg(test)]
+mod tests;

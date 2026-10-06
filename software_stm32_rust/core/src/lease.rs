@@ -143,3 +143,8 @@ impl Lease {
         self.client = s.client;
     }
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_class;
