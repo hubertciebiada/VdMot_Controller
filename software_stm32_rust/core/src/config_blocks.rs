@@ -99,9 +99,10 @@ fn check_block(raw: &[u8], payload: usize) -> BlockState {
         return BlockState::Absent;
     }
     let length = usize::from(length);
-    if version == 0 || length < payload || length + 3 > raw.len() {
+    if version == 0 || length < payload {
         return BlockState::Corrupt;
     }
+    // a payload whose CRC lies behind the block (C++: length > size - 3) is Corrupt
     let (Some(covered), Some(&crc)) = (raw.get(..2 + length), raw.get(2 + length)) else {
         return BlockState::Corrupt;
     };
@@ -135,7 +136,8 @@ pub fn decode_safety(raw: &[u8; SAFETY_BLOCK_SIZE], out: &mut SafetyBlock) -> Bl
         return state;
     }
 
-    for (pct, &stored) in out.failsafe_pct.iter_mut().zip(&raw[2..2 + VALVES]) {
+    // the 12 failsafe positions from byte 2 on (the zip ends with them)
+    for (pct, &stored) in out.failsafe_pct.iter_mut().zip(&raw[2..]) {
         *pct = sanitize_failsafe_pct(stored);
     }
     out.shadow.low_fac = raw[14];

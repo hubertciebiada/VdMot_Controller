@@ -129,9 +129,9 @@ fn take_u16(r: &ParamRange, v: u32, field: &mut u16) -> bool {
 
 /// an end-stop factor: like take_u8(), a value in (max, FAC_REQUEST_MAX] is stored as max
 fn take_factor(r: &ParamRange, v: u32, field: &mut u8) -> bool {
-    let max = u32::from(r.max);
-    let v = if v > max && v <= u32::from(FAC_REQUEST_MAX) {
-        max
+    // up to FAC_REQUEST_MAX at most max: a value in (max, FAC_REQUEST_MAX] becomes max
+    let v = if v <= u32::from(FAC_REQUEST_MAX) {
+        v.min(u32::from(r.max))
     } else {
         v
     };

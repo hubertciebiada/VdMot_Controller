@@ -94,9 +94,7 @@ impl EndStopDetector {
         }
 
         let magnitude = self.current.abs();
-        if magnitude > self.peak {
-            self.peak = magnitude;
-        }
+        self.peak = self.peak.max(magnitude);
 
         // consecutive samples: a short spike in a long move no longer adds up
         if magnitude > Self::SAFETY_LIMIT {
@@ -120,9 +118,7 @@ impl EndStopDetector {
         }
 
         if inrush_over && self.inrush == InrushMode::Enforce {
-            if raw.abs() > self.peak {
-                self.peak = raw.abs();
-            }
+            self.peak = self.peak.max(raw.abs());
             if self.trip == Trip::None {
                 self.trip = Trip::Hard;
                 self.trip_current = raw;

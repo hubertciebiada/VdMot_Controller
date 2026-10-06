@@ -178,10 +178,10 @@ impl ValveScheduler {
         // even and odd valves alternate (fewer MUX relay switches on the C1 board)
         let t = self.test_index;
         self.test_index += 2;
-        if self.test_index == VALVE_COUNT {
-            self.test_index = 1;
-        } else if self.test_index > VALVE_COUNT {
+        if self.test_index > VALVE_COUNT {
             self.test_index = 0;
+        } else if self.test_index == VALVE_COUNT {
+            self.test_index = 1;
         }
         if v[usize::from(t)].status == ST_UNKNOWN {
             d.kind = ActionKind::Test;
@@ -195,9 +195,8 @@ impl ValveScheduler {
             return d;
         }
         if self.step2(v, &mut d) {
-            if self.step2_run < Self::FAIRNESS_RUN {
-                self.step2_run += 1;
-            }
+            // counts up to FAIRNESS_RUN
+            self.step2_run = (self.step2_run + 1).min(Self::FAIRNESS_RUN);
             return d;
         }
         // the run counts step-2 decisions in a row only
