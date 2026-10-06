@@ -7,11 +7,14 @@
 
 pub mod dallas;
 pub mod ds2438;
+pub mod eeprom;
 pub mod eeprom24;
 pub mod hal;
 pub mod i2c_bus;
 pub mod onewire;
+pub mod ow_devices;
 pub mod print;
+pub mod sysstat;
 
 #[cfg(test)]
 mod test_support;
