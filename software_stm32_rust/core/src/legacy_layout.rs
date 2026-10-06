@@ -196,3 +196,6 @@ pub fn sensor_slot_valid(s: &SensorSlot) -> bool {
     let erased = address.iter().all(|&b| b == 0xFF);
     erased || crc8(&address[..7]) == address[7]
 }
+
+#[cfg(test)]
+mod tests;

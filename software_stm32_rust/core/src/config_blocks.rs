@@ -213,3 +213,6 @@ pub fn encode_calib(input: &CalibRecord, valve: u8, out: &mut [u8; CALIB_BLOCK_S
     out[2 + CALIB_PAYLOAD] = crc8(&out[..2 + CALIB_PAYLOAD]);
     3 + CALIB_PAYLOAD
 }
+
+#[cfg(test)]
+mod tests;

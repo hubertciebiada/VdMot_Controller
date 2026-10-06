@@ -178,3 +178,6 @@ pub fn encode_extension(ext: &StoredExtension, out: &mut [u8; EXTENSION_BLOCK_SI
     out[2 + EXTENSION_PAYLOAD_V3] = crc8(&out[..2 + EXTENSION_PAYLOAD_V3]);
     3 + EXTENSION_PAYLOAD_V3
 }
+
+#[cfg(test)]
+mod tests;

@@ -328,3 +328,6 @@ pub fn blocks_for(fields: u16) -> u8 {
     }
     blocks
 }
+
+#[cfg(test)]
+mod tests;

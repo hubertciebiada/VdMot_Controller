@@ -24,3 +24,6 @@ pub fn is_valid_scratchpad(page: &[u8; 9]) -> bool {
     let all_zero = page.iter().all(|&b| b == 0);
     !all_zero && crc8(&page[..8]) == page[8]
 }
+
+#[cfg(test)]
+mod tests;

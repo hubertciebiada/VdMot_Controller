@@ -176,3 +176,6 @@ impl StoreScheduler {
         self.read_failed || !self.pending
     }
 }
+
+#[cfg(test)]
+mod tests;
