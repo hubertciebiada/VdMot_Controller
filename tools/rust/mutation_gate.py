@@ -6,7 +6,8 @@ of the file except unviable ones (they do not compile, like the stillborn mutant
 gate) and the documented equivalent ones. The gate passes when the overall score and the score
 of every file reach the thresholds (95 % each, as for the C++ suites).
 
-Equivalent mutants are listed in tools/rust/mutation/equivalents/<package>.json:
+Equivalent mutants are listed in tools/rust/mutation/equivalents/<package>.json or, one file per
+module, in tools/rust/mutation/equivalents/<package>/<module>.json:
     [{"file": "src/common.rs", "function": "elapsed_ms",
       "mutation": "replace elapsed_ms -> u32 with 0", "reason": "..."}]
 "mutation" is the cargo-mutants name without its "file:line:col: " prefix, so an entry survives
@@ -52,8 +53,15 @@ def main():
 
     with open(args.outcomes, encoding="utf-8") as f:
         run = json.load(f)
-    eq_path = os.path.join(args.repo, "tools", "rust", "mutation", "equivalents", args.package + ".json")
-    equivalents = load_equivalents(eq_path)
+    # one list per package and/or one per module (tools/rust/mutation/equivalents/<package>/*.json),
+    # so parallel ports never edit the same file
+    eq_root = os.path.join(args.repo, "tools", "rust", "mutation", "equivalents")
+    equivalents = load_equivalents(os.path.join(eq_root, args.package + ".json"))
+    eq_dir = os.path.join(eq_root, args.package)
+    if os.path.isdir(eq_dir):
+        for name in sorted(os.listdir(eq_dir)):
+            if name.endswith(".json"):
+                equivalents += load_equivalents(os.path.join(eq_dir, name))
     eq_hits = [0] * len(equivalents)
 
     files = {}
