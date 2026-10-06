@@ -2158,6 +2158,27 @@ fn gvlvy_golden() {
 }
 
 #[test]
+fn failsafe_position_check_order_of_gvlvy_and_glcfg() {
+    // Rust: the C++ order of the checks (PORT-NOTES.md). gvlvy reads its six v3 fields before
+    // it checks the failsafe position; glcfg checks each position as soon as it is read.
+    let mut r = Reply::default();
+    let mut tokens: Vec<&str> = GVLVY_GOLDEN.split(' ').collect();
+    tokens[22] = "101";
+    tokens[25] = "x";
+    assert_eq!(parse(&tokens.join(" "), &mut r), ParseStatus::BadNumber);
+    tokens[25] = "256";
+    assert_eq!(parse(&tokens.join(" "), &mut r), ParseStatus::OutOfRange);
+    assert_eq!(
+        parse("glcfg 60 101 50 50 50 50 50 50 50 50 50 50 x", &mut r),
+        ParseStatus::OutOfRange
+    );
+    assert_eq!(
+        parse("glcfg 60 50 50 50 50 50 50 50 50 50 50 x 101", &mut r),
+        ParseStatus::BadNumber
+    );
+}
+
+#[test]
 fn gvlvx_stays_at_exactly_19_fields_without_v3_values() {
     let mut r = Reply::default();
     let gvlvx = "gvlvx 4 130 42 60 21 3120 3350 -230 1 57 2 7 3 1 3000 1450 3 412 8123";

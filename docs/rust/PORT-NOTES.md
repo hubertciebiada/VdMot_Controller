@@ -34,3 +34,23 @@ matters. The rules are in [PORTING.md](PORTING.md).
 | Module | What | Why it matters |
 |---|---|---|
 | stm_flasher | Decision D9 (GLUE-DESIGN-STM.md §8): an image above 16 KiB is flashed in two passes of Erasing, Writing and Verifying, sectors 1..n first (blocks from 0x08004000 upwards), then sector 0 (blocks 1..63, block 0 last). C++ erases all sectors with one frame, writes blocks 1..n-1 and block 0, then reads back blocks 0..n-1. Each pass compares the CRC32 of the image bytes it verified with the CRC the Validating phase found for them (C++: one CRC of the whole image after the verify); a session retry repeats the current pass, and the retries of both passes count against `session_retries`; an erase failure reports the first address of the erased range (0x08004000 for sectors 1..n, C++ always 0x08000000). The phases Erasing, Writing and Verifying (legacy codes 3, 4, 5) appear twice; `bytes_done` counts over both passes, and the percent holds at the value of the first verify during the erase and the writing of sector 0 (88 % for a 53,760-byte image) until the second verify passes it. Images of at most 16 KiB are flashed exactly as in C++. | Sector 0 keeps the old vector table and boot stage until the rest of the new image is written and verified: an interrupted flash (ESP crash, power loss) leaves the STM without a bootable vector table only during the sector-0 pass (about 2 s) instead of during the erase and write of the whole image. An old image whose boot stage lies in sector 0 (the Rust STM images) still answers the handshake after an interruption in the first pass, so the ESP can flash again. Pinned by `stm_flasher/tests_d9.rs`. |
+
+
+## stm_codec
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Kept quirk | gvlvy checks its failsafe position (field 22) only after reading the six v3 fields, glcfg checks each failsafe position as soon as it is read. A gvlvy line with fs_pct 101 and a malformed later field reports `bad_number`; the same mix in glcfg reports `out_of_range`. | Status only: both lines are rejected and counted as parse errors. Kept; the differential check compares the status of 460,206 lines. |
+| No Rust form | Builder tests that fill the output with `garbage()` first and check that a build overwrites, or a refusal resets, every member; `buildServiceMove(.., static_cast<MoveDir>(2), ..)`; `cmdName`, `cmdMinProtocol`, `cmdIsV2`, `cmdIsIdempotent` of numbers >= 41, `parseStatusName(99)`, `stopReasonName(8)`; `parseReply(nullptr, ..)`, `cmdFromName(nullptr, ..)`, `resolveTempSlot(id, nullptr, ..)`. | A builder returns a fresh line or None (`unwrap_or_default()` is the C++ reset line); the enums cannot hold the numbers (`from_raw` refuses them); a slice is never null. `resolve_temp_slot` takes a slice for the C++ `(slotIds, uint8_t slotCount)` and looks at its first 255 slots. |
+
+## link_policy
+
+| Kind | What | Why it matters |
+|---|---|---|
+| No Rust form | `enqueue()` of a request with `len > kRequestMaxLen`, a command number >= 41 or priority 3 (Invalid); `linkStateName(42)`; the C++ stale entry past `count_` that the "nothing stale" case watches. | `Text<63>`, `Cmd` and `Priority` cannot hold the values; the Rust queue is a `heapless::Vec` without stale slots (the case runs and passes). |
+
+## poll_planner
+
+| Kind | What | Why it matters |
+|---|---|---|
+| No Rust form | The idle `next()` call that resets the caller's `RequestLine` (gstat before) to an empty line. | `next()` returns `Option<RequestLine>`: None carries no line. |
