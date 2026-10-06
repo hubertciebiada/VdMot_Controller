@@ -207,3 +207,6 @@ pub fn apply_motor_params_request(
         ParamsRequest::Partial
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -154,3 +154,6 @@ pub fn learn_mean_current(
         (false, false) => previous_ma,
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -189,3 +189,8 @@ impl EndStopDetector {
         self.inrush_trip
     }
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_inrush;

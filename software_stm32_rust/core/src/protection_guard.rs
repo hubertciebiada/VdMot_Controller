@@ -50,3 +50,8 @@ impl ProtectionGuard {
         self.suspended
     }
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_mut;

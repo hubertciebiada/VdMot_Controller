@@ -145,3 +145,6 @@ impl ProfileRecorder {
         self.samples[usize::from(i)]
     }
 }
+
+#[cfg(test)]
+mod tests;

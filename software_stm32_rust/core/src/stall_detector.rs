@@ -36,3 +36,6 @@ impl StallDetector {
         self.busy && self.age >= self.limit
     }
 }
+
+#[cfg(test)]
+mod tests;

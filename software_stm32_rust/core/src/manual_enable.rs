@@ -12,3 +12,6 @@ pub fn manual_enable_expired(start_ms: u32, now_ms: u32, filtered_current: i32) 
     now_ms.wrapping_sub(start_ms) >= MANUAL_ENABLE_MAX_MS
         || !(-MANUAL_ENABLE_LIMIT..=MANUAL_ENABLE_LIMIT).contains(&filtered_current)
 }
+
+#[cfg(test)]
+mod tests;

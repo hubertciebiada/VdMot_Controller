@@ -153,3 +153,6 @@ pub fn presence_outcome(r: PresenceResult, calibrated: bool, recal: bool) -> Pre
         },
     }
 }
+
+#[cfg(test)]
+mod tests;
