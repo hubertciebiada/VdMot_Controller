@@ -294,9 +294,9 @@ impl AppBench {
     /// `glue::begin()`: fresh fakes and stubs (the board revision does not matter to app.cpp).
     pub fn new() -> Self {
         AppBench {
-            app: App::new(),
+            app: App::default(),
             m: MotorShared::new(BoardRev::C2),
-            flags: IsrFlags::new(),
+            flags: IsrFlags::default(),
             env: StubAppEnv::default(),
         }
     }

@@ -54,7 +54,7 @@ impl Bench {
         Bench {
             board: FakeBoard::new(),
             m: MotorShared::new(rev),
-            pulse: Pulse::new(),
+            pulse: Pulse::default(),
             flags: IsrFlags::new(),
             env: StubMotorEnv::default(),
             tim1: FakeTimer::default(),

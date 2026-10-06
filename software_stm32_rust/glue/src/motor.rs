@@ -1841,7 +1841,9 @@ impl MotorShared {
 
         if self.mc.debouncecnt > 50 && self.mc.cyclecnt > 50 {
             self.mc.cyclecnt = 0;
-            self.mc.meancurrent_mem += self.current_ma;
+            // the signed sum only reaches stroke_mean_current(), which takes |sum| (at most 12000
+            // samples of +-1000: no wrap)
+            self.mc.meancurrent_mem = self.mc.meancurrent_mem.wrapping_add(self.current_ma);
             self.mc.meancurrent_cnt = self.mc.meancurrent_cnt.saturating_add(1);
         }
         result
@@ -1860,5 +1862,7 @@ mod bench;
 mod tests;
 #[cfg(test)]
 mod tests_mut;
+#[cfg(test)]
+mod tests_unit;
 #[cfg(test)]
 mod tests_v3;
