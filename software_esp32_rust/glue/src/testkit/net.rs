@@ -31,6 +31,8 @@ pub(crate) struct Wire {
     pub(crate) closed_by_peer: bool,
     /// Writes fail from now on (a stalled or dead peer: WiFiClient's 10 s write timeout).
     pub(crate) fail_writes: bool,
+    /// The next reads report `Data(0)` (an adapter that copied nothing) this many times.
+    pub(crate) empty_reads: u32,
 }
 
 impl Wire {
@@ -196,6 +198,10 @@ impl TcpStream for FakeTcpStream {
         let mut w = self.poll();
         if w.closed_by_device {
             return TcpRead::Closed;
+        }
+        if w.empty_reads > 0 {
+            w.empty_reads -= 1;
+            return TcpRead::Data(0);
         }
         let mut n = 0;
         while n < out.len() {

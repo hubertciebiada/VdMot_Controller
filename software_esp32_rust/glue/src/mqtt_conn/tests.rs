@@ -694,3 +694,100 @@ fn defaults_are_the_library_ones() {
     assert_eq!(rig.clock.ms(), 15_000); // the default socket timeout
     assert_eq!(rig.broker.state().connects[0].keep_alive, 15);
 }
+
+#[test]
+fn a_will_qos_above_2_spills_into_the_next_flag_bits_as_in_the_library() {
+    // v = 0x04 | (willQos << 3) | (willRetain << 5), then the clean, user and password bits
+    let cases: [(u8, bool, bool, bool, u8); 4] = [
+        (4, true, false, false, 0x24),          // QoS 4 is the retain bit
+        (8, false, true, true, 0xC4),           // QoS 8 is the password bit
+        (16, false, true, false, 0x84),         // QoS 16 is the user bit
+        (32, false, false, false, 0x04 | 0x02), // shifted out of the byte
+    ];
+    for (qos, retain, user, password, flags) in cases {
+        let rig = setup();
+        let mut c = conn(&rig);
+        let a = ConnectArgs {
+            id: b"id",
+            user: user.then_some(&b"u"[..]),
+            password: password.then_some(&b"p"[..]),
+            will: Some(Will {
+                topic: b"t",
+                qos,
+                retain,
+                message: b"m",
+            }),
+            clean_session: qos == 32,
+        };
+        assert!(c.connect(HOST, PORT, &a));
+        assert_eq!(written(&rig, 0)[9], flags, "qos {qos}");
+    }
+}
+
+#[test]
+fn a_subscribe_the_buffer_cannot_hold_still_takes_its_message_id() {
+    // the library's check lets a filter of buffer - 9 bytes through and wrote past the buffer;
+    // the id it took stays taken
+    let rig = setup();
+    let a = ConnectArgs {
+        id: b"i",
+        user: None,
+        password: None,
+        will: None,
+        clean_session: true,
+    };
+    let mut small = MqttConn::new(&rig.tcp, &rig.clock, 20);
+    assert!(small.connect(HOST, PORT, &a));
+    assert!(!small.subscribe(&[b'f'; 11], 0)); // id 2, not sent
+    assert!(!small.subscribe(&[b'f'; 12], 0)); // refused before an id
+    assert!(small.subscribe(b"g", 0));
+    let ids: Vec<u16> = rig.broker.state().subscribed.iter().map(|s| s.0).collect();
+    assert_eq!(ids, vec![3]);
+}
+
+#[test]
+fn long_topics_carry_a_two_byte_length() {
+    let rig = setup();
+    let mut c = conn(&rig);
+    assert!(c.connect(HOST, PORT, &args()));
+    let topic = [b'x'; 300];
+    assert!(c.publish(&topic, b"1", false));
+    assert!(c.subscribe(&topic, 0));
+    let b = rig.broker.state();
+    assert_eq!(b.published[0].topic.len(), 300);
+    assert_eq!(b.subscribed[0].1.len(), 300);
+}
+
+#[test]
+fn keepalive_counts_from_the_last_inbound_packet_too() {
+    let rig = setup();
+    let mut c = conn(&rig);
+    c.set_keep_alive(10);
+    assert!(c.connect(HOST, PORT, &args())); // CONNACK in at 1 ms
+    rig.clock.advance_ms(5000);
+    assert!(c.publish(b"t", b"1", false)); // traffic out at 5001
+    rig.clock.advance_ms(5000); // 10 000 ms after the CONNACK: not yet
+    assert!(c.poll(|_, _| {}));
+    assert_eq!(rig.broker.state().pingreqs, 0);
+    rig.clock.advance_ms(1);
+    assert!(c.poll(|_, _| {}));
+    assert_eq!(rig.broker.state().pingreqs, 1);
+}
+
+#[test]
+fn a_read_that_copies_nothing_is_no_data() {
+    let rig = setup();
+    let mut c = conn(&rig);
+    assert!(c.connect(HOST, PORT, &args()));
+    rig.broker.send_publish(b"a", b"1", 0, false, 0);
+    rig.clock.advance_ms(1);
+    // the buffer of the first read still holds bytes of that packet
+    assert_eq!(drain(&mut c), vec![(b"a".to_vec(), b"1".to_vec())]);
+    rig.tcp.wire(0).lock().unwrap().empty_reads = 2;
+    let t = rig.clock.ms();
+    assert!(c.poll(|_, _| panic!("nothing arrived")));
+    assert_eq!(rig.clock.ms(), t); // no packet started: no wait for its bytes
+    rig.broker.send_publish(b"b", b"2", 0, false, 0);
+    rig.clock.advance_ms(1);
+    assert_eq!(drain(&mut c), vec![(b"b".to_vec(), b"2".to_vec())]);
+}
