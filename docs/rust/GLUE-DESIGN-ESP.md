@@ -674,6 +674,12 @@ event (reset reason `sw`).
 
 ## 7. Open risks and decisions
 
+Decided on 2026-10-06 (the operator may revert): 3 (a) synchronous uploads, checked with the
+dashboard during an OTA in QEMU; 4 the retired cases as listed; 5 as written; 6 in the Rust
+firmware only — the same route in the C++ firmware is a separate change on the operator's word;
+10 parity; 13 as written, reviewed against the firmware spike. 11: `mosquitto` joins the test
+image for the interop run.
+
 1. **Risk: boot chain.** The devices boot through the legacy serial-flashed bootloader
    (`software_esp32/bootloader_dio_40m.bin`) and partition table (`software_esp32/partitions.bin`).
    An ESP-IDF 5.5 image that fails before `main` is a serial reflash in the cabinet. Gate: QEMU boot
