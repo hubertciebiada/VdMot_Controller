@@ -245,7 +245,7 @@ impl MainBench {
     /// loop_system() at the fake time ms
     pub fn loop_at(&mut self, ms: u32) {
         self.env.board.set_now_us(u64::from(ms) * 1000);
-        self.main.loop_system(&self.flags, &mut self.env);
+        self.main.step(&self.flags, &mut self.env);
     }
 
     /// the stub calls of the branches, without the sysstat_loop() of every pass

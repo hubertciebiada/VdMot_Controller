@@ -134,8 +134,8 @@ impl MainLoop {
         env.attach_interval(VALVE_TIMER_US);
     }
 
-    /// `loop_system()`: one pass of the main loop.
-    pub fn loop_system(&mut self, flags: &IsrFlags, env: &mut impl MainLoopEnv) {
+    /// `loop_system()`: one pass of the main loop (the glue entry of design 2.2).
+    pub fn step(&mut self, flags: &IsrFlags, env: &mut impl MainLoopEnv) {
         env.sysstat_loop();
 
         // 1000 ms loop
@@ -206,7 +206,7 @@ impl MainLoop {
     pub fn run(&mut self, flags: &IsrFlags, env: &mut impl MainLoopEnv) -> ! {
         self.setup_system(env);
         loop {
-            self.loop_system(flags, env);
+            self.step(flags, env);
         }
     }
 }
