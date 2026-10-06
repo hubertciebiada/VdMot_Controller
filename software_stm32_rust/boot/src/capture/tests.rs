@@ -2,7 +2,11 @@
 // boot reason from RCC->CSR, reset counter in .noinit across boots, safe mode after a watchdog
 // reset loop (S9). The uptime and the end of the safe mode are the glue's sysstat (later).
 // Plus the byte layout of the cells: the C++ 2.1.7 offsets, little endian, padding untouched.
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::unwrap_used
+)]
 
 use super::*;
 use vdm_stm_core::legacy_layout::crc16_ccitt;
@@ -112,9 +116,13 @@ fn the_reset_counter_counts_every_warm_reset_and_starts_at_0_after_a_power_on() 
 #[test]
 fn the_counter_lives_in_noinit_written_by_the_capture_and_kept_by_a_pin_reset() {
     let mut cells = power_on_ram();
-    assert!(all_a5(&cells[RESET_CELL_OFFSET..RESET_CELL_OFFSET + RESET_CELL_LEN]));
+    assert!(all_a5(
+        &cells[RESET_CELL_OFFSET..RESET_CELL_OFFSET + RESET_CELL_LEN]
+    ));
     capture_reset(POWER_ON, &mut cells);
-    assert!(!all_a5(&cells[RESET_CELL_OFFSET..RESET_CELL_OFFSET + RESET_CELL_LEN]));
+    assert!(!all_a5(
+        &cells[RESET_CELL_OFFSET..RESET_CELL_OFFSET + RESET_CELL_LEN]
+    ));
     assert_eq!(capture_reset(PIN, &mut cells).resets, 1);
 }
 
@@ -185,11 +193,17 @@ fn the_cells_have_the_cpp_offsets_and_byte_order() {
         counter,
         [0x4D, 0x52, 0x44, 0x56, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]
     );
-    assert_eq!(u32::from_le_bytes(counter[..4].try_into().unwrap()), RESET_COUNTER_MAGIC);
+    assert_eq!(
+        u32::from_le_bytes(counter[..4].try_into().unwrap()),
+        RESET_COUNTER_MAGIC
+    );
     // ResetGuardCell {magic, count, safe, pad, windowS, lastUptimeS, crc} at 0xB4
     let guard = &cells[0xB4..0xC8];
     assert_eq!(&guard[..4], [0x47, 0x52, 0x44, 0x56]);
-    assert_eq!(u32::from_le_bytes(guard[..4].try_into().unwrap()), RESET_GUARD_MAGIC);
+    assert_eq!(
+        u32::from_le_bytes(guard[..4].try_into().unwrap()),
+        RESET_GUARD_MAGIC
+    );
     assert_eq!(&guard[4..16], [0; 12]);
     let crc = crc16_ccitt(&guard[..16]);
     assert_eq!(&guard[16..18], crc.to_le_bytes());
@@ -202,7 +216,8 @@ fn the_cells_have_the_cpp_offsets_and_byte_order() {
 fn a_cpp_written_cell_is_read_and_continued() {
     // cells as the C++ 2.1.7 leaves them: counter 7, guard with one watchdog reset 30 s ago
     let mut cells = [0u8; NOINIT_LEN];
-    cells[0xC8..0xD4].copy_from_slice(&[0x4D, 0x52, 0x44, 0x56, 7, 0, 0, 0, 0xF8, 0xFF, 0xFF, 0xFF]);
+    cells[0xC8..0xD4]
+        .copy_from_slice(&[0x4D, 0x52, 0x44, 0x56, 7, 0, 0, 0, 0xF8, 0xFF, 0xFF, 0xFF]);
     let mut g = vdm_stm_core::reset_guard::ResetGuardCell {
         magic: RESET_GUARD_MAGIC,
         count: 1,
@@ -224,7 +239,10 @@ fn a_cpp_written_cell_is_read_and_continued() {
     let info = capture_reset(WATCHDOG, &mut cells);
     assert_eq!(info.resets, 8);
     let after = read_guard(&cells);
-    assert_eq!((after.count, after.window_s, after.last_uptime_s), (2, 30, 0));
+    assert_eq!(
+        (after.count, after.window_s, after.last_uptime_s),
+        (2, 30, 0)
+    );
     assert_eq!(&cells[0xC6..0xC8], [0x12, 0x34]);
 }
 

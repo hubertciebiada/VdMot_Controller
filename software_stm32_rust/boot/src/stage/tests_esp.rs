@@ -3,7 +3,11 @@
 // legacy ESP 1.x (`DEADBEEF\r\n` once at 1.5 s), a flood of garbage. Bytes arrive at 115200
 // 8E1 (95 us each). Fake time 0 is the start of the boot stage; `start_ms` shifts the ESP's
 // NRST release before it (cortex-m-rt start-up and a slow reset take a few ms).
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::unwrap_used
+)]
 
 use super::*;
 use crate::test_support::{esp21_sends, Ev, Fake, BYTE_US};
@@ -79,7 +83,10 @@ fn legacy_esp_1x_once_at_1500_ms() {
     let mut fake = Fake::new();
     fake.send(1_500_000, b"DEADBEEF\r\n");
     let t = beefit_at(&mut fake).unwrap();
-    assert!(t > 1_500_000 && t <= 1_500_000 + 8 * BYTE_US + 15_000, "{t}");
+    assert!(
+        t > 1_500_000 && t <= 1_500_000 + 8 * BYTE_US + 15_000,
+        "{t}"
+    );
 }
 
 #[test]

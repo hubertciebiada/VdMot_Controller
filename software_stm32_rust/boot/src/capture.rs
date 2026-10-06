@@ -9,7 +9,9 @@
 //! Fields are read and written one by one, as the C++ does: struct padding is never written.
 
 use vdm_stm_core::reset_guard::{reset_guard_on_boot, ResetGuardCell};
-use vdm_stm_core::system_stats::{classify_reset, count_reset, BootReason, ResetCounterCell, ResetFlags};
+use vdm_stm_core::system_stats::{
+    classify_reset, count_reset, BootReason, ResetCounterCell, ResetFlags,
+};
 
 /// Bytes of the no-init region (C++ 2.1.7 `.noinit`: 0x20003234..0x20003308).
 pub const NOINIT_LEN: usize = 0xD4;

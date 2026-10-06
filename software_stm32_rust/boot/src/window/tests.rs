@@ -1,7 +1,11 @@
 // Port of software_stm32/test/native/glue/test_otasupport.cpp (glue_otasupport): the boot window
 // after reset in which the ESP may start an STM update (DEADBEEF -> BEEFIT -> ROM bootloader).
 // The C++ fake's `inject` puts bytes straight into the Serial1 ring: here into the Fifo.
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::unwrap_used
+)]
 
 use super::*;
 use crate::fifo::Fifo;
@@ -32,8 +36,12 @@ impl Rig {
     }
 
     fn call(&mut self) -> Step {
-        self.win
-            .step(&mut self.fake, &mut self.fifo, &BootId::STANDARD, &mut self.ms)
+        self.win.step(
+            &mut self.fake,
+            &mut self.fifo,
+            &BootId::STANDARD,
+            &mut self.ms,
+        )
     }
 
     /// BootLoop() calls until the window ends or n calls; the number of calls
@@ -134,7 +142,10 @@ fn deadbeef_answers_beefit_and_jumps_into_the_bootloader() {
     assert!(first_tx > 9_000 && first_tx <= 10_000 + 5, "{first_tx}");
     assert_eq!(log[9].1, Ev::Flush);
     let after_flush = rig.fake.now_us - log[9].0;
-    assert!(after_flush > 199_000 && after_flush <= 200_000 + 5, "{after_flush}");
+    assert!(
+        after_flush > 199_000 && after_flush <= 200_000 + 5,
+        "{after_flush}"
+    );
     assert_eq!(log.len(), 10);
     assert_eq!(rig.ms - ms_before, 210);
     assert!(rig.fake.led);

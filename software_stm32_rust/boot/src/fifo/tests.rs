@@ -1,6 +1,10 @@
 // The RX ring of the boot window: the STM32duino head/tail rule (1023 of 1024 slots), drops
 // when full, 8-byte blocks only when 8 bytes wait.
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::unwrap_used
+)]
 
 use super::*;
 

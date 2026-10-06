@@ -60,7 +60,10 @@ fn c_str(d: &[u8], at: usize) -> String {
 
 impl Elf {
     pub fn parse(data: Vec<u8>) -> Result<Elf, String> {
-        if data.get(..4) != Some(b"\x7fELF".as_slice()) || data.get(4) != Some(&1) || data.get(5) != Some(&1) {
+        if data.get(..4) != Some(b"\x7fELF".as_slice())
+            || data.get(4) != Some(&1)
+            || data.get(5) != Some(&1)
+        {
             return Err("not an ELF32 little-endian file".into());
         }
         let shoff = u32_at(&data, 0x20)? as usize;
@@ -80,7 +83,10 @@ impl Elf {
                 u32_at(&data, h + 24)?,
             ));
         }
-        let strtab_off = raw.get(shstrndx).map(|r| r.4 as usize).ok_or("no section names")?;
+        let strtab_off = raw
+            .get(shstrndx)
+            .map(|r| r.4 as usize)
+            .ok_or("no section names")?;
         let sections: Vec<Section> = raw
             .iter()
             .map(|&(name, kind, flags, addr, offset, size, _)| Section {
@@ -98,7 +104,10 @@ impl Elf {
                 continue;
             }
             let link = raw[i].6 as usize;
-            let names = sections.get(link).ok_or("symtab without string table")?.offset as usize;
+            let names = sections
+                .get(link)
+                .ok_or("symtab without string table")?
+                .offset as usize;
             for k in 0..(s.size as usize / 16) {
                 let e = s.offset as usize + k * 16;
                 let info = *data.get(e + 12).ok_or("symtab truncated")?;
@@ -142,10 +151,12 @@ impl Elf {
     }
 
     pub fn u16(&self, addr: u32) -> Option<u16> {
-        self.bytes(addr, 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+        self.bytes(addr, 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
     }
 
     pub fn u32(&self, addr: u32) -> Option<u32> {
-        self.bytes(addr, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        self.bytes(addr, 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 }

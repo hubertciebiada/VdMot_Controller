@@ -125,13 +125,17 @@ pub fn check(elf: &Elf, limit: u32, stop: &[u32], allowed: &[(u32, u32)]) -> Rep
     let mut seen = BTreeSet::new();
     while let Some(addr) = todo.pop() {
         let Some(f) = containing(&fs, addr) else {
-            report.problems.push(format!("branch to {addr:#010x}: no function there"));
+            report
+                .problems
+                .push(format!("branch to {addr:#010x}: no function there"));
             continue;
         };
         if stop.contains(&f.start) || !seen.insert(f.start) {
             continue;
         }
-        report.reached.insert(f.start, (f.name.clone(), f.end - f.start));
+        report
+            .reached
+            .insert(f.start, (f.name.clone(), f.end - f.start));
         report.top = report.top.max(f.end);
         if f.end > limit {
             report.problems.push(format!(
@@ -174,7 +178,11 @@ pub fn check(elf: &Elf, limit: u32, stop: &[u32], allowed: &[(u32, u32)]) -> Rep
             while pc < to {
                 let Some(hw1) = elf.u16(pc) else { break };
                 let n = len(hw1);
-                let hw2 = if n == 4 { elf.u16(pc + 2).unwrap_or(0) } else { 0 };
+                let hw2 = if n == 4 {
+                    elf.u16(pc + 2).unwrap_or(0)
+                } else {
+                    0
+                };
                 let inside = |a: u32| a >= f.start && a < f.end;
                 match decode(hw1, hw2, pc) {
                     Op::Call(t) | Op::Branch(t) => {
@@ -200,7 +208,11 @@ pub fn check(elf: &Elf, limit: u32, stop: &[u32], allowed: &[(u32, u32)]) -> Rep
                     Op::MovW { rd, imm } => movw[usize::from(rd)] = Some(imm),
                     Op::MovT { rd, imm } => {
                         if let Some(lo) = movw[usize::from(rd)].take() {
-                            use_address((u32::from(imm) << 16) | u32::from(lo), &mut report, &mut todo);
+                            use_address(
+                                (u32::from(imm) << 16) | u32::from(lo),
+                                &mut report,
+                                &mut todo,
+                            );
                         }
                     }
                     Op::Indirect => report.indirect.push(format!("{} at {pc:#010x}", f.name)),

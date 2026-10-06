@@ -1,7 +1,11 @@
 // The ID block (docs/rust/GLUE-DESIGN-STM.md §6.2, §7.3): NUL layout, at most 64 bytes, the
 // version as the first NUL-terminated run, exactly one board marker. The ESP's own scan of
 // the built images runs in the image check (tools/rust/stm/esp_validate.cpp).
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::unwrap_used
+)]
 
 use super::*;
 
@@ -30,7 +34,10 @@ fn the_block_of_the_design() {
             len: 42
         }
     );
-    assert_eq!(&out[l.version..l.version + l.version_len], b"2.2.0-revamped");
+    assert_eq!(
+        &out[l.version..l.version + l.version_len],
+        b"2.2.0-revamped"
+    );
     assert_eq!(&out[l.tag..l.tag + l.tag_len], b"C2");
     assert_eq!(&out[l.pattern..l.pattern + 8], b"DEADBEEF");
     assert_eq!(&out[l.reply..l.reply + 6], b"BEEFIT");
@@ -47,7 +54,10 @@ fn every_field_is_nul_delimited() {
     assert_eq!(out[l.reply + 6], 0);
     assert_eq!(l.len, l.reply + 7);
     // runs between the NULs: version, marker, pattern, reply
-    let runs: std::vec::Vec<&[u8]> = out[..l.len].split(|&b| b == 0).filter(|r| !r.is_empty()).collect();
+    let runs: std::vec::Vec<&[u8]> = out[..l.len]
+        .split(|&b| b == 0)
+        .filter(|r| !r.is_empty())
+        .collect();
     assert_eq!(
         runs,
         [

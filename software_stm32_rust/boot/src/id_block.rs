@@ -105,7 +105,11 @@ pub fn tag_ok(tag: &[u8]) -> bool {
 }
 
 /// Writes the block for `version` and `tag` into `out` (bytes behind the block are 0).
-pub fn write(version: &[u8], tag: &[u8], out: &mut [u8; ID_BLOCK_MAX]) -> Result<IdLayout, IdError> {
+pub fn write(
+    version: &[u8],
+    tag: &[u8],
+    out: &mut [u8; ID_BLOCK_MAX],
+) -> Result<IdLayout, IdError> {
     if !version_ok(version) {
         return Err(IdError::Version);
     }
@@ -115,7 +119,11 @@ pub fn write(version: &[u8], tag: &[u8], out: &mut [u8; ID_BLOCK_MAX]) -> Result
     let layout = IdLayout::new(version.len(), tag.len());
     *out = [0; ID_BLOCK_MAX];
     put(out, layout.version, version);
-    put(out, layout.tag.wrapping_sub(MARKER_PREFIX.len()), &MARKER_PREFIX);
+    put(
+        out,
+        layout.tag.wrapping_sub(MARKER_PREFIX.len()),
+        &MARKER_PREFIX,
+    );
     put(out, layout.tag, tag);
     put(out, layout.pattern, &PATTERN);
     put(out, layout.reply, &REPLY);

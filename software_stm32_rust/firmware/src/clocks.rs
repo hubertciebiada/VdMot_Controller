@@ -3,8 +3,8 @@
 //! vdm_stm_boot::stage::probe_app_hse), else from the HSI (D5; the C++ hangs there).
 
 use embassy_stm32::rcc::{
-    AHBPrescaler, APBPrescaler, Hse, HseMode, LsConfig, Pll, PllMul, PllPDiv, PllPreDiv,
-    PllQDiv, PllSource, Sysclk,
+    AHBPrescaler, APBPrescaler, Hse, HseMode, LsConfig, Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv,
+    PllSource, Sysclk,
 };
 use embassy_stm32::time::Hertz;
 
@@ -39,7 +39,11 @@ pub fn config(hse: bool) -> embassy_stm32::Config {
     }
     rcc.pll = Some(Pll {
         // 1 MHz PLL input from either source
-        prediv: if hse { PllPreDiv::DIV25 } else { PllPreDiv::DIV16 },
+        prediv: if hse {
+            PllPreDiv::DIV25
+        } else {
+            PllPreDiv::DIV16
+        },
         mul: MUL,
         divp: Some(DIVP),
         divq: Some(DIVQ),

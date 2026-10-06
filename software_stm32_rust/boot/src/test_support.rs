@@ -3,7 +3,11 @@
 //! reload value and the system clock, the HSE with a start-up time, USART1 with a schedule of
 //! received bytes (one data register: a byte that arrives while the previous one is unread is
 //! lost, as with ORE), and an event log with time stamps.
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::panic)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::panic
+)]
 
 use std::collections::VecDeque;
 use std::vec::Vec;
@@ -100,7 +104,11 @@ impl Fake {
 
     /// Time stamps of the events equal to `e`.
     pub fn times_of(&self, e: &Ev) -> Vec<u64> {
-        self.log.iter().filter(|(_, x)| x == e).map(|(t, _)| *t).collect()
+        self.log
+            .iter()
+            .filter(|(_, x)| x == e)
+            .map(|(t, _)| *t)
+            .collect()
     }
 
     pub fn count(&self, pred: impl Fn(&Ev) -> bool) -> usize {
@@ -173,7 +181,10 @@ impl ClockIo for Fake {
 
     fn sysclk_hse(&mut self) {
         self.ev(Ev::SysclkHse);
-        assert!(self.hse_ready(), "SYSCLK switched to an HSE that is not ready");
+        assert!(
+            self.hse_ready(),
+            "SYSCLK switched to an HSE that is not ready"
+        );
         self.sysclk_hz = HSE_HZ;
     }
 }

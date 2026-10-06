@@ -25,16 +25,25 @@ fn literals_and_addresses() {
     // ldr r0, [pc, #0x38] at 0x8000244
     assert_eq!(
         decode(0x480E, 0, 0x0800_0244),
-        Op::Literal { addr: 0x0800_0280, word: true }
+        Op::Literal {
+            addr: 0x0800_0280,
+            word: true
+        }
     );
     // ldr.w r1, [pc, #-8] at 0x08000400; ldrb.w r1, [pc, #8]
     assert_eq!(
         decode(0xF85F, 0x1008, 0x0800_0400),
-        Op::Literal { addr: 0x0800_03FC, word: true }
+        Op::Literal {
+            addr: 0x0800_03FC,
+            word: true
+        }
     );
     assert_eq!(
         decode(0xF89F, 0x1008, 0x0800_0400),
-        Op::Literal { addr: 0x0800_040C, word: false }
+        Op::Literal {
+            addr: 0x0800_040C,
+            word: false
+        }
     );
     // adr r0, #8 at 0x08000402
     assert_eq!(decode(0xA002, 0, 0x0800_0402), Op::Adr(0x0800_040C));
@@ -44,7 +53,13 @@ fn literals_and_addresses() {
     // movw r0, #0x1234; movt r0, #0x0800
     assert_eq!(decode(0xF241, 0x2034, 0), Op::MovW { rd: 0, imm: 0x1234 });
     assert_eq!(decode(0xF6C0, 0x0000, 0), Op::MovT { rd: 0, imm: 0x0800 });
-    assert_eq!(decode(0xF6C0, 0x0C00, 0), Op::MovT { rd: 12, imm: 0x0800 });
+    assert_eq!(
+        decode(0xF6C0, 0x0C00, 0),
+        Op::MovT {
+            rd: 12,
+            imm: 0x0800
+        }
+    );
 }
 
 #[test]

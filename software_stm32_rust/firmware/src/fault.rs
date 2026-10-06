@@ -147,6 +147,7 @@ fn record(kind: Kind, pc: u32, lr: u32, xpsr: u32) {
 #[allow(dead_code)]
 pub fn last_record() -> Option<[u32; RECORD_WORDS]> {
     // SAFETY: plain words in .uninit; random after power-on, so only the check decides
-    let words = unsafe { core::ptr::read_volatile(addr_of!(FAULT_RECORD) as *const [u32; RECORD_WORDS]) };
+    let words =
+        unsafe { core::ptr::read_volatile(addr_of!(FAULT_RECORD) as *const [u32; RECORD_WORDS]) };
     (words[0] == RECORD_MAGIC && words[9] == check(&words)).then_some(words)
 }

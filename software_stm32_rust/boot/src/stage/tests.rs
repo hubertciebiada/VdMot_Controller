@@ -1,7 +1,12 @@
 // The boot stage sequence (docs/rust/GLUE-DESIGN-STM.md §5.2) on the fake board: order of
 // the steps, the boot clock of D1 and the end of the stage. The ESP patterns are in
 // tests_esp.rs.
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::unwrap_used, clippy::panic)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::unwrap_used,
+    clippy::panic
+)]
 
 use super::*;
 use crate::capture::{read_counter, CSR_IWDGRSTF, CSR_PINRSTF, CSR_PORRSTF};
@@ -90,12 +95,20 @@ fn a_dead_hse_is_switched_off_after_5_ms_and_the_window_runs_on_hsi() {
     let off = fake.times_of(&Ev::HseOff);
     let on = fake.times_of(&Ev::HseOn);
     assert_eq!(off.len(), 1);
-    assert!(off[0] - on[0] >= 5_000 && off[0] - on[0] < 5_100, "{:?}", (on, off));
+    assert!(
+        off[0] - on[0] >= 5_000 && off[0] - on[0] < 5_100,
+        "{:?}",
+        (on, off)
+    );
     assert_eq!(t.boot_ms(), 5 + 10 + 3001);
     // the window still takes 3.011 s on the HSI SysTick
     let begin = fake.times_of(&Ev::UartBegin(BRR_HSI))[0];
     let end = fake.times_of(&Ev::UartEnd)[0];
-    assert!(end - begin > 3_010_000 && end - begin <= 3_011_100, "{}", end - begin);
+    assert!(
+        end - begin > 3_010_000 && end - begin <= 3_011_100,
+        "{}",
+        end - begin
+    );
 }
 
 #[test]
@@ -218,6 +231,13 @@ fn the_token_reports_what_the_stage_saw() {
     let mut fake = Fake::new();
     fake.csr = CSR_PINRSTF;
     let t = token(run(&mut fake));
-    assert_eq!(t.reset(), crate::capture::ResetInfo { reason: BootReason::Pin, resets: 0, safe_mode: false });
+    assert_eq!(
+        t.reset(),
+        crate::capture::ResetInfo {
+            reason: BootReason::Pin,
+            resets: 0,
+            safe_mode: false
+        }
+    );
     assert_eq!(index_of(&fake, &Ev::ResetFlags), 0);
 }

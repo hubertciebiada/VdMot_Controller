@@ -56,14 +56,18 @@ fn version_like(s: &str) -> bool {
         return false;
     };
     let digits = |t: &str| !t.is_empty() && t.len() <= 5 && t.bytes().all(|c| c.is_ascii_digit());
-    let p = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let p = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     let (patch, suffix) = rest.split_at(p);
     digits(a)
         && digits(b)
         && digits(patch)
         && (suffix.is_empty()
             || (suffix.starts_with(['-', '_', '+'])
-                && suffix.bytes().all(|c| c.is_ascii_alphanumeric() || b"._+-".contains(&c))))
+                && suffix
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._+-".contains(&c))))
 }
 
 fn count(hay: &[u8], needle: &[u8]) -> usize {
@@ -73,11 +77,18 @@ fn count(hay: &[u8], needle: &[u8]) -> usize {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 6 {
-        eprintln!("usage: {} <image.elf> <image.bin> <f401|f411> <C1|C2> <version>", args[0]);
+        eprintln!(
+            "usage: {} <image.elf> <image.bin> <f401|f411> <C1|C2> <version>",
+            args[0]
+        );
         return ExitCode::from(2);
     }
-    let (elf_path, bin_path, chip, tag, version) = (&args[1], &args[2], &args[3], &args[4], &args[5]);
-    let elf = match std::fs::read(elf_path).map_err(|e| e.to_string()).and_then(Elf::parse) {
+    let (elf_path, bin_path, chip, tag, version) =
+        (&args[1], &args[2], &args[3], &args[4], &args[5]);
+    let elf = match std::fs::read(elf_path)
+        .map_err(|e| e.to_string())
+        .and_then(Elf::parse)
+    {
         Ok(e) => e,
         Err(e) => {
             eprintln!("{elf_path}: {e}");
@@ -91,7 +102,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let ram_top = if chip == "f401" { 0x2001_0000 } else { 0x2002_0000 };
+    let ram_top = if chip == "f401" {
+        0x2001_0000
+    } else {
+        0x2002_0000
+    };
     let mut c = Checks { failures: 0 };
     println!("{elf_path}: layout, size, sector 0");
 
@@ -99,20 +114,33 @@ fn main() -> ExitCode {
     let sp = elf.u32(0x0800_0000).unwrap_or(0);
     let reset = elf.u32(0x0800_0004).unwrap_or(0);
     let reset_sym = elf.symbol("Reset").map_or(0, |s| s.value | 1);
-    c.check(sp == ram_top, format!("C4 SP0 {sp:#010x} (expected {ram_top:#010x})"));
-    c.check(reset == reset_sym && reset & 1 == 1, format!("C4 reset vector {reset:#010x} = Reset"));
+    c.check(
+        sp == ram_top,
+        format!("C4 SP0 {sp:#010x} (expected {ram_top:#010x})"),
+    );
+    c.check(
+        reset == reset_sym && reset & 1 == 1,
+        format!("C4 reset vector {reset:#010x} = Reset"),
+    );
     // C4: the bin is the flash image of the ELF
     let same = elf
         .loaded()
         .filter(|s| s.addr >= 0x0800_0000 && s.addr < 0x0900_0000 && s.size > 0)
-        .all(|s| elf.bytes(s.addr, s.size) == bin.get((s.addr - 0x0800_0000) as usize..(s.end() - 0x0800_0000) as usize));
+        .all(|s| {
+            elf.bytes(s.addr, s.size)
+                == bin.get((s.addr - 0x0800_0000) as usize..(s.end() - 0x0800_0000) as usize)
+        });
     c.check(same, "C4 .bin holds the flash sections of the ELF".into());
 
     // C4: ID block first, one marker
     let id = elf.section(".vdm_id");
     c.check(
         id.is_some_and(|s| s.addr == ID_BLOCK && s.size <= 64),
-        format!("C4 .vdm_id at {:#010x}, {} bytes (at 0x08000200, at most 64)", id.map_or(0, |s| s.addr), id.map_or(0, |s| s.size)),
+        format!(
+            "C4 .vdm_id at {:#010x}, {} bytes (at 0x08000200, at most 64)",
+            id.map_or(0, |s| s.addr),
+            id.map_or(0, |s| s.size)
+        ),
     );
     let first = runs(&bin).into_iter().find(|(_, s)| version_like(s));
     c.check(
@@ -120,39 +148,66 @@ fn main() -> ExitCode {
             let at = 0x0800_0000 + *at as u32;
             id.is_some_and(|i| i.contains(at)) && s == version
         }),
-        format!("C4 first version-like run {:?} in the ID block (expected \"{version}\")", first),
+        format!(
+            "C4 first version-like run {:?} in the ID block (expected \"{version}\")",
+            first
+        ),
     );
     let markers = count(&bin, b"VDM-HW:");
     let tagged = count(&bin, format!("VDM-HW:{tag}\0").as_bytes());
-    c.check(markers == 1 && tagged == 1, format!("C4 one VDM-HW: marker ({markers}), VDM-HW:{tag}"));
-    c.check(count(&bin, b"DEADBEEF") >= 1 && count(&bin, b"BEEFIT") >= 1, "C4 DEADBEEF and BEEFIT present".into());
+    c.check(
+        markers == 1 && tagged == 1,
+        format!("C4 one VDM-HW: marker ({markers}), VDM-HW:{tag}"),
+    );
+    c.check(
+        count(&bin, b"DEADBEEF") >= 1 && count(&bin, b"BEEFIT") >= 1,
+        "C4 DEADBEEF and BEEFIT present".into(),
+    );
 
     // C4: no-init cells at the C++ 2.1.7 addresses, nothing allocated there
-    for (name, want) in [("__vdm_noinit", 0x2000_3234), ("__vdm_guard_cell", 0x2000_32E8), ("__vdm_reset_cell", 0x2000_32FC)] {
+    for (name, want) in [
+        ("__vdm_noinit", 0x2000_3234),
+        ("__vdm_guard_cell", 0x2000_32E8),
+        ("__vdm_reset_cell", 0x2000_32FC),
+    ] {
         let got = elf.symbol(name).map(|s| s.value);
         let shown = got.map_or_else(|| "missing".to_string(), |v| format!("{v:#010x}"));
-        c.check(got == Some(want), format!("C4 {name} = {shown} (expected {want:#010x})"));
+        c.check(
+            got == Some(want),
+            format!("C4 {name} = {shown} (expected {want:#010x})"),
+        );
     }
     let inside: Vec<&str> = elf
         .sections
         .iter()
-        .filter(|s| s.flags & elf::SHF_ALLOC != 0 && s.size > 0 && s.addr < NOINIT.1 && s.end() > NOINIT.0)
+        .filter(|s| {
+            s.flags & elf::SHF_ALLOC != 0 && s.size > 0 && s.addr < NOINIT.1 && s.end() > NOINIT.0
+        })
         .map(|s| s.name.as_str())
         .collect();
-    c.check(inside.is_empty(), format!("C4 no section in NOINIT 0x20003234..0x20003308 {inside:?}"));
+    c.check(
+        inside.is_empty(),
+        format!("C4 no section in NOINIT 0x20003234..0x20003308 {inside:?}"),
+    );
     let ram: Vec<String> = [".data", ".bss", ".uninit"]
         .iter()
         .filter_map(|n| elf.section(n))
         .filter(|s| s.size > 0 && (s.addr < NOINIT.1 || s.end() > ram_top))
         .map(|s| s.name.clone())
         .collect();
-    c.check(ram.is_empty(), format!("C4 .data, .bss, .uninit inside RAM 0x20003308..{ram_top:#010x} {ram:?}"));
+    c.check(
+        ram.is_empty(),
+        format!("C4 .data, .bss, .uninit inside RAM 0x20003308..{ram_top:#010x} {ram:?}"),
+    );
 
     // C5: size
     let size = bin.len() as u32;
     c.check(
         size <= BUDGET,
-        format!("C5 size {size} B = {:.1} % of the 128 KiB budget (D12)", f64::from(size) * 100.0 / f64::from(BUDGET)),
+        format!(
+            "C5 size {size} B = {:.1} % of the 128 KiB budget (D12)",
+            f64::from(size) * 100.0 / f64::from(BUDGET)
+        ),
     );
 
     // D9: boot stage in sector 0
@@ -160,15 +215,27 @@ fn main() -> ExitCode {
     let boot_start = elf.symbol("__vdm_boot_start").map_or(0, |s| s.value);
     c.check(
         boot_end <= sector0::SECTOR0_END,
-        format!("D9 .vdm_boot {boot_start:#010x}..{boot_end:#010x} ({} B) inside sector 0", boot_end.wrapping_sub(boot_start)),
+        format!(
+            "D9 .vdm_boot {boot_start:#010x}..{boot_end:#010x} ({} B) inside sector 0",
+            boot_end.wrapping_sub(boot_start)
+        ),
     );
     let stop: Vec<u32> = elf
         .symbols
         .iter()
-        .filter(|s| s.kind == elf::STT_FUNC && (s.name.ends_with("3app3run") || s.name.contains("3app3run17h")))
+        .filter(|s| {
+            s.kind == elf::STT_FUNC
+                && (s.name.ends_with("3app3run") || s.name.contains("3app3run17h"))
+        })
         .map(|s| s.value & !1)
         .collect();
-    c.check(stop.len() == 1, format!("D9 application entry app::run found ({} symbols)", stop.len()));
+    c.check(
+        stop.len() == 1,
+        format!(
+            "D9 application entry app::run found ({} symbols)",
+            stop.len()
+        ),
+    );
     // the start-up code copies .data: its LMA and VMA are the only data it may address
     let reset_fn = elf.symbol("Reset").map_or(0, |s| s.value & !1);
     let allowed: Vec<(u32, u32)> = ["__sidata", "__sdata"]
