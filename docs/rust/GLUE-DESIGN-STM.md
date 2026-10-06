@@ -652,6 +652,15 @@ stops the release of every STM image.
 
 ## 8. Open decisions and risks
 
+Decided on 2026-10-07 (the operator may revert): D1 recommendation (HSE if ready within 5 ms,
+else HSI); D2 fixed 8-byte blocks as C++ (the proven path with the real ROM bootloader; the
+sliding window stays a documented alternative); D3 the C++ 2.1.7 addresses; D4 IWDG reset;
+D5 PLL from HSI; D6 no executor; D7 port 1:1 behind the feature `terminal`; D8
+`2.2.0-revamped` for the first Rust release (ESP and STM); D9 the boot stage stays inside
+sector 0 and the Rust ESP flasher erases and writes sector 0 last (a documented deviation of
+the flasher port); D10 the bench proof is a required step of the install procedure, done by
+the operator; D11 recommendation; D12 128 KiB.
+
 ### Decisions for the operator
 
 | # | decision | recommendation | alternatives |
