@@ -1,0 +1,3 @@
+# docs/rust/GLUE-DESIGN-ESP.md 2.4: a stack frame or a stack array above 1 KiB is an error.
+stack-size-threshold = 1024
+array-size-threshold = 1024

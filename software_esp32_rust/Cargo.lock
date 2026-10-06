@@ -39,3 +39,11 @@ version = "2.1.7-revamped"
 dependencies = [
  "heapless",
 ]
+
+[[package]]
+name = "vdm-esp-glue"
+version = "2.1.7-revamped"
+dependencies = [
+ "heapless",
+ "vdm-esp-core",
+]

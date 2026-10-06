@@ -2,7 +2,7 @@
 # The firmware crate (firmware/, target xtensa-esp32-espidf, own toolchain) is not a member.
 [workspace]
 resolver = "2"
-members = ["core"]
+members = ["core", "glue"]
 exclude = ["firmware"]
 
 [workspace.package]
