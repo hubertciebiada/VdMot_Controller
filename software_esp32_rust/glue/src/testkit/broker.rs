@@ -143,6 +143,24 @@ pub(crate) fn publish_packet(
     p
 }
 
+/// A clock, TCP connections and a broker without a board (protocol tests).
+pub(crate) struct Rig {
+    pub(crate) clock: super::FakeClock,
+    pub(crate) tcp: FakeTcp,
+    pub(crate) broker: FakeBroker,
+}
+
+/// A [`Rig`] whose broker serves nothing yet.
+pub(crate) fn clock_and_tcp() -> Rig {
+    let clock = super::FakeClock::default();
+    let tcp = FakeTcp::new(clock.clone(), super::Journal::default());
+    Rig {
+        clock,
+        tcp,
+        broker: FakeBroker::default(),
+    }
+}
+
 impl FakeBroker {
     /// Serves `host:port` of `tcp`.
     pub(crate) fn attach(&self, tcp: &FakeTcp, host: &str, port: u16) {
