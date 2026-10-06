@@ -336,20 +336,25 @@ impl Part {
     /// gives "x", a ';' inside a quoted filename ends the filename there, `name=x` gives "x"
     /// and `name=xy` gives "".
     fn disposition(&mut self, line: &[u8]) {
-        let mut rest = substring_from(line, index_of(line, b';').map_or(1, |at| at + 2));
+        // `substring(indexOf(';') + 2)`: from the second byte after the first ';', or from the
+        // second byte of the line without one
+        let after = split_once(line, b';').map_or(line, |(_, after)| after);
+        let mut rest = substring_from(after, 1);
         loop {
-            let semicolon = index_of(rest, b';').filter(|&at| at > 0);
-            let end = match semicolon {
-                Some(at) => at - 1,
-                None => rest.len().saturating_sub(1),
-            };
             let equals = index_of(rest, b'=');
             let name = substring(rest, 0, equals.unwrap_or(rest.len()));
-            let value = substring(rest, equals.map_or(1, |at| at + 2), end);
-            self.assign(name, value);
-            match semicolon {
-                Some(at) => rest = substring_from(rest, at + 2),
-                None => break,
+            let start = equals.map_or(1, |at| at + 2);
+            match split_once(rest, b';') {
+                // `while (indexOf(';') > 0)`: a ';' that starts the rest ends the segments
+                Some((segment, after)) if !segment.is_empty() => {
+                    self.assign(name, substring(rest, start, segment.len() - 1));
+                    rest = substring_from(after, 1);
+                }
+                _ => {
+                    // `length() - 1`; for "" any end gives ""
+                    self.assign(name, substring(rest, start, rest.len().saturating_sub(1)));
+                    break;
+                }
             }
         }
     }

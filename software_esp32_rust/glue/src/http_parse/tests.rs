@@ -693,6 +693,13 @@ fn a_body_that_does_not_start_with_its_first_line_is_a_parse_error() {
 }
 
 #[test]
+fn the_parser_holds_about_0_6_kb() {
+    // delimiter 76, header line 256, name, filename and value 160, lengths and state: 560 B on
+    // the 64-bit host
+    assert!(std::mem::size_of::<Multipart>() <= 600);
+}
+
+#[test]
 fn a_parser_is_in_its_error_state_until_started_and_a_start_forgets_the_last_body() {
     let mut parser = Box::new(Multipart::EMPTY);
     assert!(parser.is_error());
