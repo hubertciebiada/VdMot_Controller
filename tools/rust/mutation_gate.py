@@ -51,6 +51,10 @@ def main():
     ap.add_argument("--repo", default=os.path.join(os.path.dirname(__file__), "..", ".."))
     args = ap.parse_args()
 
+    if not os.path.exists(args.outcomes):
+        # cargo mutants writes no outcomes when the filters (--file, --exclude) match no mutant
+        sys.exit("%s not found: no mutants were tested (a --file glob with '/' matches from the "
+                 "workspace root, e.g. core/src/x.rs)" % args.outcomes)
     with open(args.outcomes, encoding="utf-8") as f:
         run = json.load(f)
     # one list per package and/or one per module (tools/rust/mutation/equivalents/<package>/*.json),
