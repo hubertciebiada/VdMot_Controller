@@ -3,7 +3,7 @@
 # not a member.
 [workspace]
 resolver = "2"
-members = ["core", "boot"]
+members = ["core", "boot", "image-check"]
 exclude = ["firmware"]
 
 [workspace.package]

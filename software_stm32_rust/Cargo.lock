@@ -46,3 +46,7 @@ version = "2.2.0-revamped"
 dependencies = [
  "heapless",
 ]
+
+[[package]]
+name = "vdm-stm-image-check"
+version = "2.2.0-revamped"

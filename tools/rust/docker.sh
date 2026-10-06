@@ -12,6 +12,8 @@
 #   tools/rust/docker.sh fw                             the four STM32 images and the boot probes
 #                                                       -> software_stm32_rust/firmware/images/
 #                                                       (tools/rust/stm/build_images.sh)
+#   tools/rust/docker.sh image-check                    C1-C5 and D9 on those images, with the
+#                                                       ESP's C++ validation (tools/rust/stm/image_check.sh)
 #   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
 #
 # Environment: VDM_MUTATION_JOBS (default 4), VDM_RUST_IMAGE (default
@@ -118,12 +120,15 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
       if ! flock -n 8; then echo 'waiting for another firmware build in this checkout' >&2; flock 8; fi
       bash tools/rust/stm/build_images.sh"
     ;;
+  image-check)
+    in_container "bash tools/rust/stm/image_check.sh"
+    ;;
   run)
     shift
     in_container "$*"
     ;;
   *)
-    sed -n '2,21p' "$0" >&2
+    sed -n '2,24p' "$0" >&2
     exit 2
     ;;
 esac

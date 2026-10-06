@@ -1,0 +1,13 @@
+[package]
+name = "vdm-stm-image-check"
+description = "VdMot Revamped STM32: ELF layout, size and sector-0 checks of the four firmware images (docs/rust/GLUE-DESIGN-STM.md §5.8)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
