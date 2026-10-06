@@ -1017,23 +1017,44 @@ fn ports_reach_the_fakes_through_shared_references() {
     assert_eq!(n, 1);
     assert_eq!(Fs::usage(&fs).1, 4 * 4096);
     assert!(Fs::remove(&fs, "/d/g"));
+    // the false answers pass through as well
+    assert!(!Fs::remove(&fs, "/d/g"));
+    assert!(!Fs::rename(&fs, "/d/g", "/d/h"));
+    assert!(!Fs::mkdir(&fs, "/d"));
+    assert!(!Fs::exists(&fs, "/d/g"));
+    assert!(Fs::open(&fs, "/d/g", OpenMode::Read).is_none());
     assert!(Fs::format(&fs));
+    fs.knobs().format_ok = false;
+    assert!(!Fs::format(&fs));
+    fs.knobs().mount_ok = false;
+    assert!(!Fs::mount(&fs));
     let tcp = &dev.tcp;
     assert!(TcpConnector::connect(&tcp, "x", 1, 0).is_none());
+    tcp.listen("x", 1, || Box::new(Script(Vec::new())));
+    assert!(TcpConnector::connect(&tcp, "x", 1, 0).is_some());
     let ota = &dev.ota;
     assert_eq!(Ota::running(&ota).app, Some(APP_A));
     assert_eq!(Ota::other(&ota).unwrap().app, Some(APP_B));
     assert_eq!(Ota::set_boot(&ota, 0x15_0000), Ok(()));
+    assert_eq!(Ota::set_boot(&ota, 0x1234), Err(EspErr::INVALID_ARG));
+    assert!(Ota::verify(&ota, 0x15_0000));
+    assert!(!Ota::verify(&ota, 0x1234));
+    Ota::mark_valid(&ota);
+    assert_eq!(ota.knobs().mark_valids, 1);
     assert!(Ota::begin(&ota).is_ok());
     assert_eq!(Ota::running_image_size(&ota), 1_091_984);
     let sys = &dev.system;
     assert_eq!(System::reset_reason(&sys), 1);
     assert_eq!(System::heap(&sys).free, 150_000);
     assert_eq!(System::stack_min_free(&sys, "x"), None);
-    assert_eq!(System::base_mac(&sys)[0], 0x24);
+    sys.state().stacks.insert("x".to_string(), 77);
+    assert_eq!(System::stack_min_free(&sys, "x"), Some(77));
+    assert_eq!(System::base_mac(&sys), [0x24, 0x0A, 0xC4, 0x12, 0x34, 0x56]);
     assert_eq!(run(|| System::restart(&sys)), Ended::Reset(Reset::Software));
     let heap = &dev.heap;
     assert!(HeapGate::grant(&heap, 3));
+    heap.state().fail_all = true;
+    assert!(!HeapGate::grant(&heap, 3));
     let rtc = &dev.rtc;
     Rtc::store(&rtc, 0, &[7]);
     let mut b = [0u8; 1];
@@ -1046,4 +1067,13 @@ fn ports_reach_the_fakes_through_shared_references() {
     assert_eq!(d[0], 0x90);
     Md5::reset(&mut m);
     assert_eq!(md5.added, 0);
+}
+
+#[test]
+fn the_reset_reason_reaches_through_a_reference() {
+    let board = FakeBoard::new();
+    board.reset(Reset::TaskWdt);
+    let dev = board.boot();
+    let sys = &dev.system;
+    assert_eq!(System::reset_reason(&sys), 6);
 }
