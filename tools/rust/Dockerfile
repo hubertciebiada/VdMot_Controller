@@ -16,4 +16,11 @@ RUN rustup component add llvm-tools \
  && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump" /usr/local/bin/llvm-objdump \
  && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-nm" /usr/local/bin/llvm-nm \
  && ln -s "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-size" /usr/local/bin/llvm-size
+# ESP glue tests (Debian bookworm packages of the base image): g++ with the 32-bit multilib for
+# the ArduinoJson reference program of json_body (-m32: the ESP32's slot layout), mosquitto for
+# the MQTT interop run of mqtt_conn (docker.sh interop).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++=4:12.2.0-3 g++-multilib=4:12.2.0-3 \
+      mosquitto=2.0.11-1.2+deb12u2 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
