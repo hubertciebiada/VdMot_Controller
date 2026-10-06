@@ -313,7 +313,9 @@ impl EspErr {
     pub const FLASH_OP_FAIL: EspErr = EspErr(0x6001);
 }
 
-/// Identity of an app image: the first 8 bytes of `esp_app_desc_t.app_elf_sha256`.
+/// Identity of an app image: the first 8 bytes of a SHA-256 of the image. The firmware spike's
+/// guard reads the SHA-256 appended to the image (`esp_partition_get_sha256`), the design named
+/// `esp_app_desc_t.app_elf_sha256`; either identifies the same build, the glue only compares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AppId(pub [u8; 8]);
 
@@ -343,6 +345,13 @@ pub trait Ota: Send + Sync {
     /// Selects the slot at `address` for the next boot; the image is verified first
     /// (`OTA_VALIDATE_FAILED` when it does not).
     fn set_boot(&self, address: u32) -> Result<(), EspErr>;
+    /// The image in the slot at `address` validates (`esp_image_verify`: segments, checksum,
+    /// SHA-256); reads the whole image, so the boot guard calls it once per boot.
+    fn verify(&self, address: u32) -> bool;
+    /// Marks the running image valid in otadata (`esp_ota_mark_app_valid_cancel_rollback`): a
+    /// bootloader with rollback support may have started it as PENDING_VERIFY; the error when
+    /// there is nothing to mark is ignored.
+    fn mark_valid(&self);
     /// Size of the running image (`ESP.getSketchSize()`).
     fn running_image_size(&self) -> u32;
 }
@@ -642,6 +651,12 @@ impl<T: Ota + ?Sized> Ota for &T {
     }
     fn set_boot(&self, address: u32) -> Result<(), EspErr> {
         (**self).set_boot(address)
+    }
+    fn verify(&self, address: u32) -> bool {
+        (**self).verify(address)
+    }
+    fn mark_valid(&self) {
+        (**self).mark_valid()
     }
     fn running_image_size(&self) -> u32 {
         (**self).running_image_size()
