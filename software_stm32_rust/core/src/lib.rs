@@ -2,6 +2,11 @@
 //! `software_stm32/lib/core` (C++17). Every module keeps the name, the contract and the
 //! behaviour of its C++ original; `software_stm32/PROTOCOL_V2.md` stays binding.
 //! No heap, no unsafe, fixed-size storage, every input bounded (docs/rust/PORTING.md).
+//!
+//! Build switches: no -D flag of software_stm32/platformio.ini reaches lib/core (it has no
+//! `#if`); FIRMWARE_VERSION, HARDWARE_REVISION_C1/C2, commDebug and appDebug belong to the
+//! glue. The one switch of the core is the constant [`protection_guard::PROTECT_ENFORCE`]
+//! (C++ `vdm::kProtectEnforce`, default false).
 #![no_std]
 
 #[cfg(test)]

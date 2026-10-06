@@ -93,6 +93,13 @@ fn format_valve_data_worst_case_fits_valve_data_reply_max_len() {
 }
 
 #[test]
+fn valve_data_reply_max_len_is_the_contract_value() {
+    // 5-char prefix, 11 numbers of up to 11 characters, 12 spaces: the glue sizes its buffer
+    // with it (the worst case above is 137 characters, the index has at most 10 digits)
+    assert_eq!(VALVE_DATA_REPLY_MAX_LEN, 138);
+}
+
+#[test]
 fn format_valve_data_too_small_buffer_writes_nothing() {
     let r = typical();
     let needed = legacy_valve_data(&r).len();

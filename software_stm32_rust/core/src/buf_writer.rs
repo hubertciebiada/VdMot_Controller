@@ -128,9 +128,7 @@ impl<B: Storage> BufWriter<B> {
     /// Shortens the text to `len` characters (no-op if already shorter);
     /// does not reset ok().
     pub fn truncate(&mut self, len: usize) {
-        if len < self.len {
-            self.len = len;
-        }
+        self.len = self.len.min(len);
     }
 
     fn append_raw(&mut self, s: &[u8]) -> bool {
