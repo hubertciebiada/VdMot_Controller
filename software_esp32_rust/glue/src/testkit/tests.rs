@@ -1,6 +1,18 @@
 //! Self-test of the harness (the subjects of the C++ `selftest.cpp`, rewritten for the Rust
 //! fakes): isolation, multi-boot hand-over of the persistent stores, the invariants, and the
 //! behaviour of the fakes the glue relies on. The C++ "xfail" cases are `should_panic` here.
+//!
+//! Subjects of `selftest.cpp` without a Rust form: the FreeRTOS queue and mutex fakes and the
+//! critical-section and `xTaskGetHandle(nullptr)` xfails (the glue shares data through std types,
+//! design 2.2); the sibling fakes (none, design 5.1); `File::setBufferSize` (no stdio layer);
+//! Preferences return values (the NVS port's own contract is tested instead); the
+//! AsyncWebServer driver cases (header filtering, 1460-byte pieces, pipelined bytes, multipart
+//! framing, `failNextResponse`, recycled request addresses: library quirks retired by design
+//! 5.2, the parsing lives in `http_parse`); the use-after-publish of a PubSubClient callback
+//! (the borrow checker rules it out); PENDING_VERIFY and the bootloader rollback (the devices'
+//! bootloader has none: the fake bootloader keeps the selection, see the `ota_` cases). The
+//! fake STM (`support/fake_stm.cpp`) comes with the stm_link port: it needs the golden replies
+//! and the AN3155 simulator of the core's test support.
 
 use super::board::{Booted, APP_A, APP_B, APP_CPP};
 use super::broker::publish_packet;
