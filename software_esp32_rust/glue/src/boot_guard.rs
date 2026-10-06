@@ -25,7 +25,7 @@
 //! fails), which only restarts a boot count.
 
 use crate::port::{AppId, Nvs, NvsInt, NvsNamespace, Ota, Rtc, SlotInfo, System};
-use crate::stand_in::crc32;
+use vdm_esp_core::config::crc32;
 
 /// NVS namespace of the records.
 pub const NVS_NAMESPACE: &str = "vdmrev";

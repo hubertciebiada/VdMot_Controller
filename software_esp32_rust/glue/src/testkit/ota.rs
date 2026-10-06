@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{lock, Journal};
 use crate::port::{AppId, EspErr, Ota, OtaUpdate, SlotInfo};
-use crate::stand_in::crc32;
+use vdm_esp_core::config::crc32;
 
 /// Flash addresses of app0 and app1 (the board's default partition table).
 pub(crate) const SLOT_ADDR: [u32; 2] = [0x1_0000, 0x15_0000];
