@@ -1,0 +1,20 @@
+# VdMot Revamped ESP32 firmware in Rust: the host-testable crates.
+# The firmware crate (firmware/, target xtensa-esp32-espidf, own toolchain) is not a member.
+[workspace]
+resolver = "2"
+members = ["core"]
+exclude = ["firmware"]
+
+[workspace.package]
+version = "2.1.7-revamped"
+edition = "2021"
+rust-version = "1.90"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+heapless = { version = "=0.9.3", default-features = false }
+
+[profile.test]
+# integer overflow is a bug in the port: the C++ wraps only where it means to (wrapping_*)
+overflow-checks = true

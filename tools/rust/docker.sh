@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Rust host builds, tests and mutation runs in a Linux container, the same on Windows, macOS
+# and Linux as in CI.
+#
+#   tools/rust/docker.sh image                          build the image (done on first use)
+#   tools/rust/docker.sh test <workspace> [args...]     cargo test --workspace in <workspace>
+#                                                       (software_esp32_rust, software_stm32_rust)
+#   tools/rust/docker.sh mutate <workspace> <package> [args...]
+#                                                       cargo mutants on one package, then the
+#                                                       per-file gate (tools/rust/mutation_gate.py)
+#   tools/rust/docker.sh gate <workspace> <package>     the gate on the last mutate run only
+#   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
+#
+# Environment: VDM_MUTATION_JOBS (default 4), VDM_RUST_IMAGE (default
+# vdmot-rust:<hash of the Dockerfile>).
+#
+# Each checkout (git worktree) has its own target volume, so parallel worktrees never share
+# build directories. The cargo registry is one shared volume. Mutation runs of all checkouts
+# (Rust and C++, tools/native/docker.sh) share one lock: a second run waits for the first.
+set -euo pipefail
+
+ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+HOST_ROOT="$ROOT"
+if command -v cygpath >/dev/null 2>&1; then HOST_ROOT="$(cygpath -m "$ROOT")"; fi
+IMAGE="${VDM_RUST_IMAGE:-vdmot-rust:$(md5sum "$ROOT/tools/rust/Dockerfile" | cut -c1-12)}"
+TARGET_VOLUME="vdmot-rust-target-$(printf '%s' "$HOST_ROOT" | md5sum | cut -c1-12)"
+CARGO_VOLUME="vdmot-rust-cargo"
+LOCKS_VOLUME="vdmot-locks"
+MUTATION_JOBS="${VDM_MUTATION_JOBS:-4}"
+export MSYS_NO_PATHCONV=1
+
+quote_args() {
+  [ $# -eq 0 ] || printf ' %q' "$@"
+}
+
+build_image() {
+  docker build -q -t "$IMAGE" -f "$ROOT/tools/rust/Dockerfile" "$ROOT/tools/rust" >/dev/null
+}
+
+in_container() {
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || build_image
+  docker run --rm --init -v "$HOST_ROOT:/src" -v "$TARGET_VOLUME:/target" \
+    -v "$CARGO_VOLUME:/cargo-cache" -v "$LOCKS_VOLUME:/locks" -w /src \
+    -e CARGO_HOME_CACHE=/cargo-cache -e PYTHONDONTWRITEBYTECODE=1 -e CARGO_TERM_COLOR=never \
+    "$IMAGE" bash -c "
+      mkdir -p /cargo-cache/registry /cargo-cache/git
+      ln -sfn /cargo-cache/registry /usr/local/cargo/registry
+      ln -sfn /cargo-cache/git /usr/local/cargo/git
+      $1"
+}
+
+check_workspace() {
+  case "$1" in
+    software_esp32_rust|software_stm32_rust) ;;
+    *) echo "unknown workspace: $1 (software_esp32_rust, software_stm32_rust)" >&2; exit 2 ;;
+  esac
+  [ -f "$ROOT/$1/Cargo.toml" ] || { echo "$1/Cargo.toml not found" >&2; exit 2; }
+}
+
+# Container script: take the global mutation lock (fd 9 stays open until the container ends).
+mutation_lock() {
+  cat <<EOS
+exec 9>/locks/mutate.lock
+if ! flock -n 9; then
+  echo "waiting for the mutation lock, held by: \$(cat /locks/mutate.owner 2>/dev/null || echo another run)" >&2
+  flock 9
+  echo "mutation lock acquired" >&2
+fi
+echo "$HOST_ROOT (since \$(date -u +%FT%TZ))" > /locks/mutate.owner
+EOS
+}
+
+case "${1:-}" in
+  image)
+    build_image
+    ;;
+  test)
+    [ $# -ge 2 ] || { echo "usage: $0 test <workspace> [cargo test args]" >&2; exit 2; }
+    ws="$2"; shift 2
+    check_workspace "$ws"
+    in_container "set -e
+      exec 8>/target/$ws.lock
+      if ! flock -n 8; then echo 'waiting for another cargo run of $ws in this checkout' >&2; flock 8; fi
+      cd $ws
+      CARGO_TARGET_DIR=/target/$ws cargo test --workspace$(quote_args "$@")"
+    ;;
+  mutate)
+    [ $# -ge 3 ] || { echo "usage: $0 mutate <workspace> <package> [cargo mutants args]" >&2; exit 2; }
+    ws="$2"; pkg="$3"; shift 3
+    check_workspace "$ws"
+    in_container "$(mutation_lock)
+set -e
+cd $ws
+out=/target/mutants/$ws/$pkg
+mkdir -p \$out
+set +e
+cargo mutants --package $pkg --jobs $MUTATION_JOBS --output \$out --no-shuffle$(quote_args "$@")
+rc=\$?
+set -e
+# 0 all caught, 2 missed mutants, 3 timeouts: the gate decides; anything else is an error
+case \$rc in 0|2|3) ;; *) echo \"cargo mutants failed with exit code \$rc\" >&2; exit \$rc ;; esac
+python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcomes \$out/mutants.out/outcomes.json"
+    ;;
+  gate)
+    [ $# -ge 3 ] || { echo "usage: $0 gate <workspace> <package>" >&2; exit 2; }
+    ws="$2"; pkg="$3"
+    check_workspace "$ws"
+    in_container "python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcomes /target/mutants/$ws/$pkg/mutants.out/outcomes.json"
+    ;;
+  run)
+    shift
+    in_container "$*"
+    ;;
+  *)
+    sed -n '2,19p' "$0" >&2
+    exit 2
+    ;;
+esac
