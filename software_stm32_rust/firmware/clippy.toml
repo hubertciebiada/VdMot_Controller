@@ -1,0 +1,8 @@
+# B4 (docs/rust/GLUE-DESIGN-STM.md §5.1): the firmware changes nothing that outlives a reset:
+# no internal flash writes, no option bytes (the ESP flasher and the ROM bootloader own them).
+disallowed-methods = [
+    { path = "stm32_metapac::flash::Flash::keyr", reason = "B4: no internal flash writes" },
+    { path = "stm32_metapac::flash::Flash::cr", reason = "B4: no internal flash writes" },
+    { path = "stm32_metapac::flash::Flash::optkeyr", reason = "B4: no option byte writes" },
+    { path = "stm32_metapac::flash::Flash::optcr", reason = "B4: no option byte writes" },
+]
