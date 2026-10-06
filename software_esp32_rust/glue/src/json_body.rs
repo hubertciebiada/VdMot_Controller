@@ -156,8 +156,9 @@ struct Slot {
 const _: () = assert!(core::mem::size_of::<Slot>() == SLOT_SIZE);
 
 impl Slot {
+    /// A cleared slot (`VariantSlot::clear()`); its content reads as an empty collection.
     const NULL: Self = Self {
-        content: 0,
+        content: EMPTY_COLLECTION,
         key: 0,
         kind: Kind::Null,
         next: NONE,
@@ -343,14 +344,9 @@ impl JsonDocument {
     fn find_member(&self, owner: At, input: &[u8], key: usize) -> Option<u8> {
         let first = self.data(owner).map_or(NONE, Slot::first);
         let key = cstr_at(input, key);
-        let mut index = first;
-        while let Some(slot) = self.slots.get(usize::from(index)) {
-            if cstr_at(input, slot.key as usize) == key {
-                return Some(index);
-            }
-            index = slot.next;
-        }
-        None
+        Slots::new(self, input, first)
+            .find(|(_, slot)| cstr_at(input, slot.key as usize) == key)
+            .map(|(index, _)| index)
     }
 }
 
@@ -496,11 +492,7 @@ impl<'a> JsonVariantConst<'a> {
     }
 
     fn slots(&self, first: u8) -> Slots<'a> {
-        Slots {
-            doc: self.doc,
-            input: self.input,
-            next: first,
-        }
+        Slots::new(self.doc, self.input, first)
     }
 }
 
@@ -521,7 +513,9 @@ impl<'a> JsonObjectConst<'a> {
     pub fn get(&self, key: &[u8]) -> JsonVariantConst<'a> {
         let key = cstr(key);
         let (doc, input) = (self.slots.doc, self.slots.input);
-        let data = { self.slots }.find(|slot| cstr_at(input, slot.key as usize) == key);
+        let data = { self.slots }
+            .find(|(_, slot)| cstr_at(input, slot.key as usize) == key)
+            .map(|(_, slot)| slot);
         JsonVariantConst { doc, input, data }
     }
 
@@ -568,21 +562,36 @@ impl<'a> IntoIterator for JsonArrayConst<'a> {
     }
 }
 
-/// The slots of an object or array, from `next` on.
+/// The slots of an object or array from `next` on, with their indices.
 #[derive(Clone, Copy, Debug)]
 struct Slots<'a> {
     doc: &'a JsonDocument,
     input: &'a [u8],
     next: u8,
+    /// Steps left: no list is longer than the pool, so not even a broken one could loop.
+    left: u8,
+}
+
+impl<'a> Slots<'a> {
+    fn new(doc: &'a JsonDocument, input: &'a [u8], first: u8) -> Self {
+        Self {
+            doc,
+            input,
+            next: first,
+            left: SLOT_COUNT as u8,
+        }
+    }
 }
 
 impl<'a> Iterator for Slots<'a> {
-    type Item = &'a Slot;
+    type Item = (u8, &'a Slot);
 
-    fn next(&mut self) -> Option<&'a Slot> {
-        let slot = self.doc.slots.get(usize::from(self.next))?;
+    fn next(&mut self) -> Option<(u8, &'a Slot)> {
+        self.left = self.left.checked_sub(1)?;
+        let index = self.next;
+        let slot = self.doc.slots.get(usize::from(index))?;
         self.next = slot.next;
-        Some(slot)
+        Some((index, slot))
     }
 }
 
@@ -597,7 +606,7 @@ impl<'a> Iterator for Members<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (doc, input) = (self.slots.doc, self.slots.input);
-        let slot = self.slots.next()?;
+        let (_, slot) = self.slots.next()?;
         Some((
             cstr_at(input, slot.key as usize),
             JsonVariantConst {
@@ -620,7 +629,7 @@ impl<'a> Iterator for Elements<'a> {
 
     fn next(&mut self) -> Option<JsonVariantConst<'a>> {
         let (doc, input) = (self.slots.doc, self.slots.input);
-        let slot = self.slots.next()?;
+        let (_, slot) = self.slots.next()?;
         Some(JsonVariantConst {
             doc,
             input,
@@ -1163,7 +1172,8 @@ impl NumberText<'_> {
 /// `make_float()`: `m` times 10^`e` by binary exponentiation over the tables, NaN when `e`
 /// needs a power beyond 1e256.
 fn make_float(m: f64, e: i32) -> f64 {
-    let powers = if e > 0 {
+    // `e > 0` in C++; for 0 the table is not read
+    let powers = if e.is_positive() {
         &POSITIVE_POWERS
     } else {
         &NEGATIVE_POWERS
