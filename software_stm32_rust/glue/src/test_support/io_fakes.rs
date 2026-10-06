@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use vdm_stm_core::uart_errors::count_uart_errors as comm_rx_irq;
+use crate::communication::comm_rx_irq;
 use crate::hal::{Clock, In, Out, Pins, Serial, System};
 use crate::i2c_bus::{I2cLine, LineMode, RecoveryPins, Wire};
 use vdm_stm_core::uart_errors::UartErrorCounters;

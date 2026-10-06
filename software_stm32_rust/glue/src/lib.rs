@@ -5,6 +5,7 @@
 //! no unsafe; the firmware owns the instances.
 #![cfg_attr(not(test), no_std)]
 
+pub mod communication;
 pub mod dallas;
 pub mod ds2438;
 pub mod eeprom;
@@ -15,6 +16,8 @@ pub mod onewire;
 pub mod ow_devices;
 pub mod print;
 pub mod sysstat;
+#[cfg(feature = "terminal")]
+pub mod terminal;
 
 #[cfg(test)]
 mod test_support;
