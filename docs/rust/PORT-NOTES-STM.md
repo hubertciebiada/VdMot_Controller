@@ -54,3 +54,18 @@ module, what, why it matters. The Rust tests assert the C++ behaviour.
 | what | why it matters |
 |---|---|
 | `settar` returns `CMD_CLOSE` (the code of `close`); `stdet x` with x != 255 prints " - error" and then "stdet " anyway; `stons` prints without CR LF. Kept; the C++ suite asserts the first two. | Debug port only; nobody reads the return code. |
+
+## Glue: motor
+
+The same rule for `software_stm32/src/motor.cpp` and its port `software_stm32_rust/glue/src/motor.rs`.
+
+| what | why it matters |
+|---|---|
+| A calibration does not wait for the valve PSU like a move does. `valve_loop` switches the PSU on for a `CMD_A_LEARN` and sets the 1 s wait (`WAIT_TIMER50`), but `A_LEARN1` does not check `waittimer`: it prepares the first stroke on the next tick and sets the 0.4 s stroke wait (`WAIT_TIMER20`), so the first stroke starts about 0.5 s after the PSU, a move about 1.1 s after it. A failed pass (verdict Retry) sets the 1 s wait again, which `A_LEARN1` overwrites the same way. The Rust keeps both writes. | None known: the PSU is up long before 0.4 s. The 1 s wait of the calibration paths is dead; a later change of `WAIT_TIMER50` does not reach calibrations. |
+| `appsetaction(..., force = true)` hands a command over while the valve state machine works on another valve: it overwrites `valvenr`, and `A_SET` reads `valvenr` again after an accepted calibration, so the move to the target would run on the forced valve with the target of the calibrated one. No firmware caller passes `force` (only test_motor.cpp does); the Rust keeps the parameter and the behaviour. | None today. A new caller of `force` must not use it while a calibration runs. |
+
+## Glue: main_loop
+
+| what | why it matters |
+|---|---|
+| The button line of `loop_system()` prints "Button pressed" on every other 100 ms tick while the button is held (`buttontest` is set by one tick and cleared by the next), not once per press; test_main.cpp asserts this. The Rust does the same. | Debug output on USART6 only. |
