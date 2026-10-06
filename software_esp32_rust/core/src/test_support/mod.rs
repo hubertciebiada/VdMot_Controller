@@ -1,6 +1,7 @@
 //! Shared test helpers (port of test/native/support) and the generators of the fuzz tests.
 
 pub mod rng;
+pub mod stm_golden;
 
 // for the module ports; not every port uses every generator
 #[allow(unused_imports)]
