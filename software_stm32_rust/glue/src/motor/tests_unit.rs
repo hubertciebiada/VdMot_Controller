@@ -1,15 +1,68 @@
 // No C++ counterpart in glue_motor: the C++ covers the motor parameters and the escalation only
-// through glue_system (smotc, scalx with the real motor.cpp), and the sim never puts the filtered
-// current exactly on the undercurrent threshold (its integer filter stays at 0 for 19 dmA). These
-// cases pin that behaviour of motor.cpp at the module.
+// through glue_system (smotc, scalx with the real motor.cpp), the sim never puts the filtered
+// current exactly on the undercurrent threshold (its integer filter stays at 0 for 19 dmA), and no
+// C++ case runs a keep-status move into an obstacle, idles between two moves of a valve or turns a
+// calibration stroke 65536 pulses long. These cases pin that behaviour of motor.cpp at the module.
 use vdm_stm_core::calibration::EscalationConfig;
 use vdm_stm_core::motor_params::MotorParams;
-use vdm_stm_core::move_classifier::{DIR_CLOSE, DIR_OPEN};
+use vdm_stm_core::move_classifier::{StopReason, DIR_CLOSE, DIR_OPEN};
+use vdm_stm_core::valve_codes::{ValveFault, ST_BLOCKED, ST_FAILED};
 
 use crate::board::BoardRev;
 
-use super::bench::Bench;
-use super::{Io, M_RES_NOCURRENT, M_RES_OPENS, M_RES_TURNING};
+use super::bench::{start_valves, Bench, REVS};
+use super::{
+    Io, CMD_A_OPEN, CMD_A_OPEN_END, MOVE_KEEP_STATUS, M_RES_NOCURRENT, M_RES_OPENS, M_RES_TURNING,
+};
+
+#[test]
+fn a_keep_status_move_to_the_end_stop_is_never_early() {
+    for rev in REVS {
+        let mut b = start_valves(rev);
+        b.place(0, 20);
+        b.m.mots[0].status = ST_BLOCKED;
+        // an obstacle after 360 counts: 2880 are expected from 20 % (early below 1440)
+        b.rig.valve[0].jam_from = 720 + 360;
+        b.rig.valve[0].jam_to = 100_000;
+        b.run(CMD_A_OPEN_END, 0, 0, MOVE_KEEP_STATUS);
+        assert_eq!(b.last(0).stop_reason, StopReason::EndStop as u8);
+        assert!(!b.diag(0).last_early);
+        assert_eq!(b.diag(0).early_stops, 0);
+        assert_eq!(b.m.mots[0].status, ST_BLOCKED);
+        assert_eq!(b.m.mots[0].actual_position, 100);
+    }
+}
+
+#[test]
+fn idle_ticks_count_no_movement() {
+    let mut b = start_valves(BoardRev::C2);
+    b.place(0, 20);
+    b.m.valves[0].learn_movements = 3;
+    b.run(CMD_A_OPEN, 0, 5, 0);
+    assert_eq!(b.m.valves[0].movements, 1);
+    assert_eq!(b.m.valves[0].learn_movements, 2);
+    // the valve state machine idles with valve 0 as its last valve
+    b.run_ms(1000);
+    assert_eq!(b.m.valves[0].movements, 1);
+    assert_eq!(b.m.valves[0].learn_movements, 2);
+}
+
+#[test]
+fn a_calibration_stroke_whose_count_runs_out_fails_with_a_stroke_timeout() {
+    let mut b = start_valves(BoardRev::C2);
+    // the closing stroke to the start position meets no end stop within 65536 pulses (33 s)
+    b.rig.valve[0].stroke = 200_000;
+    b.rig.valve[0].position = 100_000;
+    b.rig.valve[0].pulses_per_ms = 2.0;
+    b.learn(0);
+    assert_eq!(b.m.mots[0].status, ST_FAILED);
+    assert_eq!(b.m.mots[0].fault_reason, ValveFault::StrokeTimeout as u8);
+    assert_eq!(b.last(0).stop_reason, StopReason::Target as u8);
+    // 65536 pulses, saturated to 16 bit
+    assert_eq!(b.last(0).counted_counts, 65535);
+    assert_eq!(b.rig.valve[0].position, 100_000 - 65536);
+    assert!(b.diag(0).last_cal_failed);
+}
 
 #[test]
 fn motor_parameters_go_to_ram_and_to_the_eeprom_mirror() {

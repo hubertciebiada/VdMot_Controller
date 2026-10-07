@@ -1839,7 +1839,10 @@ impl MotorShared {
             }
         }
 
-        if self.mc.debouncecnt > 50 && self.mc.cyclecnt > 50 {
+        // C++: debouncecnt > 50 && cyclecnt > 50. Both count every turning tick from 0 at the
+        // motor start and cyclecnt starts again after each sample, so debouncecnt >= cyclecnt and
+        // the first condition holds whenever the second does.
+        if self.mc.cyclecnt > 50 {
             self.mc.cyclecnt = 0;
             // the signed sum only reaches stroke_mean_current(), which takes |sum| (at most 12000
             // samples of +-1000: no wrap)

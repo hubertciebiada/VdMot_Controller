@@ -71,6 +71,18 @@ fn the_bytes_read_back_to_the_same_state() {
 }
 
 #[test]
+fn every_byte_of_the_record_is_read_back_reserved_and_pad_included() {
+    // the CRC covers the reserved and pad bytes too (the C++ reads the whole struct)
+    let mut ws = sample();
+    ws.reserved = 0x0102;
+    ws.pad = 7;
+    ws.crc = crc16_ccitt(&warm_to_bytes(&ws)[..176]);
+    let back = warm_from_bytes(&warm_to_bytes(&ws));
+    assert_eq!(back, ws);
+    assert!(warm_state_valid(&back));
+}
+
+#[test]
 fn app_warm_save_writes_the_padding_as_0_and_keeps_the_cells_behind_the_warm_state() {
     let mut b = AppBench::new();
     b.app_setup();

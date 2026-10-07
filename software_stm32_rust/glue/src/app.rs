@@ -64,8 +64,6 @@ pub const LEARN_AFTER_MOVEMENTS_DEFAULT: u16 = LEARN_MOVEMENTS_DEFAULT;
 /// after x seconds a learning cycle is executed
 pub const LEARN_AFTER_TIME_DEFAULT: u32 = LEARN_TIME_DEFAULT_S;
 pub const NO_OF_MIN_COUNTS: u16 = 3000;
-/// init value of the temperature of a valve
-pub const VALVE_INIT_TEMPERATURE: i16 = -2000;
 /// marks that no sensor slot is selected
 pub const VALVE_SENSOR_UNKNOWN: u32 = 65535;
 /// rejected_target: no target known
@@ -1385,6 +1383,8 @@ mod stub_env;
 mod tests;
 #[cfg(test)]
 mod tests_mut;
+#[cfg(test)]
+mod tests_unit;
 #[cfg(test)]
 mod tests_v3;
 #[cfg(test)]
