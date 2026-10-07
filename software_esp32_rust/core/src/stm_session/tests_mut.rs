@@ -7,7 +7,7 @@ use crate::common::{parse_one_wire_id, TEMP_POWER_ON, TEMP_READ_ERROR, VAD_FAILE
 use crate::config::MqttMode;
 use crate::test_support::line_stm::AnswerCtx;
 use crate::test_support::session_rig::{cmd, cmd0, name, Rig, Session, TestPort};
-use crate::valve_model::{TargetSource, HEALTH_STALE};
+use crate::valve_model::{TargetSource, TargetSync, HEALTH_STALE};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::format;
@@ -1804,4 +1804,72 @@ fn the_scheduled_flag_is_consumed_per_valve() {
     let ev = r.port().with_code(EventCode::CalibStarted);
     let got: Vec<(u8, i32)> = ev.iter().map(|e| (e.valve, e.arg1)).collect();
     assert_eq!(got, [(1, 1), (1, 0), (0, 1)]);
+}
+
+#[test]
+fn a_forced_flash_skips_the_image_checks() {
+    // The command's force flag reaches the flasher: an image without the DEADBEEF string is
+    // flashed only when forced.
+    for force in [false, true] {
+        let mut r = Rig::new(3, 0x001);
+        r.start();
+        r.run(10000);
+        let mut img = image("C2");
+        img[6001] = b'X'; // "XEADBEEF"
+        r.port_mut().image.data = img;
+        r.sim.boot_pin_resets = 1;
+        let mut c = flash_cmd("new.bin", true);
+        c.force = force;
+        r.command(&c);
+        assert!(r.run_until(|r| !r.s.flashing(), 120000));
+        let done = r.port().with_code(EventCode::StmFlashDone);
+        assert_eq!(done.len(), usize::from(force), "{force}");
+        let failed = r.port().with_code(EventCode::StmFlashFailed);
+        assert_eq!(failed.len(), usize::from(!force), "{force}");
+        if let Some(e) = failed.first() {
+            assert_eq!(e.arg1, FlashError::ImageNoHandshake as i32);
+        }
+    }
+}
+
+#[test]
+fn a_count_reply_that_changes_the_count_asks_for_the_id_list() {
+    // A matched count-only reply ("gonec N", "gowvc N") whose count differs asks for the id
+    // list; the list reply, with the count already known, asks for nothing more.
+    let lists = |r: &Rig, cmd: &str| r.stm().lines_of(cmd).iter().filter(|l| *l != cmd).count();
+    let mut t = SensorRig::new();
+    t.r.run(45000);
+    let (temps, volts) = (lists(&t.r, "gonec"), lists(&t.r, "gowvc"));
+    t.bus.borrow_mut().temps.pop();
+    t.r.run(35000);
+    assert_eq!(lists(&t.r, "gonec"), temps + 1);
+    assert_eq!(lists(&t.r, "gowvc"), volts);
+    t.bus.borrow_mut().volts.pop();
+    t.r.run(35000);
+    assert_eq!(lists(&t.r, "gonec"), temps + 1);
+    assert_eq!(lists(&t.r, "gowvc"), volts + 1);
+    assert_eq!(t.r.port().last.temp_count, 2);
+    assert_eq!(t.r.port().last.volt_count, 1);
+}
+
+#[test]
+fn an_assembly_push_that_finds_the_queue_full_is_retried_later() {
+    // A staop that cannot be queued goes back to Pending (C++ onTargetPushDropped) and goes out
+    // once the queue has room. The model is put into the state a failed staop leaves.
+    let mut r = Rig::new(3, 0x001);
+    r.start();
+    r.run(10000);
+    r.stm_mut().silent = true;
+    fill_queue(&mut r);
+    let now = r.now;
+    r.s.model.set_assembly(0, now);
+    r.s.model.on_assembly_failed(0, now);
+    assert_eq!(r.s.model.valve(0).sync, TargetSync::Pending);
+    r.run(100);
+    assert_eq!(r.count("staop"), 0);
+    r.stm_mut().silent = false;
+    r.run(15000);
+    assert_eq!(r.count("staop 0"), 1);
+    assert_eq!(r.port().last.valves[0].source, TargetSource::Assembly);
+    assert_eq!(r.port().last.valves[0].sync, TargetSync::Synced);
 }
