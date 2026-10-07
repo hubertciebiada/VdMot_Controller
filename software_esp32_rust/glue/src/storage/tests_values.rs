@@ -57,6 +57,68 @@ fn values_a_fresh_device() {
 }
 
 #[test]
+fn values_keep_the_nvs_types_of_the_cpp_firmware_both_ways() {
+    // C++ Preferences: putULong (u32) boots and calSlot, putLong64 (i64) lastCal, putUChar (u8)
+    // haDrop, haLayout, frLatch, otaStm and imported. NVS reads are typed: a value of another
+    // type reads as missing, so a switch between the firmwares would lose it.
+    let rig = Rig::new();
+    let nvs = &rig.dev.nvs;
+    nvs.set_u32(NAMESPACE, KEY_BOOT_COUNT, 41);
+    nvs.set_u32(NAMESPACE, KEY_CALIB_SLOT, 20_260_923);
+    nvs.set_i64(NAMESPACE, KEY_LAST_CALIB, 1_790_136_000);
+    nvs.set_u8(NAMESPACE, KEY_HA_CLEANUP, 1);
+    nvs.set_u8(NAMESPACE, KEY_HA_LAYOUT, 2);
+    nvs.set_u8(NAMESPACE, KEY_FACTORY_LATCH, 1);
+    nvs.set_u8(NAMESPACE, KEY_OTA_STM, 1);
+    let st = rig.storage();
+    assert_eq!(st.increment_boot_count(), 42);
+    assert_eq!(st.load_calib_slot(), 20_260_923);
+    assert_eq!(st.load_last_calib(), 1_790_136_000);
+    assert!(st.ha_cleanup_done());
+    assert_eq!(st.ha_layout(), 2);
+    assert!(st.factory_latched());
+    assert!(st.ota_stm_required());
+    // what the Rust writes, the C++ reads with the same types
+    st.save_calib_slot(20_261_001);
+    st.save_last_calib(1_790_200_000);
+    st.set_ha_layout(3);
+    let types = [
+        (KEY_BOOT_COUNT, NvsType::U32),
+        (KEY_CALIB_SLOT, NvsType::U32),
+        (KEY_LAST_CALIB, NvsType::I64),
+        (KEY_HA_CLEANUP, NvsType::U8),
+        (KEY_HA_LAYOUT, NvsType::U8),
+        (KEY_FACTORY_LATCH, NvsType::U8),
+        (KEY_OTA_STM, NvsType::U8),
+    ];
+    let check = |types: &[(&str, NvsType)]| {
+        for (key, ty) in types {
+            let e = nvs
+                .get(NAMESPACE, key)
+                .unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!(e.ty, *ty, "{key}");
+        }
+    };
+    check(&types);
+    assert_eq!(nvs_int(&rig.dev, NAMESPACE, KEY_BOOT_COUNT), 42);
+    assert_eq!(nvs_int(&rig.dev, NAMESPACE, KEY_CALIB_SLOT), 20_261_001);
+    assert_eq!(nvs_int(&rig.dev, NAMESPACE, KEY_LAST_CALIB), 1_790_200_000);
+    assert_eq!(nvs_int(&rig.dev, NAMESPACE, KEY_HA_LAYOUT), 3);
+    // written fresh on an erased namespace
+    assert!(st.factory_reset());
+    st.set_ha_cleanup_done();
+    st.set_ota_stm_required(true);
+    st.increment_boot_count();
+    check(&[
+        (KEY_IMPORTED, NvsType::U8),
+        (KEY_FACTORY_LATCH, NvsType::U8),
+        (KEY_HA_CLEANUP, NvsType::U8),
+        (KEY_OTA_STM, NvsType::U8),
+        (KEY_BOOT_COUNT, NvsType::U32),
+    ]);
+}
+
+#[test]
 fn values_nvs_that_cannot_be_opened_reads_as_zero_and_refuses_the_reset() {
     let rig = Rig::new();
     let nvs = &rig.dev.nvs;
