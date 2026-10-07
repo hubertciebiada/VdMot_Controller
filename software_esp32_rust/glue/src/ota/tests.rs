@@ -468,10 +468,18 @@ fn begin_a_confirmed_image_ignores_and_erases_ota_stm() {
     assert_eq!((e.arg1, e.arg2), (-3, 0));
 }
 
+/// An image on trial whose loopback self-check just answered 200 (`stm_required` as given).
+fn pending_checked(stm_required: bool) -> Rig {
+    Rig::pending(b"HTTP/1.1 200 OK\r\n", stm_required)
+}
+
 #[test]
 fn service_restart_a_user_restart_confirms_an_image_on_trial_first() {
-    let rig = Rig::pending(b"", false);
+    // Rust: with a fresh passing self-check (C++: net up was enough, design 6.3)
+    let rig = pending_checked(false);
     let mut svc = rig.begun();
+    svc.service(0, true, false, true);
+    assert!(rig.shared.health().http_ok);
     rig.request_restart(0, 0, 0);
     svc.service_restart(0, true, false);
     rig.host.state().save_state = StmSaveState::Saved;
@@ -484,9 +492,53 @@ fn service_restart_a_user_restart_confirms_an_image_on_trial_first() {
 }
 
 #[test]
-fn service_restart_a_user_restart_without_the_required_stm_link_does_not_confirm() {
-    let rig = Rig::pending(b"", true);
+fn service_restart_a_user_restart_without_a_passing_self_check_counts_as_a_boot() {
+    // Rust only: reason 0 also comes over MQTT (`cmd/restart`). Without a fresh 200 of the
+    // loopback self-check nothing proves the web server, and a confirmed image without one
+    // takes no upload and no switch back: the restart counts as a boot of the trial.
+    // No self-check yet (the web server has not started):
+    let rig = Rig::pending(b"HTTP/1.1 200 OK\r\n", false);
     let mut svc = rig.begun();
+    svc.service(0, true, false, false);
+    rig.request_restart(0, 0, 0);
+    svc.service_restart(0, true, false);
+    rig.host.state().save_state = StmSaveState::Saved;
+    assert_eq!(run(|| svc.service_restart(0, true, false)), restarted());
+    assert_eq!(rig.dev.ota.knobs().mark_valids, 0);
+    assert!(!rig.host.has(EventCode::AppMarkedValid));
+    assert!(on_trial_in_nvs(&rig));
+    drop(svc);
+    // a self-check that failed (the loopback server closes without an answer), also for a
+    // factory reset:
+    for reason in [0, 3] {
+        let rig = Rig::pending(b"", false);
+        let mut svc = rig.begun();
+        svc.service(0, true, false, true);
+        assert!(!rig.shared.health().http_ok);
+        rig.request_restart(reason, 0, 0);
+        svc.service_restart(0, true, false);
+        rig.host.state().save_state = StmSaveState::Saved;
+        assert_eq!(run(|| svc.service_restart(0, true, false)), restarted());
+        assert_eq!(rig.dev.ota.knobs().mark_valids, 0, "reason {reason}");
+        assert!(on_trial_in_nvs(&rig));
+        drop(svc);
+        let next = Rig::boot(&rig.board);
+        assert_eq!(
+            next.guard.verdict(),
+            crate::boot_guard::BootVerdict::Trial {
+                boots: 2,
+                stm_required: false
+            }
+        );
+    }
+}
+
+#[test]
+fn service_restart_a_user_restart_without_the_required_stm_link_does_not_confirm() {
+    let rig = pending_checked(true);
+    let mut svc = rig.begun();
+    svc.service(0, true, false, true);
+    assert!(rig.shared.health().http_ok);
     rig.request_restart(3, 0, 0);
     svc.service_restart(0, true, false);
     rig.host.state().save_state = StmSaveState::Saved;
@@ -498,8 +550,10 @@ fn service_restart_a_user_restart_without_the_required_stm_link_does_not_confirm
 
 #[test]
 fn service_restart_a_watchdog_restart_does_not_confirm_an_image_on_trial() {
-    let rig = Rig::pending(b"", false);
+    let rig = pending_checked(false);
     let mut svc = rig.begun();
+    svc.service(0, true, true, true);
+    assert!(rig.shared.health().http_ok);
     rig.request_restart(2, 0, 0);
     svc.service_restart(0, true, true);
     rig.host.state().save_state = StmSaveState::Saved;

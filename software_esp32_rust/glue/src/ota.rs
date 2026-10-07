@@ -556,9 +556,10 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
     /// App thread, every pass: a requested restart when it is due and no STM flash runs: the
     /// STM EEPROM save (the restart gate, 12 s guard: with jumper X20 the ESP restart also
     /// resets the STM) and the desired targets (except for a factory reset), then the
-    /// confirmation of an image on trial by a user restart (reasons 0 and 3, when the network
-    /// and the required STM link are up), `otaStm` for an upload and no confirmed image left
-    /// behind ([`BootGuard::leave_for_upload`]), the log flush, and the
+    /// confirmation of an image on trial by a user restart (reasons 0 and 3, when the network,
+    /// the loopback self-check of the last 30 s and the required STM link are up; otherwise the
+    /// restart counts as a boot of the trial), `otaStm` for an upload and no confirmed image
+    /// left behind ([`BootGuard::leave_for_upload`]), the log flush, and the
     /// restart, or for a rollback (4) and a switch back (7) the boot guard's switch to the other
     /// image. A switch that cannot select the other image returns: this image keeps running as
     /// confirmed (event 107 -3) and later restarts go through the gate again.
@@ -591,9 +592,13 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
                 b"stm task silent",
             );
         }
-        // reboot button, network/station settings (0) or factory reset (3) during a trial
+        // reboot button, network/station settings (0) or factory reset (3) during a trial, with
+        // a fresh self-check of the web server: reason 0 also comes over MQTT (`cmd/restart`),
+        // which proves no web server, and a confirmed image without one takes no upload
         let user = reason == USER || reason == FACTORY_RESET;
-        if self.validator.confirm_before_restart(user, net_up, link_up) {
+        if self.validator.http_ok(now_ms)
+            && self.validator.confirm_before_restart(user, net_up, link_up)
+        {
             self.mark_valid();
         }
         if reason == OTA {

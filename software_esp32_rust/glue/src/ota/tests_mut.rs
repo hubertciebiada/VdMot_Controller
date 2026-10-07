@@ -152,8 +152,10 @@ fn service_restart_an_upload_restart_without_an_upload_of_this_boot_stores_0() {
 
 #[test]
 fn service_restart_a_factory_reset_confirms_an_image_on_trial_first() {
-    let rig = pending(b"", Vec::new(), DEVICE_IP);
+    // Rust: with a fresh passing self-check (design 6.3)
+    let rig = pending(&ok_200(), Vec::new(), DEVICE_IP);
     let mut svc = rig.begun();
+    svc.service(0, true, true, true);
     rig.request_restart(3, 0, 0);
     restart_through_gate(&rig, &mut svc);
     assert_eq!(rig.dev.ota.knobs().mark_valids, 1);
@@ -161,9 +163,24 @@ fn service_restart_a_factory_reset_confirms_an_image_on_trial_first() {
 }
 
 #[test]
+fn service_restart_a_user_restart_29_999_ms_after_the_passing_self_check_still_confirms() {
+    // Rust: the self-check counts while it is younger than 30 s (`HTTP_FRESH_MS`)
+    for (at, confirmed) in [(29_999, 1), (30_000, 0)] {
+        let rig = pending(&ok_200(), Vec::new(), DEVICE_IP);
+        let mut svc = rig.begun();
+        svc.service(0, true, true, true);
+        rig.dev.clock.set_ms(at);
+        rig.request_restart(0, 0, 0);
+        restart_through_gate(&rig, &mut svc);
+        assert_eq!(rig.dev.ota.knobs().mark_valids, confirmed, "at {at} ms");
+    }
+}
+
+#[test]
 fn service_restart_a_requested_rollback_restart_is_a_warning_and_confirms_nothing() {
-    let rig = pending(b"", Vec::new(), DEVICE_IP);
+    let rig = pending(&ok_200(), Vec::new(), DEVICE_IP);
     let mut svc = rig.begun();
+    svc.service(0, true, true, true);
     rig.request_restart(4, 0, 0);
     assert_eq!(
         rig.host.first(EventCode::RebootRequested).severity,

@@ -146,7 +146,9 @@ fn a_watchdog_restart_during_the_trial_counts_as_a_boot() {
 #[test]
 fn a_user_restart_during_the_trial_with_the_network_up_confirms_the_image_first() {
     let rig = Rig::trial(false);
+    healthy_network(&rig);
     let mut svc = rig.begun();
+    svc.service(0, true, false, true); // the loopback self-check answers 200
     rig.request_restart(0, 1000, 0);
     rig.dev.clock.set_ms(1000);
     restart_path(&rig, &mut svc, 1000); // net up, no STM link required
@@ -154,6 +156,38 @@ fn a_user_restart_during_the_trial_with_the_network_up_confirms_the_image_first(
     drop(svc);
     let rig = reboot(rig);
     assert_eq!(rig.dev.ota.running().app, Some(APP_B));
+    assert_eq!(rig.guard.verdict(), BootVerdict::Confirmed);
+}
+
+#[test]
+fn an_mqtt_restart_of_an_image_whose_web_server_never_answered_does_not_confirm_it() {
+    // Rust only: `cmd/restart` (reason 0) during the trial of an image whose web server does not
+    // work: the network and MQTT are up, the loopback self-check fails. Confirming it would
+    // leave a confirmed image that takes no upload and no switch back; three such restarts
+    // switch back to A instead.
+    let board = FakeBoard::with_slots([SlotImage::glue(APP_A), SlotImage::glue(APP_B)], 1);
+    for boots in 1..=3 {
+        let rig = Rig::boot(&board);
+        assert_eq!(rig.guard.verdict(), trial(boots, false));
+        {
+            let mut s = rig.host.state();
+            s.net_up = true;
+            s.net_ip = DEVICE_IP;
+        }
+        rig.loopback(b"", Vec::new()); // connects, closes without an answer
+        let mut svc = rig.begun();
+        rig.service_seconds(&mut svc, 0, 30_000, true, false);
+        assert!(!rig.shared.health().http_ok);
+        rig.request_restart(0, 1000, 0);
+        restart_path(&rig, &mut svc, 31_000);
+        assert!(!rig.host.has(EventCode::AppMarkedValid));
+    }
+    let dev = board.boot();
+    let r = run(|| BootGuard::boot(&dev.nvs, &dev.ota, &dev.rtc, &dev.system));
+    assert_eq!(r, Ended::Reset(Reset::Software)); // boot 4: the guard switched in main
+    drop(dev);
+    let rig = Rig::boot(&board);
+    assert_eq!(rig.dev.ota.running().app, Some(APP_A));
     assert_eq!(rig.guard.verdict(), BootVerdict::Confirmed);
 }
 

@@ -670,7 +670,7 @@ State of the running image (each image runs the same machine when it boots):
 | boot | `AppId` = `otaOk` | Confirmed |
 | boot | `AppId` ≠ `otaOk`, no trial record for it (or one that says `SwitchedBack`) | Trial, boot 1 |
 | Trial, boot n | any reset before the confirmation | Trial, boot n + 1; above 3 → SwitchedBack, restart into the fallback |
-| Trial | 120 s healthy, or a user restart while net (and stm when required) are up | Confirmed |
+| Trial | 120 s healthy, or a user restart while net, a fresh passing self-check (and stm when required) are up | Confirmed |
 | Trial | 15 min without 120 s of health | SwitchedBack, restart into the fallback |
 | Trial | no valid fallback, or the fallback is the image last switched away from | Confirmed (event 107 arg1 -3) |
 | any | `POST /api/system/ota/switch-back` | restart into the fallback (SwitchedBack when on trial); from a confirmed image no image stays confirmed, so the target runs a trial with this image as its fallback |
@@ -713,7 +713,7 @@ across software, panic and watchdog resets; a power cycle then restarts the coun
 |---|---|
 | `OtaValidator` → MarkValid (120 s healthy) | `otaOk` := running `AppId`, `otaTrial` removed, RTC mirror cleared, event 108 (seconds after boot) |
 | `OtaValidator` → Rollback (15 min without 120 s of health) | restart reason 4 with the missing checks (D§16 path: STM EEPROM gate, target flush, log flush, MQTT offline); at its end `otaTrial` := `SwitchedBack`, breadcrumb (reason 2), `set_boot(fallback)`, restart; a refused `set_boot` → event 107 arg1 -3, trial ended as confirmed, keep running |
-| User restart (reasons 0 and 3) during a trial | `confirmBeforeRestart`: net up and (stm when required) → confirm first, as C++; otherwise the restart counts as a boot |
+| User restart (reasons 0 and 3) during a trial | `confirmBeforeRestart`: net up, a passing loopback self-check younger than 30 s and (stm when required) → confirm first; otherwise the restart counts as a boot. C++ needed no self-check: its reason 0 came over HTTP, here `cmd/restart` of MQTT is reason 0 too and proves no web server |
 | `POST /api/system/ota/switch-back` `{"confirm":"switch-back"}` | refused with 400 `confirm_required`, 409 `busy` (upload or flash), 409 `restarting`, 409 `no_fallback` (`other().app` is `None`); else restart reason 7 (new, Info) → at the end of the restart path `set_boot(fallback)` and restart; on trial `SwitchedBack` and the fallback becomes `otaOk`, from a confirmed image `otaOk` is removed (the target may be the image that failed its last trial or one that never ran: it runs a trial with this image as its fallback). Works in any state: it is the remedy for a confirmed image that misbehaves |
 | ESP upload during a trial | refused: `409 upload_failed "image on trial"`; the upload would overwrite the fallback |
 | Heap guard, network watchdog, TWDT or panic reset during a trial | counts as a boot |
