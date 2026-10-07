@@ -20,6 +20,7 @@ pub mod shared;
 pub mod stm_link;
 pub mod stm_service;
 pub mod storage;
+pub mod web_server;
 
 #[cfg(test)]
 pub(crate) mod testkit;
