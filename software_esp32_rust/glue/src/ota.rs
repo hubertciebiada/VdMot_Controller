@@ -200,6 +200,9 @@ pub trait OtaHost {
     fn net_ip(&mut self) -> u32;
     /// C++ `app::stmFlashActive()`.
     fn stm_flash_active(&mut self) -> bool;
+    /// Rust only (D9): the STM's sector 0 is erased and not written yet
+    /// (`AppShared::stm_sector0_at_risk`).
+    fn stm_sector0_at_risk(&mut self) -> bool;
     /// C++ `storage::imageUploadActive()`: an STM image upload runs.
     fn image_upload_active(&mut self) -> bool;
     /// C++ `app::stmLinkState()`.
@@ -420,6 +423,8 @@ pub struct OtaService<'a, P: Platform, H: OtaHost> {
     guard: BootGuard,
     validator: OtaValidator,
     gate: RestartGate,
+    /// D9: the due restart logged that it waits for the STM's sector 0
+    deferral_logged: bool,
 }
 
 impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
@@ -432,6 +437,7 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
             guard,
             validator: OtaValidator::default(),
             gate: RestartGate::default(),
+            deferral_logged: false,
         }
     }
 
@@ -562,14 +568,20 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
     /// left behind ([`BootGuard::leave_for_upload`]), the log flush, and the
     /// restart, or for a rollback (4) and a switch back (7) the boot guard's switch to the other
     /// image. A switch that cannot select the other image returns: this image keeps running as
-    /// confirmed (event 107 -3) and later restarts go through the gate again.
+    /// confirmed (event 107 -3) and later restarts go through the gate again. A restart that
+    /// waits while the STM's sector 0 is not written (D9) logs once why (event 123).
     pub fn service_restart(&mut self, now_ms: u32, net_up: bool, link_up: bool) {
         let Some(reason) = self.shared.due_restart(now_ms) else {
             return;
         };
         // never in the middle of an STM flash (the STM would be left half-erased): retried
-        // every pass until it is done
+        // every pass until it is done; while its sector 0 is not written that may take long
+        // (the restart would leave the STM without a vector table), so it says once why
         if self.host.stm_flash_active() {
+            if !self.deferral_logged && self.host.stm_sector0_at_risk() {
+                self.deferral_logged = true;
+                self.log(EventCode::RestartDeferred, i32::from(reason), 0, b"");
+            }
             return;
         }
         match self.gate.update(self.host.stm_save_state(), now_ms) {
@@ -626,6 +638,7 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
         }
         self.publish_trial();
         self.gate.reset();
+        self.deferral_logged = false;
         self.shared.clear_restart();
     }
 }

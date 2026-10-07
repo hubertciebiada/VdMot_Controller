@@ -342,6 +342,9 @@ impl<P: Platform> MqttHost for Wire<'_, P> {
     fn request_restart(&self, reason: u8, delay_ms: u32) {
         Wire::request_restart(self, reason, delay_ms, 0);
     }
+    fn stm_sector0_at_risk(&self) -> bool {
+        self.shared.app.stm_sector0_at_risk()
+    }
 }
 
 impl<P: Platform> StmLinkHost for Wire<'_, P> {
@@ -419,6 +422,9 @@ impl<P: Platform> WebHost for Wire<'_, P> {
     }
     fn stm_flash_active(&self) -> bool {
         self.shared.app.stm_flash_active()
+    }
+    fn stm_sector0_at_risk(&self) -> bool {
+        self.shared.app.stm_sector0_at_risk()
     }
     fn stm_support(&self) -> StmSupport {
         self.shared.app.stm_support()
@@ -618,6 +624,9 @@ impl<P: Platform> OtaHost for OtaWire<'_, P> {
     }
     fn stm_flash_active(&mut self) -> bool {
         self.wire.shared.app.stm_flash_active()
+    }
+    fn stm_sector0_at_risk(&mut self) -> bool {
+        self.wire.shared.app.stm_sector0_at_risk()
     }
     fn image_upload_active(&mut self) -> bool {
         self.wire.storage.image_upload_active()

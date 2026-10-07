@@ -54,6 +54,8 @@ pub struct AppShared {
     store: Mutex<Store>,
     link: AtomicU8,
     flash_active: AtomicBool,
+    /// D9: the STM's sector 0 is erased and not written (`FlashStatus::sector0_at_risk`)
+    sector0: AtomicBool,
     proto: AtomicU8,
     support: AtomicU8,
     revision: AtomicU32,
@@ -85,6 +87,7 @@ impl AppShared {
             }),
             link: AtomicU8::new(LinkState::Unknown as u8),
             flash_active: AtomicBool::new(false),
+            sector0: AtomicBool::new(false),
             proto: AtomicU8::new(0),
             support: AtomicU8::new(StmSupport::Unknown as u8),
             revision: AtomicU32::new(0),
@@ -128,6 +131,13 @@ impl AppShared {
         self.flash_active.load(Ordering::SeqCst)
     }
 
+    /// D9 (F4 of REVIEW-ESP-SAFETY.md): the STM's sector 0 is erased and not written yet, from
+    /// the last snapshot. An ESP restart now resets the STM into nothing: the restarts the ESP
+    /// controls are refused or wait (an STM flash runs, so `stm_flash_active` holds too).
+    pub fn stm_sector0_at_risk(&self) -> bool {
+        self.sector0.load(Ordering::SeqCst)
+    }
+
     /// The stm thread, right after the flasher started: other tasks see it before the next
     /// snapshot.
     pub fn mark_stm_flash_active(&self) {
@@ -150,7 +160,7 @@ impl AppShared {
     }
 
     /// The stm thread publishes a snapshot: the copy first, then the cheap values, the revision
-    /// last. The flash is active in every phase but Idle, Done and Failed.
+    /// last. The flash is active in every phase but Idle, Done and Failed (Sector0Pending too).
     pub fn publish_stm_snapshot(&self, s: &StmSnapshot) {
         StmSnapshot::clone_from(&mut lock(&self.store).snapshot, s);
         self.link.store(s.link as u8, Ordering::SeqCst);
@@ -159,6 +169,8 @@ impl AppShared {
             FlashPhase::Idle | FlashPhase::Done | FlashPhase::Failed
         );
         self.flash_active.store(!idle, Ordering::SeqCst);
+        self.sector0
+            .store(s.flash.sector0_at_risk, Ordering::SeqCst);
         self.proto.store(s.proto, Ordering::SeqCst);
         self.support.store(s.support as u8, Ordering::SeqCst);
         self.revision.store(s.revision, Ordering::SeqCst);

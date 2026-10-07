@@ -526,6 +526,7 @@ received chunk so the idle task of core 0 runs during long flash writes (TWDT id
 | 9 | A body that stalls | waited for the client | the glue gives up after 3 receive timeouts of 5 s in a row: no answer, upload aborted | accept |
 | 10 | ESP upload while the new image is on trial | accepted (the devices never reached PENDING_VERIFY) | `409 upload_failed "image on trial"` (§6.5) | decision 7.5 |
 | 11 | Switch back to the other image | not possible | `POST /api/system/ota/switch-back` (§6.3) | decision 7.6 |
+| 12 | Restarts while the STM's sector 0 is erased and not written (the sector-0 pass of D9, from its erase until its verify, and `sector0_pending` after a failed pass) | a restart request waits for the end of the flash (202), factory reset 409 `flashing`, uploads 409 `busy`; the flasher reset the STM after any failure, so the state did not last | the ESP restart would reset the STM into an erased sector 0, which needs BOOT0: reboot, factory reset, switch back, uploads and the flash abort answer 409 `stm_sector0_pending` "STM sector 0 not written: keep the power on", MQTT `cmd/restart` is rejected ("stm sector 0 pending"), the automatic restarts (network watchdog, network revert, rollback, heap guard, a network settings change) wait as during every flash and log event 123 `restart_deferred` once; a flash request while `sector0_pending` repeats the pass at once (202) | F4 of [REVIEW-ESP-SAFETY.md](REVIEW-ESP-SAFETY.md) |
 
 Kept 1:1: every document and error body, status codes otherwise, Content-Length framing, the
 chunked log, ETags, the 410 table, the guard, the limits, the reason phrases.
@@ -760,7 +761,7 @@ event (reset reason `sw`).
 | User restarts | §6.3; the restart path is unchanged otherwise |
 | Network trial (D§16) | a network change during an OTA trial restarts with reason 0 → confirms the image when healthy; a network revert restarts with reason 5 → counts as a boot |
 | Factory reset (HTTP or GPIO2) | keeps `frLatch`, `otaOk` and `otaTrial` (Rust only; a C++ factory reset erases them, and the next Rust boot validates itself again) |
-| STM flash | a switch at run time waits like every restart (no restart during a flash); the boot-time switch happens before the STM link starts |
+| STM flash | a switch at run time waits like every restart (no restart during a flash; while the STM's sector 0 is not written the restart routes refuse, §4.7 row 12); the boot-time switch happens before the STM link starts |
 | Ping-pong | an automatic switch never goes back to the image that failed the last trial (§6.2 step 4); a manual switch is always allowed, and from a confirmed image its target runs a trial |
 
 ### 6.6 Coverage

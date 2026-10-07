@@ -490,6 +490,32 @@ fn a_button_acts_only_after_the_broker_echoed_its_clear() {
 }
 
 #[test]
+fn a_restart_is_rejected_while_the_stm_sector_0_is_not_written() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.settle(&mut c, 2);
+    rig.host.state().sector0_at_risk = true;
+    rig.deliver("VdMot/cmd/restart", "PRESS");
+    rig.run(&mut c, 1);
+    rig.deliver("VdMot/cmd/restart", "");
+    rig.run(&mut c, 1);
+    assert!(rig.host.state().restart_requests.is_empty());
+    let ev = rig.rejected();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(Rig::text(&ev[0]), "stm sector 0 pending");
+    assert_eq!(rig.shared.regulator_state().command_seq, 0);
+    // written: the next press restarts
+    rig.host.state().sector0_at_risk = false;
+    rig.deliver("VdMot/cmd/restart", "PRESS");
+    rig.run(&mut c, 1);
+    rig.deliver("VdMot/cmd/restart", "");
+    rig.run(&mut c, 1);
+    assert_eq!(rig.host.state().restart_requests, vec![(0, 1000)]);
+    assert_eq!(rig.rejected().len(), 1);
+}
+
+#[test]
 fn a_button_without_the_echo_is_rejected_after_5_s() {
     let rig = Rig::new();
     let mut c = rig.client();

@@ -609,6 +609,28 @@ fn wire_net_and_ota_hosts_see_the_network_of_net() {
 }
 
 #[test]
+fn wire_every_host_sees_the_stm_sector_0_of_the_snapshot() {
+    let dev = FakeBoard::new().boot();
+    let shared = Shared::new();
+    let p = ports(&dev);
+    let logger = p.logger(&shared);
+    let st = storage(p, &shared);
+    let sk = sinks(p, &logger, &shared, dev.udp.clone());
+    let sv = Mutex::new(stm_service(p, &shared, &st));
+    let w = Wire::new(p, &shared, &st);
+    let mut o = OtaWire::new(Wire::new(p, &shared, &st), &sk, &sv);
+    let mut snap = Box::<StmSnapshot>::default();
+    snap.flash.phase = FlashPhase::Sector0Pending;
+    for at_risk in [true, false] {
+        snap.flash.sector0_at_risk = at_risk;
+        shared.app.publish_stm_snapshot(&snap);
+        assert_eq!(WebHost::stm_sector0_at_risk(&w), at_risk);
+        assert_eq!(MqttHost::stm_sector0_at_risk(&w), at_risk);
+        assert_eq!(o.stm_sector0_at_risk(), at_risk);
+    }
+}
+
+#[test]
 fn wire_net_host_logs_restarts_and_keeps_the_config_and_the_trial_record() {
     let dev = FakeBoard::new().boot();
     with_wire(&dev, |s, _st, mut w| {

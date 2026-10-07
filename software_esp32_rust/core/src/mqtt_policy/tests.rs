@@ -408,10 +408,15 @@ fn reject_reason_names() {
         reject_reason_name(RejectReason::ClearNotConfirmed),
         "clear not confirmed"
     );
+    // Rust only (D9)
+    assert_eq!(
+        reject_reason_name(RejectReason::StmSector0Pending),
+        "stm sector 0 pending"
+    );
     // C++ rejectReasonName(static_cast<RejectReason>(99)) == "": no Rust form.
     assert_eq!(RejectReason::from_raw(99), None);
-    assert_eq!(RejectReason::from_raw(8), None);
-    for v in 0..8u8 {
+    assert_eq!(RejectReason::from_raw(9), None);
+    for v in 0..9u8 {
         assert_eq!(RejectReason::from_raw(v).map(|r| r as u8), Some(v));
     }
 }

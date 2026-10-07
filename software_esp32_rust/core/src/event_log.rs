@@ -126,6 +126,9 @@ pub enum EventCode {
     FilesRemoved = 121,
     /// heap guard restart; arg1 free heap, arg2 largest free block
     HeapCritical = 122,
+    /// Rust only (D9): a due restart waits while the STM's sector 0 is erased and not written
+    /// (an ESP restart resets the STM); arg1 RebootReason
+    RestartDeferred = 123,
     // network / MQTT / web 2xx
     /// arg1 interface (1 eth, 2 wifi); text IP
     NetUp = 200,
@@ -487,7 +490,7 @@ const fn special(
 
 /// Registry order = the order of [`event_mqtt_names`].
 #[rustfmt::skip]
-static CODES: [CodeInfo; 88] = {
+static CODES: [CodeInfo; 89] = {
     use EventCode as C;
     use EventMqtt::{Always, No, WarnPlus as Warn};
     use Severity::{Critical, Debug, Error, Info, Warning};
@@ -544,6 +547,9 @@ static CODES: [CodeInfo; 88] = {
                     end_txt!())),
         templated(C::HeapCritical, Error, Warn, "heap_critical",
             concat!("heap critical, restarting (free ", arg1!(), ", largest block ", arg2!(), ")")),
+        templated(C::RestartDeferred, Warning, Warn, "restart_deferred",
+            concat!("restart deferred (", name1!("b"), "): STM sector 0 not written, keep the ",
+                    "power on")),
         templated(C::NetUp, Info, Warn, "net_up",
             concat!("network up (", name1!("i"), if_txt!(), ", ", txt!(), end_txt!(), ")")),
         templated(C::NetDown, Warning, Warn, "net_down",
@@ -980,6 +986,7 @@ fn add_name(t: &mut TextBuf<'_>, set: u8, v: i32) {
     let byte = u8::try_from(v).ok();
     let s = match set {
         b'r' => zero_based(&RESET_REASONS, v),
+        b'b' => zero_based(&REBOOT_REASONS, v),
         b'i' => one_based(&INTERFACES, v),
         b'j' => one_based(&IFACE_SETS, v),
         b'l' => one_based(&LOG_STEPS, v),

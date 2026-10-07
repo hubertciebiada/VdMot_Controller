@@ -293,6 +293,9 @@ pub trait MqttHost {
     fn restart_pending(&self) -> bool;
     /// `ota::requestRestart(reason, delayMs)`.
     fn request_restart(&self, reason: u8, delay_ms: u32);
+    /// Rust only (D9): the STM's sector 0 is erased and not written yet
+    /// (`AppShared::stm_sector0_at_risk`).
+    fn stm_sector0_at_risk(&self) -> bool;
 }
 
 impl<T: MqttHost + ?Sized> MqttHost for &T {
@@ -355,6 +358,9 @@ impl<T: MqttHost + ?Sized> MqttHost for &T {
     }
     fn request_restart(&self, reason: u8, delay_ms: u32) {
         (**self).request_restart(reason, delay_ms)
+    }
+    fn stm_sector0_at_risk(&self) -> bool {
+        (**self).stm_sector0_at_risk()
     }
 }
 
@@ -1416,6 +1422,11 @@ where
             InboundAction::CalibrateValve => self.submit(StmCommandType::Calibrate, d.valve),
             InboundAction::CalibrateAll => self.submit(StmCommandType::Calibrate, ALL_VALVES),
             InboundAction::Restart => {
+                // D9 (F4): the restart would reset the STM, whose sector 0 is not written
+                if self.host.stm_sector0_at_risk() {
+                    self.reject_command(RejectReason::StmSector0Pending, d.valve, 0);
+                    return;
+                }
                 self.host
                     .request_restart(RESTART_REASON_USER, RESTART_DELAY_MS);
                 true

@@ -689,6 +689,9 @@ impl MqttHost for Host {
         false
     }
     fn request_restart(&self, _reason: u8, _delay_ms: u32) {}
+    fn stm_sector0_at_risk(&self) -> bool {
+        false
+    }
 }
 
 type Task<'a> = MqttClient<'a, StdClock, MemFs, CuttableTcp, Grant, MemRtc, NoWatchdog, &'a Host>;

@@ -142,6 +142,17 @@ decisions of [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator):
   pass (about 2 s) instead of the whole flash; an STM that runs a Rust image still answers the
   next flash after an interruption in the first pass
   ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover), [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator) D9).
+- The bytes of sector 0 are read and checked before its erase, and the sector-0 pass has retries
+  of its own. When the pass fails after its erase, the ESP does not reset the STM (it would not
+  start again): the flash shows the new phase `sector0_pending` (legacy status 8, event
+  `stm_sector0_pending`), keeps the STM in its ROM bootloader and repeats the pass every 30 s,
+  or at once when the flash is started again (any image). The flash abort is refused then
+  ([REVIEW-ESP-SAFETY.md](REVIEW-ESP-SAFETY.md) F4, [INSTALL.md §4.4](INSTALL.md#44-when-something-fails)).
+- While the STM's sector 0 is erased and not written, the ESP refuses its restarts: reboot,
+  factory reset, switch back, uploads and the flash abort answer `409 stm_sector0_pending`, MQTT
+  `cmd/restart` is rejected ("stm sector 0 pending"), and the automatic restarts (network
+  watchdog, rollback, heap guard, network settings) wait and log `restart_deferred`
+  ([GLUE-DESIGN-ESP.md §4.7](GLUE-DESIGN-ESP.md#47-behaviour-that-changes), row 12).
 
 ### C++ 2.1.7 behaviour kept on purpose
 

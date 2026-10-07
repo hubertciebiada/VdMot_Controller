@@ -309,6 +309,8 @@ pub enum RejectReason {
     UnknownCommand = 5,
     QueueFull = 6,
     ClearNotConfirmed = 7,
+    /// Rust only (D9): `cmd/restart` while the STM's sector 0 is not written
+    StmSector0Pending = 8,
 }
 
 impl RejectReason {
@@ -322,6 +324,7 @@ impl RejectReason {
             Self::UnknownCommand,
             Self::QueueFull,
             Self::ClearNotConfirmed,
+            Self::StmSector0Pending,
         ]
         .get(usize::from(v))
         .copied()
@@ -329,7 +332,7 @@ impl RejectReason {
 }
 
 /// "", "payload", "unknown valve", "inactive", "unsupported", "unknown command", "queue full",
-/// "clear not confirmed".
+/// "clear not confirmed", "stm sector 0 pending".
 pub fn reject_reason_name(r: RejectReason) -> &'static str {
     match r {
         RejectReason::None => "",
@@ -340,6 +343,7 @@ pub fn reject_reason_name(r: RejectReason) -> &'static str {
         RejectReason::UnknownCommand => "unknown command",
         RejectReason::QueueFull => "queue full",
         RejectReason::ClearNotConfirmed => "clear not confirmed",
+        RejectReason::StmSector0Pending => "stm sector 0 pending",
     }
 }
 

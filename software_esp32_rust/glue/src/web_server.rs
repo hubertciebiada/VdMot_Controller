@@ -59,7 +59,9 @@ use vdm_esp_core::stm_codec::{
     breakaway_valid, learn_movements_valid, motor_chars_valid, Breakaway, MotorChars, MoveDir,
     Profile,
 };
-use vdm_esp_core::stm_flasher::{check_board, flash_error_name, BoardCheck, FlashError};
+use vdm_esp_core::stm_flasher::{
+    check_board, flash_error_name, BoardCheck, FlashError, FlashPhase,
+};
 use vdm_esp_core::stm_types::{StmCommand, StmCommandType, StmSnapshot};
 use vdm_esp_core::valve_model::TargetSource;
 use vdm_esp_core::version::{format_version, StmSupport};
@@ -127,6 +129,8 @@ const QUERY_PATH_MAX: usize = 256;
 const CONFIG_PATH_SIZE: usize = 72;
 /// The deferred restarts of the reboot, the factory reset and the switch back.
 const RESTART_DELAY_MS: u32 = 1000;
+/// The detail of 409 `stm_sector0_pending` (D9, F4 of REVIEW-ESP-SAFETY.md).
+const SECTOR0_PENDING: &[u8] = b"STM sector 0 not written: keep the power on";
 /// The epoch of a development build (`VDM_BUILD_EPOCH`, C++ the build flag), 0 = none.
 const BUILD_EPOCH: u32 = match option_env!("VDM_BUILD_EPOCH") {
     Some(s) => parse_epoch(s.as_bytes()),
@@ -181,6 +185,9 @@ pub trait WebHost {
     fn read_profile(&self, valve: u8, out: &mut Profile);
     /// `app::stmFlashActive()`: an STM flash runs.
     fn stm_flash_active(&self) -> bool;
+    /// Rust only (D9): the STM's sector 0 is erased and not written yet
+    /// (`AppShared::stm_sector0_at_risk`).
+    fn stm_sector0_at_risk(&self) -> bool;
     /// `app::stmSupport()`: the STM firmware is supported, too old or unknown.
     fn stm_support(&self) -> StmSupport;
     /// `app::stmProtocol()`: the protocol of the STM link (0 unknown, 1..3).
@@ -232,6 +239,9 @@ impl<T: WebHost + ?Sized> WebHost for &T {
     }
     fn stm_flash_active(&self) -> bool {
         (**self).stm_flash_active()
+    }
+    fn stm_sector0_at_risk(&self) -> bool {
+        (**self).stm_sector0_at_risk()
     }
     fn stm_support(&self) -> StmSupport {
         (**self).stm_support()
@@ -1142,6 +1152,8 @@ where
             send_error(req, 411, "length_required", b"Content-Length");
         } else if h.len > self.upload_limit(route) {
             send_error(req, 413, "too_large", b"file");
+        } else if self.host.stm_sector0_at_risk() {
+            send_error(req, 409, "stm_sector0_pending", SECTOR0_PENDING);
         } else if self.upload_busy() {
             send_error(req, 409, "busy", b"upload or flash running");
         } else {
@@ -1309,6 +1321,18 @@ where
 
     // ------------------------------------------------------------ refusals of STM actions
 
+    /// D9 (F4 of REVIEW-ESP-SAFETY.md, design 4.7 row 12): true (409 `stm_sector0_pending`
+    /// answered) while the STM's sector 0 is erased and not written: the restart of an ESP
+    /// restart, a switch back or an upload would reset the STM into nothing, an abort is not
+    /// taken.
+    fn refuse_while_sector0(&self, req: &mut dyn HttpRequest) -> bool {
+        if !self.host.stm_sector0_at_risk() {
+            return false;
+        }
+        send_error(req, 409, "stm_sector0_pending", SECTOR0_PENDING);
+        true
+    }
+
     /// C++ `refuseWhileFlashing`: true (409 `flashing` answered) while an STM flash runs.
     fn refuse_while_flashing(&self, req: &mut dyn HttpRequest) -> bool {
         if !self.host.stm_flash_active() {
@@ -1447,8 +1471,10 @@ where
         match route {
             ApiRoute::ConfigPatch => self.config_patch(req, w, body),
             ApiRoute::Reboot => {
-                self.request_restart(RebootReason::User);
-                send(req, 202, JSON, b"{\"result\":\"restarting\"}");
+                if !self.refuse_while_sector0(req) {
+                    self.request_restart(RebootReason::User);
+                    send(req, 202, JSON, b"{\"result\":\"restarting\"}");
+                }
             }
             ApiRoute::FactoryReset => self.factory_reset(req, w, body),
             ApiRoute::OtaSwitchBack => self.switch_back(req, w, body),
@@ -1681,6 +1707,15 @@ where
                 b"image, mode normal|blank, force, board C1|C2",
             );
         }
+        // D9 (F4): while the STM waits with its sector 0 pending, a flash request repeats the
+        // sector-0 pass of that run at once (its image and mode do not matter)
+        self.host.read_stm_snapshot(&mut w.snap);
+        if w.snap.flash.phase == FlashPhase::Sector0Pending {
+            if self.submit(req, &cmd) {
+                accepted(req);
+            }
+            return;
+        }
         if self.flash_refused(req, &mut w.snap, &cmd) {
             return;
         }
@@ -1761,10 +1796,14 @@ where
         false
     }
 
-    /// POST /api/stm/flash/abort.
+    /// POST /api/stm/flash/abort; refused while the STM's sector 0 is not written (the flasher
+    /// does not take it then).
     fn flash_abort(&self, req: &mut dyn HttpRequest) {
         if !self.host.stm_flash_active() {
             return send_error(req, 409, "idle", b"no flash running");
+        }
+        if self.refuse_while_sector0(req) {
+            return;
         }
         if self.submit(req, &command(StmCommandType::AbortFlash, NO_VALVE)) {
             accepted(req);
@@ -1853,6 +1892,9 @@ where
                 b"{\"confirm\":\"factory-reset\"}",
             );
         }
+        if self.refuse_while_sector0(req) {
+            return;
+        }
         if self.host.stm_flash_active() {
             return send_error(req, 409, "flashing", b"STM flash in progress");
         }
@@ -1876,6 +1918,9 @@ where
                 "confirm_required",
                 b"{\"confirm\":\"switch-back\"}",
             );
+        }
+        if self.refuse_while_sector0(req) {
+            return;
         }
         if self.upload_busy() {
             return send_error(req, 409, "busy", b"upload or flash running");

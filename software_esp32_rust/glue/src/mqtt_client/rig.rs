@@ -137,6 +137,7 @@ pub(super) struct HostState {
     pub local_time: LocalTime,
     pub restart_pending: bool,
     pub restart_requests: Vec<(u8, u32)>,
+    pub sector0_at_risk: bool,
     pub fs_ready: bool,
     pub ha_cleanup_done: bool,
     pub ha_cleanup_marks: u32,
@@ -169,6 +170,7 @@ impl FakeHost {
             local_time: LocalTime::default(),
             restart_pending: false,
             restart_requests: Vec::new(),
+            sector0_at_risk: false,
             fs_ready: true,
             ha_cleanup_done: false,
             ha_cleanup_marks: 0,
@@ -295,6 +297,9 @@ impl MqttHost for FakeHost {
         let mut s = self.state();
         s.restart_requests.push((reason, delay_ms));
         s.restart_pending = true;
+    }
+    fn stm_sector0_at_risk(&self) -> bool {
+        self.state().sector0_at_risk
     }
 }
 

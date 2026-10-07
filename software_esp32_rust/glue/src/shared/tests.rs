@@ -89,6 +89,25 @@ fn snapshot_the_flash_is_active_in_every_phase_but_idle_done_and_failed() {
 }
 
 #[test]
+fn snapshot_the_stm_sector_0_flag_follows_the_flash_status() {
+    let a = AppShared::new();
+    assert!(!a.stm_sector0_at_risk());
+    let mut s = Box::<StmSnapshot>::default();
+    s.flash.phase = FlashPhase::Sector0Pending;
+    s.flash.sector0_at_risk = true;
+    a.publish_stm_snapshot(&s);
+    assert!(a.stm_sector0_at_risk());
+    assert!(a.stm_flash_active());
+    s.flash.phase = FlashPhase::Writing; // a round of the sector-0 pass
+    a.publish_stm_snapshot(&s);
+    assert!(a.stm_sector0_at_risk());
+    s.flash.sector0_at_risk = false; // sector 0 verified
+    a.publish_stm_snapshot(&s);
+    assert!(!a.stm_sector0_at_risk());
+    assert!(a.stm_flash_active());
+}
+
+#[test]
 fn snapshot_every_link_state_and_support_level_is_kept() {
     let a = AppShared::new();
     let mut s = Box::<StmSnapshot>::default();

@@ -30,6 +30,7 @@ pub(super) struct HostState {
     pub(super) net_up: bool,
     pub(super) net_ip: u32,
     pub(super) flash_active: bool,
+    pub(super) sector0_at_risk: bool,
     pub(super) image_upload_active: bool,
     pub(super) link: LinkState,
     pub(super) save_state: StmSaveState,
@@ -47,6 +48,7 @@ impl Default for HostState {
             net_up: false,
             net_ip: 0,
             flash_active: false,
+            sector0_at_risk: false,
             image_upload_active: false,
             link: LinkState::Unknown,
             save_state: StmSaveState::Idle,
@@ -116,6 +118,9 @@ impl OtaHost for FakeOtaHost {
     }
     fn stm_flash_active(&mut self) -> bool {
         self.state().flash_active
+    }
+    fn stm_sector0_at_risk(&mut self) -> bool {
+        self.state().sector0_at_risk
     }
     fn image_upload_active(&mut self) -> bool {
         self.state().image_upload_active

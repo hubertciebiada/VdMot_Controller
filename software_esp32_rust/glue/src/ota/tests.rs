@@ -372,10 +372,55 @@ fn service_restart_never_in_the_middle_of_an_stm_flash() {
     rig.host.state().flash_active = true;
     svc.service_restart(100, true, true);
     assert_eq!(rig.host.state().save_requests, 0);
+    // sector 0 of the STM untouched: the restart waits without a word
+    assert!(!rig.host.has(EventCode::RestartDeferred));
     rig.host.state().flash_active = false;
     svc.service_restart(100, true, true);
     rig.host.state().save_state = StmSaveState::Saved;
     assert_eq!(run(|| svc.service_restart(200, true, true)), restarted());
+}
+
+/// An STM flash with sector 0 erased and not written (D9, F4), or none.
+fn sector0_open(rig: &Rig, open: bool) {
+    let mut s = rig.host.state();
+    s.flash_active = open;
+    s.sector0_at_risk = open;
+}
+
+#[test]
+fn service_restart_says_once_per_restart_that_it_waits_for_the_stm_sector_0() {
+    let rig = Rig::pending(b"", false);
+    let mut svc = rig.begun();
+    // the switch back of this restart will be refused: the restart path returns
+    rig.dev.ota.knobs().set_boot_err = Some(EspErr::OTA_VALIDATE_FAILED);
+    rig.dev.clock.set_ms(1000);
+    rig.request_restart(7, 0, 0);
+    sector0_open(&rig, true);
+    svc.service_restart(1000, true, true);
+    svc.service_restart(1100, true, true);
+    let ev = rig.host.with_code(EventCode::RestartDeferred);
+    assert_eq!(ev.len(), 1);
+    assert_eq!((ev[0].arg1, ev[0].arg2), (7, 0));
+    assert_eq!(ev[0].severity, Severity::Warning);
+    assert_eq!(rig.host.state().save_requests, 0);
+    assert!(rig.shared.restart_pending());
+    // sector 0 verified and the flash over: the restart goes on
+    sector0_open(&rig, false);
+    svc.service_restart(1200, true, true);
+    assert_eq!(rig.host.state().save_requests, 1);
+    rig.host.state().save_state = StmSaveState::Saved;
+    svc.service_restart(1300, true, true);
+    assert!(!rig.shared.restart_pending());
+    assert_eq!(rig.host.first(EventCode::EspOtaFailed).arg1, -3);
+    // the next restart that waits for sector 0 says so again
+    rig.host.state().save_state = StmSaveState::Idle;
+    rig.dev.clock.set_ms(2000);
+    rig.request_restart(2, 0, 0);
+    sector0_open(&rig, true);
+    svc.service_restart(2000, true, true);
+    let ev = rig.host.with_code(EventCode::RestartDeferred);
+    assert_eq!(ev.len(), 2);
+    assert_eq!(ev[1].arg1, 2);
 }
 
 #[test]

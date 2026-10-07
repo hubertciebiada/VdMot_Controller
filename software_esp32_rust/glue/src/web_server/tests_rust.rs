@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use vdm_esp_core::common::ALL_VALVES;
 use vdm_esp_core::event_log::{EventCode, Severity};
 use vdm_esp_core::json_api::HttpMethod;
+use vdm_esp_core::stm_flasher::FlashPhase;
 use vdm_esp_core::stm_types::StmCommandType;
 
 use super::rig::*;
@@ -195,6 +196,89 @@ fn switch_back_without_an_image_in_the_other_slot() {
     let r = perform(&mut web, api_post(SWITCH_BACK, CONFIRMED));
     assert_eq!(r.status, 409);
     assert!(!rig.ota_shared.restart_pending());
+}
+
+// ---------------------------------------------------------------- STM sector 0 (4.7 row 12)
+
+/// An STM flash with sector 0 erased and not written (D9, F4): a pass of sector 0 runs, or
+/// (`pending`) it waits for its next round.
+fn sector0_open(rig: &Rig, pending: bool) {
+    let mut s = rig.state();
+    s.flash_active = true;
+    s.snapshot.flash.sector0_at_risk = true;
+    s.snapshot.flash.phase = if pending {
+        FlashPhase::Sector0Pending
+    } else {
+        FlashPhase::Writing
+    };
+}
+
+#[test]
+fn restarts_uploads_and_the_abort_are_refused_while_the_stm_sector_0_is_not_written() {
+    let rig = Rig::with_fallback();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    sector0_open(&rig, false);
+    let refused = error_body(
+        "stm_sector0_pending",
+        "STM sector 0 not written: keep the power on",
+    );
+    let requests = [
+        ("reboot", api_post("/api/system/reboot", "")),
+        (
+            "factory reset",
+            api_post(
+                "/api/system/factory-reset",
+                "{\"confirm\":\"factory-reset\"}",
+            ),
+        ),
+        ("switch back", api_post(SWITCH_BACK, CONFIRMED)),
+        ("abort", api_post("/api/stm/flash/abort", "")),
+        (
+            "esp upload",
+            api_upload("/api/ota/esp", "fw.bin", &esp_image(64)),
+        ),
+        ("stm image", api_upload("/api/stm/images", "fw.bin", b"abc")),
+    ];
+    for (what, req) in requests {
+        let r = perform(&mut web, req);
+        assert_eq!(r.status, 409, "{what}");
+        assert_eq!(text(&r), refused, "{what}");
+    }
+    assert!(!rig.ota_shared.restart_pending());
+    assert!(rig.host.with_code(EventCode::RebootRequested).is_empty());
+    assert!(rig.state().submitted.is_empty());
+    assert_eq!(rig.dev.ota.knobs().begins, 0);
+    // sector 0 verified: a restart waits for the end of the flash, as in C++
+    rig.state().snapshot.flash.sector0_at_risk = false;
+    let r = perform(&mut web, api_post("/api/system/reboot", ""));
+    assert_eq!(r.status, 202);
+    assert!(rig.ota_shared.restart_pending());
+}
+
+#[test]
+fn a_flash_request_while_sector_0_is_pending_repeats_its_pass() {
+    let rig = Rig::with_fallback();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    sector0_open(&rig, true);
+    // any image: the run holds its own; the session takes the request as the next round
+    let r = perform(&mut web, api_post("/api/stm/flash", "{\"image\":\"none\"}"));
+    assert_eq!(r.status, 202);
+    assert_eq!(text(&r), "{\"result\":\"queued\"}");
+    let submitted = rig.state().submitted.clone();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].kind, StmCommandType::StartFlash);
+    // during a round (sector 0 erased, no longer waiting) the flash is busy as any other
+    sector0_open(&rig, false);
+    let r = perform(&mut web, api_post("/api/stm/flash", "{\"image\":\"none\"}"));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("busy", "upload or flash running"));
+    // a body without an image is refused before
+    sector0_open(&rig, true);
+    let r = perform(&mut web, api_post("/api/stm/flash", "{}"));
+    assert_eq!(r.status, 400);
+    assert_eq!(rig.state().submitted.len(), 1);
 }
 
 // ---------------------------------------------------------------- the image on trial (4.7 row 10)

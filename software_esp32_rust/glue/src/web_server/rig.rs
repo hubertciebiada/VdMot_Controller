@@ -200,6 +200,9 @@ impl WebHost for Host {
     fn stm_flash_active(&self) -> bool {
         self.state().flash_active
     }
+    fn stm_sector0_at_risk(&self) -> bool {
+        self.state().snapshot.flash.sector0_at_risk
+    }
     fn stm_support(&self) -> StmSupport {
         self.state().support
     }
@@ -289,6 +292,9 @@ impl OtaHost for &Host {
     }
     fn stm_flash_active(&mut self) -> bool {
         self.state().flash_active
+    }
+    fn stm_sector0_at_risk(&mut self) -> bool {
+        self.state().snapshot.flash.sector0_at_risk
     }
     fn image_upload_active(&mut self) -> bool {
         self.state().image_upload_active

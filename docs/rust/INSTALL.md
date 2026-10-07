@@ -170,6 +170,7 @@ QEMU cannot show it: it cannot run a restart after the first minute of uptime
 | 3.4 steps 5, 6 | no dashboard and no ping 5 minutes after the restart or the power cycle | the image loops before `main`. USB-UART: write the C++ 2.1.7 image to `0x10000` and erase otadata, as in "ESP does not boot at all" ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)). The settings stay |
 | any time | the Rust image misbehaves while its HTTP API answers | switch back (section 3.3) and report |
 | any time | the image runs but its HTTP API does not answer | power-cycle; if HTTP stays dead, USB-UART as above |
+| any time | a restart, the switch back or an upload answers `409 stm_sector0_pending` | an STM flash waits for its sector 0: **do not power-cycle**, see section 4.4 |
 
 ### 3.6 Back to C++ 2.1.7
 
@@ -244,6 +245,14 @@ up first, then sector 0; the percentage holds while sector 0 is erased and writt
   code in the sectors the first pass erases, so treat any interruption of the first flash (C++ ->
   Rust) as a BOOT0 recovery. An interruption during the sector-0 pass needs BOOT0 with every image
   ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover)).
+- **Sector 0 pending.** When the sector-0 pass itself fails (a UART fault, not a power loss), the
+  ESP does not reset the STM, which would not start again: the STM waits in its ROM bootloader,
+  the flash shows the phase `sector0_pending` (event `stm_sector0_pending`), and the ESP repeats
+  the pass every 30 s, or at once when the flash is started again (any image). Until sector 0 is
+  written the ESP refuses its own restarts, the switch back, uploads and the flash abort
+  (`409 stm_sector0_pending`, MQTT `cmd/restart` rejected) and lets the automatic ones wait
+  (event `restart_deferred`). **Never power-cycle the controller while the phase is
+  `sector0_pending`**: the STM would need BOOT0.
 
 ### 4.4 When something fails
 
@@ -253,6 +262,7 @@ up first, then sector 0; the percentage holds while sector 0 is erased and writt
 | first flash: `handshake_timeout`, and the STM does not answer afterwards | the HSE did not start (R12). Power-cycle the controller; when the STM answers again (Maintenance → STM32), flash once more. Otherwise BOOT0, mode blank ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)) |
 | the flash of a Rust image was interrupted (ESP restart, power) | flash again, mode normal: the STM still answers the handshake unless the sector-0 pass was running |
 | an interrupted first flash, or an interruption in the sector-0 pass | BOOT0, mode blank (as above) |
+| the flash shows `sector0_pending` (event `stm_sector0_pending`); restarts answer `409 stm_sector0_pending` | **keep the power on.** The ESP repeats the sector-0 pass every 30 s; start the flash again (any image, mode normal) to repeat it at once. It ends `done` when sector 0 verifies. If it keeps failing, report the event log before anything else: the last way out is BOOT0, mode blank (as above) |
 | `app_not_responding` or `app_version_mismatch` after the flash | Maintenance → Restart and reset → Reset STM, then check Maintenance → STM32 and the event log |
 | bench: the warm restore fails (the valves recalibrate after a flash) | stop: no controller gets the Rust STM image (risk R3); report |
 | bench: the 1-Wire or I2C timing differs from C++ beyond the slot limits | stop and report (R5) |
