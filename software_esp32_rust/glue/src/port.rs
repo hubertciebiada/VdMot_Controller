@@ -250,7 +250,8 @@ pub enum BodyRead {
     Closed,
 }
 
-/// One HTTP request on the esp_http_server task, passed to the handler as `&mut dyn`.
+/// One HTTP request on the esp_http_server task, passed to the handler as `&mut dyn`. A request
+/// the handler leaves unanswered (a client that went away or stalled) closes its connection.
 pub trait HttpRequest {
     /// The method.
     fn method(&self) -> HttpMethod;
@@ -265,9 +266,11 @@ pub trait HttpRequest {
     fn remote_ip(&self) -> u32;
     /// Local address of the connection (the interface the request came in on).
     fn local_ip(&self) -> u32;
-    /// Reads the next body bytes into `out`.
+    /// Reads the next body bytes into `out`; `End` once Content-Length bytes were read, also
+    /// when `out` is empty.
     fn read_body(&mut self, out: &mut [u8]) -> BodyRead;
-    /// Sends the whole response with a Content-Length; false when the client is gone.
+    /// Sends the whole response with a Content-Length; false when the client is gone. An empty
+    /// `content_type` sends no Content-Type header (204, 304).
     fn respond(
         &mut self,
         status: u16,
