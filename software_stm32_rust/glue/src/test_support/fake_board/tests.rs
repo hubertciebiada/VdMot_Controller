@@ -58,7 +58,7 @@ fn pins_writes_are_recorded_in_one_sequence_latches_and_inputs_read_back() {
     assert!(board.latch(Out::PsuEna));
     board.set(Out::PsuEna, true);
     board.set(Out::Dir, true);
-    let events = board.events();
+    let events = board.event_log();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind, Ev::Write(Out::PsuEna, true));
     assert!(events[0].seq < events[1].seq);
@@ -167,7 +167,36 @@ fn watchdog_time_passing_its_timeout_without_a_reload_is_a_watchdog_reset() {
 }
 
 #[test]
+fn time_an_installed_hook_runs_at_every_ms_boundary_also_in_delays_not_nested_not_masked() {
+    // C++ advanceUs(): board.onMs and the timers at every boundary, also inside delay(); an
+    // interrupt handler that waits runs no nested interrupts
+    let board = FakeBoard::new();
+    let ticks = std::rc::Rc::new(Cell::new(0u32));
+    let seen = ticks.clone();
+    let inner = board.clone();
+    board.set_on_ms(Some(std::boxed::Box::new(move || {
+        seen.set(seen.get() + 1);
+        // a handler that waits 2.5 ms: the boundaries inside it run nothing
+        inner.delay_us(2500);
+    })));
+    board.delay_ms(2);
+    assert_eq!(ticks.get(), 1);
+    assert_eq!(board.now_us(), 3500);
+    board.masked.set(true);
+    board.advance_ms(3);
+    board.masked.set(false);
+    assert_eq!(ticks.get(), 1);
+    board.advance_ms(1);
+    assert_eq!(ticks.get(), 2);
+    board.set_on_ms(None);
+    board.advance_ms(3);
+    assert_eq!(ticks.get(), 2);
+    // a clone is the same board
+    assert_eq!(board.clone().now_us(), board.now_us());
+}
+
+#[test]
 fn hal_a_system_reset_panics_the_device_id_is_the_f401ccs() {
-    assert!(expect_panic::<SystemReset>(|| FakeSystem.reset()));
-    assert_eq!(FakeSystem.dev_id(), 0x423);
+    assert!(expect_panic::<SystemReset>(|| FakeSystem::default().reset()));
+    assert_eq!(FakeSystem::default().dev_id(), 0x423);
 }

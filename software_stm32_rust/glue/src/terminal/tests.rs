@@ -5,7 +5,8 @@
 // port only.
 
 use super::*;
-use crate::test_support::io_fakes::{FakeBoard, FakeSerial};
+use crate::test_support::fake_board::FakeBoard;
+use crate::test_support::io_fakes::FakeSerial;
 use crate::test_support::stubs::Stubs;
 use vdm_stm_core::replies_v2::EEP_STATE_WRITE_FAILED;
 
@@ -227,7 +228,7 @@ fn sena_the_output_and_the_valve_psu_on_off_after_2_s_the_valve_machine_gets_no_
         assert!(!r.board.out(Out::PsuEna));
         for (other, &o) in ENA.iter().enumerate() {
             if other != ch {
-                assert!(r.board.writes(o).is_empty(), "ch {ch} other {other}");
+                assert!(r.board.writes_of(o).is_empty(), "ch {ch} other {other}");
             }
         }
         assert!(r.term.manual_active());
@@ -242,7 +243,7 @@ fn sena_the_output_and_the_valve_psu_on_off_after_2_s_the_valve_machine_gets_no_
         assert!(r.board.out(Out::PsuEna));
         assert!(!r.term.manual_active());
         assert_eq!(r.dbg.take_tx(), "sena: output off\r\n");
-        assert_eq!(r.board.writes(pin).len(), 2);
+        assert_eq!(r.board.writes_of(pin).len(), 2);
         r.supervise();
         assert!(r.dbg.take_tx().is_empty());
     }
@@ -270,21 +271,21 @@ fn sena_refused_while_the_valve_machine_works_or_in_safe_mode_0_switches_off_bad
     let (res, out) = r.command("sena 1 1\n");
     assert_eq!(res, 0);
     assert_eq!(out, "valve machine busy\r\n");
-    assert!(r.board.writes(Out::Ena1).is_empty());
+    assert!(r.board.writes_of(Out::Ena1).is_empty());
     assert!(!r.term.manual_active());
     r.stubs.motor.idle = true;
     r.stubs.sysstat.safe_mode = true;
     let (res, out) = r.command("sena 1 1\n");
     assert_eq!(res, 0);
     assert_eq!(out, "valve machine busy\r\n");
-    assert!(r.board.writes(Out::Ena1).is_empty());
-    assert!(r.board.writes(Out::PsuEna).is_empty());
+    assert!(r.board.writes_of(Out::Ena1).is_empty());
+    assert!(r.board.writes_of(Out::PsuEna).is_empty());
     r.stubs.sysstat.safe_mode = false;
     // off: only that output, the manual enable of another output stays
     r.command("sena 1 1\n");
     assert_eq!(r.command("sena 4 0\n").0, 0);
     assert!(!r.board.out(Out::Ena4));
-    assert_eq!(r.board.writes(Out::Ena4).len(), 1);
+    assert_eq!(r.board.writes_of(Out::Ena4).len(), 1);
     assert!(r.term.manual_active());
     assert!(!r.board.out(Out::PsuEna));
     assert_eq!(r.command("sena 1 0\n").0, 0);

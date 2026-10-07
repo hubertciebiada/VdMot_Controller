@@ -133,11 +133,11 @@ impl NoinitStore for StubAppEnv {
 
 impl System for StubAppEnv {
     fn reset(&self) -> ! {
-        FakeSystem.reset()
+        FakeSystem::default().reset()
     }
 
     fn dev_id(&self) -> u16 {
-        FakeSystem.dev_id()
+        FakeSystem::default().dev_id()
     }
 }
 

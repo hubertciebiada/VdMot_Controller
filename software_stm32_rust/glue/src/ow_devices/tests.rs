@@ -5,7 +5,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use crate::test_support::io_fakes::{FakeBoard, FakeSerial};
+use crate::test_support::fake_board::FakeBoard;
+use crate::test_support::io_fakes::FakeSerial;
 use crate::test_support::ow_fakes::{dash_address, FakeOwBus};
 use crate::test_support::stub_log::CallLog;
 

@@ -3,11 +3,11 @@
 // again.
 
 use super::*;
-use crate::test_support::io_fakes::{Ev, FakeBoard};
+use crate::test_support::fake_board::{Ev, FakeBoard};
 
 /// SDA is held low by a slave until SCL has been pulled low `clocks` times.
 fn hold_sda_for(board: &FakeBoard, clocks: usize) {
-    board.0.borrow_mut().sda_input = Some(Box::new(move |events: &[Ev]| {
+    *board.sda_input.borrow_mut() = Some(Box::new(move |events: &[Ev]| {
         let lows = events
             .iter()
             .filter(|e| **e == Ev::LineWrite(I2cLine::Scl, false))
@@ -27,7 +27,7 @@ fn scl_clocks(board: &FakeBoard) -> usize {
 }
 
 fn line_modes(board: &FakeBoard) -> [LineMode; 2] {
-    board.0.borrow().line_mode
+    board.line_modes()
 }
 
 #[test]
@@ -101,5 +101,5 @@ fn restart_driver_stopped_bus_recovered_driver_started_again_on_the_eeprom_pins(
     assert_eq!(events[events.len() - 1], Ev::WireBegin);
     // C++ Wire.sda / Wire.scl == the EEPROM pins: no Rust form, the driver owns PB6/PB7
     assert_eq!(events.iter().filter(|e| **e == Ev::WireEnd).count(), 1);
-    assert!(board.0.borrow().wire_running);
+    assert!(board.wire_running.get());
 }

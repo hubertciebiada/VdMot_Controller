@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 
 use super::*;
-use crate::test_support::io_fakes::{Ev, FakeBoard};
+use crate::test_support::fake_board::{Ev, FakeBoard};
 use crate::test_support::onewire_sim::{Event, Kind, OneWireSim, SimDevice};
 
 fn bus(devices: Vec<SimDevice>) -> OneWire<OneWireSim> {

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::tests::Env;
 use super::*;
-use crate::test_support::io_fakes::FakeBoard;
+use crate::test_support::fake_board::FakeBoard;
 use crate::test_support::onewire_sim::{Event, Kind, OneWireSim, SimDevice};
 use crate::test_support::stub_log::CallLog;
 

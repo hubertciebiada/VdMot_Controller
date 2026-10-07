@@ -5,7 +5,7 @@
 // cell survives the reboots in the store the firmware writes.
 
 use super::*;
-use crate::test_support::io_fakes::FakeBoard;
+use crate::test_support::fake_board::FakeBoard;
 use vdm_stm_core::reset_guard::reset_guard_on_boot;
 
 /// The no-init cell across the boots of one case.

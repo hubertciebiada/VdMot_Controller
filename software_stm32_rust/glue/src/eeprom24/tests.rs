@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::hal::{WIRE_ERROR, WIRE_NACK, WIRE_OK, WIRE_TIMEOUT};
-use crate::test_support::io_fakes::FakeBoard;
+use crate::test_support::fake_board::FakeBoard;
 
 /// One I2C transfer as the chip saw it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,7 +151,7 @@ fn setup() -> (FakeBoard, I2cEeprom<Chip, FakeBoard>) {
     let board = FakeBoard::new();
     board.set_now_us(1_000_000);
     // 1 us per micros(): a poll without transfers still ends
-    board.0.borrow_mut().auto_advance_us = 1;
+    board.auto_advance_us.set(1);
     let chip = Chip::new(&board);
     let ee = I2cEeprom::new(chip, board.clone(), DEVICEADDRESS);
     (board, ee)
@@ -280,7 +280,7 @@ fn a_failed_write_also_starts_the_ready_wait() {
 #[test]
 fn the_first_transfer_after_the_start_probes_within_5_ms_of_micros_0() {
     let board = FakeBoard::new();
-    board.0.borrow_mut().auto_advance_us = 1;
+    board.auto_advance_us.set(1);
     let chip = Chip::new(&board);
     let mut ee = I2cEeprom::new(chip, board.clone(), DEVICEADDRESS);
     let mut b = [0u8; 2];

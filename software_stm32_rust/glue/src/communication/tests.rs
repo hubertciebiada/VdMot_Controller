@@ -2,7 +2,8 @@
 // values, and the line handling of the loop.
 
 use super::*;
-use crate::test_support::io_fakes::{FakeBoard, FakeSerial, FakeSystem};
+use crate::test_support::fake_board::{FakeBoard, FakeSystem};
+use crate::test_support::io_fakes::FakeSerial;
 use crate::test_support::stubs::{Stubs, VALVE_SENSOR_UNKNOWN};
 
 /// the -D flags of the C++ release env the glue suites build with

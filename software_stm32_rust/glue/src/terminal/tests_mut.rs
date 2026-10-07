@@ -323,7 +323,7 @@ fn sena_off_of_another_channel_and_the_enable_of_channel_5() {
     r.command("sena 5 1\n");
     assert!(r.board.out(Out::Ena5));
     for &pin in &ENA[..5] {
-        assert!(r.board.writes(pin).is_empty());
+        assert!(r.board.writes_of(pin).is_empty());
     }
     // 0 for the channel that runs: the manual enable ends with the PSU
     r.command("sena 5 0\n");

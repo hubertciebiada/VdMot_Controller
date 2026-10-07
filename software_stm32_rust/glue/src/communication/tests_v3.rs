@@ -6,6 +6,7 @@
 use super::tests::Rig;
 use super::*;
 use crate::test_support::onewire_sim::SimDevice;
+use vdm_stm_core::move_classifier::MoveResult;
 use vdm_stm_core::replies_v2::{
     EEP_STATE_OK, EEP_STATE_PENDING, EEP_STATE_READ_FAILED, EEP_STATE_WRITE_FAILED,
 };

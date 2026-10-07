@@ -29,7 +29,7 @@ use vdm_stm_core::line_assembler::StaticLineAssembler;
 use vdm_stm_core::motor_params::{
     apply_motor_params_request, same_motor_params, MotorParams, ParamsRequest,
 };
-use vdm_stm_core::move_classifier::{EarlyStopRun, MoveResult, DIR_CLOSE, DIR_OPEN};
+use vdm_stm_core::move_classifier::{DIR_CLOSE, DIR_OPEN};
 use vdm_stm_core::profile_recorder::ProfileRecorder;
 use vdm_stm_core::replies::{
     format_status_list, format_valve_data, ValveDataReply, VALVE_DATA_REPLY_MAX_LEN,
@@ -137,51 +137,10 @@ pub struct FirmwareId {
     pub build: &'static [u8],
 }
 
-/// motor.h `valve_diag`: diagnostics of one valve, written by the valve state machine (the type
-/// of the motor port, mirrored here until both meet).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ValveDiag {
-    /// last move (normal, calibration stroke or service move)
-    pub last: MoveResult,
-    /// early end stops of normal moves since start-up
-    pub early_stops: u16,
-    /// early end stop since the last successful calibration
-    pub early_warn: bool,
-    /// the last calibration did not succeed
-    pub last_cal_failed: bool,
-    /// the last move stopped early
-    pub last_early: bool,
-    /// early partial stops in a row
-    pub early_run: EarlyStopRun,
-}
-
-/// motor.h `valve_snapshot`: the fields gvlvx reports, copied together.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ValveSnapshot {
-    pub diag: ValveDiag,
-    pub opening_count: u32,
-    pub closing_count: u32,
-    pub deadzone_count: i32,
-    pub meancurrent: u32,
-    pub movements: u32,
-    pub status: u8,
-    pub actual_position: u8,
-    pub target_position: u8,
-    pub calibration: bool,
-    pub calib_retries: u8,
-    pub calib_active: bool,
-}
-
-/// app.h `valve_v3_info`: gvlvy values 20..25.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ValveV3Info {
-    pub flags: u16,
-    pub fault: u8,
-    pub fs_pct: u8,
-    pub drive: u8,
-    pub retry_s: u32,
-    pub retries: u8,
-}
+/// motor.h `valve_diag` and `valve_snapshot` (the fields gvlvx reports, copied together), app.h
+/// `valve_v3_info` (gvlvy values 20..25): the types of the motor and app ports.
+pub use crate::app::ValveV3Info;
+pub use crate::motor::{ValveDiag, ValveSnapshot};
 
 /// What communication.cpp reads of the globals `myvalvemots[v]` (motor.cpp) and `myvalves[v]`
 /// (app.cpp): plain data in C++, no call.

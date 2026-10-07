@@ -7,7 +7,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::eeprom_fake::FakeEeprom;
-use super::io_fakes::{Ev, FakeBoard, FakeSerial, RX_RING_SIZE};
+use super::fake_board::{Ev, FakeBoard};
+use super::io_fakes::{FakeSerial, RX_RING_SIZE};
 use super::ow_fakes::FakeOwBus;
 use super::stub_log::CallLog;
 use super::stubs::Stubs;
@@ -96,7 +97,7 @@ fn wire_begin_and_end_are_recorded() {
     Wire::end(&mut board);
     // C++ also records the pins of setSDA/setSCL: the driver owns PB6/PB7
     assert_eq!(board.events(), vec![Ev::WireBegin, Ev::WireEnd]);
-    assert!(!board.0.borrow().wire_running);
+    assert!(!board.wire_running.get());
 }
 
 // ---------------------------------------------------------------- 24LC64

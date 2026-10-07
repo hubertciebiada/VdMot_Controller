@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 
 use super::*;
-use crate::test_support::io_fakes::{Ev, FakeBoard};
+use crate::test_support::fake_board::{Ev, FakeBoard};
 use crate::test_support::onewire_sim::{Event, Kind, OneWireSim, SimDevice};
 
 fn bus(devices: Vec<SimDevice>) -> OneWire<OneWireSim> {
@@ -233,7 +233,7 @@ fn request_temperatures_waiting_polls_until_the_conversion_is_done() {
     let mut ow = bus(vec![d]);
     let clock = FakeBoard::new();
     // time passes while it polls (a poll that never ends fails instead of hanging)
-    clock.0.borrow_mut().auto_advance_us = 1000;
+    clock.auto_advance_us.set(1000);
     let mut dallas = DallasTemperature::default();
     dallas.request_temperatures(&mut ow, &clock);
     // 5 slots read 0, the sixth 1
@@ -247,7 +247,7 @@ fn request_temperatures_waiting_gives_up_after_750_ms() {
     d.busy_reads = 1_000_000;
     let mut ow = bus(vec![d]);
     let clock = FakeBoard::new();
-    clock.0.borrow_mut().auto_advance_us = 1000;
+    clock.auto_advance_us.set(1000);
     let mut dallas = DallasTemperature::default();
     dallas.request_temperatures(&mut ow, &clock);
     // millis() 0 at the start, then one ms per call: the 750th poll sees 750 ms
