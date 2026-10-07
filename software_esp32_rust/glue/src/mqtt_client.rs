@@ -1504,7 +1504,8 @@ where
             self.reject_command(RejectReason::ClearNotConfirmed, d.valve, 0);
         }
         if let Some((valve, pos)) = self.latch.next(self.latch_cursor) {
-            self.latch_cursor = (valve + 1) % VALVE_COUNT;
+            // C++ `(valve + 1) % kValveCount`: next() wraps past the last valve itself
+            self.latch_cursor = valve + 1;
             self.submit_target(valve, pos);
         }
     }

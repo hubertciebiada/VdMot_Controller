@@ -395,6 +395,11 @@ impl Rig {
 
     /// The client of the device (C++ the module statics).
     pub fn client(&self) -> Client<'_> {
+        self.client_with(&self.shared)
+    }
+
+    /// A client of the device with other shared objects (a new task after a restart).
+    pub fn client_with<'a>(&'a self, shared: &'a MqttShared) -> Client<'a> {
         MqttClient::new(
             MqttPorts {
                 clock: &self.dev.clock,
@@ -406,7 +411,7 @@ impl Rig {
                 mac: self.dev.system.base_mac(),
             },
             &self.host,
-            &self.shared,
+            shared,
         )
     }
 

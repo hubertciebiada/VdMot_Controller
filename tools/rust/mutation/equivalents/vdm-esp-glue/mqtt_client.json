@@ -1,0 +1,5 @@
+[
+ {"file": "glue/src/mqtt_client.rs", "function": "MqttClient<'a, C, F, N, G, R, W, H>::service_full_publish",
+  "mutation": "replace < with <= in MqttClient<'a, C, F, N, G, R, W, H>::service_full_publish",
+  "reason": "full_cursor < SLOT_COUNT is never decided with budget left: a full publish always starts at slot 0, slot 0 and valve slot 1 fill the first pass, each valve slot 2..12 ends its own pass and the 44 slots 13..56 take 11 passes of 4, so the budget is 0 exactly when the cursor reaches 57 and budget > 0 ends the loop first (C++ the same loop)"}
+]

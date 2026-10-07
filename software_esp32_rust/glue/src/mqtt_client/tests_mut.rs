@@ -1982,6 +1982,37 @@ fn discovery_a_run_that_skipped_entities_says_so() {
 }
 
 #[test]
+fn discovery_changed_inputs_start_no_run_with_ha_discovery_on_connect_off() {
+    // the 2.0 cleanup is still due, so an automatic run would have a plan: only the switch
+    // keeps the changed inputs from asking for one
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::MqttHa);
+    rig.cfg(|c| c.mqtt.ha_discovery_on_connect = false);
+    rig.host.state().ha_layout = 1;
+    rig.link_up();
+    c.begin();
+    rig.run(&mut c, 40); // the connect asks for the cleanup, the STM inputs are not settled
+    assert!(rig.session_up());
+    assert!(!rig.shared.status().discovery_running);
+    rig.shared.request_discovery(DiscoveryAction::Delete); // answers the waiting run
+    rig.run(&mut c, 1000);
+    let runs = || rig.events(EventCode::HaDiscoverySent).len();
+    assert_eq!(runs(), 1);
+    assert!(rig.host.state().ha_layout_sets.is_empty());
+    let before = rig.published_len();
+    rig.snap(|s| {
+        s.sensors_settled = true;
+        copy_string(&mut s.version.hw, b"C2");
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(), 1);
+    assert!(!rig.shared.status().discovery_running);
+    assert_eq!(rig.count_prefix("homeassistant/", before), 0);
+}
+
+#[test]
 fn ha_status_an_accepted_command_outside_ha_mode_keeps_a_restored_offline() {
     let rig = Rig::new();
     let mut c = rig.client();
@@ -2007,4 +2038,26 @@ fn shared_is_the_object_main_created() {
     let rig = Rig::new();
     let c = rig.client();
     assert!(core::ptr::eq(c.shared(), &rig.shared));
+}
+
+#[test]
+fn begin_after_a_restart_reads_the_ha_status_of_rtc_memory_and_the_config() {
+    // C++ K1-4 called begin() again on the same module; a Rust restart is a new client
+    let rig = Rig::new();
+    rig.use_mqtt(MqttMode::MqttHa);
+    rig.cfg(|c| c.mqtt.ha_discovery_on_connect = false);
+    {
+        let mut c = rig.client();
+        rig.settle(&mut c, 2);
+        rig.deliver("homeassistant/status", "offline");
+        rig.run(&mut c, 1);
+        assert_eq!(rig.shared.status().ha_status, HaStatus::Offline);
+    }
+    let shared = MqttShared::default();
+    let mut c = rig.client_with(&shared);
+    c.begin(); // before any pass
+    let r = shared.regulator_state();
+    assert_eq!((r.mode, r.ha), (MqttMode::MqttHa, HaStatus::Offline));
+    assert!(!r.broker_connected);
+    assert_eq!(shared.status().ha_status, HaStatus::Offline);
 }
