@@ -186,6 +186,37 @@ fn at_least_once(rig: &Rig, entry: &str) -> bool {
 }
 
 #[test]
+fn an_upload_that_ends_while_a_switch_back_waits_replaces_it_and_runs_on_trial() {
+    // the switch would select the uploaded slot as the confirmed image without its trial
+    let rig = Rig::confirmed();
+    let mut svc = rig.begun();
+    rig.request_restart(7, 1000, 0);
+    let mut up = rig.upload();
+    rig.dev.ota.knobs().next_app = Some(APP_B);
+    assert!(up.upload_begin(5000, b""));
+    assert!(up.upload_write(&image(5000)));
+    assert!(up.upload_end(true));
+    let reasons: Vec<i32> = rig
+        .host
+        .with_code(EventCode::RebootRequested)
+        .iter()
+        .map(|e| e.arg1)
+        .collect();
+    assert_eq!(reasons, vec![7, 1]);
+    rig.request_restart(7, 0, 0); // a switch back does not replace the upload's restart
+    assert_eq!(rig.host.with_code(EventCode::RebootRequested).len(), 2);
+    rig.dev.clock.set_ms(1000);
+    restart_path(&rig, &mut svc, 1000);
+    assert!(rig.dev.ota.knobs().set_boots.is_empty()); // a plain restart into the upload
+    assert_eq!(rig.confirmed_app(), Some(APP_A.0));
+    drop(up);
+    drop(svc);
+    let rig = reboot(rig);
+    assert_eq!(rig.dev.ota.running().app, Some(APP_B));
+    assert_eq!(rig.guard.verdict(), trial(1, false)); // with A as its fallback
+}
+
+#[test]
 fn a_manual_switch_back_during_a_trial_that_cannot_select_the_fallback_ends_the_trial() {
     let rig = Rig::trial(true);
     let mut svc = rig.begun();

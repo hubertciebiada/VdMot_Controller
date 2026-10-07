@@ -110,9 +110,10 @@ impl OtaShared {
     /// A deferred restart from any thread (C++ `ota::requestRestart`): the restart path runs it
     /// `delay_ms` after `now_ms`, so responses and MQTT `offline` can go out. The first request
     /// wins and later ones are ignored, except that an uploaded image (reason 1) replaces a
-    /// pending rollback (4), which would discard it (its time stands). Returns the
-    /// RebootRequested event (`detail`: outage minutes of the network watchdog, missing checks
-    /// of a rollback) when the request counts; the caller logs it.
+    /// pending rollback (4), which would discard it, and a pending switch back (7, Rust only),
+    /// which would select the uploaded slot as the confirmed image without its trial (its time
+    /// stands). Returns the RebootRequested event (`detail`: outage minutes of the network
+    /// watchdog, missing checks of a rollback) when the request counts; the caller logs it.
     #[must_use]
     pub fn request_restart(
         &self,
@@ -128,7 +129,7 @@ impl OtaShared {
                 at_ms: now_ms.wrapping_add(delay_ms),
                 reason,
             };
-        } else if reason == OTA && r.reason == ROLLBACK {
+        } else if reason == OTA && matches!(r.reason, ROLLBACK | SWITCH_BACK) {
             r.reason = reason;
         } else {
             return None;
