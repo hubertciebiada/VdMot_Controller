@@ -93,7 +93,7 @@ fn setup_the_log_sinks_follow_the_loaded_config() {
 
 #[test]
 fn setup_tasks_of_the_binding_table() {
-    // first-build sizes of GLUE-DESIGN-ESP.md 2.1 (C++ 6656, 7168, 7168)
+    // the sizes of GLUE-DESIGN-ESP.md 2.1: the QEMU peaks plus about 25 % (C++ 6656, 7168, 7168)
     assert_eq!(
         TASKS,
         [
@@ -105,20 +105,20 @@ fn setup_tasks_of_the_binding_table() {
             },
             TaskSpec {
                 name: "app",
-                stack_bytes: 9216,
+                stack_bytes: 10_240,
                 priority: 3,
                 core: 1
             },
             TaskSpec {
                 name: "mqtt",
-                stack_bytes: 9216,
+                stack_bytes: 16_384,
                 priority: 2,
                 core: 1
             },
         ]
     );
     assert_eq!(TASK_WDT_TIMEOUT_S, 30);
-    assert_eq!(HTTPD_STACK_BYTES, 10_240);
+    assert_eq!(HTTPD_STACK_BYTES, 15_360);
     assert_eq!(
         (PASS_DELAY_MS, SECOND_MS, RESOURCES_MS),
         (100, 1000, 10_000)
@@ -433,8 +433,8 @@ fn read_health_our_tasks_at_once_library_tasks_once_found_by_a_resource_sample()
     };
     let ours = vec![
         ("stm".to_string(), 8192, 2100),
-        ("app".to_string(), 9216, 3200),
-        ("mqtt".to_string(), 9216, 4100),
+        ("app".to_string(), 10_240, 3200),
+        ("mqtt".to_string(), 16_384, 4100),
     ];
     assert_eq!(tasks(&rig), ours);
     rig.run_app(&mut app, 101); // one sample after 10 s
@@ -456,7 +456,7 @@ fn read_health_our_tasks_at_once_library_tasks_once_found_by_a_resource_sample()
     assert_eq!(tasks(&rig).len(), 4);
     rig.run_app(&mut app, 101);
     let mut want = ours;
-    want.push(("httpd".to_string(), 10_240, 9000));
+    want.push(("httpd".to_string(), 15_360, 9000));
     want.push(("sys_evt".to_string(), 3072, 1100));
     want.push(("tiT".to_string(), 3072, 1500));
     assert_eq!(tasks(&rig), want);
@@ -771,9 +771,9 @@ fn monitored_tasks_ours_first_then_the_library_tasks() {
         MONITORED,
         [
             ("stm", 8192),
-            ("app", 9216),
-            ("mqtt", 9216),
-            ("httpd", 10_240),
+            ("app", 10_240),
+            ("mqtt", 16_384),
+            ("httpd", 15_360),
             ("sys_evt", 3072),
             ("tiT", 3072)
         ]

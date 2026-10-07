@@ -10,10 +10,10 @@
 //! `<Module>Host` of the glue over the shared objects of [`crate::shared`], and the firmware's
 //! [`AppHost`].
 //!
-//! The firmware's `main` (GLUE-DESIGN-ESP.md 6.4): NRST released first
-//! ([`crate::stm_link::StmLink::release_reset`]), NVS, the boot guard, the boot deadline, the
-//! modules of [`wiring`], [`App::setup`], then [`spawn_tasks`]; `main` returns and its stack is
-//! freed.
+//! The firmware's `main` (GLUE-DESIGN-ESP.md 6.4): NRST released first, on the bare pins
+//! ([`crate::stm_link::release_stm_reset`]), NVS, the boot guard, the shared objects and the boot
+//! deadline, the modules of [`wiring`], [`App::setup`], then [`spawn_tasks`]; `main` returns and
+//! its stack is freed.
 
 pub mod wiring;
 
@@ -51,33 +51,35 @@ pub struct TaskSpec {
     pub core: u8,
 }
 
-/// The stm thread: UART, NRST, the STM session (D§3; the C++ 6656 B plus about 25 %, until the
-/// measuring campaign of GLUE-DESIGN-ESP.md 2.1).
+/// The stm thread: UART, NRST, the STM session (D§3). The stack sizes are the peaks measured in
+/// QEMU plus about 25 %, not below the C++ size plus about 25 % (GLUE-DESIGN-ESP.md 2.1; the
+/// device campaign checks them): here 5,984 B in QEMU, C++ 6656 B.
 pub const STM_TASK: TaskSpec = TaskSpec {
     name: "stm",
     stack_bytes: 8192,
     priority: 5,
     core: 1,
 };
-/// The app thread (C++ 7168 B).
+/// The app thread (8,000 B in QEMU; C++ 7168 B).
 pub const APP_TASK: TaskSpec = TaskSpec {
     name: "app",
-    stack_bytes: 9216,
+    stack_bytes: 10_240,
     priority: 3,
     core: 1,
 };
-/// The mqtt thread (C++ 7168 B).
+/// The mqtt thread (12,344 B in QEMU with a discovery run, whose context passes this stack
+/// once; C++ 7168 B).
 pub const MQTT_TASK: TaskSpec = TaskSpec {
     name: "mqtt",
-    stack_bytes: 9216,
+    stack_bytes: 16_384,
     priority: 2,
     core: 1,
 };
 /// The binding task table in spawn order (DESIGN.md section 3, GLUE-DESIGN-ESP.md 2.1).
 pub const TASKS: [TaskSpec; 3] = [STM_TASK, APP_TASK, MQTT_TASK];
-/// Stack of the esp_http_server task that runs every web handler (`async_tcp` had 8960 B);
-/// the firmware's server configuration takes it.
-pub const HTTPD_STACK_BYTES: u32 = 10_240;
+/// Stack of the esp_http_server task that runs every web handler (11,840 B in QEMU; `async_tcp`
+/// had 8960 B); the firmware's server configuration takes it.
+pub const HTTPD_STACK_BYTES: u32 = 15_360;
 /// Task watchdog: every thread of [`TASKS`] subscribes and feeds it at least this often; the
 /// ESP panics (and reboots, reason TASK_WDT) otherwise.
 pub const TASK_WDT_TIMEOUT_S: u32 = 30;

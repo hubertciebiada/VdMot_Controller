@@ -43,6 +43,18 @@ fn release_reset_boot0_low_before_nrst_is_released_both_driven() {
 }
 
 #[test]
+fn release_stm_reset_on_the_bare_pins_before_the_link_exists() {
+    // main's first step (GLUE-DESIGN-ESP.md 6.4): the pins go into the link afterwards
+    let rig = Rig::new();
+    let mut nrst = rig.dev.gpio.output(15);
+    let mut boot0 = rig.dev.gpio.output(14);
+    release_stm_reset(&mut boot0, &mut nrst);
+    assert_eq!(rig.dev.journal.entries(), vec!["gpio 14=0", "gpio 15=0"]);
+    assert_eq!(rig.dev.gpio.level(15), Some(false));
+    assert_eq!(rig.dev.gpio.level(14), Some(false));
+}
+
+#[test]
 fn pulse_reset_nrst_high_for_100_ms() {
     let rig = Rig::new();
     let mut link = rig.link();

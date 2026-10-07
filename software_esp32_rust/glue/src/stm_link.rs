@@ -104,6 +104,15 @@ fn set_reset<O: OutputPin>(nrst: &Mutex<O>, asserted: bool) {
     lock(nrst).set(asserted == STM_RESET_ASSERTED_LEVEL);
 }
 
+/// BOOT0 LOW, then NRST released (IO15 LOW), on the bare pins. The IO15 strap pull-up holds the
+/// STM in reset from the ESP reset until this runs: `main` calls it first, before the link and
+/// before anything that can fail (GLUE-DESIGN-ESP.md 6.4 step 1). BOOT0 goes LOW first, so a
+/// wired BOOT0 never starts the ROM bootloader.
+pub fn release_stm_reset<O: OutputPin>(boot0: &mut O, nrst: &mut O) {
+    boot0.set(false);
+    nrst.set(!STM_RESET_ASSERTED_LEVEL);
+}
+
 /// NRST asserted for [`RESET_PULSE_MS`], then released.
 fn pulse<O: OutputPin>(nrst: &Mutex<O>, clock: &impl Clock) {
     set_reset(nrst, true);
@@ -256,12 +265,9 @@ impl<'a, P: Platform, H: StmLinkHost + Clone> StmLink<'a, P, H> {
         }
     }
 
-    /// BOOT0 LOW, then NRST released (IO15 LOW). The IO15 strap pull-up holds the STM in reset
-    /// from the ESP reset until this runs, so `main` calls it first. BOOT0 goes LOW first, so a
-    /// wired BOOT0 never starts the ROM bootloader.
+    /// [`release_stm_reset`] on the link's pins.
     pub fn release_reset(&mut self) {
-        self.boot0.set(false);
-        set_reset(&self.nrst, false);
+        release_stm_reset(&mut self.boot0, &mut *lock(&self.nrst));
     }
 
     /// `app::setup`: NRST released again (R6: the firmware never resets the STM at its own boot;

@@ -8,6 +8,7 @@ use super::*;
 use crate::app::{RTC_LEASE, RTC_TARGETS};
 use crate::boot_guard::BootGuard;
 use crate::port::{HttpMethod, IpInfo, OpenMode};
+use crate::stm_link::release_stm_reset;
 use crate::storage::{KEY_CALIB_SLOT, KEY_LAST_CALIB, KEY_OTA_STM, KEY_TARGETS, NAMESPACE};
 use crate::testkit::board::TestPlatform;
 use crate::testkit::{run, Device, Ended, FakeBoard, FakeHttpServer, FakeRequest, FakeStm, Reset};
@@ -89,28 +90,24 @@ struct Fw<'a> {
     app: FwApp<'a, P, WebBegin<FakeHttpServer>>,
 }
 
-/// Builds the firmware on `dev` in the order of `main` (NRST released first, the boot guard,
-/// the modules) and hands it to `f`.
+/// Builds the firmware on `dev` in the order of `main` (GLUE-DESIGN-ESP.md 6.4: NRST released
+/// on the bare pins, the boot guard, then the shared objects and the modules) and hands it to
+/// `f`.
 fn firmware<R>(dev: &Device, f: impl FnOnce(&mut Fw<'_>) -> R) -> R {
-    let shared = Shared::new();
-    let p = ports(dev);
-    let logger = p.logger(&shared);
-    let st = storage(p, &shared);
-    let sk = sinks(p, &logger, &shared, dev.udp.clone());
-    let sv = Mutex::new(stm_service(p, &shared, &st));
-    let mut link = stm_link(
-        p,
-        &shared,
-        &st,
-        dev.uart.clone(),
-        dev.gpio.output(15),
-        dev.gpio.output(14),
-    );
-    link.release_reset();
+    let mut nrst = dev.gpio.output(15);
+    let mut boot0 = dev.gpio.output(14);
+    release_stm_reset(&mut boot0, &mut nrst);
     let (guard, report) = match run(|| BootGuard::boot(&dev.nvs, &dev.ota, &dev.rtc, &dev.system)) {
         Ended::Returned(r) => r,
         other => panic!("the boot guard switched: {other:?}"),
     };
+    let shared = Shared::new();
+    let p = ports(dev);
+    let logger = p.logger(&shared);
+    let st = storage(p, &shared);
+    let link = stm_link(p, &shared, &st, dev.uart.clone(), nrst, boot0);
+    let sk = sinks(p, &logger, &shared, dev.udp.clone());
+    let sv = Mutex::new(stm_service(p, &shared, &st));
     let mq = mqtt(p, &shared, &st);
     let nt = net(
         p,
