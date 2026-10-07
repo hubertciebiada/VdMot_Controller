@@ -11,7 +11,7 @@
 //! has its own cases in `tests_rust.rs`.
 #![allow(clippy::large_stack_frames, clippy::large_stack_arrays)]
 
-use vdm_esp_core::common::NO_VALVE;
+use vdm_esp_core::common::{parse_one_wire_id, NO_VALVE};
 use vdm_esp_core::event_log::EventCode;
 use vdm_esp_core::json_api::write_error_json;
 use vdm_esp_core::json_writer::JsonWriter;
@@ -156,6 +156,66 @@ fn guard_setvalve_reads_a_body_of_8192_bytes() {
     assert_eq!(r.status, 400);
     assert_eq!(text(&r), error_body("bad_request", "EmptyInput"));
     assert!(rig.dev.heap.state().granted.contains(&MAX_BODY_SIZE));
+}
+
+#[test]
+fn guard_a_get_alias_ignores_its_body_and_takes_at_most_8192_bytes_for_it() {
+    // C++ handleBody: a buffer of the body up to 8 KB (503 without it), a longer body only sets
+    // the overflow, which the documents of the GET aliases ignore
+    let rig = Rig::new();
+    let t_id = parse_one_wire_id(b"28-84-37-94-97-ff-03-23").unwrap();
+    let u_id = parse_one_wire_id(b"26-11-22-33-44-55-66-29").unwrap();
+    rig.config(|c| {
+        c.temps[0].active = true;
+        c.temps[0].id = t_id;
+        c.volts[0].active = true;
+        c.volts[0].factor = 1.0;
+        c.volts[0].id = u_id;
+    });
+    {
+        let mut st = rig.state();
+        let s = &mut st.snapshot;
+        s.temp_count = 1;
+        s.temps[0].id = t_id;
+        s.temps[0].raw = 210;
+        s.temps[0].seen = true;
+        s.volt_count = 1;
+        s.volts[0].id = u_id;
+        s.volts[0].vad = 1208;
+        s.volts[0].seen = true;
+    }
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let docs: Vec<String> = ["/valves", "/temps", "/volts"]
+        .iter()
+        .map(|p| text(&perform(&mut web, get(p))))
+        .collect();
+    assert_ne!(docs[1], docs[2]);
+    for (path, doc) in ["/valves", "/temps", "/volts"].iter().zip(&docs) {
+        for len in [10, MAX_BODY_SIZE, MAX_BODY_SIZE + 1, 4 * MAX_BODY_SIZE] {
+            let before = rig.dev.heap.state().granted.len();
+            let mut r = get(path);
+            r.body = vec![b' '; len];
+            let req = served(&mut web, r);
+            assert_eq!(req.response.status, 200, "{path} {len}");
+            assert_eq!(&text(&req.response), doc, "{path} {len}");
+            let granted = rig.dev.heap.state().granted[before..].to_vec();
+            assert_eq!(granted[0], len.min(MAX_BODY_SIZE), "{path} {len}");
+            // a body that fits its buffer is read, a longer one is left to the server
+            let read = if len > MAX_BODY_SIZE { 0 } else { len };
+            assert_eq!(req.body_read(), read, "{path} {len}");
+        }
+    }
+    // no buffer for the body: 503, nothing else runs
+    for len in [10, MAX_BODY_SIZE + 1] {
+        rig.dev.heap.state().next.push_back(false);
+        let mut r = get("/temps");
+        r.body = vec![b' '; len];
+        let r = perform(&mut web, r);
+        assert_eq!(r.status, 503, "{len}");
+        assert_eq!(text(&r), error_body("busy", "out of memory"));
+    }
+    assert!(rig.submitted().is_empty());
 }
 
 #[test]

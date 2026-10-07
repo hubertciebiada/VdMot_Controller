@@ -1035,6 +1035,21 @@ where
         if self.legacy_refused(req, w, h, &lm) {
             return;
         }
+        let get_alias = matches!(
+            lm.route,
+            LegacyRoute::Valves | LegacyRoute::Temps | LegacyRoute::Volts
+        );
+        if get_alias && h.len > MAX_BODY_SIZE {
+            // The documents ignore a body. C++ took a buffer of at most 8 KB for it (503 without
+            // one) and dropped the rest; the rest is never read here (esp_http_server drops it).
+            if try_bytes(self.ports.gate, MAX_BODY_SIZE).is_none() {
+                return out_of_memory(req);
+            }
+            return match lm.route {
+                LegacyRoute::Valves => self.legacy_valves(req, w),
+                _ => self.legacy_sensors(req, w, lm.route == LegacyRoute::Temps),
+            };
+        }
         let Some(mut body) = self.read_body(req, h.len) else {
             return;
         };
