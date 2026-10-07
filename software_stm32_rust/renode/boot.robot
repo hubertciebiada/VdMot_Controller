@@ -272,24 +272,55 @@ E7 A Fault In The Application Ends In An IWDG Reset
     ${at}=    Evaluate    ${t_fault} / 1000000.0
     Evidence    E7 UDF at ${at} s: outputs off, FaultRecord kind ${kind} CFSR.UNDEFINSTR; IWDG reset ${after} s after the fault; BEEFIT and ROM entered after it
 
-E8 A Fault Before The IWDG Runs Ends In A Reset Within 1 s
+E8 Code After The Window Runs Under The IWDG
     [Tags]    E8
-    [Documentation]    A fault at the first instruction of the application stage, before it starts
-    ...                the IWDG: the fault handler starts the IWDG with its reset values (512 ms).
+    [Documentation]    D9 residual: after an interrupted flash of sectors 1..n the old boot stage
+    ...                calls new or erased code at the old address of app::run. The boot stage
+    ...                starts the IWDG (8 s) at the end of the window, so code that hangs at the
+    ...                entry of app::run (here a "b ." in RAM, before the application stage sets
+    ...                the IWDG up itself) still ends in a watchdog reset and the next window.
     Create VdMot Machine
-    Execute Command    sysbus WriteWord ${UDF_AT} 0xDE00
-    # the hook stops the machine at the entry of app::run; the fault is raised from there
+    Execute Command    sysbus WriteWord ${UDF_AT} 0xE7FE
+    # the hook stops the machine at the entry of app::run; the hang starts from there
     Execute Command    cpu AddHook ${APP_RUN} "self.InfoLog('application entry'); machine.PauseAndRequestEmulationPause()"
     Wait For Log Entry    application entry    timeout=3.2    pauseEmulation=true
     ${pc}=    Execute Command    cpu PC
     Should Be Equal As Integers    ${pc.strip()}    ${APP_RUN}
+    ${t0}=    Read Word    ${T_UART}
     ${t_iwdg}=    Read Word    ${T_IWDG}
-    Should Be Equal As Integers    ${t_iwdg}    0    the IWDG is still stopped
+    Should Be True    ${t_iwdg} >= ${t0} + 3010000    IWDG started at ${t_iwdg} us, after the window (B6)
     Execute Command    cpu RemoveHooksAt ${APP_RUN}
     Execute Command    cpu PC ${UDF_AT}
-    ${t_fault}=    Now Us
-    Run Until Us    ${t_fault + 5000}
+    ${t_hang}=    Now Us
+    Run Until Us    ${t_hang + 5000}
     Expect Valve Outputs Off
+    Wait For Log Entry    Watchdog reset triggered    timeout=9    pauseEmulation=true
+    Forget The Previous Boot
+    ${t}=    Now Us
+    ${after}=    Evaluate    ${t} - ${t_iwdg}
+    # 8 s (prescaler /64, reload 3999 at 32 kHz), not the 512 ms of the reset values
+    Should Be True    7900000 <= ${after} <= 8100000    reset ${after} us after the IWDG start
+    ${sends}    ${line}=    Send ESP 2.1 Handshake Until BEEFIT    first_us=${t + 20000}
+    Expect Jump Into The ROM Bootloader
+    Evidence    E8 hang at the entry of app::run: IWDG started at ${t_iwdg} us (end of the window), reset ${after} us after it, BEEFIT and ROM entered after it
+
+E8 A Fault Before The IWDG Runs Ends In A Reset Within 1 s
+    [Tags]    E8
+    [Documentation]    A fault at the entry of the boot stage (B3 excludes one; this proves the
+    ...                handler): the IWDG is stopped, the fault handler starts it with its reset
+    ...                values (512 ms) and the next boot opens the window.
+    Create VdMot Machine
+    Execute Command    sysbus WriteWord ${UDF_AT} 0xDE00
+    # the hook stops the machine at the entry of boot_hw::run; the fault is raised from there
+    Execute Command    cpu AddHook ${BOOT_RUN} "self.InfoLog('boot stage entry'); machine.PauseAndRequestEmulationPause()"
+    Wait For Log Entry    boot stage entry    timeout=0.1    pauseEmulation=true
+    ${pc}=    Execute Command    cpu PC
+    Should Be Equal As Integers    ${pc.strip()}    ${BOOT_RUN}
+    ${t_iwdg}=    Read Word    ${T_IWDG}
+    Should Be Equal As Integers    ${t_iwdg}    0    the IWDG is still stopped
+    Execute Command    cpu RemoveHooksAt ${BOOT_RUN}
+    Execute Command    cpu PC ${UDF_AT}
+    ${t_fault}=    Now Us
     Wait For Log Entry    Watchdog reset triggered    timeout=1    pauseEmulation=true
     Forget The Previous Boot
     ${t}=    Now Us
@@ -297,7 +328,7 @@ E8 A Fault Before The IWDG Runs Ends In A Reset Within 1 s
     Should Be True    ${after} < 1000000    reset ${after} us after the fault
     ${sends}    ${line}=    Send ESP 2.1 Handshake Until BEEFIT    first_us=${t + 20000}
     Expect Jump Into The ROM Bootloader
-    Evidence    E8 UDF at the entry of app::run (IWDG stopped): outputs off, IWDG reset ${after} us after the fault, BEEFIT and ROM entered after it
+    Evidence    E8 UDF at the entry of boot_hw::run (IWDG stopped): IWDG reset ${after} us after the fault, BEEFIT and ROM entered after it
 
 E9 The No-Init Cells Survive A Warm Reset In The C++ Format
     [Tags]    E9

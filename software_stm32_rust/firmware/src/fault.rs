@@ -4,9 +4,10 @@
 //! after a C++ hang, so the safe mode (3 watchdog resets within 10 min) counts a fault loop the
 //! same way.
 //!
-//! - before the application stage the IWDG is stopped: the start key runs it with its reset
+//! - before the end of the boot window the IWDG is stopped: the start key runs it with its reset
 //!   values (prescaler /4, reload 0xFFF: 512 ms nominal);
-//! - after it the IWDG runs with 8 s and is never reloaded again.
+//! - from the end of the window on (boot stage, application) the IWDG runs with 8 s and is never
+//!   reloaded again.
 //!
 //! The MPU guard below the stack turns a stack overflow into a fault instead of a silent
 //! corruption of `.uninit`. D9: these handlers lie in sector 0 with the boot stage (image check).

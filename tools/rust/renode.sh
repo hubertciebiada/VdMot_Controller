@@ -70,10 +70,12 @@ for name in "${images[@]}"; do
   [ -f "$map" ] || { echo "$map not found: tools/rust/docker.sh fw" >&2; exit 2; }
   chip=$(echo "${name:5:4}" | tr 'F' 'f')
   tag=${name: -2}
-  # the application entry, where E8 raises its fault
+  # the application entry and the boot stage entry, where the E8 cases hang and fault
   app_run=$(awk '/3app3run\)$/ { print "0x" $1; exit }' "$map")
   [ -n "$app_run" ] || { echo "$name: app::run not in $map" >&2; exit 2; }
-  echo "== $name ($chip, $tag, $version, app::run at $app_run)"
+  boot_run=$(awk '/7boot_hw3run\)$/ { print "0x" $1; exit }' "$map")
+  [ -n "$boot_run" ] || { echo "$name: boot_hw::run not in $map" >&2; exit 2; }
+  echo "== $name ($chip, $tag, $version, app::run at $app_run, boot_hw::run at $boot_run)"
   # the image runs as its own user (uid 1000), which on a Linux host (CI runner) does not own
   # the checkout: the results and the suite directory must be writable for it
   mkdir -p "$ROOT/software_stm32_rust/renode/results/$prefix$name"
@@ -83,7 +85,8 @@ for name in "${images[@]}"; do
     -w /src/software_stm32_rust/renode --entrypoint renode-test "$IMAGE" \
     -r "/src/software_stm32_rust/renode/results/$prefix$name" \
     --variable "IMAGE:$name" --variable "CHIP:$chip" --variable "TAG:$tag" \
-    --variable "VERSION:$version" --variable "APP_RUN:$app_run" ${vars[@]+"${vars[@]}"} \
+    --variable "VERSION:$version" --variable "APP_RUN:$app_run" --variable "BOOT_RUN:$boot_run" \
+    ${vars[@]+"${vars[@]}"} \
     ${extra[@]+"${extra[@]}"} "${suites[@]}"
   rc=$?
   set -e

@@ -39,6 +39,7 @@ pub enum Ev {
     Tx(u8),
     Flush,
     BootId,
+    WatchdogStart,
 }
 
 pub struct Fake {
@@ -274,6 +275,10 @@ impl BootHw for Fake {
     fn boot_id(&mut self) -> BootId {
         self.ev(Ev::BootId);
         self.id
+    }
+
+    fn watchdog_start(&mut self) {
+        self.ev(Ev::WatchdogStart);
     }
 }
 

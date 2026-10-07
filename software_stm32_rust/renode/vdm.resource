@@ -23,6 +23,7 @@ ${CHIP}           f401
 ${TAG}            C2
 ${VERSION}        2.2.0-revamped
 ${APP_RUN}        0x0
+${BOOT_RUN}       0x0
 ${MIPS}           4
 # RAM_LO (0x20000000-0x20003233) is reserved and unused by the firmware (memory/vdm.x): the
 # hooks keep their time stamps there

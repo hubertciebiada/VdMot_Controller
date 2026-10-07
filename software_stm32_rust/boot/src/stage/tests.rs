@@ -48,7 +48,10 @@ fn the_steps_run_in_the_order_of_the_cpp_setup() {
         ]
     );
     assert_eq!(ev[12], Ev::UartBegin(BRR_HSE));
-    assert_eq!(&ev[ev.len() - 2..], [Ev::UartEnd, Ev::TickStop]);
+    assert_eq!(
+        &ev[ev.len() - 3..],
+        [Ev::UartEnd, Ev::TickStop, Ev::WatchdogStart]
+    );
 }
 
 #[test]
@@ -130,9 +133,25 @@ fn the_end_of_the_window_resets_usart1_and_stops_systick() {
     assert!(!fake.uart_on);
     let ev = fake.events();
     assert_eq!(ev.iter().filter(|e| **e == Ev::UartEnd).count(), 1);
-    assert_eq!(ev.last(), Some(&Ev::TickStop));
+    assert_eq!(ev.iter().filter(|e| **e == Ev::TickStop).count(), 1);
     // no byte went out in the window
     assert!(fake.tx_bytes.is_empty());
+}
+
+#[test]
+fn the_watchdog_starts_once_after_a_window_without_handshake() {
+    // B6 and the D9 residual: never before the window ends, then right before the
+    // application, so code after the boot stage runs watched even before the application
+    // stage sets the watchdog up itself
+    let mut fake = Fake::new();
+    let _ = token(run(&mut fake));
+    let starts = fake.times_of(&Ev::WatchdogStart);
+    assert_eq!(starts.len(), 1);
+    assert!(starts[0] >= fake.times_of(&Ev::UartEnd)[0]);
+    assert_eq!(fake.events().last(), Some(&Ev::WatchdogStart));
+    // the window ran its 3001 calls before
+    let begin = fake.times_of(&Ev::UartBegin(BRR_HSE))[0];
+    assert!(starts[0] - begin > 3_010_000, "{}", starts[0] - begin);
 }
 
 #[test]
@@ -143,6 +162,8 @@ fn an_update_ends_the_stage_without_resetting_usart1() {
     assert_eq!(fake.tx_bytes, b"BEEFIT\r\n");
     assert_eq!(fake.count(|e| *e == Ev::UartEnd), 0);
     assert_eq!(fake.count(|e| *e == Ev::TickStop), 0);
+    // B6: the ROM bootloader session runs without the IWDG
+    assert_eq!(fake.count(|e| *e == Ev::WatchdogStart), 0);
 }
 
 #[test]

@@ -60,4 +60,7 @@ pub trait BootHw: BootIo {
     fn outputs_safe(&mut self);
     /// The handshake pattern and reply from the ID block in flash.
     fn boot_id(&mut self) -> BootId;
+    /// The independent watchdog with the values of the application (`IWatchdog.begin(8000000)`:
+    /// prescaler /64, reload 3999, 8 s nominal), started and reloaded.
+    fn watchdog_start(&mut self);
 }

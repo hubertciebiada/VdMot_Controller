@@ -8,11 +8,14 @@
 //! 4. `BootSetup`: LED on, USART1 115200 8E1, 10 ms, drop
 //! 5. the window ([`crate::window`])
 //! 6. `BEEFIT` sent -> [`BootEnd::Update`] (the firmware jumps); timeout -> USART1 and SysTick
-//!    back to their reset state, [`BootEnd::Timeout`] with the [`BootToken`]
+//!    back to their reset state, the IWDG started, [`BootEnd::Timeout`] with the [`BootToken`]
 //!
 //! B2: nothing here waits without a bound or needs interrupts; every wait counts SysTick
-//! periods. B6: the IWDG is not started here (a running IWDG would reset the ROM bootloader
-//! session); the application stage starts it first.
+//! periods. B6: the IWDG starts only at the end of a window without handshake, never before
+//! the ROM bootloader (a running IWDG would reset its session). It starts here, in sector 0,
+//! and not in the application stage: after an interrupted flash of sectors 1..n (D9) the old
+//! boot stage calls into new or erased code, which then still ends in a watchdog reset and the
+//! next window.
 
 use crate::capture::{capture_reset, ResetInfo};
 use crate::io::{BootHw, ClockIo};
@@ -139,6 +142,9 @@ pub fn run<H: BootHw>(hw: &mut H) -> BootEnd {
             // 6b. the application stage sets USART1 up again at 8N1 and its own clocks
             hw.uart_end();
             hw.tick_stop();
+            // last, right before the application: whatever runs from here on is watched (B6:
+            // the window is over)
+            hw.watchdog_start();
             BootEnd::Timeout(BootToken {
                 reset,
                 boot_ms,

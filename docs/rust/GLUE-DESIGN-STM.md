@@ -372,7 +372,7 @@ Proposal: keep the existing terminal, minimal and 1:1 (D7).
 | 4 | USART1 115200 8E1 polled (BRR 0xD9 at 25 MHz, 0x8B at 16 MHz), PA9/PA10 AF7; LED PC13 low (on); 10 ms, then drop what arrived | `BootSetup` | 10 ms |
 | 5 | window: 3001 ticks of 1 ms; RX drained continuously into a 1024-byte FIFO; per tick at most one 8-byte block when 8 bytes wait, compared with `DEADBEEF` read from the ID block; LED toggles every 102 ticks | `BootLoop` state 0 | 3.001 s |
 | 6a | match: LED low; next tick: LED high, 10 ms, `BEEFIT\r\n` from the ID block, wait for TC, 200 ms; clocks back to reset (HSI, HSE off, CFGR 0), SysTick off, `cpsid i`, SYSCFG clock on, MEMRMP = 01, `cortex_m::asm::bootload(0x1FFF0000)` | state 1, `JumpToBootloader` (`HAL_RCC_DeInit`, SysTick off, `__disable_irq`, MEMRMP, MSP, jump) | 0.21 s |
-| 6b | timeout: USART1 back to its reset state (RCC reset pulse), SysTick off; return `BootToken { reset, boot_ms, hse }` | state 2, `bootstate = 1` | — |
+| 6b | timeout: USART1 back to its reset state (RCC reset pulse), SysTick off, IWDG started (8 s, §5.4); return `BootToken { reset, boot_ms, hse }` | state 2, `bootstate = 1`; `IWatchdog.begin` at the head of `setup_system` | — |
 
 - The 8-byte blocks, the 10 ms drop, the 3001 ticks, the LED period, `BEEFIT\r\n` and the
   10 ms / 200 ms delays are the C++ behaviour and the cases of `test_otasupport.cpp`
@@ -384,7 +384,7 @@ Proposal: keep the existing terminal, minimal and 1:1 (D7).
 - The legacy ESP 1.x sends `DEADBEEF\r\n` 1.5 s after reset: inside the window, aligned.
 - `boot_ms` offsets the application's `millis()`, so the uptime in `gstat` counts the window
   as in C++ (millis starts at `HAL_Init`).
-- Application stage, in this order: IWDG start (§5.4); HSE probe (100 ms, as
+- Application stage, in this order: IWDG set-up again (§5.4); HSE probe (100 ms, as
   `HSE_STARTUP_TIMEOUT`); `embassy_stm32::init`; then the `setup_system` order of `main.cpp`
   without the watchdog line (I2C recovery, `Wire.begin`, pins, terminal, UART, 500 ms,
   EEPROM, 1-Wire, `app_setup`, valve set-up with TIM1, `app_restore`, TIM2).
@@ -410,17 +410,25 @@ fields used: `hse`, `pll_src`, `pll` (`PllPreDiv`, `PllMul`, `PllPDiv`, `PllQDiv
 
 | phase | IWDG | a hang here is ended by |
 |---|---|---|
-| boot stage (≤ 3.02 s) | off | nothing needed: B2, B3; else the ESP's NRST |
+| boot stage, window (≤ 3.02 s) | off | nothing needed: B2, B3; else the ESP's NRST |
 | ROM bootloader (after the jump) | off, never started before the jump | the ESP flasher's NRST |
-| application start | started first: `pac::IWDG` KR 0x5555, PR 4 (/64), RLR 3999, KR 0xCCCC = 8 s nominal, 5.4-15 s with the LSI spread (as `IWatchdog.begin(8000000)`) | IWDG |
+| end of the boot stage (window without handshake) | started (`boot_hw::watchdog_start`, sector 0): `pac::IWDG` KR 0xCCCC, KR 0x5555, PR 4 (/64), RLR 3999, KR 0xAAAA = 8 s nominal, 5.4-15 s with the LSI spread (as `IWatchdog.begin(8000000)`) | IWDG |
+| application start | the same set-up again before `embassy_stm32::init`: same values, the start key leaves the running IWDG running, the reload restarts the 8 s | IWDG |
 | set-up | reloaded between the long steps (EEPROM read, 1-Wire enumeration) as in `setup_system` | IWDG |
 | main loop | reloaded in the 10 ms branch only if `valve_loop_ticks` advanced and the stall detector is clear | IWDG |
 | fault, panic | started if it is not running, never reloaded | IWDG (§5.5) |
 
-The IWDG is started by the PAC before `embassy_stm32::init`, because `wdg::IndependentWatchdog`
-needs the peripherals that `init` creates; this moves the start from the head of
-`setup_system` to the head of the application stage (before the clock set-up it now covers).
-The option bytes keep the software watchdog (factory default); the firmware never writes them.
+The IWDG is started by the PAC, because `wdg::IndependentWatchdog` needs the peripherals that
+`embassy_stm32::init` creates. The boot stage starts it as its last step before it returns the
+token, in sector 0, not the application stage: after an interrupted or failed flash of sectors
+1..n (D9) the old boot stage calls `app::run` at its old address, now new or erased code. Erased
+code faults (the handlers lie in sector 0), new code entered in the middle may hang; started
+by the boot stage, the IWDG ends that hang too, and the next window keeps the STM re-flashable
+(Renode E8). The C++ starts it at the head of `setup_system`, also after its window. From the
+reload of the application stage to the first reload of `setup_system` (before the EEPROM read)
+pass the HSE probe (≤ 100 ms), `embassy_stm32::init`, the I2C recovery, the terminal banner and
+the 500 ms delay: about 0.6 s, far below the 5.4 s of the fastest LSI. The option bytes keep the
+software watchdog (factory default); the firmware never writes them.
 
 ### 5.5 Faults
 
@@ -525,7 +533,7 @@ Facts of the Renode models the suites depend on (found while building them):
 | E5 | no handshake | nothing for 3.1 s | no TX on USART1 in the window; afterwards 8N1, BRR 0x2D9 / 0x341; `gvers` -> `gvers 2.2.0-revamped_C2 1 ` (C1 images: `_C1`), `gproto` -> `gproto 3`, `ghwin` -> 1059 / 1073; no IWDG reset in 10 s |
 | E6 | HSE dead | read hook clears HSERDY (RCC_CR bit 17) | E1 passes on HSI; E5 passes with PLLCFGR source HSI |
 | E7 | fault in the application | PC set to a `UDF` in RAM | outputs off, "Watchdog reset triggered!" within 15 s virtual time; E1 passes afterwards |
-| E8 | fault before the IWDG runs | `cpu AddHook` at the first application function raises the fault | reset within 1 s; E1 passes afterwards |
+| E8 | code after the window; a fault before the IWDG runs | a hang (`b .`) at the entry of `app::run`; a fault at the entry of `boot_hw::run` (`cpu AddHook`) | the IWDG runs from the end of the window: reset 8 s after its start; the fault: reset within 1 s (reset values, 512 ms); E1 passes after both |
 | E9 | no-init cells across resets | `NOINIT` loaded with C++ 2.1.7 cells (counter 41, guard); a pin reset (CSR read hook = PINRSTF), then SYSRESETREQ | the Rust capture continues the C++ cells (counter 42, 43, guard window summed and sealed); warm state area and padding byte-equal. The warm restore itself: A4 |
 | E10 | regression fence | reset | USART1 RE set at most 10 ms after reset (+5 ms HSE probe): fails when someone puts code before the window |
 | E11 | end to end (D11) | host build of the Rust ESP flasher <-> USART1 socket <-> AN3155 responder (Python peripheral) after the jump | C++ -> Rust -> C++ image cycle in emulated flash, `gvers` after each. *Implementation:* `e11.robot`, `tools/rust/renode.sh --e11 [--cpp <dir>]`. The flasher (`vdm_esp_core::stm_flasher`) runs in a host program (`tools/rust/stm/e11`, `vdm-e11`, static) that `VdmEsp.cs` drives in lock-step, once per millisecond of virtual time: `VdmEsp` is the ESP's end of USART1 (an IUART on a UART hub with `usart1`) and of NRST (its release resets the machine). `VdmRom.cs` does the work of the ROM bootloader while the CPU is in the stand-in: USART1 to 8E1, then sync, GET, GET ID, Extended Erase with a sector list, Write and Read Memory on the registers of USART1 and the emulated flash, every command logged. With the C++ 2.1.7 release images in `<dir>` (SHA-256 pinned in `tools/rust/stm/cpp217.sha256`): C++ -> Rust -> C++; without: Rust -> Rust with another version string in the ID block -> Rust. Each flash ends when the new image answers `gvers` with the expected version and tag; the ROM log shows D9: sectors 1..n erased, written and verified, then sector 0 erased, written from its second block on, the vector table last. SysTick and the CPU run at the core clock (84 / 96 MHz, 84 / 96 MIPS): the C++ counts its milliseconds there, and its 1 ms interrupt (two `analogRead` with the whole HAL ADC set-up) takes more than 1 ms at 4 MIPS, so TIM2 at the same priority never runs and the IWDG resets the chip; the Rust boot window, counted for the 25 MHz boot clock, is shorter then (E1-E10 check its timing) |

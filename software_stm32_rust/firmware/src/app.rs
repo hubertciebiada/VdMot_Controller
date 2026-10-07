@@ -1,7 +1,8 @@
-//! The application stage (docs/rust/GLUE-DESIGN-STM.md §5.2, §5.4): the IWDG first (B6: the
-//! window is over), the HSE probe, the MPU stack guard, `embassy_stm32::init`, the hardware of the
-//! glue (pin modes, the state the interrupts share, the serial ports), then the controller of the
-//! glue: `setup_system()` and `loop_system()` for ever, its own watchdog feed.
+//! The application stage (docs/rust/GLUE-DESIGN-STM.md §5.2, §5.4): the IWDG set-up first (the
+//! boot stage started it at the end of the window; the same values again), the HSE probe, the
+//! MPU stack guard, `embassy_stm32::init`, the hardware of the glue (pin modes, the state the
+//! interrupts share, the serial ports), then the controller of the glue: `setup_system()` and
+//! `loop_system()` for ever, its own watchdog feed.
 #![forbid(unsafe_code)]
 
 use embassy_stm32::adc::Adc;
@@ -25,18 +26,11 @@ use vdm_stm_glue::sysstat::Sysstat;
 use vdm_stm_glue::system::{Controller, Hardware, Shared};
 
 use crate::board::{self, Fw, FwAdc, FwBoard, FwNoinit, FwTimer, FwUsart, FwWatchdog};
-use crate::boot_hw::{id_field, iwdg_key, Regs};
+use crate::boot_hw::{id_field, watchdog_start, Regs};
 use crate::i2c::FwI2c;
 use crate::isr;
 use crate::one_wire::FwOneWire;
 use crate::{clocks, fault, id, noinit};
-
-const IWDG_ENABLE: u16 = 0x5555;
-const IWDG_RELOAD: u16 = 0xAAAA;
-const IWDG_START: u16 = 0xCCCC;
-/// `IWatchdog.begin(8000000)`: prescaler /64, reload 3999 = 8 s at 32 kHz (5.4-15 s LSI)
-const IWDG_PR_DIV64: u32 = 4;
-const IWDG_RLR_8S: u32 = 3999;
 
 #[cfg(feature = "c1")]
 const BOARD: BoardRev = BoardRev::C1;
@@ -46,6 +40,7 @@ const BOARD: BoardRev = BoardRev::C2;
 /// The application stage; never returns.
 #[inline(never)]
 pub fn run(token: BootToken) -> ! {
+    // `IWatchdog.begin(8000000)` of setup_system(), before the clock set-up it now covers
     watchdog_start();
     let hse = probe_app_hse(&mut Regs, token.hse());
     fault::stack_guard();
@@ -167,21 +162,3 @@ fn firmware_id() -> FirmwareId {
     }
 }
 
-/// `IWatchdog.begin(8000000)` on the registers, before `embassy_stm32::init` (§5.4).
-fn watchdog_start() {
-    iwdg_key(IWDG_START);
-    iwdg_key(IWDG_ENABLE);
-    pac::IWDG
-        .pr()
-        .write_value(pac::iwdg::regs::Pr(IWDG_PR_DIV64));
-    pac::IWDG
-        .rlr()
-        .write_value(pac::iwdg::regs::Rlr(IWDG_RLR_8S));
-    // PVU, RVU: the new values reach the LSI domain within a few LSI cycles
-    for _ in 0..100_000 {
-        if pac::IWDG.sr().read().0 == 0 {
-            break;
-        }
-    }
-    iwdg_key(IWDG_RELOAD);
-}

@@ -47,6 +47,14 @@ const CR1_PCE: u32 = 1 << 10;
 const CR1_M: u32 = 1 << 12;
 const CR1_UE: u32 = 1 << 13;
 
+// IWDG (§17.4): `IWatchdog.begin(8000000)`, prescaler /64, reload 3999 = 8 s at 32 kHz
+// (5.4-15 s with the LSI spread)
+const IWDG_ENABLE: u16 = 0x5555;
+const IWDG_RELOAD: u16 = 0xAAAA;
+const IWDG_START: u16 = 0xCCCC;
+const IWDG_PR_DIV64: u32 = 4;
+const IWDG_RLR_8S: u32 = 3999;
+
 // SysTick
 const SYST_ENABLE: u32 = 1 << 0;
 const SYST_CLKSOURCE_CPU: u32 = 1 << 2;
@@ -73,7 +81,8 @@ const SPIN_LIMIT: u32 = 200_000;
 pub struct Regs;
 
 /// Steps 1 to 6 of the boot stage; returns only without a handshake (B1: the only source of
-/// a `BootToken`).
+/// a `BootToken`). A function of its own: Renode E8 raises a fault at its entry.
+#[inline(never)]
 pub fn run() -> BootToken {
     match vdm_stm_boot::run(&mut Regs) {
         BootEnd::Timeout(token) => token,
@@ -292,6 +301,28 @@ impl BootHw for Regs {
         flash_bytes(LAYOUT.reply, &mut id.reply);
         id
     }
+
+    fn watchdog_start(&mut self) {
+        watchdog_start();
+    }
+}
+
+/// `IWatchdog.begin(8000000)` on the registers: the boot stage at the end of a window without
+/// handshake, the application stage again before `embassy_stm32::init` (§5.4). A second call
+/// changes nothing: the start key leaves a running IWDG running, PR and RLR get the same values,
+/// the reload restarts the 8 s.
+pub fn watchdog_start() {
+    iwdg_key(IWDG_START);
+    iwdg_key(IWDG_ENABLE);
+    pac::IWDG
+        .pr()
+        .write_value(iwdg::regs::Pr(IWDG_PR_DIV64));
+    pac::IWDG
+        .rlr()
+        .write_value(iwdg::regs::Rlr(IWDG_RLR_8S));
+    // PVU, RVU: the new values reach the LSI domain within a few LSI cycles
+    spin_until(|| pac::IWDG.sr().read().0 == 0);
+    iwdg_key(IWDG_RELOAD);
 }
 
 /// Volatile reads from the ID block in flash: the bytes the ESP validated, not constants the
