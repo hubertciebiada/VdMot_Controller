@@ -14,12 +14,14 @@ pub mod ds2438;
 pub mod eeprom;
 pub mod eeprom24;
 pub mod hal;
+pub mod hw_timer;
 pub mod i2c_bus;
 pub mod main_loop;
 pub mod motor;
 pub mod onewire;
 pub mod ow_devices;
 pub mod print;
+pub mod serial;
 pub mod sysstat;
 #[cfg(feature = "terminal")]
 pub mod terminal;
