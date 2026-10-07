@@ -13,8 +13,9 @@ module, in tools/rust/mutation/equivalents/<package>/<module>.json:
 "file" is relative to the workspace root, as cargo-mutants names it. "function" is "" for a
 mutant outside any function (cargo-mutants also mutates the expressions of const items).
 "mutation" is the cargo-mutants name without its "file:line:col: " prefix, so an entry survives
-edits that move the code. Every entry needs a reason. An entry that matches no mutant is
-reported as stale (and fails the gate, so the list cannot rot).
+edits that move the code. Every entry needs a reason. An entry of a file in the run that
+matches no mutant is reported as stale (and fails the gate, so the list cannot rot); entries of
+files outside a partial run (--file) are not checked by that run.
 
 Writes tools/rust/mutation/<package>.report.json and prints the per-file table and the
 surviving mutants.
@@ -105,7 +106,7 @@ def main():
         else:
             sys.exit("unknown outcome %r for %s" % (summary, m["name"]))
 
-    stale = [equivalents[i] for i, n in enumerate(eq_hits) if n == 0]
+    stale = [equivalents[i] for i, n in enumerate(eq_hits) if n == 0 and equivalents[i]["file"] in files]
     total_k = sum(s["killed"] for s in files.values())
     total_c = sum(s["killed"] + s["survived"] for s in files.values())
     overall = 100.0 * total_k / total_c if total_c else None
