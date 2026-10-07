@@ -1,6 +1,8 @@
 //! Shared test helpers (port of test/native/support) and the generators of the fuzz tests.
 
+pub mod line_stm;
 pub mod rng;
+pub mod session_rig;
 pub mod sim_stm;
 pub mod stm_golden;
 
