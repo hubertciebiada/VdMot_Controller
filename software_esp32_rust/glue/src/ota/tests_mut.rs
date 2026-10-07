@@ -226,3 +226,27 @@ fn self_check_an_adapter_that_copies_nothing_waits_like_an_empty_read() {
     assert!(rig.shared.health().http_ok);
     assert_eq!(rig.dev.clock.sleeps(), vec![10, 10]);
 }
+
+/// A server that closes at once while the first read reports that it copied nothing.
+struct ClosesAfterNothing;
+
+impl crate::testkit::net::TcpPeer for ClosesAfterNothing {
+    fn on_connect(&mut self, wire: &mut crate::testkit::net::Wire, _now_ms: u64) {
+        wire.empty_reads = 1;
+    }
+    fn on_data(&mut self, wire: &mut crate::testkit::net::Wire, _data: &[u8], now_ms: u64) {
+        wire.close_at(now_ms);
+    }
+}
+
+#[test]
+fn self_check_a_connection_closed_while_a_read_copies_nothing_ends_at_once() {
+    let rig = pending(b"", Vec::new(), DEVICE_IP);
+    rig.dev
+        .tcp
+        .listen("127.0.0.1", 80, || Box::new(ClosesAfterNothing));
+    let mut svc = rig.begun();
+    svc.service(0, true, true, true);
+    assert!(!rig.shared.health().http_ok);
+    assert!(rig.dev.clock.sleeps().is_empty());
+}

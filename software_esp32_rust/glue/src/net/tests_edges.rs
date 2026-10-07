@@ -883,3 +883,63 @@ fn constants_of_the_cpp_glue() {
         b"00:0F:F0:FF:12:AB"
     );
 }
+
+/// A wall clock whose conversion reports what the test scripts (an adapter's `localtime_r`).
+struct ScriptedWall {
+    epoch: i64,
+    local: Option<LocalTime>,
+}
+
+impl WallClock for ScriptedWall {
+    fn epoch(&self) -> i64 {
+        self.epoch
+    }
+    fn set_time_zone(&self, _posix: &str) {}
+    fn local_time(&self, _epoch: i64) -> Option<LocalTime> {
+        self.local
+    }
+}
+
+#[test]
+fn local_time_is_valid_with_the_epoch_it_was_asked_for() {
+    let broken_down = LocalTime {
+        valid: false,
+        year: 2026,
+        month: 9,
+        mday: 23,
+        wday: 3,
+        hour: 6,
+        minute: 1,
+        second: 2,
+        epoch: 0,
+    };
+    let wall = ScriptedWall {
+        epoch: 1_790_136_000,
+        local: Some(broken_down),
+    };
+    assert_eq!(
+        local_time(&wall),
+        LocalTime {
+            valid: true,
+            epoch: 1_790_136_000,
+            ..broken_down
+        }
+    );
+    // a conversion that fails: not valid (C++ localtime_r returned nullptr)
+    let wall = ScriptedWall {
+        epoch: 1_790_136_000,
+        local: None,
+    };
+    assert_eq!(local_time(&wall), LocalTime::default());
+}
+
+#[test]
+fn before_begin_the_host_name_and_the_time_settings_are_the_cpp_defaults() {
+    let rig = Rig::new();
+    let mut net = rig.net();
+    assert_eq!(net.hostname(), "VdMot");
+    // the C++ member initialisers of gTime: the default time settings are not a change
+    net.reconfigure(&config());
+    assert!(rig.dev.wall.zones().is_empty());
+    assert!(rig.dev.sntp.state().configured.is_empty());
+}
