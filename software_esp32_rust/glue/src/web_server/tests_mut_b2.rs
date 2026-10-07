@@ -510,6 +510,38 @@ fn upload_the_md5_from_a_form_field_or_a_header() {
 }
 
 #[test]
+fn upload_the_md5_query_in_capitals_after_the_small_ones_before_the_capital_field() {
+    // the third source of C++ uploadMd5: query `md5`, field `md5`, query `MD5`, field `MD5`,
+    // the headers
+    let rig = Rig::started();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let image = esp_image(64);
+    let md5 = md5_hex(&image);
+    let wrong = "fedcba9876543210fedcba9876543210";
+    let req = |query: &str, fields: &[(&str, &str)]| {
+        upload(&format!("{ESP_UPLOAD}?{query}"), "fw.bin", &image, fields)
+            .with_header("X-VdMot", "1")
+            .with_header("X-Update-MD5", wrong)
+    };
+    // query MD5 before the field MD5 and the headers
+    assert_eq!(
+        perform(&mut web, req(&format!("MD5={md5}"), &[("MD5", wrong)])).status,
+        200
+    );
+    let r = perform(&mut web, req(&format!("MD5={wrong}"), &[("MD5", &md5)]));
+    assert_eq!(r.status, 500);
+    assert_eq!(text(&r), error_body("upload_failed", "MD5 Check Failed"));
+    // the small names first: query md5, then the field md5
+    let both = format!("md5={md5}&MD5={wrong}");
+    assert_eq!(perform(&mut web, req(&both, &[])).status, 200);
+    assert_eq!(
+        perform(&mut web, req(&format!("MD5={wrong}"), &[("md5", &md5)])).status,
+        200
+    );
+}
+
+#[test]
 fn upload_one_file_per_request() {
     let rig = Rig::started();
     let st = rig.storage();
