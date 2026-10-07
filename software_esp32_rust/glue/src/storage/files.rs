@@ -14,8 +14,8 @@ use crate::port::{Fs, FsEntry, FsFile, HeapGate, Nvs, OpenMode};
 
 /// Legacy images collected per listing of the root: no removal while the root is listed.
 const LEGACY_BATCH: usize = 8;
-/// One path of a legacy batch: a file manager path and its NUL (the C++ buffer).
-const LEGACY_PATH: usize = FS_PATH_MAX + 1;
+/// A path buffer: a file manager path and its NUL (the C++ buffers).
+const PATH_BUF: usize = FS_PATH_MAX + 1;
 
 /// Outcome of a file delete (the HTTP layer maps it to a status).
 #[repr(u8)]
@@ -49,7 +49,7 @@ fn entry_path(dir: &[u8], name: &[u8], buf: &mut [u8]) -> Option<usize> {
 
 /// The legacy images of one listing of the root.
 struct LegacyBatch {
-    paths: [[u8; LEGACY_PATH]; LEGACY_BATCH],
+    paths: [[u8; PATH_BUF]; LEGACY_BATCH],
     lens: [usize; LEGACY_BATCH],
     sizes: [u32; LEGACY_BATCH],
     n: usize,
@@ -57,7 +57,7 @@ struct LegacyBatch {
 
 impl LegacyBatch {
     const EMPTY: Self = LegacyBatch {
-        paths: [[0; LEGACY_PATH]; LEGACY_BATCH],
+        paths: [[0; PATH_BUF]; LEGACY_BATCH],
         lens: [0; LEGACY_BATCH],
         sizes: [0; LEGACY_BATCH],
         n: 0,
@@ -104,7 +104,7 @@ fn add_file(out: &mut [FileEntry], n: &mut usize, dir: &[u8], e: &FsEntry) -> bo
     let Some(slot) = out.get_mut(*n) else {
         return false;
     };
-    let mut buf = [0u8; FS_PATH_MAX + 1];
+    let mut buf = [0u8; PATH_BUF];
     if let Some(len) = entry_path(dir, e.name, &mut buf) {
         copy_string(&mut slot.path, buf.get(..len).unwrap_or_default());
         slot.size = e.size;
@@ -128,7 +128,7 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
                 return !*truncated;
             }
             // one level below the root
-            let mut buf = [0u8; FS_PATH_MAX + 1];
+            let mut buf = [0u8; PATH_BUF];
             if let Some(len) = entry_path(b"", e.name, &mut buf) {
                 let dir = buf.get(..len).unwrap_or_default();
                 self.fs.list(as_path(dir), &mut |g| {
@@ -217,8 +217,8 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
         if !self.shared.fs_ready() {
             return 0;
         }
-        // The batch (872 B) takes a heap block for this call instead of the C++ stack arrays
-        // (design 2.4); without memory no image is removed.
+        // The batch (about 0.8 KB) takes a heap block for this call instead of the C++ stack
+        // arrays (design 2.4); without memory no image is removed.
         let Some(mut batch) = try_block(&self.gate, || LegacyBatch::EMPTY) else {
             return 0;
         };

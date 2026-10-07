@@ -646,6 +646,19 @@ fn scan_waits_for_a_running_copy_and_without_a_file_system_nothing_runs() {
 }
 
 #[test]
+fn delete_image_a_removal_that_fails_on_an_existing_image_is_an_io_error() {
+    let rig = Rig::new();
+    rig.dev.fs.put("/stm/a.bin", b"a");
+    let st = rig.storage();
+    mount(&st);
+    rig.dev.fs.fail("remove", "/stm/a.bin", 1);
+    assert_eq!(st.delete_image(b"a"), ImageResult::Io);
+    assert!(has_file(&rig.dev, "/stm/a.bin"));
+    assert!(st.find_image(b"a").is_some());
+    assert_eq!(st.delete_image(b"a"), ImageResult::Ok);
+}
+
+#[test]
 fn file_image_a_second_open_closes_the_first_file() {
     let rig = Rig::new();
     let st = rig.storage();

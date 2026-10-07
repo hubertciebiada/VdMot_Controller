@@ -11,7 +11,7 @@ use super::rig::*;
 use super::*;
 use crate::testkit::{Device, Reset};
 use vdm_esp_core::common::copy_string;
-use vdm_esp_core::config::{crc32, DecodeResult, REPAIR_FIELD, REPAIR_TOPICS};
+use vdm_esp_core::config::{crc32, DecodeResult, REPAIR_FIELD, REPAIR_HA_IDS, REPAIR_TOPICS};
 use vdm_esp_core::file_manager::FileEntry;
 use vdm_esp_core::json_writer::JsonWriter;
 use vdm_esp_core::legacy_import::{
@@ -1155,6 +1155,75 @@ fn boots_a_failed_import_save_is_retried_by_the_next_boot() {
     assert_eq!(l.cfg.station.as_slice(), b"Again");
     assert_eq!(nvs_int(&rig.dev, NAMESPACE, KEY_IMPORTED), 1);
     assert!(rig.dev.nvs.has(NAMESPACE, KEY_CONFIG));
+}
+
+#[test]
+fn load_the_same_repair_in_the_blob_and_after_the_ext_records_is_one_bit() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    mount(&st);
+    let mut base = named(b"Ha");
+    copy_string(&mut base.valves[0].name, b"A.b");
+    copy_string(&mut base.valves[1].name, b"A,b"); // the HA id of valve 1: repaired by the decode
+    let mut ext = named(b"Ha");
+    copy_string(&mut ext.valves[2].topic, b"C.d");
+    copy_string(&mut ext.valves[3].topic, b"C,d"); // the HA id of valve 3: repaired after cfgx
+    rig.dev.nvs.set_blob(NAMESPACE, KEY_CONFIG, &blob_of(&base));
+    rig.dev
+        .nvs
+        .set_blob(NAMESPACE, KEY_CONFIG_EXT, &ext_of(&ext, &[]));
+    let l = load(&st);
+    assert_eq!(l.src, LoadSource::Stored);
+    assert!(l.cfg.valves[1].name.is_empty());
+    assert!(l.cfg.valves[3].topic.is_empty());
+    let ev = rig.host.with_code(EventCode::ConfigRepaired);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].arg1, REPAIR_HA_IDS as i32);
+    assert_eq!(ev[0].arg2, 2);
+    assert_eq!(ev[0].text.as_slice(), b"valves.2.name");
+}
+
+#[test]
+fn list_files_a_path_of_95_bytes_is_listed_a_longer_one_left_out() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    mount(&st);
+    let root95 = format!("/{}", "r".repeat(94));
+    let sub95 = format!("/stm/{}", "t".repeat(90));
+    rig.dev.fs.put(&root95, b"1");
+    rig.dev.fs.put(&format!("/{}", "s".repeat(95)), b"2");
+    rig.dev.fs.put(&sub95, b"3");
+    rig.dev.fs.put(&format!("/stm/{}", "u".repeat(91)), b"4");
+    let mut out = entries(8);
+    let mut truncated = true;
+    let n = st.list_files(&mut out, &mut truncated);
+    assert!(!truncated);
+    let paths: Vec<&[u8]> = out[..n].iter().map(|e| e.path.as_slice()).collect();
+    assert_eq!(paths, vec![root95.as_bytes(), sub95.as_bytes()]);
+}
+
+#[test]
+fn delete_file_a_directory_below_the_root_is_a_bad_path() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    mount(&st);
+    assert!(rig.dev.fs.mkdir("/stm/sub"));
+    rig.dev.fs.put("/stm/subway", b"x");
+    assert_eq!(st.delete_file(b"/stm/sub"), FileResult::BadPath);
+    assert!(is_dir(&rig.dev, "/stm/sub"));
+    assert_eq!(st.delete_file(b"/stm/subway"), FileResult::Ok);
+}
+
+#[test]
+fn shared_data_is_reached_through_storage_and_read_in_place() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    assert!(core::ptr::eq(st.shared(), &rig.shared));
+    rig.shared.set_active_config(&with_ext(b"W"));
+    let (station, timeout) = st
+        .shared()
+        .with_config(|c| (c.station.to_vec(), c.failsafe.timeout_min));
+    assert_eq!((station, timeout), (b"W".to_vec(), 90));
 }
 
 #[test]

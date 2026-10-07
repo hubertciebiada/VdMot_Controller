@@ -742,6 +742,15 @@ fn constants_are_the_cpp_ones() {
 }
 
 #[test]
+fn the_shared_parts_can_be_shared_by_the_tasks() {
+    fn sync<T: Sync + Send + ?Sized>() {}
+    fn send<T: Send + ?Sized>() {}
+    sync::<LoggerShared>();
+    sync::<TestLogger<'static>>(); // every task logs through one reference
+    send::<TestSinks<'static>>(); // the app task owns the sinks
+}
+
+#[test]
 fn file_a_reader_that_holds_the_log_file_blocks_the_rotation_until_it_closes() {
     // design 4.6: a download of /api/log holds the file open, esp_littlefs refuses the rename
     let board = FakeBoard::new();

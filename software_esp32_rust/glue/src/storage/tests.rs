@@ -342,6 +342,14 @@ fn constants_are_the_cpp_ones() {
 }
 
 #[test]
+fn the_shared_parts_can_be_shared_by_the_tasks() {
+    fn sync<T: Sync + Send + ?Sized>() {}
+    sync::<StorageShared>();
+    sync::<TestStorage<'static>>(); // every task calls storage through one reference
+    sync::<FileImage<crate::testkit::FakeFs>>();
+}
+
+#[test]
 fn result_names_of_every_image_result() {
     let names = [
         (ImageResult::Ok, "ok"),
