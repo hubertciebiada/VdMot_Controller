@@ -9,6 +9,7 @@ pub mod boot_guard;
 pub mod heap;
 pub mod http_parse;
 pub mod json_body;
+pub mod logger;
 pub mod mqtt_conn;
 pub mod ota;
 pub mod port;
