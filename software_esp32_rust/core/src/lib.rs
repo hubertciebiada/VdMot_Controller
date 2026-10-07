@@ -51,3 +51,7 @@ pub mod web_guard;
 #[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::should_implement_trait)] // the helpers keep the C++ names (`SimLcg::next`)
 pub mod test_support;
+
+/// Port of test/native/test_smoke.cpp (the C++ smoke test of the core).
+#[cfg(test)]
+mod tests_smoke;
