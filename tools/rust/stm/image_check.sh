@@ -11,7 +11,8 @@
 set -euo pipefail
 cd /src/software_stm32_rust
 images=firmware/images
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+# (a checkout with CR LF line ends: the CR is not part of the version)
+version=$(tr -d '\r' < Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
 echo "workspace version: $version"
 
 CARGO_TARGET_DIR=/target/software_stm32_rust cargo build -q --release -p vdm-stm-image-check

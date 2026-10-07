@@ -8,6 +8,13 @@ use embassy_stm32::rcc::{
 };
 use embassy_stm32::time::Hertz;
 
+/// SYSCLK and PCLK1 of the application stage (the 1-Wire slots, the I2C timing).
+#[cfg(feature = "f401")]
+pub const SYSCLK_HZ: u32 = 84_000_000;
+#[cfg(feature = "f411")]
+pub const SYSCLK_HZ: u32 = 96_000_000;
+pub const PCLK1_HZ: u32 = SYSCLK_HZ / 2;
+
 /// F401: 84 MHz (APB1 42, APB2 84), USB/SDIO clock 48 MHz.
 #[cfg(feature = "f401")]
 const MUL: PllMul = PllMul::MUL336;

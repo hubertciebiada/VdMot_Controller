@@ -1,24 +1,34 @@
 //! The application stage (docs/rust/GLUE-DESIGN-STM.md §5.2, §5.4): the IWDG first (B6: the
-//! window is over), the HSE probe, `embassy_stm32::init`, then the main loop.
-//!
-//! TODO(glue): this is the skeleton the glue port replaces (main_loop.rs, communication.rs
-//! with the interrupt-driven rings of §4.1, the watchdog feed tied to the valve loop). Today it
-//! answers the ESP's start-up requests `gvers`, `gproto` and `ghwin` byte for byte as C++ 2.1.7
-//! (`communication_loop`, `communication_dispatch`) and feeds the IWDG in the 10 ms branch.
+//! window is over), the HSE probe, the MPU stack guard, `embassy_stm32::init`, the hardware of the
+//! glue (pin modes, the state the interrupts share, the serial ports), then the controller of the
+//! glue: `setup_system()` and `loop_system()` for ever, its own watchdog feed.
+#![forbid(unsafe_code)]
 
-use embassy_stm32::mode::Blocking;
-use embassy_stm32::usart::{Config, Uart};
-use embassy_time::{Duration, Instant};
+use embassy_stm32::adc::Adc;
+use embassy_stm32::exti::{ExtiInput, TriggerEdge};
+use embassy_stm32::gpio::{Flex, Input, Level, Output, OutputOpenDrain, Pull, Speed};
+use embassy_stm32::timer::low_level::Timer;
+use embassy_stm32::usart::{Config as UartConfig, Uart};
 use stm32_metapac as pac;
+use vdm_stm_boot::capture::read_guard;
 use vdm_stm_boot::stage::probe_app_hse;
 use vdm_stm_boot::BootToken;
-use vdm_stm_core::buf_writer::StaticBufWriter;
-use vdm_stm_core::line_assembler::StaticLineAssembler;
-use vdm_stm_core::replies_v2::format_protocol_version;
-use vdm_stm_core::tokenizer::Tokenizer;
+use vdm_stm_glue::board::BoardRev;
+use vdm_stm_glue::communication::FirmwareId;
+use vdm_stm_glue::eeprom24::{I2cEeprom, DEVICEADDRESS};
+use vdm_stm_glue::hal::{Out, Pins};
+use vdm_stm_glue::motor::MotorShared;
+use vdm_stm_glue::ow_devices::LineBus;
+use vdm_stm_glue::serial::PortSerial;
+use vdm_stm_glue::sysstat::Sysstat;
+use vdm_stm_glue::system::{Controller, Hardware, Shared};
 
-use crate::boot_hw::{flash_bytes, iwdg_key, Regs};
-use crate::{clocks, fault, id};
+use crate::board::{self, Fw, FwAdc, FwBoard, FwNoinit, FwTimer, FwUsart, FwWatchdog};
+use crate::boot_hw::{id_field, iwdg_key, Regs};
+use crate::i2c::FwI2c;
+use crate::isr;
+use crate::one_wire::FwOneWire;
+use crate::{clocks, fault, id, noinit};
 
 const IWDG_ENABLE: u16 = 0x5555;
 const IWDG_RELOAD: u16 = 0xAAAA;
@@ -27,51 +37,132 @@ const IWDG_START: u16 = 0xCCCC;
 const IWDG_PR_DIV64: u32 = 4;
 const IWDG_RLR_8S: u32 = 3999;
 
-/// `COMM_LINE_SIZE`, `NO_OF_ARGS`, `COMM_LINE_TIMEOUT_MS` of communication.cpp
-const COMM_LINE_SIZE: usize = 128;
-const NO_OF_ARGS: u8 = 5;
-const COMM_LINE_TIMEOUT_MS: u64 = 100;
-/// the 10 ms branch of `loop_system` runs when more than 10 ms passed
-const BRANCH_10MS: Duration = Duration::from_millis(10);
-
-const USART1_SR_RXNE: u32 = 1 << 5;
+#[cfg(feature = "c1")]
+const BOARD: BoardRev = BoardRev::C1;
+#[cfg(feature = "c2")]
+const BOARD: BoardRev = BoardRev::C2;
 
 /// The application stage; never returns.
 #[inline(never)]
 pub fn run(token: BootToken) -> ! {
     watchdog_start();
     let hse = probe_app_hse(&mut Regs, token.hse());
+    fault::stack_guard();
     let p = embassy_stm32::init(clocks::config(hse));
-    let mut config = Config::default();
-    config.baudrate = 115_200;
-    let Ok(mut uart) = Uart::new_blocking(p.USART1, p.PA10, p.PA9, config) else {
-        fault::on_panic()
+    board::set_boot_ms(token.boot_ms());
+    // the cycle counter of the 1-Wire slots
+    if let Some(mut core) = cortex_m::Peripherals::take() {
+        core.DCB.enable_trace();
+        core.DWT.enable_cycle_counter();
+    }
+
+    // pin modes (include/hardware.h); the levels are the glue's, through BSRR. The boot stage
+    // drove the valve outputs safe already: the same levels here.
+    keep(Output::new(p.PA5, Level::Low, Speed::Low));
+    keep(Output::new(p.PA6, Level::Low, Speed::Low));
+    keep(Output::new(p.PA7, Level::Low, Speed::Low));
+    keep(Output::new(p.PB0, Level::Low, Speed::Low));
+    keep(Output::new(p.PA15, Level::Low, Speed::Low));
+    keep(Output::new(p.PB3, Level::Low, Speed::Low));
+    keep(Output::new(p.PA8, Level::Low, Speed::Low));
+    keep(Output::new(p.PB1, Level::Low, Speed::Low));
+    // valve PSU: latch high before open drain (valve_pins_safe)
+    keep(OutputOpenDrain::new(p.PB9, Level::High, Speed::Low));
+    // the LED keeps the level the boot window left (pinMode does not touch the latch)
+    let led = if FwBoard.latch(Out::Led) {
+        Level::High
+    } else {
+        Level::Low
     };
+    keep(Output::new(p.PC13, led, Speed::Low));
+    keep(Input::new(p.PB2, Pull::Up));
+    // REVIN: EXTI4 on the rising edge, detached until a motor start attaches it
+    keep(ExtiInput::new_blocking(
+        p.PA4,
+        p.EXTI4,
+        Pull::None,
+        TriggerEdge::Rising,
+    ));
+    isr::rev_irq(false);
+    // 1-Wire on PB10: open drain, released, input buffer on
+    let mut one_wire = Flex::new(p.PB10);
+    one_wire.set_high();
+    one_wire.set_as_input_output(Speed::Medium);
+    keep(one_wire);
 
-    let mut line = StaticLineAssembler::<COMM_LINE_SIZE>::default();
-    let mut last_byte = Instant::now();
-    let mut last_10ms = Instant::now();
-    loop {
-        // communication_loop: bytes up to a complete line, then the request
-        while !line.has_line() {
-            let Some(byte) = rx() else { break };
-            line.push(byte);
-            last_byte = Instant::now();
-        }
-        if line.has_line() {
-            dispatch(line.line(), &mut uart);
-            line.release();
-        } else if line.partial()
-            && last_byte.elapsed() > Duration::from_millis(COMM_LINE_TIMEOUT_MS)
-        {
-            line.reset();
-        }
+    // the state of the interrupts, before any of them runs
+    isr::ADC.init(FwAdc {
+        adc: Adc::new(p.ADC1),
+        current: p.PA0,
+        reference: p.PA1,
+    });
+    isr::MOTOR.init(MotorShared::new(BOARD));
 
-        // 10 ms branch. TODO(glue): reload only while the valve loop (TIM2) advances
-        if last_10ms.elapsed() > BRANCH_10MS {
-            last_10ms = Instant::now();
-            iwdg_key(IWDG_RELOAD);
-        }
+    // USART1 (ESP, PA9/PA10) and USART6 (terminal, PA11/PA12): 115200 8N1, receive interrupts on
+    let mut config = UartConfig::default();
+    config.baudrate = 115_200;
+    match Uart::new_blocking(p.USART1, p.PA10, p.PA9, config) {
+        Ok(uart) => keep(uart),
+        Err(_) => fault::on_panic(),
+    }
+    match Uart::new_blocking(p.USART6, p.PA12, p.PA11, config) {
+        Ok(uart) => keep(uart),
+        Err(_) => fault::on_panic(),
+    }
+    isr::priorities();
+    isr::usart_irqs_on();
+
+    let hw = Hardware::<Fw> {
+        board: FwBoard,
+        esp: PortSerial {
+            port: &isr::ESP,
+            usart: FwUsart(pac::USART1),
+        },
+        dbg: PortSerial {
+            port: &isr::DBG,
+            usart: FwUsart(pac::USART6),
+        },
+        noinit: FwNoinit,
+        watchdog: FwWatchdog,
+        tim1: FwTimer::Tim1(Timer::new(p.TIM1)),
+        tim2: FwTimer::Tim2(Timer::new(p.TIM2)),
+        eeprom: I2cEeprom::new(FwI2c, FwBoard, DEVICEADDRESS),
+        i2c: FwI2c,
+        one_wire: LineBus::new(FwOneWire, FwBoard),
+    };
+    let reset = token.reset();
+    let sysstat = Sysstat::new(
+        reset.reason,
+        reset.resets,
+        reset.safe_mode,
+        read_guard(&noinit::read()),
+    );
+    let mut controller = Controller::new(
+        hw,
+        Shared {
+            motor: &isr::MOTOR,
+            flags: &isr::FLAGS,
+            esp_port: &isr::ESP,
+        },
+        sysstat,
+        firmware_id(),
+        BOARD,
+    );
+    controller.set_fault_record(fault::last_record());
+    controller.run()
+}
+
+/// A driver whose set-up stays: its drop would undo it.
+fn keep<T>(driver: T) {
+    core::mem::forget(driver);
+}
+
+/// Version and tag from the ID block in flash (the bytes the ESP validated), the build field.
+fn firmware_id() -> FirmwareId {
+    FirmwareId {
+        version: id_field(id::LAYOUT.version, id::LAYOUT.version_len),
+        tag: id_field(id::LAYOUT.tag, id::LAYOUT.tag_len),
+        build: id::BUILD,
     }
 }
 
@@ -92,54 +183,4 @@ fn watchdog_start() {
         }
     }
     iwdg_key(IWDG_RELOAD);
-}
-
-fn rx() -> Option<u8> {
-    let u = pac::USART1;
-    (u.sr().read().0 & USART1_SR_RXNE != 0).then(|| u.dr().read().0 as u8)
-}
-
-/// `communication_dispatch` for the requests of the skeleton; unknown commands get no reply.
-fn dispatch(line: &[u8], uart: &mut Uart<'_, Blocking>) {
-    let mut req = Tokenizer::default();
-    if !req.parse(line, NO_OF_ARGS) {
-        return;
-    }
-    let mut out = StaticBufWriter::<96>::default();
-    if req.is(b"gvers") {
-        // "gvers <version>_<board revision> <build> " CR LF
-        let mut version = [0u8; vdm_stm_boot::id_block::VERSION_MAX];
-        let mut tag = [0u8; 3];
-        let version = read_id(id::LAYOUT.version, id::LAYOUT.version_len, &mut version);
-        let tag = read_id(id::LAYOUT.tag, id::LAYOUT.tag_len, &mut tag);
-        out.append(b"gvers ");
-        out.append(version);
-        out.append(b"_");
-        out.append(tag);
-        out.append(b" ");
-        out.append(id::BUILD);
-        out.append(b" \r\n");
-    } else if req.is(b"ghwin") {
-        // "ghwin <HAL_GetDEVID()> " CR LF
-        out.append(b"ghwin ");
-        out.append_unsigned(u32::from(pac::DBGMCU.idcode().read().dev_id()) & 0xFFF);
-        out.append(b" \r\n");
-    } else if req.is(b"gproto") {
-        if !format_protocol_version(&mut out) {
-            return;
-        }
-        out.append(b"\r\n");
-    } else {
-        return;
-    }
-    let _ = uart.blocking_write(out.as_bytes());
-    let _ = uart.blocking_flush();
-}
-
-/// A field of the ID block in flash (the bytes the ESP validated).
-fn read_id(offset: usize, len: usize, buf: &mut [u8]) -> &[u8] {
-    let n = len.min(buf.len());
-    let field = &mut buf[..n];
-    flash_bytes(offset, field);
-    field
 }

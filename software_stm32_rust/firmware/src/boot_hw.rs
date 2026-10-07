@@ -304,6 +304,17 @@ pub fn flash_bytes(offset: usize, out: &mut [u8]) {
     }
 }
 
+/// A field of the ID block in flash as a slice (`gvers` and the banner of the application read
+/// version and tag from it). `offset + len` beyond the block gives an empty slice.
+#[cfg(feature = "app")]
+pub fn id_field(offset: usize, len: usize) -> &'static [u8] {
+    if offset.saturating_add(len) > LAYOUT.len {
+        return &[];
+    }
+    // SAFETY: inside the ID block (checked above), in flash, never written by the firmware (B4)
+    unsafe { core::slice::from_raw_parts((ID_BLOCK_ADDR as usize + offset) as *const u8, len) }
+}
+
 /// Step 6a, as `JumpToBootloader` of the C++ (`HAL_RCC_DeInit`, SysTick off,
 /// `__disable_irq`, MEMRMP, MSP, jump). VTOR stays 0: with MEMRMP = 01 address 0 is the
 /// system memory (R2: only hardware proves the ROM bootloader start, §5.9).

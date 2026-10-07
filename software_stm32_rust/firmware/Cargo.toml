@@ -30,10 +30,11 @@ c1 = []
 c2 = []
 # version suffix -dev, build field = build time (the C++ development envs)
 dev = []
-# the application stage on embassy-stm32 (the four images); off only in the boot probe
-app = ["dep:embassy-stm32", "dep:embassy-time"]
-# debug terminal on USART6 (§4.2); TODO(glue): the terminal port
-terminal = []
+# the application stage on embassy-stm32 and the glue (the four images); off only in the boot
+# probe
+app = ["dep:embassy-stm32", "dep:embassy-time", "dep:vdm-stm-glue"]
+# debug terminal and debug lines on USART6 (§4.2, D7)
+terminal = ["vdm-stm-glue?/terminal"]
 # link probe of B3: boot stage and fault handlers only, with a panic handler that does not
 # exist, so any panic path left in them fails the link
 boot-probe = []
@@ -41,6 +42,7 @@ boot-probe = []
 [dependencies]
 vdm-stm-boot = { path = "../boot" }
 vdm-stm-core = { path = "../core" }
+vdm-stm-glue = { path = "../glue", optional = true, default-features = false }
 cortex-m = { version = "=0.7.9", features = ["critical-section-single-core"] }
 cortex-m-rt = "=0.7.7"
 # the boot stage and the fault handlers use the PAC directly, so the probe links without

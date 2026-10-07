@@ -709,6 +709,15 @@ dependencies = [
  "stm32-metapac",
  "vdm-stm-boot",
  "vdm-stm-core",
+ "vdm-stm-glue",
+]
+
+[[package]]
+name = "vdm-stm-glue"
+version = "2.2.0-revamped"
+dependencies = [
+ "vdm-stm-boot",
+ "vdm-stm-core",
 ]
 
 [[package]]

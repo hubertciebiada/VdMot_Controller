@@ -1,0 +1,14 @@
+// The parts of the VdMot controller board around the STM32F401/F411 for the Renode tests
+// (docs/rust/GLUE-DESIGN-STM.md §5.7), used by stm32f401.repl and stm32f411.repl. The C# models
+// (VdmValves.cs, VdmEeprom.cs) are compiled by boot.robot before the platform is loaded.
+
+// USART6 (debug terminal, PA11/PA12): not in Renode's STM32F4 platform
+usart6: UART.STM32_UART @ sysbus <0x40011400, +0x100>
+    -> nvic@71
+
+// ADC1 with the valve motors behind it; REVIN pulses on PA4 (EXTI4)
+valves: Analog.VdmValves @ sysbus 0x40012000
+    Revin -> gpioPortA@4
+
+// the 24LC64 at 0x50 on I2C1 (PB6/PB7)
+eeprom: I2C.VdmEeprom @ i2c1 0x50

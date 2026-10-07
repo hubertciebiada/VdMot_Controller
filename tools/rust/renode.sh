@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Renode tests of the STM32 boot stage (docs/rust/GLUE-DESIGN-STM.md §5.7, E1-E10) in the
-# Docker image antmicro/renode:1.16.1 (D11): software_stm32_rust/renode/boot.robot once per image.
+# Renode tests of the STM32 images (docs/rust/GLUE-DESIGN-STM.md §5.7) in the Docker image
+# antmicro/renode:1.16.1 (D11), once per image: software_stm32_rust/renode/boot.robot (the boot
+# stage, E1-E10) and app.robot (the application against the C++ goldens, A1-A6).
 #
 #   tools/rust/docker.sh fw                     first: the images in software_stm32_rust/firmware/images/
 #   tools/rust/renode.sh [image...]             all four images, or e.g. STM32F401_C2
-#   tools/rust/renode.sh STM32F401_C2 -- --include E1*   extra arguments for renode-test after --
+#   tools/rust/renode.sh STM32F401_C2 -- --include E1   extra arguments for renode-test after --
+#                                               (tags: E1-E10, A1-A6)
 #
 # Results (robot log, report, Renode logs of failed tests) in
 # software_stm32_rust/renode/results/<image>/. Exit code 0 when every image passed.
@@ -26,7 +28,8 @@ while [ $# -gt 0 ]; do
 done
 [ ${#images[@]} -gt 0 ] || images=(STM32F401_C1 STM32F401_C2 STM32F411_C1 STM32F411_C2)
 
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/software_stm32_rust/Cargo.toml" | head -1)
+# (a checkout with CR LF line ends: the CR is not part of the version)
+version=$(tr -d '\r' < "$ROOT/software_stm32_rust/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
 fail=0
 summary=""
 for name in "${images[@]}"; do
@@ -44,7 +47,7 @@ for name in "${images[@]}"; do
     -r "/src/software_stm32_rust/renode/results/$name" \
     --variable "IMAGE:$name" --variable "CHIP:$chip" --variable "TAG:$tag" \
     --variable "VERSION:$version" --variable "APP_RUN:$app_run" \
-    "${extra[@]}" boot.robot
+    "${extra[@]}" boot.robot app.robot
   rc=$?
   set -e
   if [ $rc -eq 0 ]; then result=pass; else result=FAIL; fail=1; fi

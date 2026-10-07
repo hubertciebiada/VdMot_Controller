@@ -1,6 +1,8 @@
-// STM32F411CE BlackPill for the boot stage tests (docs/rust/GLUE-DESIGN-STM.md §5.7): Renode's
-// STM32F4 with the F411 memory sizes and the clocks of the Rust firmware.
+// STM32F411CE BlackPill for the tests of the Rust images (docs/rust/GLUE-DESIGN-STM.md §5.7):
+// Renode's STM32F4 with the F411 memory sizes, the clocks of the Rust firmware and the board
+// around the chip (vdm_board.repl).
 using "platforms/cpus/stm32f4.repl"
+using "./vdm_board.repl"
 
 sram:
     size: 0x20000
@@ -12,8 +14,19 @@ flash:
 nvic:
     systickFrequency: 25000000
 
-// TIM5, the embassy time driver, on the APB1 timer clock (96 MHz)
+// the timers on the timer clocks of the application (96 MHz on APB1 x2 and APB2): TIM1 and TIM2
+// run the valve machine, TIM5 is the embassy time driver
+timer1:
+    frequency: 96000000
+
+timer2:
+    frequency: 96000000
+
 timer5:
+    frequency: 96000000
+
+// the cycle counter of the 1-Wire slots at the application's SYSCLK
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
     frequency: 96000000
 
 // SYSCFG has no model: plain memory, so MEMRMP reads back
