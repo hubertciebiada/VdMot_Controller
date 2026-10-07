@@ -1,6 +1,6 @@
 //! Rust additions (no C++ counterpart): the contract constants, the enum tables, the payload
 //! limit at 2047/2048 bytes, the end of a pure Delete, a refused station that exhausts the DROP
-//! list, and the context fields at their full length.
+//! list, the context fields at their full length, and the phases of a publish plan without prune.
 
 use super::tests::{all, cls, has, json, owid, run_all, small_ctx, tail, topics, FakePort};
 use super::*;
@@ -234,4 +234,37 @@ fn the_context_keeps_fields_of_their_full_length_and_protocol_4() {
         ),
         TopicClass::Current
     );
+}
+
+#[test]
+fn a_publish_plan_without_prune_goes_from_the_drop_list_to_publish() {
+    // The C++ switch falls through DropList -> Prune -> Publish: a plan without prune never
+    // enters Prune (the firmware prunes in every publish run, the core takes any plan).
+    let c = small_ctx();
+    let mut run = DiscoveryRun::new();
+    run.start(&DiscoveryPlan {
+        publish: true,
+        prune: false,
+        ..DiscoveryPlan::default()
+    });
+    assert_eq!(run.phase(), DiscoveryRunPhase::Publish);
+    run.start(&DiscoveryPlan {
+        publish: true,
+        prune: false,
+        drop_legacy: true,
+        ..DiscoveryPlan::default()
+    });
+    assert_eq!(run.phase(), DiscoveryRunPhase::DropList);
+    let mut port = FakePort::new();
+    let mut buf = vec![0u8; 4096];
+    let mut jw = JsonWriter::new(&mut buf);
+    for _ in 0..1000 {
+        if run.phase() != DiscoveryRunPhase::DropList {
+            break;
+        }
+        run.step(&c, &mut port, &mut jw);
+    }
+    assert_eq!(run.phase(), DiscoveryRunPhase::Publish);
+    assert!(!port.deletes().is_empty()); // the DROP entities
+    assert_eq!(port.opens, 0); // no list was read
 }
