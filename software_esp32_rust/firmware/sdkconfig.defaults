@@ -26,25 +26,33 @@ CONFIG_BOOTLOADER_WDT_ENABLE=y
 CONFIG_BOOTLOADER_WDT_TIME_MS=9000
 # Must stay off: an app with SRAM1 as IRAM does not boot under a bootloader older than the option.
 # CONFIG_ESP_SYSTEM_ESP32_SRAM1_REGION_AS_IRAM is not set
-# The safety net of an OTA is the boot guard of the app (src/boot_guard.rs), not the bootloader:
+# The safety net of an OTA is the boot guard of the app (glue boot_guard), not the bootloader:
 # esp_ota_set_boot_partition() writes otadata without a NEW state that a rollback-capable
 # bootloader would turn into PENDING_VERIFY.
 # CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set
 
-# Panic: print and reboot; watchdogs on
+# Panic: print and reboot; watchdogs on. The task watchdog as the C++ firmware set it
+# (esp_task_wdt_init(30, true)): 30 s, panic, the idle task of core 0 watched (Arduino-ESP32
+# 2.0.7: CHECK_IDLE_TASK_CPU0=y, CPU1 off); main reconfigures the same values for the threads'
+# subscriptions.
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=0
 CONFIG_ESP_INT_WDT=y
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_PANIC=y
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
 
-# Tasks (Arduino 2.0.7: FreeRTOS at 1000 Hz)
+# Tasks (GLUE-DESIGN-ESP.md 2.1). FreeRTOS at 1000 Hz as Arduino 2.0.7: at 100 Hz a 2 ms delay of
+# the stm thread is 0 ticks. main builds every module in its own frame (about 21 KB after LTO
+# inlining, 27.3 KB at the peak in QEMU) and returns, which frees its stack. sys_evt and tiT as
+# 2.1.7 (2560 + 512 each).
 CONFIG_FREERTOS_HZ=1000
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
-CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2560
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=2560
 
 # Size: optimise for size, no assert texts, IDF logs only from warnings up, no error-name table
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
@@ -59,9 +67,26 @@ CONFIG_ETH_ENABLED=y
 CONFIG_ETH_USE_ESP32_EMAC=y
 CONFIG_ETH_USE_OPENETH=y
 
-# WiFi: STA only, nothing in the driver's NVS (the C++ firmware: WiFi.persistent(false))
+# Ethernet DMA as Arduino 2.0.7: 10 RX and 10 TX buffers of 512 B
+CONFIG_ETH_DMA_BUFFER_SIZE=512
+CONFIG_ETH_DMA_RX_BUFFER_NUM=10
+CONFIG_ETH_DMA_TX_BUFFER_NUM=10
+
+# WiFi: STA only, nothing in the driver's NVS (the C++ firmware: WiFi.persistent(false)); 4
+# static RX buffers and dynamic TX buffers (DESIGN.md section 9)
 # CONFIG_ESP_WIFI_NVS_ENABLED is not set
 # CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+
+# lwIP: sockets as Arduino 2.0.7 (httpd 4 + 3, MQTT, syslog, the self-check, ping); IPv4 only
+# (AsyncTCP served IPv4); one SNTP server, polled every 3 h (Arduino; the IDF 5.5 default is
+# 1 h), the first request at once
+CONFIG_LWIP_MAX_SOCKETS=16
+# CONFIG_LWIP_IPV6 is not set
+CONFIG_LWIP_SNTP_MAX_SERVERS=1
+CONFIG_LWIP_SNTP_UPDATE_DELAY=10800000
+# CONFIG_LWIP_SNTP_STARTUP_DELAY is not set
 
 # HTTP server (the C++ firmware's limits of Arduino 2.0.7)
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024

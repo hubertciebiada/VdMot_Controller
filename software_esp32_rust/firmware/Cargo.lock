@@ -1429,13 +1429,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "vdm-esp-core"
+version = "2.1.7-revamped"
+dependencies = [
+ "heapless",
+]
+
+[[package]]
 name = "vdm-esp-fw"
-version = "2.1.7-revamped-rust-spike"
+version = "2.1.7-revamped-rust"
 dependencies = [
  "embuild",
  "esp-idf-hal",
  "esp-idf-svc",
  "esp-idf-sys",
+ "vdm-esp-core",
+ "vdm-esp-glue",
+]
+
+[[package]]
+name = "vdm-esp-glue"
+version = "2.1.7-revamped"
+dependencies = [
+ "heapless",
+ "vdm-esp-core",
 ]
 
 [[package]]

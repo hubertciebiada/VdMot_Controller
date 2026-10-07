@@ -2,11 +2,12 @@
 # esp-idf-svc). Not a member of the host workspace (../Cargo.toml): own toolchain ("esp", see
 # rust-toolchain.toml), built in the container of tools/rust/esp/docker.sh.
 #
-# Today this is the risk spike of the port (src/main.rs): the drivers and services the firmware
-# needs, the boot guard (src/boot_guard.rs) and a realistic image size.
+# The port adapters of the glue (src/adapters) and main (src/main.rs); every decision lives in
+# vdm-esp-glue, host-tested there. The version is also the firmware version of the glue
+# (VDM_VERSION in .cargo/config.toml).
 [package]
 name = "vdm-esp-fw"
-version = "2.1.7-revamped-rust-spike"
+version = "2.1.7-revamped-rust"
 edition = "2021"
 rust-version = "1.90"
 license = "GPL-3.0-only"
@@ -20,25 +21,28 @@ bench = false
 
 [features]
 default = ["wifi"]
-# WiFi STA driver (initialised, not connected); off for the size comparison without WiFi
+# WiFi STA driver; without it the station cannot be built (the size comparison without WiFi)
 wifi = []
 # Espressif QEMU: OpenETH MAC instead of the LAN8720 on the ESP32 EMAC (tools/rust/esp/qemu)
 qemu = []
-# boot guard tests: the image panics right after the guard counted its boot; the confirmation
-# deadline is 60 s instead of 15 min
+# boot guard tests of tools/rust/esp/qemu: the image panics right after the guard counted its
+# boot; the image hangs before the app thread runs (the boot deadline restarts it)
 fail-boot = []
-short-deadline = []
+hang-setup = []
 
 [dependencies]
 esp-idf-svc = { version = "=0.53.0" }
 esp-idf-hal = { version = "=0.47.0" }
 esp-idf-sys = { version = "=0.38.1" }
+vdm-esp-core = { path = "../core" }
+vdm-esp-glue = { path = "../glue", features = ["dashboard"] }
 
 [build-dependencies]
 embuild = { version = "=0.33.5" }
 
 [profile.release]
-opt-level = "s"
+# "z" (GLUE-DESIGN-ESP.md 7 item 7): 23 KB below "s" with the whole glue
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
