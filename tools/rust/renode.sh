@@ -74,6 +74,10 @@ for name in "${images[@]}"; do
   app_run=$(awk '/3app3run\)$/ { print "0x" $1; exit }' "$map")
   [ -n "$app_run" ] || { echo "$name: app::run not in $map" >&2; exit 2; }
   echo "== $name ($chip, $tag, $version, app::run at $app_run)"
+  # the image runs as its own user (uid 1000), which on a Linux host (CI runner) does not own
+  # the checkout: the results and the suite directory must be writable for it
+  mkdir -p "$ROOT/software_stm32_rust/renode/results/$prefix$name"
+  chmod -R a+rwX "$ROOT/software_stm32_rust/renode" 2>/dev/null || true
   set +e
   docker run --rm --init -v "$HOST_ROOT:/src" ${mounts[@]+"${mounts[@]}"} \
     -w /src/software_stm32_rust/renode --entrypoint renode-test "$IMAGE" \
