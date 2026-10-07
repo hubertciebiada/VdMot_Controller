@@ -54,3 +54,26 @@ matters. The rules are in [PORTING.md](PORTING.md).
 | Kind | What | Why it matters |
 |---|---|---|
 | No Rust form | The idle `next()` call that resets the caller's `RequestLine` (gstat before) to an empty line. | `next()` returns `Option<RequestLine>`: None carries no line. |
+
+
+## event_log
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Intended deviation | Reboot reason 7 `RebootReason::SwitchBack` (`POST /api/system/ota/switch-back`, GLUE-DESIGN-ESP §7 item 6): `reboot_requested` with arg1 7 reads "restart requested (switch back)" and keeps the default severity Info (the Warning reasons stay 2, 4, 5, 6); C++ 2.1.7 reads it "restart requested (unknown)". 8 and above stay "unknown". Event 107 `esp_ota_failed` arg1 -4 (boot guard of the Rust firmware): the previous image failed its trial, arg2 1 boot limit, 2 health; its message stays the generic "ESP update failed (error -4)". | Values appended only (DESIGN.md §13 follows; the C++ firmware gets them in 2.1.8), so the log, `/api/log` and MQTT read the same from either firmware. Pinned by `switch_back_restart_and_trial_failure_are_the_glue_design_contract` and the message table. Differential check: identical with the C++ module plus the reason-7 name; against 2.1.7 only the outputs of reason-7 events differ (150 of 2,189,806 lines, all from the 32 such events). |
+| Kept quirk | Messages keep their C++ wording where it reads oddly: "recovered ()" for a ValveRecovered without a previous status or a health bit, "1 events lost", "1 fields", "1 repairs", "1 attempts", and "temp" for every SensorCountChanged kind other than 1. | The messages are external API (log file, `/api/log`, MQTT `msg`); the message table pins every one, and the differential check compares 800,000 lines, messages, JSON and MQTT documents, syslog packets and timestamps of random events (truncating buffers included) byte for byte. |
+| No Rust form | `static_cast<EventCode>(0)`/`(999)` and `static_cast<Severity>(5)`/`(7)`/`(9)`: the "unknown" names, "event 999", "UNKNOWN" lines, syslog severity 7 and MQTT class No; a 24-byte text without its NUL (`memset(e.text, ..)`); `EventLog(nullptr, 10)`; `parseSeverity(nullptr, 4, ..)`, `eventMqttNames(nullptr, 5)`, `read(f, nullptr, 5, ..)`, `makeEvent(.., nullptr)` and the null output buffers. | `from_raw(v) == None`; a full 23-byte text (a `Text<23>` holds no more; a NUL inside ends it as in C++, tested); `EventLog<0>`; the empty slice. |
+
+## log_sink
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Kept quirk | `formatLogGapLine` counts `to - from + 1` in uint32: a gap with `to` below `from` prints the wrapped count ("#5-4 gap: 0 events not written"); `detectLogGap` after cursor 2^32 - 1 starts the gap at seq 0; `logFileStep` adds in size_t. | Not reachable (`detect_log_gap` gives from <= to; 2^32 events); kept with `wrapping_*`, tested and compared. |
+| No Rust form | `formatSyslog(e, nullptr, nullptr, ..)`, `formatSyslog(.., nullptr, 10)`, `formatLogGapLine(g, nullptr, 10)`. | The empty C strings and the empty output. |
+
+## sys_health
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Kept quirk | `onHeap` hands the free heap and the largest block to the event args as int32: figures of 2^31 and more turn negative. | Not reachable (263 KB of heap); kept (`as i32`), tested. |
+| No Rust form | `onHeap(.., nullptr, 2)`, `onStack(.., nullptr, 1)`, `httpStatusOk(nullptr, 12)`. | The empty output and the empty line. |
