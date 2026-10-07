@@ -1,12 +1,14 @@
-/* Layout shared by the four images (docs/rust/GLUE-DESIGN-STM.md §3.2, §5.6, D3, D9),
+/* Layout shared by the four images (docs/rust/GLUE-DESIGN-STM.md §3.2, §5.6, §5.10, D3, D9),
    included by f401.x and f411.x.
 
-   Flash: vector table at 0x08000000, the ID block at 0x08000200, then the boot stage and
-   everything it calls (.vdm_boot), then cortex-m-rt's .text with the rest. D9: the ESP flasher
-   writes sector 0 (16 KiB) last, so as long as .vdm_boot ends inside sector 0, an interrupted
-   flash leaves the old vector table, ID block and boot stage working. The image check
-   (vdm-stm-image-check) follows every call and literal of the boot stage and fails when
-   anything lies outside sector 0.
+   Flash: vector table at 0x08000000, the ID block at 0x08000200, the record of the application
+   part at 0x08000240 (B8), then the boot stage and everything it calls (.vdm_boot), then
+   cortex-m-rt's .text with the rest. D9: the ESP flasher writes sector 0 (16 KiB) separately
+   from sectors 1..n, so as long as .vdm_boot ends inside sector 0, an interrupted flash of
+   sectors 1..n leaves a working vector table, ID block and boot stage, and the record keeps
+   that boot stage out of sectors that are not its own. The image check (vdm-stm-image-check)
+   follows every call and literal of the boot stage and fails when anything lies outside
+   sector 0.
 
    RAM: the C++ 2.1.7 .noinit cells keep their addresses (D3); RAM_LO is not used. */
 
@@ -24,7 +26,17 @@ SECTIONS
     KEEP(*(.vdm_id));
   } > FLASH
 
-  .vdm_boot ORIGIN(FLASH) + 0x240 :
+  /* B8: magic, start, length and CRC-32 of the application part (boot_hw.rs APP_CHECK),
+     written after the link by vdm-stm-image-check patch; the ESP flasher reads it here
+     (vdm_stm_boot::app_check::RECORD_ADDR) */
+  .vdm_app_check ORIGIN(FLASH) + 0x240 :
+  {
+    __vdm_app_check = .;
+    KEEP(*(.vdm_app_check));
+    __vdm_app_check_end = .;
+  } > FLASH
+
+  .vdm_boot ORIGIN(FLASH) + 0x250 :
   {
     __vdm_boot_start = .;
     /* cortex-m-rt start-up, entry and fault entries */
@@ -51,7 +63,8 @@ SECTIONS
     *(.text.memcpy .text.memmove .text.memset .text.memcmp .text.bcmp);
     *(.text.__aeabi_memcpy* .text.__aeabi_memmove* .text.__aeabi_memset* .text.__aeabi_memclr*);
     *(.text.*compiler_builtins*mem*);
-    . = ALIGN(4);
+    /* the alignment .text needs (ASSERT below) */
+    . = ALIGN(8);
     __vdm_boot_end = .;
   } > FLASH
 
@@ -63,5 +76,7 @@ SECTIONS
 
 ASSERT(SIZEOF(.vdm_id) <= 0x40, "vdm: ID block above 64 bytes");
 ASSERT(ADDR(.vdm_id) == ORIGIN(FLASH) + 0x200, "vdm: ID block not at 0x08000200");
+ASSERT(__vdm_app_check == ORIGIN(FLASH) + 0x240, "vdm: the record of the application part not at 0x08000240");
+ASSERT(__vdm_app_check_end - __vdm_app_check == 16, "vdm: the record of the application part is not 16 bytes");
 ASSERT(__vdm_boot_end <= __vdm_sector0_end, "vdm: the boot stage does not fit into sector 0 (D9)");
 ASSERT(_stext % ALIGNOF(.text) == 0, "vdm: .text needs more alignment than the end of .vdm_boot");

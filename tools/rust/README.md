@@ -50,7 +50,10 @@ before use), steps 2 and 4 take them as the reference: `tools/rust/docker.sh ima
    `c1|c2`, release profile) into `software_stm32_rust/firmware/images/`
    (`STM32F401_C1.elf`, `.bin`, `.map` ... `STM32F411_C2.*`, not in git), and the boot probe of
    each chip (B3): a link of the boot stage and the fault handlers whose panic handler calls a
-   function that does not exist, so the build fails while any panic path is left in them.
+   function that does not exist, so the build fails while any panic path is left in them. After
+   the link `vdm-stm-image-check patch` writes the record of the application part (B8: CRC-32
+   of the image from 0x08004000 on) into sector 0 of the .elf and the .bin: an image without it
+   never starts its application, so flash only these files.
 2. **image-check** checks each image against the ESP's own code and the layout rules of
    docs/rust/GLUE-DESIGN-STM.md §5.8:
    - C1-C3 with the C++ `validateImage`/`checkBoard` of
@@ -58,15 +61,15 @@ before use), steps 2 and 4 take them as the reference: `tools/rust/docker.sh ima
      g++ in the container (`software_stm32_rust/image-check/esp_validate.cpp`): accepted without
      `force` for every chip ID the image fits, version, board tag, no marker conflict, the
      erase set, and the acceptance of the image's `gvers` reply after a flash;
-   - C4, C5, D9 with `vdm-stm-image-check`: vectors, the ID block as the first version string,
-     one board marker, the no-init cells at the C++ 2.1.7 addresses, the 128 KiB budget, and the
-     sector-0 proof (every function and flash datum the boot stage and the fault handlers reach
-     lies in `.vdm_boot`). It ends with a size table.
-3. **renode.sh** runs `software_stm32_rust/renode/boot.robot` (the boot stage, E1-E10 of §5.7)
-   and `app.robot` (the application against the C++ goldens, A1-A6) once per image and prints
-   one `EVIDENCE` line per scenario. Arguments: image names (`tools/rust/renode.sh
+   - C4, C5, C7, D9 with `vdm-stm-image-check`: vectors, the ID block as the first version
+     string, one board marker, the no-init cells at the C++ 2.1.7 addresses, the 128 KiB budget,
+     the record of the application part, and the sector-0 proof (every function and flash datum
+     the boot stage and the fault handlers reach lies in `.vdm_boot`). It ends with a size table.
+3. **renode.sh** runs `software_stm32_rust/renode/boot.robot` (the boot stage, E1-E10 and E12
+   of §5.7) and `app.robot` (the application against the C++ goldens, A1-A6) once per image and
+   prints one `EVIDENCE` line per scenario. Arguments: image names (`tools/rust/renode.sh
    STM32F401_C2`), and after `--` options of `renode-test`, e.g. `-- --include A3` for one
-   scenario (tags E1 ... E10, A1 ... A6). Results in `software_stm32_rust/renode/results/<image>/`
+   scenario (tags E1 ... E10, E12, A1 ... A6). Results in `software_stm32_rust/renode/results/<image>/`
    (not in git). About 12 minutes per image.
 
    The machine (`vdm.resource`): Renode's STM32F4 platform with the chip sizes and clocks

@@ -161,4 +161,3 @@ fn firmware_id() -> FirmwareId {
         build: id::BUILD,
     }
 }
-

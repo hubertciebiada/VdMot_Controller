@@ -10,8 +10,9 @@ use cortex_m::peripheral::SYST;
 use stm32_metapac as pac;
 use stm32_metapac::{gpio, iwdg, rcc, syscfg, usart};
 
+use vdm_stm_boot::app_check::RECORD_WORDS;
 use vdm_stm_boot::id_block::{BootId, ID_BLOCK_ADDR};
-use vdm_stm_boot::{BootEnd, BootHw, BootIo, BootToken, ClockIo, NOINIT_LEN};
+use vdm_stm_boot::{BootEnd, BootHw, BootIo, BootToken, ClockIo, FlashRead, NOINIT_LEN};
 
 use crate::id::LAYOUT;
 use crate::noinit;
@@ -76,6 +77,14 @@ const AF_USART1: u32 = 7;
 /// Polls of a hardware flag that settles within a few clock cycles (switch of SYSCLK, HSI
 /// on) or within one character at 115200 Bd (TXE, TC): far above both on any clock here.
 const SPIN_LIMIT: u32 = 200_000;
+
+/// B8: magic, first address, length and CRC-32 of the application part (sectors 1..n), at
+/// 0x08000240 in sector 0 (memory/vdm.x, design §5.11). The placeholder fails the check; after the
+/// link `vdm-stm-image-check patch` (tools/rust/stm/build_images.sh) writes the record of the
+/// image into the .elf and the .bin.
+#[used]
+#[link_section = ".vdm_app_check"]
+static APP_CHECK: [u32; RECORD_WORDS] = [u32::MAX; RECORD_WORDS];
 
 /// The boot stage registers (no state: the registers are the state).
 pub struct Regs;
@@ -305,6 +314,21 @@ impl BootHw for Regs {
     fn watchdog_start(&mut self) {
         watchdog_start();
     }
+
+    fn app_record(&mut self) -> [u32; RECORD_WORDS] {
+        // SAFETY: the record in sector 0; volatile, as the patch step changed it after the link
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(APP_CHECK)) }
+    }
+}
+
+impl FlashRead for Regs {
+    fn flash_read(&mut self, addr: u32, out: &mut [u8]) {
+        for (i, b) in out.iter_mut().enumerate() {
+            // SAFETY: the application part of the image, at most APP_MAX_LEN above APP_START
+            // (vdm_stm_boot::app_check): inside the flash of both chips
+            *b = unsafe { core::ptr::read_volatile((addr as usize + i) as *const u8) };
+        }
+    }
 }
 
 /// `IWatchdog.begin(8000000)` on the registers: the boot stage at the end of a window without
@@ -314,12 +338,8 @@ impl BootHw for Regs {
 pub fn watchdog_start() {
     iwdg_key(IWDG_START);
     iwdg_key(IWDG_ENABLE);
-    pac::IWDG
-        .pr()
-        .write_value(iwdg::regs::Pr(IWDG_PR_DIV64));
-    pac::IWDG
-        .rlr()
-        .write_value(iwdg::regs::Rlr(IWDG_RLR_8S));
+    pac::IWDG.pr().write_value(iwdg::regs::Pr(IWDG_PR_DIV64));
+    pac::IWDG.rlr().write_value(iwdg::regs::Rlr(IWDG_RLR_8S));
     // PVU, RVU: the new values reach the LSI domain within a few LSI cycles
     spin_until(|| pac::IWDG.sr().read().0 == 0);
     iwdg_key(IWDG_RELOAD);

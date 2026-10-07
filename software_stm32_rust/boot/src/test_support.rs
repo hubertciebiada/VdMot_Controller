@@ -12,9 +12,10 @@
 use std::collections::VecDeque;
 use std::vec::Vec;
 
+use crate::app_check::{record, APP_START, RECORD_WORDS};
 use crate::capture::NOINIT_LEN;
 use crate::id_block::BootId;
-use crate::io::{BootHw, BootIo, ClockIo};
+use crate::io::{BootHw, BootIo, ClockIo, FlashRead};
 use crate::stage::{HSE_HZ, HSI_HZ};
 
 /// One character at 115200 8E1 (11 bits) in µs, rounded.
@@ -40,6 +41,7 @@ pub enum Ev {
     Flush,
     BootId,
     WatchdogStart,
+    AppRecord,
 }
 
 pub struct Fake {
@@ -63,6 +65,19 @@ pub struct Fake {
     pub hse_start_us: Option<u64>,
     hse_on_at: Option<u64>,
     pub id: BootId,
+    /// the flash from APP_START on (the application part); erased (0xFF) behind it
+    pub app: Vec<u8>,
+    /// the record of the application part in sector 0
+    pub record: [u32; RECORD_WORDS],
+    /// bytes read from the flash, and the times of the first and the last read
+    pub flash_bytes_read: usize,
+    pub first_flash_read_us: Option<u64>,
+    pub last_flash_read_us: u64,
+}
+
+/// The application part of the fake flash: 1000 bytes of a pattern.
+pub fn default_app() -> Vec<u8> {
+    (0..1000u32).map(|i| (i * 7 + 3) as u8).collect()
 }
 
 impl Default for Fake {
@@ -91,6 +106,11 @@ impl Fake {
             hse_start_us: Some(500),
             hse_on_at: None,
             id: BootId::STANDARD,
+            app: default_app(),
+            record: record(&default_app()),
+            flash_bytes_read: 0,
+            first_flash_read_us: None,
+            last_flash_read_us: 0,
         }
     }
 
@@ -279,6 +299,23 @@ impl BootHw for Fake {
 
     fn watchdog_start(&mut self) {
         self.ev(Ev::WatchdogStart);
+    }
+
+    fn app_record(&mut self) -> [u32; RECORD_WORDS] {
+        self.ev(Ev::AppRecord);
+        self.record
+    }
+}
+
+impl FlashRead for Fake {
+    fn flash_read(&mut self, addr: u32, out: &mut [u8]) {
+        for (i, b) in out.iter_mut().enumerate() {
+            let at = (addr as usize + i).checked_sub(APP_START as usize);
+            *b = at.and_then(|a| self.app.get(a)).copied().unwrap_or(0xFF);
+        }
+        self.flash_bytes_read += out.len();
+        self.first_flash_read_us.get_or_insert(self.now_us);
+        self.last_flash_read_us = self.now_us;
     }
 }
 

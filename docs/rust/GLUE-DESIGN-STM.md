@@ -361,12 +361,13 @@ Proposal: keep the existing terminal, minimal and 1:1 (D7).
 | # | invariant | how it is enforced |
 |---|---|---|
 | B1 | every reset runs the boot stage before any other code except cortex-m-rt's start-up (FPU on, RAM init) | `#[entry]` holds only `let t = boot::run(); app::run(t)`; `app::run` needs a `BootToken` that only `boot::run` creates; Renode E1, E10 |
-| B2 | the boot stage needs nothing that can fail or wait without a bound | reset clock or an HSE that is ready within 5 ms (§5.3); polled USART1 and SysTick; no interrupts, allocator, executor or `embassy_stm32::init`; no flash or option-byte access; stack only |
+| B2 | the boot stage needs nothing that can fail or wait without a bound | reset clock or an HSE that is ready within 5 ms (§5.3); polled USART1 and SysTick; no interrupts, allocator, executor or `embassy_stm32::init`; no flash writes or option-byte access (it reads its own flash: ID block, B8); stack only. Only the windows repeat without end, and only under B8 |
 | B3 | the boot stage cannot panic or fault | `vdm-stm-boot` denies `clippy::{indexing_slicing, unwrap_used, expect_used, panic, arithmetic_side_effects}`; a probe binary links `boot::run` and the core functions it calls with a panic handler that does not exist (`panic-never` pattern): any panic path fails the link; registers only at fixed PAC addresses |
 | B4 | the application never changes state that outlives a reset | no option bytes, no internal-flash writes (`embassy_stm32::flash` not used; clippy `disallowed-methods` on the FLASH key and option registers), no backup domain |
 | B5 | every failure ends in a reset that reaches the boot stage | faults and panics -> IWDG reset (§5.5); hangs after the boot stage -> IWDG; the ESP's NRST (flasher, reset policy of DESIGN.md §5) covers a hung boot stage, which B2/B3 exclude |
 | B6 | the IWDG is never started before the window ends | a running IWDG would reset the ROM bootloader session (§5.4) |
 | B7 | the image carries what the ESP validation needs | `DEADBEEF`, `BEEFIT`, version, exactly one `VDM-HW:C<n>`, SP and reset vector; image check C1-C6 with the ESP's own code (§5.8) |
+| B8 | the boot stage starts only the application its sector 0 was linked with | the record of the application part at 0x08000240 (§5.11: magic `VDAC`, 0x08004000, length, CRC-32 of sectors 1..n), written after the link; the boot stage computes the CRC in the idle time of the window and opens the next window instead of the application when it differs (§5.10, D9); image check C7, Renode E12 |
 
 ### 5.2 Boot stage
 
@@ -377,9 +378,9 @@ Proposal: keep the existing terminal, minimal and 1:1 (D7).
 | 2 | valve outputs safe: PB9 latch high, then open drain (PSU off); PA5, PA6, PA7, PB0, PA15, PB3 outputs low | `valve_pins_safe` | µs |
 | 3 | boot clock: HSEON, wait for HSERDY at most 5 ms (SysTick on HSI); ready -> SYSCLK = HSE 25 MHz without PLL (0 wait states); else HSE off, stay on HSI 16 MHz (D1) | (PLL from step 0) | ≤ 5 ms |
 | 4 | USART1 115200 8E1 polled (BRR 0xD9 at 25 MHz, 0x8B at 16 MHz), PA9/PA10 AF7; LED PC13 low (on); 10 ms, then drop what arrived | `BootSetup` | 10 ms |
-| 5 | window: 3001 ticks of 1 ms; RX drained continuously into a 1024-byte FIFO; per tick at most one 8-byte block when 8 bytes wait, compared with `DEADBEEF` read from the ID block; LED toggles every 102 ticks | `BootLoop` state 0 | 3.001 s |
+| 5 | window: 3001 ticks of 1 ms; RX drained continuously into a 1024-byte FIFO; per tick at most one 8-byte block when 8 bytes wait, compared with `DEADBEEF` read from the ID block; LED toggles every 102 ticks. Meanwhile, one 8-byte step per pass of the polling loop, the CRC-32 of the application part (B8): ~30 µs per step on HSI, 112 KiB in ~0.5 s | `BootLoop` state 0 | 3.001 s |
 | 6a | match: LED low; next tick: LED high, 10 ms, `BEEFIT\r\n` from the ID block, wait for TC, 200 ms; clocks back to reset (HSI, HSE off, CFGR 0), SysTick off, `cpsid i`, SYSCFG clock on, MEMRMP = 01, `cortex_m::asm::bootload(0x1FFF0000)` | state 1, `JumpToBootloader` (`HAL_RCC_DeInit`, SysTick off, `__disable_irq`, MEMRMP, MSP, jump) | 0.21 s |
-| 6b | timeout: USART1 back to its reset state (RCC reset pulse), SysTick off, IWDG started (8 s, §5.4); return `BootToken { reset, boot_ms, hse }` | state 2, `bootstate = 1`; `IWatchdog.begin` at the head of `setup_system` | — |
+| 6b | timeout, application part matches its record (B8): USART1 back to its reset state (RCC reset pulse), SysTick off, IWDG started (8 s, §5.4); return `BootToken { reset, boot_ms, hse }`. No match: the next window (step 4), for ever, without IWDG | state 2, `bootstate = 1`; `IWatchdog.begin` at the head of `setup_system` | — |
 
 - The 8-byte blocks, the 10 ms drop, the 3001 ticks, the LED period, `BEEFIT\r\n` and the
   10 ms / 200 ms delays are the C++ behaviour and the cases of `test_otasupport.cpp`
@@ -465,7 +466,9 @@ their vectors anyway (app.robot A6).
 |---|---|---|
 | vector table | 0x08000000, 0x194 B (16 + 85 vectors) | 0x08000000, 0x198 B (16 + 86 vectors) |
 | ID block `.vdm_id` | 0x08000200, ≤ 64 B | the same |
-| `.text` start (`_stext`) | 0x08000240 | the same |
+| record of the application part `.vdm_app_check` (B8, §5.11) | 0x08000240, 16 B | the same |
+| boot stage `.vdm_boot` | 0x08000250, inside sector 0 | the same |
+| `.text` start (`_stext`) | end of `.vdm_boot`, 8-byte aligned (0x080015A0 today) | the same |
 | image budget | 128 KiB (D12) | 128 KiB |
 | `RAM_LO` (reserved) | 0x20000000-0x20003233 | the same |
 | `NOINIT` | 0x20003234-0x20003307 | the same |
@@ -543,6 +546,7 @@ Facts of the Renode models the suites depend on (found while building them):
 | E8 | code after the window; a fault before the IWDG runs | a hang (`b .`) at the entry of `app::run`; a fault at the entry of `boot_hw::run` (`cpu AddHook`) | the IWDG runs from the end of the window: reset 8 s after its start; the fault: reset within 1 s (reset values, 512 ms); E1 passes after both |
 | E9 | no-init cells across resets | `NOINIT` loaded with C++ 2.1.7 cells (counter 41, guard); a pin reset (CSR read hook = PINRSTF), then SYSRESETREQ | the Rust capture continues the C++ cells (counter 42, 43, guard window summed and sealed); warm state area and padding byte-equal. The warm restore itself: A4 |
 | E10 | regression fence | reset | USART1 RE set at most 10 ms after reset (+5 ms HSE probe): fails when someone puts code before the window |
+| E12 | half-flashed image (B8) | one word of sector 2 changed under the image's sector 0 | for 6.5 s (three windows) no `app::run`, no IWDG write, no byte sent, outputs off, USART1 at 8E1; the ESP 2.1 handshake in the third window: `BEEFIT`, ROM entered; the word restored and a reset: the application answers |
 | E11 | end to end (D11) | host build of the Rust ESP flasher <-> USART1 socket <-> AN3155 responder (Python peripheral) after the jump | C++ -> Rust -> C++ image cycle in emulated flash, `gvers` after each. *Implementation:* `e11.robot`, `tools/rust/renode.sh --e11 [--cpp <dir>]`. The flasher (`vdm_esp_core::stm_flasher`) runs in a host program (`tools/rust/stm/e11`, `vdm-e11`, static) that `VdmEsp.cs` drives in lock-step, once per millisecond of virtual time: `VdmEsp` is the ESP's end of USART1 (an IUART on a UART hub with `usart1`) and of NRST (its release resets the machine). `VdmRom.cs` does the work of the ROM bootloader while the CPU is in the stand-in: USART1 to 8E1, then sync, GET, GET ID, Extended Erase with a sector list, Write and Read Memory on the registers of USART1 and the emulated flash, every command logged. With the C++ 2.1.7 release images in `<dir>` (SHA-256 pinned in `tools/rust/stm/cpp217.sha256`): C++ -> Rust -> C++; without: Rust -> Rust with another version string in the ID block -> Rust. Each flash ends when the new image answers `gvers` with the expected version and tag; the ROM log shows D9: sectors 1..n erased, written and verified, then sector 0 erased, written from its second block on, the vector table last. SysTick and the CPU run at the core clock (84 / 96 MHz, 84 / 96 MIPS): the C++ counts its milliseconds there, and its 1 ms interrupt (two `analogRead` with the whole HAL ADC set-up) takes more than 1 ms at 4 MIPS, so TIM2 at the same priority never runs and the IWDG resets the chip; the Rust boot window, counted for the 25 MHz boot clock, is shorter then (E1-E10 check its timing) |
 
 `app.robot` runs the whole application against the C++ goldens of the glue_system suites
@@ -588,6 +592,7 @@ What Renode does not prove, so the bench (§5.9) does:
 | C4 | ELF layout | SP0 and reset vector as §5.6; `.vdm_id` at 0x08000200 holds the first version-like run of the image; exactly one `VDM-HW:` marker; `NOINIT` symbols at 0x20003234 / 0x200032E8 / 0x200032FC; no section in `NOINIT` |
 | C5 | size | ≤ 128 KiB, so `sectorsForImage` gives 5 sectors like the C++ images |
 | C6 | reference | the same tool on the C++ 2.1.7 images gives version `2.1.7-revamped`, tags `C1`/`C2`, handshake present, SP 0x20010000 / 0x20020000 (*measured* with a port of `scanBytes`). *Implementation:* `tools/rust/docker.sh image-check <dir>` with the four release images in `<dir>` (`*STM32F401_C1.bin` ...), each checked against its SHA-256 pinned in `tools/rust/stm/cpp217.sha256` first |
+| C7 | record of the application part (B8) | `__vdm_app_check` at 0x08000240 (§5.11; behind the ID block, so the ESP's scan still finds the version and the marker there first), its 16 bytes equal `VDAC`, 0x08004000, the length and the CRC-32 of the .bin from 0x4000 on, computed with the boot stage's own code (`vdm_stm_boot::app_check`) |
 
 The ESP side is `vdm_esp_core::stm_flasher::{validate_image, check_board}`, the Rust port of
 `stm_flasher.cpp` (`software_esp32_rust/core/src/stm_flasher.rs`). C1-C3 and C6 run through a
@@ -604,10 +609,62 @@ electrical timing need hardware. Before the first cabinet unit (the operator fla
 3. 1-Wire slots and I2C on a logic analyzer next to the C++ (R5);
 4. then one cabinet unit, with C++ 2.1.7 as the known-good fallback image on the ESP.
 
-### 5.10 What the image cannot cover
+### 5.10 What the image cannot cover, and the half-flashed image
 
-An interrupted flash (ESP crash or power loss between the erase and the last block) leaves no
-valid vector table: the STM needs BOOT0, today and with Rust. Only an ESP-side change helps (D9).
+With the C++ flasher an interrupted flash (ESP crash or power loss between the erase and the
+last block) leaves no valid vector table: the STM needs BOOT0. The Rust ESP flasher writes
+sector 0 in a pass of its own (D9), so only that pass (~2 s) can leave no valid vector table.
+
+A cut in the pass of sectors 1..n leaves a whole sector 0 (vector table, ID block, boot stage)
+in front of erased, partly written or foreign sectors, and the ESP then resets the STM. The
+window works, but `main` would call `app::run` at the address of the image sector 0 was linked
+with (sector 2 today): erased code faults into the handlers of sector 0, foreign code entered
+in the middle may do anything with the valve outputs, also hang. Two measures of the boot stage
+keep that state safe:
+- B8: sector 0 holds the record of the application part it was linked with (§5.11), written
+  into the .elf and the .bin after the link (`vdm-stm-image-check patch`, `tools/rust/stm/
+  build_images.sh`; image check C7). The boot stage computes the CRC in the idle time of the
+  window (no delay of the application, at most ~30 µs between two looks at the receiver) and
+  starts the application only when it matches; otherwise it opens the next window, for ever,
+  without the IWDG, with the outputs safe: the ESP can flash at any time (Renode E12). An image
+  that was not patched never starts its application either, so only the images of
+  `tools/rust/docker.sh fw` may be flashed.
+- the IWDG starts at the end of the boot stage (§5.4): whatever runs after the window is
+  watched, also if a record ever matched wrong code.
+
+The order of the passes (F9 of REVIEW-STM-SAFETY.md, decided on 2026-10-07): the C++ 2.1.7
+images keep their reset handler (0x0800F7D5) and every fault vector (0x0800F825) in sector 3,
+so sector 0 of a C++ image is worth nothing once sectors 1..n are erased. The ESP flasher
+therefore writes sector 0 first when the new image carries a valid record (magic, start,
+length and CRC checked against the image before anything is erased): from the end of that
+pass on, a cut leaves the new boot stage, whose check loops its window. An image without a
+valid record (C++) is written as D9 says, sector 0 last: the old Rust boot stage in front of it
+loops its window on a cut. Brick windows: C++ -> Rust, Rust -> Rust, Rust -> C++ ~2 s each
+(the sector-0 pass); C++ -> C++ the whole session, as before. Implemented in
+`vdm_esp_core::stm_flasher`.
+
+A half-flashed image therefore stays in its window and can be flashed again remotely; only the
+sector-0 pass itself needs BOOT0 when it is cut. Images of at most 16 KiB (none today) have no
+application part: their record holds length 0.
+
+### 5.11 The record of the application part (B8)
+
+The format the boot stage, the patch step, the image check and the ESP flasher share
+(`vdm_stm_boot::app_check`):
+
+| item | value |
+|---|---|
+| place | image offset 0x240 (address 0x08000240), 16 bytes, in sector 0 behind the ID block (0x200, at most 64 bytes) and in front of the boot stage (0x250); its own bytes lie outside the range it covers |
+| layout | four 32-bit words, little endian, in this order |
+| word 0, offset 0x240 | magic 0x43414456 (the bytes `56 44 41 43`, "VDAC") |
+| word 1, offset 0x244 | start of the covered range: 0x08004000 (image offset 0x4000, sector 1) |
+| word 2, offset 0x248 | length L of the covered range in bytes: image size - 0x4000 (0 for an image of at most 16 KiB); the boot stage accepts L <= 0x1C000 (112 KiB, D12) |
+| word 3, offset 0x24C | CRC-32/ISO-HDLC (zlib `crc32`) of the image bytes at offsets 0x4000 .. 0x4000 + L - 1: polynomial 0x04C11DB7, reflected input and output (bitwise with 0xEDB88320), init 0xFFFFFFFF, final XOR 0xFFFFFFFF; check value of "123456789": 0xCBF43926; of no bytes: 0 |
+| before the patch | 0xFFFFFFFF in all four words: no valid magic, the boot stage starts no application |
+| valid | magic, start and L as above, L equal to the image size - 0x4000, the CRC matching; the boot stage needs the first three and the CRC over the flash |
+
+The .bin the ESP gets is the patched one: the record lies in the image itself, the ESP can check
+it before it erases anything (F9).
 
 ## 6. Build
 
@@ -743,8 +800,8 @@ reproduces all 27 cases byte for byte; `app.robot` replays some of them against 
 ### 7.6 CI order
 
 host tests (core, boot, glue) -> mutation gate -> firmware build (4 images, size budget, boot
-probe link) -> image check C1-C6 -> Renode E1-E10, A1-A6 and E11 -> release packaging. A
-failure anywhere stops the release of every STM image.
+probe link, the patch of the record of B8) -> image check C1-C7 -> Renode E1-E10, E12, A1-A6
+and E11 -> release packaging. A failure anywhere stops the release of every STM image.
 
 ## 8. Open decisions and risks
 
@@ -769,7 +826,7 @@ the operator; D11 recommendation; D12 128 KiB.
 | D6 | executor | none: blocking superloop and raw ISRs | `embassy-executor` 0.10 task around the superloop: more code, no gain |
 | D7 | debug terminal | port 1:1 with the debug lines, feature `terminal`; ArduinoMenu dropped | drop the terminal (saves 3-5 KiB; its 24 test cases and the field tool go) |
 | D8 | version of the first Rust release | `2.2.0-revamped`: `gvers` and the dashboard tell Rust from C++ | `2.1.7-revamped`: byte-identical `gvers`, implementations indistinguishable remotely |
-| D9 | interrupted flash | keep the boot stage and its callees inside sector 0 (image check verifies) and let the ESP flasher erase and write sector 0 last: the brick window shrinks from the whole session (30-55 s) to ~2 s; decide with the ESP flasher port | accept as today; or a permanent first stage in sector 0 with the application at 0x08004000 (new image format, flasher change) |
+| D9 | interrupted flash | keep the boot stage and its callees inside sector 0 (image check verifies) and let the ESP flasher erase and write sector 0 last: the brick window shrinks from the whole session (30-55 s) to ~2 s; decide with the ESP flasher port. *Implementation:* a flash cut in the pass of sectors 1..n leaves a boot stage in front of foreign sectors; it starts no application there (B8: record and CRC-32 of the application part, §5.11) and the IWDG runs from the end of every window that does start one (§5.4, §5.10). F9 (2026-10-07): the ESP writes sector 0 first for an image with a valid record, last otherwise, so a flash from C++ is protected too (§5.10) | accept as today; or a permanent first stage in sector 0 with the application at 0x08004000 (new image format, flasher change) |
 | D10 | bench proof | mandatory before the first cabinet unit: spare BlackPill + ESP or USB-UART (§5.9) | flash a cabinet unit directly, C++ fallback on the ESP |
 | D11 | emulator | `antmicro/renode:1.16.1` (newest published image; Renode 1.17.0 has a GitHub release but no image); E11 once the Rust ESP flasher exists | own image from the 1.17.0 release; skip E11 |
 | D12 | size budget | 128 KiB per image (same erase set as C++) | 192 KiB (one more 128 KiB sector, ~1-2 s longer erase) |

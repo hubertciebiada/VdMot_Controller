@@ -1,6 +1,6 @@
 *** Settings ***
 Documentation     The boot stage of one Rust STM32 image in Renode (docs/rust/GLUE-DESIGN-STM.md §5.7,
-...               scenarios E1-E10). tools/rust/renode.sh runs this suite once per image; the
+...               scenarios E1-E10, E12). tools/rust/renode.sh runs this suite once per image; the
 ...               machine, the models and the variables are in vdm.resource. What Renode cannot
 ...               show is in the test documentation.
 Resource          vdm.resource
@@ -367,3 +367,39 @@ E10 The Window Opens Within 10 ms Of Reset
     Should Be Equal As Integers    ${sp0}    ${SP0}    initial SP of the image = RAM top of the chip
     ${t0}=    Read Word    ${T_UART}
     Evidence    E10 USART1 RE set ${t0} us after reset (limit 15000), no IWDG write
+
+E12 A Half-Flashed Image Keeps The Window And Starts No Application
+    [Tags]    E12
+    [Documentation]    D9: the old sector 0 in front of sectors 1..n that are not its own (a flash
+    ...                that failed or stopped before sector 0; here one word of sector 2
+    ...                changed). The boot stage checks the record of the application part in the
+    ...                idle time of the window, starts neither the application nor the IWDG and
+    ...                opens the next window, for ever; the ESP's handshake in the third window
+    ...                enters the ROM bootloader. With the flash complete again, the next reset
+    ...                starts the application.
+    Create VdMot Machine
+    ${word}=    Read Word    0x08008000
+    ${changed}=    Evaluate    ${word} ^ 0x00010000
+    Execute Command    sysbus WriteDoubleWord 0x08008000 ${changed}
+    Execute Command    cpu AddHook ${APP_RUN} "self.InfoLog('application entry')"
+    Run Until Us    6500000
+    Should Not Be In Log    application entry    timeout=0
+    Should Not Be In Log    Watchdog reset triggered    timeout=0
+    ${t_iwdg}=    Read Word    ${T_IWDG}
+    Should Be Equal As Integers    ${t_iwdg}    0    no IWDG write (B6)
+    ${tx}=    Read Word    ${TX_COUNT}
+    Should Be Equal As Integers    ${tx}    0    no byte sent
+    # the third window listens: 8E1 on the boot clock, not the 8N1 of the application
+    Expect Window Clock And Framing    0xD9
+    Expect Valve Outputs Off
+    ${sends}    ${line}=    Send ESP 2.1 Handshake Until BEEFIT    first_us=6500000
+    Expect Jump Into The ROM Bootloader
+    # the ESP's next attempt completes the flash, then its NRST
+    Execute Command    sysbus WriteDoubleWord 0x08008000 ${word}
+    Execute Command    machine Reset
+    Forget The Previous Boot
+    ${t}=    Now Us
+    Run Until Us    ${t + 3500000}
+    Expect Application Answers
+    Wait For Log Entry    application entry    timeout=1    pauseEmulation=true
+    Evidence    E12 sector 2 changed: no application and no IWDG for 6.5 s (windows 1-3), BEEFIT at ${line}[Timestamp] ms and ROM entered; restored: the application answers after the next reset

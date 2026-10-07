@@ -58,3 +58,6 @@ dependencies = [
 [[package]]
 name = "vdm-stm-image-check"
 version = "2.2.0-revamped"
+dependencies = [
+ "vdm-stm-boot",
+]

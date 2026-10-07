@@ -2,8 +2,15 @@
 //! PAC (polled, no interrupts); the tests implement them with a fake board that keeps time in
 //! microseconds (`test_support`). Every decision of the boot stage stays in this crate.
 
+use crate::app_check::RECORD_WORDS;
 use crate::capture::NOINIT_LEN;
 use crate::id_block::BootId;
+
+/// The flash of the image (the check of the application part, D9).
+pub trait FlashRead {
+    /// The bytes from `addr` on (volatile reads: the image as flashed, not as linked).
+    fn flash_read(&mut self, addr: u32, out: &mut [u8]);
+}
 
 /// SysTick and the HSE oscillator.
 pub trait ClockIo {
@@ -47,7 +54,7 @@ pub trait BootIo: ClockIo {
 }
 
 /// Everything else the boot stage touches before the window.
-pub trait BootHw: BootIo {
+pub trait BootHw: BootIo + FlashRead {
     /// RCC_CSR as found after the reset.
     fn reset_flags(&mut self) -> u32;
     /// RCC_CSR.RMVF = 1: the flags accumulate until cleared.
@@ -60,6 +67,8 @@ pub trait BootHw: BootIo {
     fn outputs_safe(&mut self);
     /// The handshake pattern and reply from the ID block in flash.
     fn boot_id(&mut self) -> BootId;
+    /// The record of the application part in sector 0 (`crate::app_check`), as flashed.
+    fn app_record(&mut self) -> [u32; RECORD_WORDS];
     /// The independent watchdog with the values of the application (`IWatchdog.begin(8000000)`:
     /// prescaler /64, reload 3999, 8 s nominal), started and reloaded.
     fn watchdog_start(&mut self);

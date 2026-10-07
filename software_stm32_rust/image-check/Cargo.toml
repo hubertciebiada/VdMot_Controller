@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# the record of the application part (D9): the boot stage's own CRC and layout
+vdm-stm-boot = { path = "../boot" }
 
 [lints.rust]
 unsafe_code = "forbid"

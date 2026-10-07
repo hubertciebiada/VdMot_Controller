@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Renode tests of the STM32 images (docs/rust/GLUE-DESIGN-STM.md §5.7) in the Docker image
 # antmicro/renode:1.16.1 (D11), once per image: software_stm32_rust/renode/boot.robot (the boot
-# stage, E1-E10) and app.robot (the application against the C++ goldens, A1-A6), or with --e11
+# stage, E1-E10, E12) and app.robot (the application against the C++ goldens, A1-A6), or with --e11
 # e11.robot (the Rust ESP flasher replaces the image through the boot window).
 #
 #   tools/rust/docker.sh fw                     first: the images in software_stm32_rust/firmware/images/
 #   tools/rust/renode.sh [image...]             all four images, or e.g. STM32F401_C2
 #   tools/rust/renode.sh STM32F401_C2 -- --include E1   extra arguments for renode-test after --
-#                                               (tags: E1-E10, A1-A6)
+#                                               (tags: E1-E10, E12, A1-A6)
 #   tools/rust/renode.sh --e11 [--cpp <dir>] [image...]
 #                                               E11: Rust -> Rust with another version -> Rust;
 #                                               with the C++ 2.1.7 release images in <dir>

@@ -17,6 +17,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod app_check;
 pub mod capture;
 pub mod fault_record;
 pub mod fifo;
@@ -27,7 +28,7 @@ pub mod window;
 
 pub use capture::{capture_reset, ResetInfo, NOINIT_LEN};
 pub use id_block::BootId;
-pub use io::{BootHw, BootIo, ClockIo};
+pub use io::{BootHw, BootIo, ClockIo, FlashRead};
 pub use stage::{run, BootEnd, BootToken};
 pub use window::WindowEnd;
 

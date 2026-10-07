@@ -3,11 +3,18 @@
 # the Rust container (tools/rust/docker.sh fw), repo at /src, target volume at /target.
 #
 # Output in software_stm32_rust/firmware/images/ (not in git):
-#   STM32F401_C1.elf .bin .map ... STM32F411_C2.*   the images (release profile, clippy clean)
+#   STM32F401_C1.elf .bin .map ... STM32F411_C2.*   the images (release profile, clippy clean),
+#                                                   patched with the record of their application
+#                                                   part (D9); an image without it never starts
+#                                                   its application, so flash only these
 # The boot probe (B3, docs/rust/GLUE-DESIGN-STM.md §5.1) is built per chip with
 # --no-default-features: it links the boot stage and the fault handlers with a panic handler
 # that does not exist, so its link fails while any panic path is left in them.
 set -euo pipefail
+# the patch step of D9 (vdm-stm-image-check patch): the record of the application part
+(cd /src/software_stm32_rust && CARGO_TARGET_DIR=/target/software_stm32_rust \
+  cargo build -q --release -p vdm-stm-image-check)
+patch=/target/software_stm32_rust/release/vdm-stm-image-check
 cd /src/software_stm32_rust/firmware
 out=images
 mkdir -p "$out"
@@ -23,6 +30,9 @@ for chip in f401 f411; do
     elf="$dir/thumbv7em-none-eabihf/release/vdm-stm-fw"
     cp "$elf" "$out/$name.elf"
     llvm-objcopy -O binary "$elf" "$out/$name.bin"
+    # D9: magic, start, length and CRC-32 of sectors 1..n into sector 0 of both files; the boot
+    # stage starts no application without it
+    "$patch" patch "$out/$name.elf" "$out/$name.bin"
     cp "$(ls -t "$dir"/thumbv7em-none-eabihf/release/build/vdm-stm-fw-*/out/vdm-stm-fw.map | head -1)" "$out/$name.map"
   done
 done

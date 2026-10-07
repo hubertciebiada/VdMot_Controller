@@ -150,6 +150,31 @@ impl Elf {
         self.data.get(at..at + len as usize)
     }
 
+    /// Writes `bytes` at virtual address `addr` of a PROGBITS section (the patch step); false
+    /// when they do not lie inside one.
+    pub fn patch(&mut self, addr: u32, bytes: &[u8]) -> bool {
+        let len = bytes.len() as u32;
+        let Some(s) = self
+            .loaded()
+            .find(|s| s.contains(addr) && addr.checked_add(len).is_some_and(|e| e <= s.end()))
+        else {
+            return false;
+        };
+        let at = (s.offset + (addr - s.addr)) as usize;
+        match self.data.get_mut(at..at + bytes.len()) {
+            Some(dst) => {
+                dst.copy_from_slice(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The file as parsed and patched.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
     pub fn u16(&self, addr: u32) -> Option<u16> {
         self.bytes(addr, 2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))

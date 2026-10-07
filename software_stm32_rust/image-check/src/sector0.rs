@@ -105,8 +105,10 @@ fn data_object(elf: &Elf, addr: u32) -> (Option<&str>, u32) {
 
 /// Walks the boot stage. `stop`: functions not followed (the application entry);
 /// `allowed`: (function, value) pairs exempt from the data rules (the start-up code's `.data`
-/// copy: its LMA and its VMA).
-pub fn check(elf: &Elf, limit: u32, stop: &[u32], allowed: &[(u32, u32)]) -> Report {
+/// copy: its LMA and its VMA); `reads`: flash addresses any reached function may hold as data
+/// outside the boot stage (B8: the start of the application part, which the boot stage reads
+/// for its CRC and never executes).
+pub fn check(elf: &Elf, limit: u32, stop: &[u32], allowed: &[(u32, u32)], reads: &[u32]) -> Report {
     let fs = functions(elf);
     let mut report = Report::default();
     let flash_end = elf
@@ -144,7 +146,7 @@ pub fn check(elf: &Elf, limit: u32, stop: &[u32], allowed: &[(u32, u32)]) -> Rep
             ));
         }
         let use_address = |value: u32, report: &mut Report, todo: &mut Vec<u32>| {
-            if allowed.contains(&(f.start, value)) {
+            if allowed.contains(&(f.start, value)) || reads.contains(&value) {
                 return;
             }
             if value >= FLASH && value < flash_end {

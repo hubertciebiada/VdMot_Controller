@@ -6,20 +6,24 @@
 //! 3. boot clock (D1): HSEON, HSERDY within 5 ms -> SYSCLK = HSE 25 MHz without PLL, else
 //!    HSE off and HSI 16 MHz
 //! 4. `BootSetup`: LED on, USART1 115200 8E1, 10 ms, drop
-//! 5. the window ([`crate::window`])
-//! 6. `BEEFIT` sent -> [`BootEnd::Update`] (the firmware jumps); timeout -> USART1 and SysTick
-//!    back to their reset state, the IWDG started, [`BootEnd::Timeout`] with the [`BootToken`]
+//! 5. the window ([`crate::window`]), meanwhile the check of the application part
+//!    ([`crate::app_check`])
+//! 6. `BEEFIT` sent -> [`BootEnd::Update`] (the firmware jumps); timeout with a matching
+//!    application part -> USART1 and SysTick back to their reset state, the IWDG started,
+//!    [`BootEnd::Timeout`] with the [`BootToken`]; without a match the next window, for ever
 //!
 //! B2: nothing here waits without a bound or needs interrupts; every wait counts SysTick
-//! periods. B6: the IWDG starts only at the end of a window without handshake, never before
-//! the ROM bootloader (a running IWDG would reset its session). It starts here, in sector 0,
-//! and not in the application stage: after an interrupted flash of sectors 1..n (D9) the old
-//! boot stage calls into new or erased code, which then still ends in a watchdog reset and the
-//! next window.
+//! periods. Only the windows repeat without end, and only when sectors 1..n do not belong to
+//! this sector 0 (B8, D9): then the boot stage is the one safe place, and its window the way
+//! out. B6: the IWDG starts only at the end of a window without handshake, never before the ROM
+//! bootloader (a running IWDG would reset its session). It starts here, in sector 0, and not in
+//! the application stage, so that whatever runs after the window is watched, also code the
+//! check of the application part would not have expected.
 
+use crate::app_check::AppCheck;
 use crate::capture::{capture_reset, ResetInfo};
 use crate::io::{BootHw, ClockIo};
-use crate::window::{window, WindowEnd};
+use crate::window::{window_with, WindowEnd};
 
 /// HSI after reset.
 pub const HSI_HZ: u32 = 16_000_000;
@@ -134,24 +138,35 @@ pub fn run<H: BootHw>(hw: &mut H) -> BootEnd {
         BRR_HSI
     };
 
-    // 4, 5. BootSetup and the window, with the pattern and the reply from the ID block
+    // 4, 5. BootSetup and the window, with the pattern and the reply from the ID block; the
+    // check of the application part (D9) runs in the idle time of the window
     let id = hw.boot_id();
-    match window(hw, &id, brr, &mut boot_ms) {
-        WindowEnd::Update => BootEnd::Update,
-        WindowEnd::Timeout => {
-            // 6b. the application stage sets USART1 up again at 8N1 and its own clocks
-            hw.uart_end();
-            hw.tick_stop();
-            // last, right before the application: whatever runs from here on is watched (B6:
-            // the window is over)
-            hw.watchdog_start();
-            BootEnd::Timeout(BootToken {
-                reset,
-                boot_ms,
-                hse,
-            })
+    let mut check = AppCheck::new(hw.app_record());
+    loop {
+        let end = window_with(hw, &id, brr, &mut boot_ms, &mut |io: &mut H| check.step(io));
+        match end {
+            WindowEnd::Update => return BootEnd::Update,
+            WindowEnd::Timeout => {
+                if check.finish(hw) {
+                    break;
+                }
+                // sectors 1..n are not the image of this sector 0 (a flash that failed or
+                // stopped in their pass): no application, the next window (B6: no IWDG, the
+                // ESP may flash at any time)
+            }
         }
     }
+    // 6b. the application stage sets USART1 up again at 8N1 and its own clocks
+    hw.uart_end();
+    hw.tick_stop();
+    // last, right before the application: whatever runs from here on is watched (B6: the
+    // window is over)
+    hw.watchdog_start();
+    BootEnd::Timeout(BootToken {
+        reset,
+        boot_ms,
+        hse,
+    })
 }
 
 #[cfg(test)]

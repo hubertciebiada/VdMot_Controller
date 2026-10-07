@@ -9,6 +9,7 @@
 )]
 
 use super::*;
+use crate::app_check::{record, APP_MAX_LEN};
 use crate::capture::{read_counter, CSR_IWDGRSTF, CSR_PINRSTF, CSR_PORRSTF};
 use crate::test_support::{Ev, Fake};
 use vdm_stm_core::system_stats::{BootReason, RESET_COUNTER_MAGIC};
@@ -31,7 +32,7 @@ fn the_steps_run_in_the_order_of_the_cpp_setup() {
     let _ = run(&mut fake);
     let ev = fake.events();
     assert_eq!(
-        ev[..12],
+        ev[..13],
         [
             Ev::ResetFlags,
             Ev::ClearResetFlags,
@@ -43,11 +44,12 @@ fn the_steps_run_in_the_order_of_the_cpp_setup() {
             Ev::SysclkHse,
             Ev::TickStart(HSE_TICK_RELOAD),
             Ev::BootId,
+            Ev::AppRecord,
             Ev::LedBegin,
             Ev::Led(false),
         ]
     );
-    assert_eq!(ev[12], Ev::UartBegin(BRR_HSE));
+    assert_eq!(ev[13], Ev::UartBegin(BRR_HSE));
     assert_eq!(
         &ev[ev.len() - 3..],
         [Ev::UartEnd, Ev::TickStop, Ev::WatchdogStart]
@@ -152,6 +154,62 @@ fn the_watchdog_starts_once_after_a_window_without_handshake() {
     // the window ran its 3001 calls before
     let begin = fake.times_of(&Ev::UartBegin(BRR_HSE))[0];
     assert!(starts[0] - begin > 3_010_000, "{}", starts[0] - begin);
+}
+
+#[test]
+fn the_check_of_the_application_part_runs_in_the_first_window_and_adds_no_time() {
+    // D9: the longest part (112 KiB) is read in the idle time of the listening calls, after
+    // the window opened and before it ends; the application starts as without the check
+    let mut fake = Fake::new();
+    fake.hse_start_us = Some(2_200);
+    fake.app = (0..APP_MAX_LEN).map(|i| (i % 251) as u8).collect();
+    fake.record = record(&fake.app);
+    let t = token(run(&mut fake));
+    assert_eq!(fake.flash_bytes_read, APP_MAX_LEN as usize);
+    let listening = fake.times_of(&Ev::UartBegin(BRR_HSE))[0] + 10_000;
+    assert!(fake.first_flash_read_us.unwrap() >= listening);
+    assert!(fake.last_flash_read_us < fake.times_of(&Ev::UartEnd)[0]);
+    assert_eq!(t.boot_ms(), 2 + 10 + 3001);
+    assert_eq!(fake.count(|e| *e == Ev::WatchdogStart), 1);
+}
+
+#[test]
+fn a_part_that_does_not_match_keeps_the_stage_in_its_window_without_iwdg() {
+    // D9: sectors 1..n of another image under this sector 0 (a flash that failed or stopped
+    // before sector 0): no application and no IWDG, the next window instead; the ESP's
+    // handshake in the second window still starts the update
+    let mut fake = Fake::new();
+    fake.app[500] ^= 0x40;
+    fake.send(4_000_000, b"DEADBEEF\n");
+    assert_eq!(run(&mut fake), BootEnd::Update);
+    assert_eq!(fake.tx_bytes, b"BEEFIT\r\n");
+    let begins = fake.times_of(&Ev::UartBegin(BRR_HSE));
+    assert_eq!(begins.len(), 2);
+    // the second window follows the first one at once (its 10 ms drop, then listening)
+    assert!(begins[1] - begins[0] > 3_010_000 && begins[1] - begins[0] < 3_012_000);
+    assert_eq!(fake.count(|e| *e == Ev::WatchdogStart), 0);
+    assert_eq!(fake.count(|e| *e == Ev::UartEnd), 0);
+    assert_eq!(fake.count(|e| *e == Ev::TickStop), 0);
+    // read once, in the first window
+    assert_eq!(fake.flash_bytes_read, 1000);
+    assert!(fake.last_flash_read_us < begins[1]);
+}
+
+#[test]
+fn an_image_that_was_not_patched_never_starts_its_application() {
+    let mut fake = Fake::new();
+    fake.record = [!0; 4];
+    fake.send(7_000_000, b"DEADBEEF\n");
+    assert_eq!(run(&mut fake), BootEnd::Update);
+    assert_eq!(fake.count(|e| matches!(e, Ev::UartBegin(_))), 3);
+    assert_eq!(fake.flash_bytes_read, 0);
+    assert_eq!(fake.count(|e| *e == Ev::WatchdogStart), 0);
+    // an erased application part with a record of the image: the same
+    let mut fake = Fake::new();
+    fake.app.clear();
+    fake.send(4_000_000, b"DEADBEEF\n");
+    assert_eq!(run(&mut fake), BootEnd::Update);
+    assert_eq!(fake.count(|e| matches!(e, Ev::UartBegin(_))), 2);
 }
 
 #[test]

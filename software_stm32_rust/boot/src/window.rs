@@ -30,11 +30,25 @@ pub const MAX_CALLS: u32 = WINDOW_CALLS + 2;
 /// USART1 receives meanwhile in `fifo`, as the C++ RX interrupt does during `delay`.
 /// `elapsed` counts the periods (the boot stage's millisecond clock).
 pub fn wait_ms<I: BootIo>(io: &mut I, ms: u32, fifo: &mut Fifo, elapsed: &mut u32) {
+    wait_ms_with(io, ms, fifo, elapsed, &mut |_: &mut I| {});
+}
+
+/// [`wait_ms`] that runs `work` once per pass of its polling loop, after the receiver: the
+/// check of the application part uses the idle time of the window. A pass must stay well below
+/// one character time (95 us) or a byte is lost.
+pub fn wait_ms_with<I: BootIo, W: FnMut(&mut I)>(
+    io: &mut I,
+    ms: u32,
+    fifo: &mut Fifo,
+    elapsed: &mut u32,
+    work: &mut W,
+) {
     let mut left = ms;
     while left > 0 {
         if let Some(byte) = io.rx() {
             fifo.push(byte);
         }
+        work(io);
         if io.tick() {
             left = left.saturating_sub(1);
             *elapsed = elapsed.wrapping_add(1);
@@ -112,6 +126,19 @@ impl Window {
         id: &BootId,
         elapsed: &mut u32,
     ) -> Step {
+        self.step_with(io, fifo, id, elapsed, &mut |_: &mut I| {})
+    }
+
+    /// [`Window::step`] with `work` in the idle time of its listening millisecond
+    /// ([`wait_ms_with`]).
+    pub fn step_with<I: BootIo, W: FnMut(&mut I)>(
+        &mut self,
+        io: &mut I,
+        fifo: &mut Fifo,
+        id: &BootId,
+        elapsed: &mut u32,
+        work: &mut W,
+    ) -> Step {
         match self.state {
             State::Listening => {
                 self.timer = self.timer.saturating_add(1);
@@ -132,7 +159,7 @@ impl Window {
                 } else {
                     self.led_timer = self.led_timer.saturating_add(1);
                 }
-                wait_ms(io, 1, fifo, elapsed);
+                wait_ms_with(io, 1, fifo, elapsed, work);
                 Step::Continue
             }
             State::Matched => {
@@ -157,11 +184,22 @@ impl Window {
 /// The whole window: `BootSetup`, then `BootLoop` until it jumps or ends (at most
 /// [`MAX_CALLS`] calls, about 3.0 s; 3.2 s with the reply).
 pub fn window<I: BootIo>(io: &mut I, id: &BootId, brr: u16, elapsed: &mut u32) -> WindowEnd {
+    window_with(io, id, brr, elapsed, &mut |_: &mut I| {})
+}
+
+/// [`window`] with `work` in the idle time of its listening calls ([`wait_ms_with`]).
+pub fn window_with<I: BootIo, W: FnMut(&mut I)>(
+    io: &mut I,
+    id: &BootId,
+    brr: u16,
+    elapsed: &mut u32,
+    work: &mut W,
+) -> WindowEnd {
     let mut fifo = Fifo::new();
     setup(io, brr, &mut fifo, elapsed);
     let mut w = Window::new();
     for _ in 0..MAX_CALLS {
-        match w.step(io, &mut fifo, id, elapsed) {
+        match w.step_with(io, &mut fifo, id, elapsed, work) {
             Step::Continue => {}
             Step::Jump => return WindowEnd::Update,
             Step::Timeout => return WindowEnd::Timeout,

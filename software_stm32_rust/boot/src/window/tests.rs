@@ -276,6 +276,83 @@ fn wait_ms_counts_periods_and_keeps_the_bytes() {
 }
 
 #[test]
+fn wait_ms_with_runs_the_work_once_per_polling_pass_after_the_receiver() {
+    let mut fake = Fake::new();
+    fake.start_ms_clock();
+    fake.uart_begin(BRR_HSE);
+    fake.send(100, b"ab");
+    let mut fifo = Fifo::new();
+    let mut ms = 0;
+    let mut passes = 0u32;
+    let mut seen = std::vec::Vec::new();
+    wait_ms_with(&mut fake, 2, &mut fifo, &mut ms, &mut |io: &mut Fake| {
+        passes += 1;
+        seen.push(io.rx_reads);
+    });
+    assert_eq!(ms, 2);
+    assert_eq!(fifo.len(), 2);
+    // one pass per tick() call of 5 us: 2 ms after a partial first period
+    assert_eq!(passes as u64, fake.now_us / fake.poll_us);
+    // 'a' is complete at 195 us, in pass 39 (5 us each): read before the work of that pass
+    assert_eq!(seen.iter().position(|&r| r == 1), Some(39));
+    // 0 ms: no pass
+    let mut none = 0;
+    wait_ms_with(&mut fake, 0, &mut fifo, &mut ms, &mut |_: &mut Fake| {
+        none += 1
+    });
+    assert_eq!(none, 0);
+}
+
+#[test]
+fn the_work_runs_in_the_listening_calls_only() {
+    let mut rig = Rig::setup();
+    let mut passes = 0u32;
+    let call = |rig: &mut Rig, passes: &mut u32| {
+        rig.win.step_with(
+            &mut rig.fake,
+            &mut rig.fifo,
+            &BootId::STANDARD,
+            &mut rig.ms,
+            &mut |_: &mut Fake| *passes += 1,
+        )
+    };
+    assert_eq!(call(&mut rig, &mut passes), Step::Continue);
+    assert!(passes > 0 && passes <= 200, "{passes}");
+    // the call that sees DEADBEEF still listens for its millisecond
+    rig.inject(b"DEADBEEF");
+    let before = passes;
+    assert_eq!(call(&mut rig, &mut passes), Step::Continue);
+    assert!(passes > before);
+    // the reply call (10 ms, BEEFIT, 200 ms) runs no work
+    let before = passes;
+    assert_eq!(call(&mut rig, &mut passes), Step::Jump);
+    assert_eq!(passes, before);
+    // after the timeout no work either
+    let mut rig = Rig::setup();
+    rig.loop_calls(3001);
+    let before = passes;
+    assert_eq!(call(&mut rig, &mut passes), Step::Timeout);
+    assert_eq!(passes, before);
+    // window() runs none, window_with() in its listening calls
+    let mut fake = Fake::new();
+    fake.start_ms_clock();
+    let mut ms = 0;
+    let mut n = 0u64;
+    assert_eq!(
+        window_with(
+            &mut fake,
+            &BootId::STANDARD,
+            BRR_HSE,
+            &mut ms,
+            &mut |_: &mut Fake| { n += 1 }
+        ),
+        WindowEnd::Timeout
+    );
+    // about 200 passes in each of the 3001 listening milliseconds, none in the 10 ms drop
+    assert!(n > 3001 * 190 && n <= 3001 * 200, "{n}");
+}
+
+#[test]
 fn constants_are_the_cpp_values() {
     assert_eq!(WINDOW_CALLS, 3000);
     assert_eq!(LED_PERIOD, 100);

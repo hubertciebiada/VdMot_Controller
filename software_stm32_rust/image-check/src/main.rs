@@ -4,6 +4,10 @@
 //! both on the four images.
 //!
 //!   vdm-stm-image-check <image.elf> <image.bin> <f401|f411> <C1|C2> <version>
+//!   vdm-stm-image-check patch <image.elf> <image.bin>
+//!
+//! `patch` (tools/rust/stm/build_images.sh, after objcopy) writes the record of the application
+//! part (D9, vdm_stm_boot::app_check) into sector 0 of both files; the check (C7) reads it back.
 
 mod elf;
 mod sector0;
@@ -12,11 +16,56 @@ mod thumb;
 use std::process::ExitCode;
 
 use elf::Elf;
+use vdm_stm_boot::app_check::{record, APP_START, RECORD_ADDR, RECORD_WORDS};
 
 /// D12: the image budget (5 erase sectors, as the C++ images).
 const BUDGET: u32 = 128 * 1024;
 const ID_BLOCK: u32 = 0x0800_0200;
 const NOINIT: (u32, u32) = (0x2000_3234, 0x2000_3308);
+const FLASH: u32 = 0x0800_0000;
+/// the linker symbol of the record (memory/vdm.x)
+const APP_CHECK_SYMBOL: &str = "__vdm_app_check";
+
+/// The application part of a flash image: everything above sector 0.
+fn app_part(bin: &[u8]) -> &[u8] {
+    bin.get((APP_START - FLASH) as usize..).unwrap_or_default()
+}
+
+/// The record as it lies in flash.
+fn record_bytes(rec: &[u32; RECORD_WORDS]) -> Vec<u8> {
+    rec.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// The offset of the record in the .bin, if the linker put it at RECORD_ADDR (where the ESP
+/// flasher reads it) and the file holds it.
+fn record_offset(elf: &Elf, bin: &[u8]) -> Option<usize> {
+    let at = elf.symbol(APP_CHECK_SYMBOL)?.value;
+    let off = (RECORD_ADDR - FLASH) as usize;
+    (at == RECORD_ADDR && off + RECORD_WORDS * 4 <= bin.len()).then_some(off)
+}
+
+/// `patch`: the record of the application part into the .elf and the .bin.
+fn patch(elf_path: &str, bin_path: &str) -> Result<String, String> {
+    let mut elf = Elf::parse(std::fs::read(elf_path).map_err(|e| format!("{elf_path}: {e}"))?)?;
+    let mut bin = std::fs::read(bin_path).map_err(|e| format!("{bin_path}: {e}"))?;
+    let off = record_offset(&elf, &bin).ok_or_else(|| {
+        format!("{elf_path}: {APP_CHECK_SYMBOL} missing or not at {RECORD_ADDR:#010x}")
+    })?;
+    let rec = record(app_part(&bin));
+    let bytes = record_bytes(&rec);
+    bin[off..off + bytes.len()].copy_from_slice(&bytes);
+    if !elf.patch(FLASH + off as u32, &bytes) {
+        return Err(format!("{elf_path}: the record lies in no flash section"));
+    }
+    std::fs::write(elf_path, elf.data()).map_err(|e| format!("{elf_path}: {e}"))?;
+    std::fs::write(bin_path, &bin).map_err(|e| format!("{bin_path}: {e}"))?;
+    Ok(format!(
+        "{bin_path}: application part {} B, CRC-32 {:#010x}, record at {:#010x}",
+        rec[2],
+        rec[3],
+        FLASH + off as u32
+    ))
+}
 
 struct Checks {
     failures: u32,
@@ -76,6 +125,18 @@ fn count(hay: &[u8], needle: &[u8]) -> usize {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 4 && args[1] == "patch" {
+        return match patch(&args[2], &args[3]) {
+            Ok(done) => {
+                println!("{done}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.len() != 6 {
         eprintln!(
             "usage: {} <image.elf> <image.bin> <f401|f411> <C1|C2> <version>",
@@ -200,6 +261,18 @@ fn main() -> ExitCode {
         format!("C4 .data, .bss, .uninit inside RAM 0x20003308..{ram_top:#010x} {ram:?}"),
     );
 
+    // C7 (D9): the record of the application part in sector 0, as the boot stage checks it
+    let want = record(app_part(&bin));
+    let stored = record_offset(&elf, &bin).and_then(|off| bin.get(off..off + RECORD_WORDS * 4));
+    c.check(
+        stored == Some(record_bytes(&want).as_slice()),
+        format!(
+            "C7 record of the application part {want:#010x?} at {}",
+            elf.symbol(APP_CHECK_SYMBOL)
+                .map_or_else(|| "?".to_string(), |s| format!("{:#010x}", s.value))
+        ),
+    );
+
     // C5: size
     let size = bin.len() as u32;
     c.check(
@@ -243,7 +316,8 @@ fn main() -> ExitCode {
         .filter_map(|n| elf.symbol(n))
         .map(|s| (reset_fn, s.value))
         .collect();
-    let report = sector0::check(&elf, boot_end, &stop, &allowed);
+    // B8: the boot stage reads the application part from its first address for the CRC
+    let report = sector0::check(&elf, boot_end, &stop, &allowed, &[APP_START]);
     for p in &report.problems {
         println!("       {p}");
     }
@@ -268,5 +342,27 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_application_part_starts_at_sector_1() {
+        let bin: Vec<u8> = (0..0x4010u32).map(|i| i as u8).collect();
+        assert_eq!(app_part(&bin), &bin[0x4000..]);
+        assert!(app_part(&bin[..0x4000]).is_empty());
+        assert!(app_part(&bin[..100]).is_empty());
+        let rec = record(app_part(&bin));
+        assert_eq!(rec[2], 16);
+        let bytes = record_bytes(&rec);
+        assert_eq!(bytes.len(), 16);
+        assert_eq!(&bytes[..4], b"VDAC");
+        assert_eq!(&bytes[4..8], &0x0800_4000u32.to_le_bytes());
+        assert_eq!(&bytes[12..], &rec[3].to_le_bytes());
+        // the place the ESP flasher reads
+        assert_eq!(RECORD_ADDR - FLASH, 0x240);
     }
 }
