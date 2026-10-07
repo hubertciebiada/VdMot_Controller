@@ -4,6 +4,7 @@
 //! crate only implements the ports and spawns the threads. No global mutable state, no unsafe,
 //! no panic on any input, no infallible allocation after boot (`heap`).
 
+pub mod app;
 pub mod board;
 pub mod boot_guard;
 pub mod heap;
