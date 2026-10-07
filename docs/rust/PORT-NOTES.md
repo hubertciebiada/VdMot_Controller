@@ -111,3 +111,9 @@ matters. The rules are in [PORTING.md](PORTING.md).
 | Port form | `LegacyNvsReader::readString(ns, key, out, cap, truncated)` becomes `read_string(ns, key, out: &mut TextView) -> Option<bool>` (the text in `out`, at most its capacity = the C++ cap - 1; true when truncated); `readInt`/`readBlob` return `Option<i64>`/`Option<usize>` (the stored length). | The importer reads the strings into a `Text<65>` (the C++ 66-byte buffer) and treats them as C strings, so the same keys are rejected; the NVS reads are the same calls in the same order (the differential check compares the read counts). |
 | No Rust form | `importLegacyConfig(n, c, nullptr, 2 * kLegacyTempsBlob)` (a null scratch with a capacity). | The empty scratch slice: the temps blob is not read, as with a null pointer. |
 | Test order | The fuzz test draws `std::string(rng() % 80, rng() % 256)`, `setValve(.., pool[rng() % 10], rng() % 3)` and `setTemp(..)` with several `rng()` calls in one argument list; GCC 13.3 (the test toolchain, -O0 and -O2) evaluates them right to left. | The Rust test draws in that order, so it walks the C++ inputs. |
+
+## file_manager
+
+| Kind | What | Why it matters |
+|---|---|---|
+| No Rust form | `fsPathValid(nullptr, 3)`, `isLegacyImageFile(nullptr, 6)`, the name and reason of `FileKind` 99. | Named in comments; `FileKind::from_raw(99) == None`. |
