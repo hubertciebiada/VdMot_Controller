@@ -12,7 +12,10 @@ use vdm_esp_core::json_api::HttpMethod;
 use vdm_esp_core::stm_types::StmCommandType;
 
 use super::rig::*;
-use super::{parse_epoch, BODY_TIMEOUTS};
+use super::{
+    parse_epoch, BODY_TIMEOUTS, MAX_BODY_SIZE, MAX_CONNECTIONS, MAX_STM_IMAGE_SIZE,
+    MULTIPART_SLACK, RESPONSE_SIZE,
+};
 use crate::boot_guard::BootGuard;
 use crate::ota::{OtaPorts, OtaService};
 use crate::port::{BodyRead, Clock, HttpRequest};
@@ -609,6 +612,17 @@ fn the_dashboard_is_every_file_of_web_gzipped_with_its_etag() {
     }
     let index = DASHBOARD.iter().find(|a| a.path == "/index.html").unwrap();
     assert_eq!(perform(&mut web, get("/")).body, index.data);
+}
+
+#[test]
+fn the_binding_numbers_are_the_ones_of_web_server_h() {
+    // kResponseSlotSize, kMaxBodySize, kMaxConnections, kMaxStmImageSize, kMultipartSlack: the
+    // limit cases use the names, so the values are pinned here
+    assert_eq!(RESPONSE_SIZE, 12 * 1024);
+    assert_eq!(MAX_BODY_SIZE, 8192);
+    assert_eq!(MAX_CONNECTIONS, 4);
+    assert_eq!(MAX_STM_IMAGE_SIZE, 512 * 1024);
+    assert_eq!(MULTIPART_SLACK, 8 * 1024);
 }
 
 #[test]

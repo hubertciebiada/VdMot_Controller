@@ -388,7 +388,10 @@ fn guard_a_station_name_of_20_characters_is_the_whole_hostname() {
     let st = rig.storage();
     let mut web = rig.web(&st);
     let full = with_host(get("/api/status"), "abcdefghijklmnopqrst.local");
-    assert_eq!(perform(&mut web, full).status, 200);
+    let r = perform(&mut web, full);
+    assert_eq!(r.status, 200);
+    // the status document shows it whole too
+    assert!(text(&r).contains("\"hostname\":\"Abcdefghijklmnopqrst\","));
     let cut = with_host(get("/api/status"), "abcdefghijklmnopqrs.local");
     assert_eq!(perform(&mut web, cut).status, 403);
 }
