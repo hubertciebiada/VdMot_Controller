@@ -1777,7 +1777,8 @@ fn to_integer(v: &ConfigValue<'_>) -> Result<i64, ConvError> {
         ConfigValue::Str(s) => number_from_text(s).ok_or(ConvError::WrongType)?,
         _ => return Err(ConvError::WrongType),
     };
-    if !d.is_finite() || d < -2147483648.0 || d > 4294967295.0 {
+    // C++: !isfinite(d) || d < -2^31 || d > 2^32 - 1 (NaN and +-inf are outside the range)
+    if !(-2147483648.0..=4294967295.0).contains(&d) {
         return Err(ConvError::OutOfRange);
     }
     if !is_integral(d) {
@@ -1968,10 +1969,10 @@ pub fn set_config_value(
     v: &ConfigValue<'_>,
     clear_secrets: bool,
 ) -> SetResult {
+    // The C++ rejects an empty path and one over 64 bytes first (it scans at most 65). Both are
+    // unknown keys below: the first segment of "" is empty, and no key path is longer than 64
+    // bytes (indices have no leading zeros; test every_key_path_fits_the_path_limit).
     let path = c_str(path);
-    if path.is_empty() || path.len() > PATH_MAX {
-        return SetResult::UnknownKey;
-    }
     let (seg, rest) = split_segment(path);
     if seg.is_empty() {
         return SetResult::UnknownKey;

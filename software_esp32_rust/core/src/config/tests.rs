@@ -4521,3 +4521,73 @@ fn a_cfgx_record_with_tag_0_sets_the_first_base_field() {
     assert_eq!(info.applied, 1);
     assert_text(&c.station, "abc");
 }
+
+#[test]
+fn every_key_path_fits_the_path_limit() {
+    // set_config_value has no length check of its own: the C++ one (64 bytes) rejects only
+    // paths that name no key, as long as every key path fits.
+    let mut longest = 0;
+    for &g in &GROUPS {
+        let group = if g.name.is_empty() {
+            0
+        } else {
+            g.name.len() + 1
+        };
+        let index = if g.count == 0 {
+            0
+        } else {
+            g.count.to_string().len() + 1
+        };
+        for f in g.fields {
+            let flag = if f.kind == Kind::Secret { 3 } else { 0 };
+            longest = longest.max(group + index + f.name.len() + flag);
+        }
+    }
+    assert!(longest <= PATH_MAX, "{longest}");
+    let mut c = Config::default();
+    assert_eq!(set(&mut c, "net.wifiPasswordSet", vb(true)), SetResult::Ok);
+    assert_eq!(set(&mut c, "net.reconnectTimeoutMin", vi(7)), SetResult::Ok);
+    assert_eq!(c.net.reconnect_timeout_min, 7);
+}
+
+#[test]
+fn ten_character_item_keys_are_compared_in_full() {
+    // The C++ key buffers are char[11]: a 10-character MQTT segment and HA id fit whole.
+    let mut c = Config::default();
+    strcpy(&mut c.valves[0].name, "abcdefghij");
+    strcpy(&mut c.valves[1].name, "abcdefghik");
+    assert_eq!(validate_path(&c), "OK");
+    strcpy(&mut c.valves[1].name, "abcdefghij");
+    assert_eq!(validate_path(&c), "valves.2.name");
+}
+
+#[test]
+fn restart_reasons_compare_full_length_host_names() {
+    // build_hostname() of a 20-character station keeps all 20 (C++ char[21] buffers).
+    let mut before = Config::default();
+    strcpy(&mut before.station, "abcdefghijklmnopqrst");
+    let mut after = before.clone();
+    assert_eq!(config_restart_reasons(&before, &after), 0);
+    strcpy(&mut after.station, "abcdefghijklmnopqrsu");
+    assert_eq!(config_restart_reasons(&before, &after), RESTART_HOSTNAME);
+}
+
+#[test]
+fn a_cfgx_text_with_a_nul_inside_is_bad_also_for_the_station() {
+    // The C++ rejects a text record with a NUL inside before its rule. The station rule
+    // (is_safe_name) reads a C string and would take "a\0b" as "a"; tag 0 reaches the station
+    // (the findExt(0) quirk above).
+    let mut c = Config::default();
+    let mut info = ExtInfo::default();
+    assert_eq!(
+        decode_config_ext(
+            &ext_blob(b"\x00\x00\x03a\x00b", 1),
+            &mut c,
+            Some(&mut info),
+            &mut []
+        ),
+        ExtResult::Ok
+    );
+    assert_eq!((info.applied, info.bad), (0, 1));
+    assert_text(&c.station, "VdMot");
+}
