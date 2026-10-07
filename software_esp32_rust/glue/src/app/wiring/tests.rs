@@ -80,6 +80,7 @@ struct Fw<'a> {
     shared: &'a Shared,
     storage: &'a FwStorage<'a, P>,
     sinks: &'a Mutex<FwSinks<'a, P>>,
+    service: &'a Mutex<FwService<'a, P>>,
     link: FwLink<'a, P>,
     mqtt: FwMqtt<'a, P>,
     app: FwApp<'a, P, HttpStart<FakeHttpServer>>,
@@ -138,6 +139,7 @@ fn firmware<R>(dev: &Device, f: impl FnOnce(&mut Fw<'_>) -> R) -> R {
         shared: &shared,
         storage: &st,
         sinks: &sk,
+        service: &sv,
         link,
         mqtt: mq,
         app: ap,
@@ -525,8 +527,9 @@ fn wire_mqtt_host_reads_and_writes_the_shared_objects() {
             ..CalibInfo::default()
         });
         assert_eq!(MqttHost::calib_next_epoch(&w), 77);
+        s.storage.set_active_config(&Config::default());
         s.storage.set_active_config(&boiler());
-        assert_eq!(MqttHost::config_revision(&w), 1);
+        assert_eq!(MqttHost::config_revision(&w), 2);
         let mut station = Vec::new();
         MqttHost::with_config(&w, &mut |c| station = c.station.to_vec());
         assert_eq!(station, b"Boiler");
@@ -540,7 +543,9 @@ fn wire_mqtt_host_reads_and_writes_the_shared_objects() {
         assert_eq!(MqttHost::ha_layout(&w), 0);
         MqttHost::set_ha_layout(&w, 2);
         assert_eq!(MqttHost::ha_layout(&w), 2);
+        MqttHost::log(&w, EventCode::LowHeap, NO_VALVE, 1, 2, b"");
         let seq = MqttHost::log(&w, EventCode::LowHeap, NO_VALVE, 5, 6, b"");
+        assert_eq!(seq, 2);
         assert_eq!(seq, s.logger.last_seq());
         let mut ev: Vec<Event> = vec![Event::default(); 4];
         let (n, next) = MqttHost::read_events_since(&w, seq - 1, &mut ev);
@@ -665,8 +670,9 @@ fn wire_stm_service_host_reads_and_writes_app_storage_and_time() {
         assert_eq!(StmServiceHost::calib_info(&mut w), ci);
         let mut cfg = boiler();
         cfg.calib.day_mask = 5;
+        s.storage.set_active_config(&Config::default());
         s.storage.set_active_config(&cfg);
-        assert_eq!(StmServiceHost::config_revision(&mut w), 1);
+        assert_eq!(StmServiceHost::config_revision(&mut w), 2);
         assert_eq!(StmServiceHost::calib_config(&mut w).day_mask, 5);
         assert_eq!(StmServiceHost::load_calib_slot(&mut w), 0);
         StmServiceHost::save_calib_slot(&mut w, 20_261_001);
@@ -753,8 +759,9 @@ fn wire_stm_link_host_reaches_app_storage_ota_mqtt_and_the_rtc_records() {
     });
     st.load_config(&mut cfg, &mut report, &mut details);
     assert_eq!(StmLinkHost::boot_load_source(&mut w), LoadSource::Stored);
+    s.storage.set_active_config(&Config::default());
     s.storage.set_active_config(&cfg);
-    assert_eq!(StmLinkHost::config_revision(&mut w), 1);
+    assert_eq!(StmLinkHost::config_revision(&mut w), 2);
     let mut station = Vec::new();
     StmLinkHost::with_config(&mut w, &mut |c| station = c.station.to_vec());
     assert_eq!(station, b"Boiler");
@@ -863,28 +870,56 @@ fn modules_forward_the_app_threads_calls() {
         assert!(host.begin_fs(&mut formatted));
         assert!(!formatted);
         assert!(fw.dev.fs.open("/log/x", OpenMode::Write).is_some());
+        // the log sinks: an event, a flush request, the next service writes the file
+        host.log(&make_test_event(EventCode::LowHeap, 3));
+        assert_eq!(events(fw.shared, EventCode::LowHeap).len(), 1);
+        fw.shared.logger.request_flush();
+        host.logger_service(false);
+        let log = fw.dev.fs.read("/log/events.log").unwrap_or_default();
+        assert!(String::from_utf8_lossy(&log).contains("low_heap"));
+        // storage: a saved config gets its backup files from the service
+        assert!(fw.storage.apply_config(&boiler(), &mut []).is_ok());
+        assert!(!fw.dev.fs.exists("/sys/cfg.bak"));
+        host.storage_service();
+        assert!(fw.dev.fs.exists("/sys/cfg.bak"));
         assert!(host.factory_reset());
         assert_eq!(fw.dev.nvs.get_i(NAMESPACE, "imported"), 1);
         assert_eq!(host.increment_boot_count(), 1);
         assert_eq!(host.increment_boot_count(), 2);
         host.logger_configure(2, 0x0A00_000A, 514, false, b"Boiler");
         assert!(!fw.shared.logger.stats(0).persist);
+        host.set_active_config(&Config::default());
         host.set_active_config(&boiler());
-        assert_eq!(host.config_revision(), 1);
+        assert_eq!(host.config_revision(), 3); // the save above, then these two
         let mut out = Box::<Config>::default();
         host.get_config(&mut out);
         assert_eq!(&out.station[..], b"Boiler");
         assert!(!host.mqtt_connected());
         assert!(!host.net_is_up());
         assert!(!host.net_ota_ok());
+        // an ESP upload of the web server
+        assert!(!host.ota_upload_active());
+        let mut up = crate::ota::OtaUpload::<P, OtaWire<'_, P>>::new(
+            &fw.dev.clock,
+            &fw.dev.ota,
+            fw.dev.md5.clone(),
+            &fw.dev.heap,
+            &fw.shared.ota,
+            OtaWire::new(
+                Wire::new(ports(fw.dev), fw.shared, fw.storage),
+                fw.sinks,
+                fw.service,
+            ),
+        );
+        assert!(up.upload_begin(1000, b""));
+        assert!(host.ota_upload_active());
+        assert!(!up.upload_end(false));
         assert!(!host.ota_upload_active());
         assert!(!host.ota_restart_pending());
         host.ota_request_restart(6, 1000);
         assert!(host.ota_restart_pending());
         let r = events(fw.shared, EventCode::RebootRequested);
         assert_eq!((r[0].arg1, r[0].severity), (6, Severity::Warning));
-        host.storage_service();
-        host.logger_service(false);
     });
 }
 
@@ -905,6 +940,8 @@ fn modules_net_and_web_follow_the_interface() {
         });
         host.net_service(1000, true);
         assert!(host.net_is_up());
+        // the DHCP lease and the MQTT session prove the network
+        assert!(host.net_ota_ok());
         assert!(!host.web_started());
         host.web_begin();
         assert!(host.web_started());
@@ -938,6 +975,54 @@ fn wire_read_health_takes_the_parts_of_net_ota_and_the_logger() {
         assert_eq!(h.net, fw.shared.net.health());
         assert_eq!(h.ota, fw.shared.ota.health());
         assert!(h.net.evidence_age_s == u32::MAX);
+    });
+}
+
+#[test]
+fn the_tasks_of_the_stm_and_mqtt_threads_run_their_modules() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    firmware(&dev, |fw| {
+        fw.setup();
+        let wd = fw.dev.watchdog.clone();
+        Task::start(&mut fw.link, wd.clone());
+        assert_eq!(Task::pass(&mut fw.link), crate::stm_link::PASS_DELAY_MS);
+        assert_eq!(wd.feeds(), 1);
+        Task::start(&mut fw.mqtt, wd.clone());
+        // MQTT off: the idle delay
+        assert_eq!(Task::pass(&mut fw.mqtt), crate::mqtt_client::IDLE_MS);
+        assert_eq!(wd.feeds(), 2);
+    });
+}
+
+#[test]
+fn the_mqtt_session_runs_over_the_wiring_and_proves_the_network() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    store_config(&dev, |c| {
+        c.mqtt.mode = MqttMode::Mqtt;
+        copy_string(&mut c.mqtt.host, b"broker.lan");
+        c.valves[0].active = true;
+    });
+    let broker = crate::testkit::FakeBroker::default();
+    broker.attach(&dev.tcp, "broker.lan", 1883);
+    let _stm = FakeStm::attach(&dev.uart, &dev.gpio, &dev.clock);
+    dev.eth.got_ip(IpInfo {
+        ip: u32::from_le_bytes([192, 168, 1, 20]),
+        mask: u32::from_le_bytes([255, 255, 255, 0]),
+        gateway: u32::from_le_bytes([192, 168, 1, 1]),
+        dns: 0,
+    });
+    firmware(&dev, |fw| {
+        fw.setup();
+        fw.start();
+        fw.run_ms(10_000);
+        assert_eq!(broker.state().connects.len(), 1);
+        assert_eq!(fw.shared.mqtt.status().state, MqttState::Connected);
+        assert!(fw.app.host.mqtt_connected());
+        // the session published the state of the STM the stm thread published
+        assert!(!broker.state().published.is_empty());
+        assert!(fw.shared.app.stm_snapshot_revision() > 0);
     });
 }
 

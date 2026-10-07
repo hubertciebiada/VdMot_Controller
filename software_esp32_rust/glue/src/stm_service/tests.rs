@@ -11,6 +11,7 @@ use super::*;
 use crate::testkit::board::TestPlatform;
 use crate::testkit::{lock as tlock, Device, FakeBoard, Reset};
 use vdm_esp_core::event_log::Severity;
+use vdm_esp_core::valve_model::TargetSource;
 
 /// Where the cases keep the two RTC records.
 const RECORDS: RtcRecords = RtcRecords {
@@ -324,6 +325,28 @@ fn the_next_slot_after_a_dst_change_takes_the_offset_in_force_then() {
     let ci = host.s().calib;
     assert_eq!(ci.next_slot, 20_261_028);
     assert_eq!(ci.next_epoch, 1_793_152_800); // 2026-10-28 03:00 CET = 02:00 UTC
+}
+
+#[test]
+fn the_next_slot_keeps_the_minute_of_the_schedule() {
+    // Rust addition: the slot epoch at 03:30, still today at 02:00
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    let shared = StmServiceShared::new();
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    {
+        let mut h = host.s();
+        h.calib_cfg.day_mask = 1 << 3;
+        h.calib_cfg.hour = 3;
+        h.calib_cfg.minute = 30;
+        h.revision = 1;
+        h.local_time = wednesday(2, 0);
+    }
+    s.service(10_000);
+    let ci = host.s().calib;
+    assert_eq!(ci.next_slot, 20_260_923);
+    assert_eq!(ci.next_epoch, 1_790_121_600 + 3 * 3600 + 30 * 60);
 }
 
 #[test]

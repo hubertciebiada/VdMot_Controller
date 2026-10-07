@@ -30,7 +30,6 @@ use vdm_esp_core::target_store::{
     choose_targets, decode_targets, encode_targets, PersistedTargets, RestoreSource, TargetSaver,
     PERSISTED_TARGETS_SIZE,
 };
-use vdm_esp_core::valve_model::TargetSource;
 
 use crate::port::{Clock, Platform, Rtc, WallClock};
 use crate::shared::CalibInfo;
@@ -354,10 +353,10 @@ impl<'a, P: Platform, H: StmServiceHost> StmService<'a, P, H> {
         match self.calib.evaluate(&self.calib_cfg, &lt, now_ms) {
             CalibDecision::Fire => {
                 self.attempt_id = self.attempt_id.wrapping_add(1);
+                // the default source is the C++ TargetSource::None
                 let c = StmCommand {
                     kind: StmCommandType::Calibrate,
                     valve: ALL_VALVES,
-                    source: TargetSource::None,
                     scheduled: true,
                     attempt: self.attempt_id,
                     ..StmCommand::default()

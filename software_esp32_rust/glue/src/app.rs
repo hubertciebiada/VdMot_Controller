@@ -288,6 +288,18 @@ pub fn spawn_tasks<'a, W, C, S, A, M>(
     );
 }
 
+// ---------------------------------------------------------------- boot deadline
+
+/// The boot deadline (GLUE-DESIGN-ESP.md 6.3, 6.4): `main` arms a one-shot timer of
+/// [`crate::boot_guard::BOOT_DEADLINE_MS`] at its start and calls this when it fires. An image
+/// that hangs in its boot (`setup` never reached the first pass of the app thread) restarts, a
+/// boot the boot guard counts; once the app thread runs, nothing happens.
+pub fn boot_deadline(shared: &AppShared, system: &impl System) {
+    if !shared.app_running() {
+        system.restart();
+    }
+}
+
 // ---------------------------------------------------------------- health
 
 /// The parts of /api/health other modules publish (C++ `net::health`, `ota::health`,
@@ -604,6 +616,8 @@ impl<'a, P: Platform, H: AppHost> Task<P::Watchdog> for App<'a, P, H> {
         if let Some(w) = &self.watchdog {
             w.feed();
         }
+        // the boot finished: the boot deadline is disarmed
+        self.shared.mark_app_running();
         let now = self.clock.now_ms();
         if self.host.config_revision() != self.cfg_revision {
             self.apply_config_change();

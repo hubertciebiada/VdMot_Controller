@@ -239,6 +239,41 @@ fn task_the_next_policy_reset_waits_10_min_from_the_nrst_release() {
 }
 
 #[test]
+fn task_an_stm_that_reboots_on_its_own_gets_its_desired_target_again() {
+    // Rust addition: the reboot detection of the session behind the glue (gstat uptime)
+    let rig = Rig::new();
+    rig.host.active_valve(0);
+    let stm = rig.stm();
+    let mut link = rig.link();
+    link.begin();
+    let mut c = command(StmCommandType::SetTarget, 0);
+    c.pos = 40;
+    {
+        let (clock, host, stm) = (rig.dev.clock.clone(), rig.host.clone(), stm.clone());
+        rig.dev.clock.on_sleep(move |_| {
+            let now = clock.ms();
+            if now == 8000 {
+                host.s().to_receive.push_back(c.clone());
+            }
+            if now == 20_000 {
+                stm.reboot();
+            }
+        });
+    }
+    rig.run_task(&mut link, 45_000);
+    assert!(rig.host.has(EventCode::StmRebootDetected));
+    let pushes: Vec<u64> = stm
+        .requests()
+        .iter()
+        .filter(|r| r.line == "stgtp 0 40 ")
+        .map(|r| r.at_ms)
+        .collect();
+    assert!(pushes.first().is_some_and(|&t| t < 20_000), "{pushes:?}");
+    assert!(pushes.last().is_some_and(|&t| t > 20_000), "{pushes:?}");
+    assert_eq!(rig.host.s().published.link, LinkState::Up);
+}
+
+#[test]
 fn task_a_pass_returns_the_2_ms_delay_and_feeds_the_watchdog() {
     // Rust addition: the pass is the loop body of the thread
     let rig = Rig::new();

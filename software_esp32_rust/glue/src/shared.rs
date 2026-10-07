@@ -63,6 +63,9 @@ pub struct AppShared {
     found: [AtomicBool; MONITORED_TASKS],
     /// The smallest largest free heap block of the resource samples, 0 before the first.
     min_largest: AtomicU32,
+    /// The app thread ran its first pass: the boot finished (the boot deadline of
+    /// GLUE-DESIGN-ESP.md 6.3).
+    app_running: AtomicBool,
 }
 
 impl Default for AppShared {
@@ -89,6 +92,7 @@ impl AppShared {
             calib: Mutex::new(CalibInfo::default()),
             found: Default::default(),
             min_largest: AtomicU32::new(0),
+            app_running: AtomicBool::new(false),
         }
     }
 
@@ -229,6 +233,18 @@ impl AppShared {
     /// The app thread after a resource sample.
     pub fn set_min_largest(&self, bytes: u32) {
         self.min_largest.store(bytes, Ordering::SeqCst);
+    }
+
+    // ------------------------------------------------------------ boot
+
+    /// The app thread runs its passes (set by every pass; the boot deadline reads it).
+    pub fn mark_app_running(&self) {
+        self.app_running.store(true, Ordering::SeqCst);
+    }
+
+    /// The app thread ran a pass since the boot.
+    pub fn app_running(&self) -> bool {
+        self.app_running.load(Ordering::SeqCst)
     }
 }
 

@@ -197,6 +197,16 @@ impl FakeStm {
     pub(crate) fn set_reply_delay_ms(&self, ms: u64) {
         self.s().reply_delay_ms = ms;
     }
+    /// The STM restarts on its own now (a brown-out, its watchdog): silent for the boot time,
+    /// its uptime from 0 again (Rust addition).
+    pub(crate) fn reboot(&self) {
+        let mut s = self.s();
+        let now = s.clock.ms();
+        s.boot_until_ms = now + s.boot_ms;
+        s.boot_at_ms = now;
+        s.uptime_base_s = 0;
+        s.rx_line.clear();
+    }
     /// Flash runs: every byte and the NRST line go to the AN3155 simulator (created on first
     /// use: it fills a 512 KiB flash model).
     pub(crate) fn use_simulator(&self, on: bool) {

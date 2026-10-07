@@ -717,6 +717,34 @@ fn task_the_heap_guard_ignores_a_heap_at_the_threshold() {
 }
 
 #[test]
+fn boot_deadline_restarts_a_boot_that_never_reached_the_app_thread() {
+    // Rust addition (GLUE-DESIGN-ESP.md 6.3): setup returned, the app thread did not run
+    let rig = Rig::new();
+    let mut app = rig.app();
+    rig.setup(&mut app);
+    assert!(!rig.shared.app_running());
+    assert_eq!(
+        run(|| boot_deadline(&rig.shared, &rig.dev.system)),
+        Ended::Reset(Reset::Software)
+    );
+    assert_eq!(rig.dev.journal.of("esp_restart").len(), 1);
+}
+
+#[test]
+fn boot_deadline_is_disarmed_by_the_first_pass_of_the_app_thread() {
+    let rig = Rig::new();
+    let mut app = rig.app();
+    rig.setup(&mut app);
+    rig.run_app(&mut app, 1);
+    assert!(rig.shared.app_running());
+    assert_eq!(
+        run(|| boot_deadline(&rig.shared, &rig.dev.system)),
+        Ended::Returned(())
+    );
+    assert!(rig.dev.journal.of("esp_restart").is_empty());
+}
+
+#[test]
 fn rtc_layout_one_record_after_the_other() {
     let table = [
         (RTC_BOOT_GUARD, crate::boot_guard::MIRROR_LEN),
