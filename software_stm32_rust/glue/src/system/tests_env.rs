@@ -6,6 +6,7 @@
 use std::string::String;
 use std::vec::Vec;
 
+use vdm_stm_boot::fault_record::{FaultRecord, KIND_HARD_FAULT};
 use vdm_stm_core::valve_codes::{ST_IDLE, ST_OPENING, ST_UNKNOWN};
 
 use super::bench::{sim, Bench, Boot, Case, PLAIN};
@@ -62,6 +63,31 @@ fn gvers_and_the_banner_report_the_identity_of_the_image() {
     assert!(b
         .terminal("gvers\n")
         .contains("Version: 2.2.0-revamped\r\n"));
+    b.finish();
+}
+
+#[test]
+fn a_fault_record_of_the_start_before_follows_the_banner() {
+    let mut c = case();
+    c.set_fault_record(Some(FaultRecord {
+        kind: KIND_HARD_FAULT,
+        pc: 0x0800_4321,
+        lr: 1,
+        xpsr: 2,
+        cfsr: 3,
+        hfsr: 4,
+        bfar: 5,
+        count: 6,
+    }));
+    let mut b = c.boot(PLAIN, |_| {});
+    let dbg = b.take_dbg();
+    assert!(
+        dbg.starts_with(
+            "VdMot Controller 2.1.7-revamped_C2\r\nlast fault: HardFault pc 0x8004321 \
+             lr 0x1 xpsr 0x2 cfsr 0x3 hfsr 0x4 bfar 0x5 count 6\r\nSERIAL_BUFFER_SIZE"
+        ),
+        "{dbg}"
+    );
     b.finish();
 }
 

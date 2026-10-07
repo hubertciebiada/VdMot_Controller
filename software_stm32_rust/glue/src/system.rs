@@ -44,7 +44,8 @@ use crate::print::Print;
 use crate::serial::Port;
 use crate::sysstat::{Sysstat, SysstatEnv};
 #[cfg(feature = "terminal")]
-use crate::terminal::{Terminal, TerminalEnv};
+use crate::terminal::{print_fault_record, Terminal, TerminalEnv};
+use vdm_stm_boot::fault_record::FaultRecord;
 
 use core::sync::atomic::Ordering;
 
@@ -123,6 +124,8 @@ pub struct Modules<'a, P: Platform> {
     pub sysstat: Sysstat,
     #[cfg(feature = "terminal")]
     pub term: Terminal,
+    /// the fault record of the start before, printed after the terminal banner
+    pub fault: Option<FaultRecord>,
 }
 
 /// The controller: `setup_system()` once, then `loop_system()` for ever.
@@ -157,8 +160,15 @@ impl<'a, P: Platform> Controller<'a, P> {
                 sysstat,
                 #[cfg(feature = "terminal")]
                 term: Terminal::new(id, board.mux_on_high()),
+                fault: None,
             },
         }
+    }
+
+    /// The fault record the terminal prints at the set-up (firmware: a valid record of the
+    /// fault handlers, design §5.5).
+    pub fn set_fault_record(&mut self, record: Option<FaultRecord>) {
+        self.modules.fault = record;
     }
 
     /// `setup_system()` (the firmware started the IWDG before).
@@ -940,7 +950,11 @@ impl<P: Platform> MainLoopEnv for Modules<'_, P> {
         #[cfg(feature = "terminal")]
         {
             let mut dbg = self.hw.dbg;
-            self.term.init(&mut dbg)
+            let r = self.term.init(&mut dbg);
+            if let Some(fault) = &self.fault {
+                print_fault_record(&mut dbg, fault);
+            }
+            r
         }
         #[cfg(not(feature = "terminal"))]
         {

@@ -18,6 +18,7 @@
 extern crate std;
 
 pub mod capture;
+pub mod fault_record;
 pub mod fifo;
 pub mod id_block;
 pub mod io;

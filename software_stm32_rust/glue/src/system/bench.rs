@@ -26,6 +26,7 @@ use vdm_stm_boot::capture::{
     capture_reset, read_guard, CSR_BORRSTF, CSR_IWDGRSTF, CSR_PINRSTF, CSR_PORRSTF, CSR_SFTRSTF,
 };
 
+use vdm_stm_boot::fault_record::FaultRecord;
 use vdm_stm_core::motor_params::MotorParams;
 use vdm_stm_core::valve_codes::{ST_IDLE, ST_PRESENT};
 
@@ -364,6 +365,7 @@ pub struct Case {
     slug: &'static str,
     rev: BoardRev,
     id: FirmwareId,
+    fault: Option<FaultRecord>,
     eeprom: Vec<u8>,
     noinit: [u8; NOINIT_SIZE],
     next: Reset,
@@ -380,6 +382,7 @@ impl Case {
             slug,
             rev: BoardRev::C2,
             id: CPP_ID,
+            fault: None,
             eeprom: std::vec![0xFF; EEPROM_SIZE],
             noinit: [0xA5; NOINIT_SIZE],
             next: Reset::PowerOn,
@@ -481,7 +484,7 @@ impl Case {
             i2c: BenchI2c(s.board.clone()),
             one_wire: FakeOwBus::new(s.log.clone()),
         };
-        let ctl = Controller::new(
+        let mut ctl = Controller::new(
             hw,
             Shared {
                 motor: &s.motor,
@@ -492,6 +495,7 @@ impl Case {
             self.id,
             rev,
         );
+        ctl.set_fault_record(self.fault);
         let index = self.boots;
         let mut boot = Boot {
             s,
@@ -527,6 +531,11 @@ impl Case {
     /// The firmware identity the next boots report (the C++ glue_system's by default).
     pub fn set_id(&mut self, id: FirmwareId) {
         self.id = id;
+    }
+
+    /// The fault record the firmware hands to the next boots (none by default).
+    pub fn set_fault_record(&mut self, record: Option<FaultRecord>) {
+        self.fault = record;
     }
 }
 

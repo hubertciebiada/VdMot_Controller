@@ -8,7 +8,8 @@ use crate::communication::FirmwareId;
 use crate::eeprom::EepromLayout;
 use crate::hal::{Clock, Out, Pins, Serial};
 use crate::ow_devices::TEMP_CMD_NEWSEARCH;
-use crate::print::{Print, DEC};
+use crate::print::{Print, DEC, HEX};
+use vdm_stm_boot::fault_record::FaultRecord;
 use vdm_stm_core::config_store::{CHANGED_ALL, CHANGED_MOTOR};
 use vdm_stm_core::line_assembler::StaticLineAssembler;
 use vdm_stm_core::manual_enable::manual_enable_expired;
@@ -472,7 +473,29 @@ impl Terminal {
     }
 }
 
+/// The fault record of the start before (Rust only, docs/rust/GLUE-DESIGN-STM.md §5.5): one line
+/// after the banner, no protocol reply carries it.
+pub fn print_fault_record(dbg: &mut impl Print, r: &FaultRecord) {
+    dbg.print(b"last fault: ");
+    dbg.print(r.kind_name());
+    for (name, value) in [
+        (b" pc 0x" as &[u8], r.pc),
+        (b" lr 0x", r.lr),
+        (b" xpsr 0x", r.xpsr),
+        (b" cfsr 0x", r.cfsr),
+        (b" hfsr 0x", r.hfsr),
+        (b" bfar 0x", r.bfar),
+    ] {
+        dbg.print(name);
+        dbg.print_unsigned(value, HEX);
+    }
+    dbg.print(b" count ");
+    dbg.println_unsigned(r.count, DEC);
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_fault;
 #[cfg(test)]
 mod tests_mut;
