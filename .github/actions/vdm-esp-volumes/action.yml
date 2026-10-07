@@ -1,0 +1,74 @@
+# ESP-IDF (with its tools and python environment, about 4 GB) and the cargo registry of the Rust
+# ESP32 firmware, kept in the Actions cache between runs. tools/rust/esp/docker.sh mounts the
+# Docker volumes vdmot-esp-idf and vdmot-esp-cargo; here they are created as bind mounts of two
+# directories of the runner, which actions/cache restores (mode restore, before the first
+# tools/rust/esp/docker.sh call) and saves (mode save, after a successful build).
+name: VdMot ESP-IDF volumes
+description: Restore or save the ESP-IDF and cargo volumes of tools/rust/esp/docker.sh
+inputs:
+  mode:
+    description: restore or save
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: keys
+      shell: bash
+      run: |
+        # ESP-IDF: the image that runs the install, the ESP-IDF version and esp-idf-sys of the
+        # firmware crate (not its other lines: a version bump keeps the cache)
+        idf=$({ cat tools/rust/esp/Dockerfile; grep -E '^(esp_idf_version|esp-idf-sys) ' software_esp32_rust/firmware/Cargo.toml; } \
+          | sha256sum | cut -c1-16)
+        cargo=$(sha256sum < software_esp32_rust/firmware/Cargo.lock | cut -c1-16)
+        echo "idf=esp-idf-$idf" >> "$GITHUB_OUTPUT"
+        echo "cargo=esp-cargo-$cargo" >> "$GITHUB_OUTPUT"
+        if [ -f "$HOME/.cache/vdm-esp/hits" ]; then cat "$HOME/.cache/vdm-esp/hits" >> "$GITHUB_OUTPUT"; fi
+
+    - if: inputs.mode == 'restore'
+      id: idf
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/vdm-esp/idf
+        key: ${{ steps.keys.outputs.idf }}
+    - if: inputs.mode == 'restore'
+      id: cargo
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/vdm-esp/cargo
+        key: ${{ steps.keys.outputs.cargo }}
+        restore-keys: esp-cargo-
+    - if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        IDF_HIT: ${{ steps.idf.outputs.cache-hit }}
+        CARGO_HIT: ${{ steps.cargo.outputs.cache-hit }}
+      run: |
+        for v in idf cargo; do
+          mkdir -p "$HOME/.cache/vdm-esp/$v"
+          # the containers run as root: git there refuses an ESP-IDF checkout owned by another
+          # user ("dubious ownership"), so the restored files belong to root while they are used
+          sudo chown -R 0:0 "$HOME/.cache/vdm-esp/$v"
+          docker volume create --driver local --opt type=none --opt o=bind \
+            --opt device="$HOME/.cache/vdm-esp/$v" "vdmot-esp-$v" >/dev/null
+        done
+        printf 'idf-hit=%s\ncargo-hit=%s\n' "${IDF_HIT:-false}" "${CARGO_HIT:-false}" > "$HOME/.cache/vdm-esp/hits"
+        sudo du -sh "$HOME/.cache/vdm-esp/idf" "$HOME/.cache/vdm-esp/cargo"
+
+    - if: inputs.mode == 'save'
+      shell: bash
+      run: |
+        # the cache action reads as the runner user
+        sudo chown -R "$(id -u):$(id -g)" "$HOME/.cache/vdm-esp"
+        # the downloaded archives of the installed tools
+        rm -rf "$HOME/.cache/vdm-esp/idf/dist"
+        du -sh "$HOME/.cache/vdm-esp/idf" "$HOME/.cache/vdm-esp/cargo"
+    - if: inputs.mode == 'save' && steps.keys.outputs.idf-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.cache/vdm-esp/idf
+        key: ${{ steps.keys.outputs.idf }}
+    - if: inputs.mode == 'save' && steps.keys.outputs.cargo-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.cache/vdm-esp/cargo
+        key: ${{ steps.keys.outputs.cargo }}

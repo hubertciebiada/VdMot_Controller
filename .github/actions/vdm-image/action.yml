@@ -1,0 +1,60 @@
+# Container image of a tools/rust script, loaded from the Actions cache or built and cached.
+# The scripts tag their image <name>:<first 12 hex digits of the md5 of its Dockerfile> and build
+# it on first use when that tag is missing; this action provides the tag before the first call,
+# so the jobs do not each install cargo-mutants or the Xtensa toolchain again. A change of the
+# Dockerfile is a new key, so a new image.
+name: VdMot tool image
+description: Load the image of tools/rust/docker.sh or tools/rust/esp/docker.sh from the cache, or build and cache it
+inputs:
+  name:
+    description: vdmot-rust (tools/rust/docker.sh) or vdmot-rust-esp (tools/rust/esp/docker.sh)
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: tag
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+      run: |
+        case "$NAME" in
+          vdmot-rust) dockerfile=tools/rust/Dockerfile; script=tools/rust/docker.sh ;;
+          vdmot-rust-esp) dockerfile=tools/rust/esp/Dockerfile; script=tools/rust/esp/docker.sh ;;
+          *) echo "::error::unknown image $NAME"; exit 1 ;;
+        esac
+        hash=$(md5sum "$dockerfile" | cut -c1-12)
+        {
+          echo "tag=$NAME:$hash"
+          echo "key=image-$NAME-$hash"
+          echo "script=$script"
+        } >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/vdm-images/${{ inputs.name }}.tar.zst
+        key: ${{ steps.tag.outputs.key }}
+    - shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        TAG: ${{ steps.tag.outputs.tag }}
+        SCRIPT: ${{ steps.tag.outputs.script }}
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: |
+        file="$HOME/.cache/vdm-images/$NAME.tar.zst"
+        if [ "$HIT" = true ]; then
+          zstd -dc "$file" | docker load
+          rm -f "$file"
+        else
+          bash "$SCRIPT" image
+          mkdir -p "$(dirname "$file")"
+          docker save "$TAG" | zstd -T0 -3 -q -o "$file"
+        fi
+        docker image ls "$TAG"
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.cache/vdm-images/${{ inputs.name }}.tar.zst
+        key: ${{ steps.tag.outputs.key }}
+    - if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: rm -f "$HOME/.cache/vdm-images/${{ inputs.name }}.tar.zst"

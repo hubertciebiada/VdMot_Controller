@@ -1,6 +1,6 @@
 name: Build firmware
 
-# VdMot Revamped CI/CD (hc-version + the revamped branch).
+# VdMot Revamped CI/CD (hc-version, the revamped and the revamped-rust branch).
 #   native     : host unit tests of the pure-logic cores (STM + new ESP), ASan/UBSan, -Werror
 #   mutation   : mutation testing of the cores and the glue (stm32, stm32-glue, esp32,
 #                esp32-glue). PR/push: changed files only; weekly + manual: everything.
@@ -8,23 +8,46 @@ name: Build firmware
 #                tools/native/docker.sh mutate-all.
 #   stm32      : all release envs (F401 + F411, HW C1 + C2)
 #   esp32      : new firmware (software_esp32_revamped) + legacy firmware (software_esp32)
-#   release    : tag v*-revamped -> packaged VdMot Revamped release (tools/release/package.py)
+#   release    : tag v*-revamped -> packaged VdMot Revamped release (tools/release/package.py);
+#                release-firmware decides: the C++ firmware here, the Rust one in release-rust
 #   release-legacy : any other v* tag -> legacy ESP + STM C2 binaries, as before
 # Everything is pinned (PlatformIO core, esptool, platforms, lib_deps) so a CI
 # build byte-matches a local build.
+#
+# The Rust port (software_esp32_rust, software_stm32_rust; docs/rust/README.md) runs the
+# container scripts of tools/rust, the same commands as on a workstation:
+#   rust-host      : host tests, rustfmt and clippy -D warnings, interop tests (both workspaces)
+#   rust-stm       : the four STM32 images, image check C1-C6 and D9
+#   rust-renode    : Renode E1-E10, A1-A6 and E11 per STM32 image
+#   rust-esp       : the ESP32 image (size budget, digest-less copy), clippy of the firmware
+#   rust-esp-qemu  : the QEMU harness of the ESP32 firmware. Weekly + manual (input qemu).
+#   rust-mutation  : cargo-mutants per package in shards, then the 95 % per-file gate of each
+#                    package (rust-mutation-gate). Weekly + manual (input rust_mutation).
+#   release-rust   : a v*-revamped tag with the version of the Rust firmware -> the same asset
+#                    set from the Rust images (tools/release/package.py)
+# GitHub starts the schedule and workflow_dispatch runs only when this file exists on the
+# repository's default branch.
 
 on:
   push:
-    branches: [hc-version, revamped]
+    branches: [hc-version, revamped, revamped-rust]
     tags: ['v*']
   pull_request:
-    branches: [hc-version, revamped]
+    branches: [hc-version, revamped, revamped-rust]
   schedule:
-    - cron: '17 3 * * 1'        # weekly full mutation run
+    - cron: '17 3 * * 1'        # weekly full mutation run, Rust QEMU harness
   workflow_dispatch:
     inputs:
       full_mutation:
         description: Run mutation testing on every core file
+        type: boolean
+        default: false
+      rust_mutation:
+        description: Run the Rust mutation gate of every package (hours, sharded)
+        type: boolean
+        default: false
+      qemu:
+        description: Run the QEMU harness of the Rust ESP32 firmware
         type: boolean
         default: false
       release_tag:
@@ -207,12 +230,309 @@ jobs:
           path: out/*.bin
           if-no-files-found: error
 
-  release:
-    name: Publish VdMot Revamped release
+  # ---- Rust port: every step is a tools/rust script (tools/rust/README.md) ----
+
+  rust-host:
+    name: Rust host (${{ matrix.workspace }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [software_esp32_rust, software_stm32_rust]
+    steps:
+      - uses: actions/checkout@v4
+      - id: image
+        uses: ./.github/actions/vdm-image
+        with:
+          name: vdmot-rust
+      - name: Tests
+        run: bash tools/rust/docker.sh test ${{ matrix.workspace }}
+      - name: rustfmt, clippy -D warnings
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: bash tools/rust/docker.sh lint ${{ matrix.workspace }}
+      - name: Interop tests (mosquitto, g++ -m32)
+        if: ${{ !cancelled() && steps.image.outcome == 'success' && matrix.workspace == 'software_esp32_rust' }}
+        run: bash tools/rust/docker.sh interop ${{ matrix.workspace }}
+
+  rust-stm:
+    name: Rust STM32 images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vdm-image
+        with:
+          name: vdmot-rust
+      - name: Build (clippy -D warnings, four images, boot probe links)
+        run: bash tools/rust/docker.sh fw
+      - name: C++ 2.1.7 STM32 images (reference of C6 and E11)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.1.7-revamped --repo hubertciebiada/VdMot_Controller \
+            --pattern 'VdMot-Revamped_2.1.7-revamped_STM32*.bin' --dir cpp217
+          ls -l cpp217
+      - name: Image check C1-C6, D9 (C6 checks the C++ images against tools/rust/stm/cpp217.sha256)
+        run: |
+          set -o pipefail
+          bash tools/rust/docker.sh image-check cpp217 | tee image-check.log
+      - name: Summary
+        if: always()
+        run: |
+          # the last paragraph of the image check: one line per image and per C6 reference
+          { echo '```'; awk 'BEGIN { RS = "" } { last = $0 } END { print last }' image-check.log; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stm32-rust
+          path: software_stm32_rust/firmware/images/
+          if-no-files-found: error
+
+  rust-renode:
+    name: Rust Renode ${{ matrix.image }}
+    needs: rust-stm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [STM32F401_C1, STM32F401_C2, STM32F411_C1, STM32F411_C2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stm32-rust
+          path: software_stm32_rust/firmware/images
+      # E11 builds the Rust ESP flasher (tools/rust/stm/e11) in the Rust container
+      - id: image
+        uses: ./.github/actions/vdm-image
+        with:
+          name: vdmot-rust
+      - name: C++ 2.1.7 STM32 images (E11)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.1.7-revamped --repo hubertciebiada/VdMot_Controller \
+            --pattern 'VdMot-Revamped_2.1.7-revamped_STM32*.bin' --dir cpp217
+      - name: Renode E1-E10 (boot stage), A1-A6 (application against the C++ goldens)
+        run: bash tools/rust/renode.sh ${{ matrix.image }}
+      - name: Renode E11 (C++ 2.1.7 -> Rust -> C++ 2.1.7 through the Rust ESP flasher)
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: bash tools/rust/renode.sh --e11 --cpp cpp217 ${{ matrix.image }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: renode-results-${{ matrix.image }}
+          path: software_stm32_rust/renode/results/
+          if-no-files-found: ignore
+
+  rust-esp:
+    name: Rust ESP32 image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disk space (the image holds the Xtensa toolchain, ESP-IDF takes 4 GB, the build more)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/vdm-image
+        with:
+          name: vdmot-rust-esp
+      - uses: ./.github/actions/vdm-esp-volumes
+        with:
+          mode: restore
+      - name: Build, size budget, digest-less image
+        id: export
+        run: |
+          set -o pipefail
+          bash tools/rust/esp/docker.sh export | tee export.log
+          { echo '```'; grep -E '^(image|budget) ' export.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: clippy -D warnings (default, nowifi, QEMU test builds)
+        run: bash tools/rust/esp/docker.sh lint
+      - uses: ./.github/actions/vdm-esp-volumes
+        if: ${{ !cancelled() && steps.export.outcome == 'success' }}
+        with:
+          mode: save
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32-rust
+          path: |
+            software_esp32_rust/firmware/images/vdm-esp-fw.bin
+            software_esp32_rust/firmware/images/vdm-esp-fw_nodigest.bin
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32-rust-elf
+          path: |
+            software_esp32_rust/firmware/images/vdm-esp-fw.elf
+            software_esp32_rust/firmware/images/vdm-esp-fw.map
+          if-no-files-found: error
+
+  rust-esp-qemu:
+    name: Rust ESP32 QEMU harness
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.qemu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - id: image
+        uses: ./.github/actions/vdm-image
+        with:
+          name: vdmot-rust-esp
+      - uses: ./.github/actions/vdm-esp-volumes
+        with:
+          mode: restore
+      - name: QEMU harness (the devices' bootloader, C++ 2.1.7 in the other slot)
+        env:
+          VDM_FETCH_CPP: "1"
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/rust/esp/docker.sh qemu
+      - name: Serial logs
+        if: ${{ failure() && steps.image.outcome == 'success' }}
+        run: |
+          bash tools/rust/esp/docker.sh run "mkdir -p /src/qemu-logs && cd /target/qemu && find . -name '*.log' -exec cp --parents {} /src/qemu-logs/ \;"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: qemu-logs
+          path: qemu-logs/
+          if-no-files-found: ignore
+
+  # cargo-mutants rebuilds the package per mutant: the large packages run in shards (one job
+  # each, below the 6 h job limit) whose outcomes rust-mutation-gate gates together.
+  rust-mutation:
+    name: Rust mutation ${{ matrix.package }} ${{ matrix.shard }}/${{ matrix.shards }}
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.rust_mutation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 0, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 1, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 2, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 3, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 4, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 5, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 6, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-core, shard: 7, shards: 8 }
+          - { workspace: software_esp32_rust, package: vdm-esp-glue, shard: 0, shards: 4 }
+          - { workspace: software_esp32_rust, package: vdm-esp-glue, shard: 1, shards: 4 }
+          - { workspace: software_esp32_rust, package: vdm-esp-glue, shard: 2, shards: 4 }
+          - { workspace: software_esp32_rust, package: vdm-esp-glue, shard: 3, shards: 4 }
+          - { workspace: software_stm32_rust, package: vdm-stm-core, shard: 0, shards: 1 }
+          - { workspace: software_stm32_rust, package: vdm-stm-boot, shard: 0, shards: 1 }
+          - { workspace: software_stm32_rust, package: vdm-stm-glue, shard: 0, shards: 2 }
+          - { workspace: software_stm32_rust, package: vdm-stm-glue, shard: 1, shards: 2 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disk space (four build copies of the workspace)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - id: image
+        uses: ./.github/actions/vdm-image
+        with:
+          name: vdmot-rust
+      - name: cargo mutants
+        env:
+          VDM_MUTATION_GATE: "0"
+        run: |
+          shard=""
+          # round-robin: every shard gets every file, so the shards take about the same time
+          [ "${{ matrix.shards }}" -gt 1 ] && shard="--shard ${{ matrix.shard }}/${{ matrix.shards }} --sharding round-robin"
+          bash tools/rust/docker.sh mutate ${{ matrix.workspace }} ${{ matrix.package }} $shard
+      - name: Outcomes
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: |
+          mkdir -p mutants
+          echo "${{ matrix.shard }} ${{ matrix.shards }}" > mutants/shard
+          bash tools/rust/docker.sh run "cp /target/mutants/${{ matrix.workspace }}/${{ matrix.package }}/mutants.out/*.json /target/mutants/${{ matrix.workspace }}/${{ matrix.package }}/mutants.out/*.txt /src/mutants/"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        with:
+          name: rust-mutants-${{ matrix.package }}-${{ matrix.shard }}
+          path: mutants/
+          if-no-files-found: error
+
+  rust-mutation-gate:
+    name: Rust mutation gate ${{ matrix.package }}
+    needs: rust-mutation
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.rust_mutation)) }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { workspace: software_esp32_rust, package: vdm-esp-core }
+          - { workspace: software_esp32_rust, package: vdm-esp-glue }
+          - { workspace: software_stm32_rust, package: vdm-stm-core }
+          - { workspace: software_stm32_rust, package: vdm-stm-boot }
+          - { workspace: software_stm32_rust, package: vdm-stm-glue }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rust-mutants-${{ matrix.package }}-*
+          path: mutants
+      - name: Gate (95 % overall and per file, tools/rust/mutation_gate.py)
+        run: |
+          set -o pipefail
+          # every shard of the package must be there: the gate of a part is no gate
+          n=$(cat mutants/*/shard 2>/dev/null | cut -d' ' -f2 | sort -u)
+          have=$(ls mutants/*/outcomes.json 2>/dev/null | wc -l)
+          if [ -z "$n" ] || [ "$(echo "$n" | wc -l)" != 1 ] || [ "$have" != "$n" ]; then
+            echo "::error::${{ matrix.package }}: $have shard outcomes, expected ${n:-?}"; exit 1
+          fi
+          python3 tools/rust/mutation_gate.py --workspace ${{ matrix.workspace }} \
+            --package ${{ matrix.package }} --outcomes mutants/*/outcomes.json | tee gate.md
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### ${{ matrix.package }}"; grep -v '^SURVIVED' gate.md; } >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-mutation-${{ matrix.package }}
+          path: |
+            gate.md
+            tools/rust/mutation/${{ matrix.package }}.report.json
+          if-no-files-found: ignore
+
+  # Which firmware a release tag publishes: rust when the tag carries the version of the Rust
+  # firmware (tools/release/package.py), else cpp.
+  release-firmware:
+    name: Firmware of the release tag
     if: >-
       (startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && contains(inputs.release_tag, '-revamped'))
-    needs: [native, stm32, esp32]
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
+    outputs:
+      firmware: ${{ steps.of.outputs.firmware }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: of
+        run: |
+          firmware=$(python3 tools/release/package.py --tag "$TAG" --firmware-of-tag)
+          echo "firmware=$firmware" >> "$GITHUB_OUTPUT"
+          echo "$TAG: $firmware firmware" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Publish VdMot Revamped release
+    if: >-
+      needs.release-firmware.outputs.firmware == 'cpp' && (
+      (startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && contains(inputs.release_tag, '-revamped')))
+    needs: [release-firmware, native, stm32, esp32]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -237,6 +557,39 @@ jobs:
           # on a manual run the tag does not exist yet: gh creates it at the built commit
           gh release create "$TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
             --title "VdMot Revamped $TAG" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
+
+  # The same assets from the Rust images: ESP32 app image and its digest-less copy, the four
+  # STM32 images, SHA256SUMS, manifest.json, docs/rust/INSTALL.md, the release notes from
+  # docs/rust/CHANGES.md. package.py refuses a tag that is not the version of both firmwares
+  # and images that do not carry it.
+  release-rust:
+    name: Publish VdMot Revamped release (Rust)
+    if: needs.release-firmware.outputs.firmware == 'rust'
+    needs: [release-firmware, rust-host, rust-stm, rust-renode, rust-esp]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package
+        run: python3 tools/release/package.py --artifacts artifacts --tag "$TAG" --firmware rust --out dist
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRE=""
+          [[ "$TAG" == *-rc* ]] && PRE="--prerelease"
+          # on a manual run the tag does not exist yet: gh creates it at the built commit
+          gh release create "$TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "VdMot Revamped $TAG (Rust)" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
 
   release-legacy:
     name: Publish legacy release
