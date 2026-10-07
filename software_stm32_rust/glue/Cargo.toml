@@ -13,6 +13,8 @@ default = ["terminal"]
 terminal = []
 
 [dependencies]
+# the no-init layout of the reset capture (system: the guard cell of sysstat)
+vdm-stm-boot = { path = "../boot" }
 vdm-stm-core = { path = "../core" }
 
 [lints.rust]

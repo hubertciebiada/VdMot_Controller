@@ -51,6 +51,7 @@ dependencies = [
 name = "vdm-stm-glue"
 version = "2.2.0-revamped"
 dependencies = [
+ "vdm-stm-boot",
  "vdm-stm-core",
 ]
 

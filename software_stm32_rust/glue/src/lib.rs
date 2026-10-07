@@ -23,6 +23,7 @@ pub mod ow_devices;
 pub mod print;
 pub mod serial;
 pub mod sysstat;
+pub mod system;
 #[cfg(feature = "terminal")]
 pub mod terminal;
 
