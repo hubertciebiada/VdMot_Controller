@@ -11,8 +11,8 @@
 //! 5.2, the parsing lives in `http_parse`); the use-after-publish of a PubSubClient callback
 //! (the borrow checker rules it out); PENDING_VERIFY and the bootloader rollback (the devices'
 //! bootloader has none: the fake bootloader keeps the selection, see the `ota_` cases). The
-//! fake STM (`support/fake_stm.cpp`) comes with the stm_link port: it needs the golden replies
-//! and the AN3155 simulator of the core's test support.
+//! fake STM (`support/fake_stm.cpp`, here `fake_stm.rs` over the golden replies and the AN3155
+//! simulator of the core's test support) has its case below the UART cases.
 
 use super::board::{Booted, APP_A, APP_B, APP_CPP};
 use super::broker::publish_packet;
@@ -619,6 +619,47 @@ fn uart_a_peer_answers_after_its_delay() {
     assert_eq!(uart.read(&mut buf), 0);
     clock.advance_ms(3);
     assert_eq!(uart.read(&mut buf), 8);
+}
+
+#[test]
+fn fake_stm_answers_by_protocol_and_holds_still_in_reset() {
+    let clock = FakeClock::default();
+    let uart = FakeUart::new(clock.clone());
+    let gpio = FakeGpio::new(clock.clone(), Journal::default());
+    let stm = FakeStm::attach(&uart, &gpio, &clock);
+    let mut port = uart.clone();
+    port.configure(115_200, false);
+    let mut ask = |line: &str| {
+        assert_eq!(port.write(line.as_bytes()), line.len());
+        clock.advance_ms(10);
+        let mut buf = [0u8; 128];
+        let n = port.read(&mut buf);
+        String::from_utf8(buf[..n].to_vec()).unwrap()
+    };
+    assert_eq!(ask("gproto\r\n"), "gproto 2\r\n");
+    assert_eq!(
+        ask("gvlvd 7\r\n"),
+        "gvlvd 7 42 18 1 215 -500 57 3120 3350 230 0 \r\n"
+    );
+    stm.protocol(1);
+    assert_eq!(ask("gproto\r\n"), ""); // a v1 STM ignores gproto
+    let mut nrst = gpio.output(crate::board::STM_RESET_PIN);
+    nrst.set(true);
+    assert!(stm.held());
+    assert_eq!(ask("gvers\r\n"), "");
+    nrst.set(false);
+    assert_eq!(stm.resets(), 1);
+    stm.set_boot_ms(250);
+    nrst.set(true);
+    nrst.set(false); // released again: silent for the boot time
+    assert_eq!(stm.resets(), 2);
+    clock.advance_ms(240);
+    assert_eq!(ask("gvers\r\n"), "");
+    assert_eq!(ask("gvers\r\n"), "gvers 1.4.9_Dev_C2 1712345678 \r\n");
+    stm.too_old(true);
+    assert_eq!(ask("gvers\r\n"), "gvers 1.3.5_C2\r\n");
+    assert_eq!(ask("ghwin\r\n"), "");
+    assert_eq!(stm.requests_of("gvers").len(), 4);
 }
 
 #[test]
