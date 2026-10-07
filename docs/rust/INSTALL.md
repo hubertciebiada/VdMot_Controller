@@ -95,7 +95,7 @@ with the C++ 2.1.7 image that uploaded it as the fallback.
 | any reset before the confirmation: crash, watchdog, network watchdog, **power cycle** | counts the boot; the **4th** unconfirmed boot switches to the C++ image before anything else runs |
 | the start-up hangs for 60 s | restarts; the boot counts |
 | 15 min without 120 s of health | restarts (event `reboot_requested`, rollback, with the missing checks) into the C++ image |
-| a restart from the dashboard (or a network settings change) while the network and, when required, the STM link are up | confirms first, then restarts |
+| a restart from the dashboard (or a network settings change) while the network, the HTTP self-check of the last 30 s and, when required, the STM link are up | confirms first, then restarts; otherwise the restart counts as a boot (also a restart over MQTT, `cmd/restart`, which proves no web server) |
 | an ESP firmware upload | refuses it: `409 upload_failed` "image on trial" (it would overwrite the fallback) |
 | `POST /api/system/ota/switch-back` | restarts into the C++ image (also after the confirmation) |
 
@@ -125,23 +125,37 @@ and the 15 min also run out during a network outage
 ### 3.4 First-flash checklist
 
 1. The image is confirmed: event `app_marked_valid`, `ota` is `null` in `GET /api/health`.
-2. Let it run for **at least 10 minutes**.
-3. Restart it: Dashboard → Maintenance → Restart and reset → **Restart ESP** (or
+2. **Switch back** to the C++ image with the `curl` call of section 3.3. It answers `202` and the
+   header shows `2.1.7-revamped` after the restart. This proves that the Rust image takes a
+   `POST` with a body and that the way back works.
+3. **Upload the Rust image again**, from the C++ dashboard as in section 3.2. It runs a new trial
+   (the switch back removed its confirmation) and is confirmed again: wait for
+   `app_marked_valid`. This proves the way forward.
+4. Let it run for **at least 10 minutes**.
+5. Restart it: Dashboard → Maintenance → Restart and reset → **Restart ESP** (or
    `curl -X POST -H 'X-VdMot: 1' http://<device>/api/system/reboot`). It must come back: the
    dashboard answers, the new `boot` event says `reset sw`.
-4. **Power-cycle** the controller. It must come back the same way.
-5. The checks of the C++ procedure
+6. **Power-cycle** the controller. It must come back the same way.
+7. The checks of the C++ procedure
    ([docs/revamped/INSTALL.md §4](../revamped/INSTALL.md#4-after-the-upgrade-checklist)): header
    chips, settings, valves, sensors, MQTT `<main>status` = `online`, Home Assistant entities,
    targets from the dashboard and from MQTT move the valves.
-6. Maintenance → ESP32: note the heap after the boot with Ethernet idle. The acceptance figures
+8. Maintenance → ESP32: note the heap after the boot with Ethernet idle. The acceptance figures
    (free heap, the minimum under load) are in
    [GLUE-DESIGN-ESP.md §2.3](GLUE-DESIGN-ESP.md#23-ram-budget-no-psram-263-kb-of-8-bit-heap);
    `GET /api/health` lists the free stack of every task (`tasks`, `minFree`).
+9. Only with WiFi (interface WiFi, or Auto with WiFi settings as the fallback): start WiFi on both
+   paths the firmware has and check that the controller stays up. Interface WiFi: the start-up
+   builds the station (a restart is enough). Auto: unplug the Ethernet cable for at least a
+   minute, the app thread builds the station after 30 s. Then read `minFree` of `app` in
+   `GET /api/health`: the stack sizes were measured with WiFi off
+   ([REVIEW-ESP-SAFETY.md F6](REVIEW-ESP-SAFETY.md)).
 
-Steps 2 to 4 test the one failure the boot guard cannot catch: an image that loops in the ESP-IDF
-start-up before `main`, where the guard runs. QEMU cannot show it: it cannot run a restart after
-the first minute of uptime ([GLUE-DESIGN-ESP.md §5.5](GLUE-DESIGN-ESP.md#55-end-to-end-in-qemu-vdm-esp-fw)).
+Steps 2 and 3 run the two paths every later update needs: `POST` requests (the switch back, the
+upload) and an upload from the C++ firmware. Steps 4 to 6 test the one failure the boot guard
+cannot catch: an image that loops in the ESP-IDF start-up before `main`, where the guard runs.
+QEMU cannot show it: it cannot run a restart after the first minute of uptime
+([GLUE-DESIGN-ESP.md §5.5](GLUE-DESIGN-ESP.md#55-end-to-end-in-qemu-vdm-esp-fw)).
 
 ### 3.5 When something fails
 
@@ -151,7 +165,9 @@ the first minute of uptime ([GLUE-DESIGN-ESP.md §5.5](GLUE-DESIGN-ESP.md#55-end
 | 3.2 to 3.3 | the controller does not answer for a few minutes | wait: the boot limit switches back within a few boots, the start-up deadline after 60 s per boot, the health limit after 15 min |
 | 3.3 | back on `2.1.7-revamped` | the trial failed. Note the time, the C++ event log and the header chips, report them. An image that failed its trial gets a new trial when it is uploaded again |
 | 3.3 | not confirmed, `ota.checks` shows a check `false` | fix that cause (network, HTTP, STM link); after 15 min the guard switches back |
-| 3.4 steps 3, 4 | no dashboard and no ping 5 minutes after the restart or the power cycle | the image loops before `main`. USB-UART: write the C++ 2.1.7 image to `0x10000` and erase otadata, as in "ESP does not boot at all" ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)). The settings stay |
+| 3.4 step 2 | the switch back is not answered `202`, or the controller stays on `2.2.0-revamped` | stop the rollout, report; the image stays confirmed and runs |
+| 3.4 step 3 | the upload from the C++ dashboard is refused, or the new trial fails | the C++ image runs; report the text or the C++ event log |
+| 3.4 steps 5, 6 | no dashboard and no ping 5 minutes after the restart or the power cycle | the image loops before `main`. USB-UART: write the C++ 2.1.7 image to `0x10000` and erase otadata, as in "ESP does not boot at all" ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)). The settings stay |
 | any time | the Rust image misbehaves while its HTTP API answers | switch back (section 3.3) and report |
 | any time | the image runs but its HTTP API does not answer | power-cycle; if HTTP stays dead, USB-UART as above |
 
@@ -164,8 +180,9 @@ the first minute of uptime ([GLUE-DESIGN-ESP.md §5.5](GLUE-DESIGN-ESP.md#55-end
 
 The C++ firmware reads the settings and files the Rust firmware wrote (same NVS and LittleFS
 formats); the desired targets come from NVS, because the RTC records of the two firmwares differ
-([CHANGES.md](CHANGES.md)). A Rust image that was confirmed once is not put on trial again when it
-comes back ([GLUE-DESIGN-ESP.md §6.2](GLUE-DESIGN-ESP.md#62-decision-at-boot), step 1).
+([CHANGES.md](CHANGES.md)). The switch back and an upload remove the confirmation of the Rust
+image they leave: when the C++ firmware installs it again, it runs a new trial
+([GLUE-DESIGN-ESP.md §6.1](GLUE-DESIGN-ESP.md#61-records)).
 
 ## 4. STM32
 
