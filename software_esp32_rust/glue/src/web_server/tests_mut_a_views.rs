@@ -435,6 +435,18 @@ fn status_flash_size_calibration_activity_and_the_next_slot_at_epoch_1() {
     assert!(r.contains("\"calibration\":{\"active\":false,"));
 }
 
+#[test]
+fn status_names_the_newest_event() {
+    let rig = Rig::new();
+    log_events(&rig, 3, 0, Severity::Info, b"");
+    let seq = rig.host.log.last_seq();
+    assert!(seq >= 3);
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let r = text(&perform(&mut web, get("/api/status")));
+    assert!(r.contains(&format!("\"lastEventSeq\":{seq},")), "{r}");
+}
+
 // ---------------------------------------------------------------- events
 
 fn log_events(rig: &Rig, n: i32, valve: u8, sev: Severity, text: &[u8]) {

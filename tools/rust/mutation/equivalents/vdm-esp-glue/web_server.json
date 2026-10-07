@@ -1,0 +1,17 @@
+[
+ {"file": "glue/src/web_server/views.rs", "function": "",
+  "mutation": "replace < with <=",
+  "reason": "const EVENTS_BUFFER = if MAX_EVENTS_PER_RESPONSE < EVENT_CAPACITY { MAX_EVENTS_PER_RESPONSE } else { EVENT_CAPACITY }: < and <= differ only when the two are equal, where both branches give the same number"},
+ {"file": "glue/src/web_server/views.rs", "function": "Web<'a, P, N, F, G, S, O, H>::document",
+  "mutation": "replace || with && in Web<'a, P, N, F, G, S, O, H>::document",
+  "reason": "every build closure ends with JsonWriter::ok() after closing its root (the core writers have no early return, the image list closes its array), and complete() is ok() with every container closed: build is false exactly when the writer is not complete, so !build || !complete and !build && !complete agree"},
+ {"file": "glue/src/web_server/views.rs", "function": "Web<'a, P, N, F, G, S, O, H>::status_config",
+  "mutation": "replace > with >= in Web<'a, P, N, F, G, S, O, H>::status_config",
+  "reason": "write_status_json writes calibration.next only for next_calib_epoch > 0, so the local time converted for an epoch of 0 is never shown"},
+ {"file": "glue/src/web_server/views.rs", "function": "Web<'a, P, N, F, G, S, O, H>::events",
+  "mutation": "replace > with >= in Web<'a, P, N, F, G, S, O, H>::events",
+  "reason": "max reaches 0 only after the document of one event did not fit the 12 KB response buffer; one event is far below it (25 events of the longest escaped text fit, test events_a_count_that_does_not_fit_is_halved_until_it_does), so the loop answers before max is 0"},
+ {"file": "glue/src/web_server/views.rs", "function": "Web<'a, P, N, F, G, S, O, H>::events_fit",
+  "mutation": "replace || with && in Web<'a, P, N, F, G, S, O, H>::events_fit",
+  "reason": "write_events_json ends with JsonWriter::ok() after closing its root, so its result is false exactly when the writer is not complete: both forms of the check agree"}
+]

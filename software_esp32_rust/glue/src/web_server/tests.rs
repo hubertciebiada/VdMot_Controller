@@ -1124,6 +1124,18 @@ fn valves_carry_the_sensor_position_and_the_calibration_end() {
             second: 5,
             ..LocalTime::default()
         });
+        // the web marks an end the host has valid, whatever its flag (C++ set `valid` from the
+        // result of mqtt::calibrationEnd)
+        s.calib_end[1] = Some(LocalTime {
+            valid: false,
+            year: 2026,
+            month: 9,
+            mday: 21,
+            hour: 6,
+            minute: 7,
+            second: 8,
+            ..LocalTime::default()
+        });
     }
     let st = rig.storage();
     let mut web = rig.web(&st);
@@ -1134,7 +1146,8 @@ fn valves_carry_the_sensor_position_and_the_calibration_end() {
         body.contains("\"sensors\":[{\"sensor\":2,\"slot\":7,\"name\":\"Wall\",\"temp\":20.7}]")
     );
     assert!(body.contains("\"calibrationEnd\":\"2026-09-20T03:04:05\"},{\"idx\":2,"));
-    assert_eq!(count_of(&body, "\"calibrationEnd\":null"), 11);
+    assert!(body.contains("\"calibrationEnd\":\"2026-09-21T06:07:08\"},{\"idx\":3,"));
+    assert_eq!(count_of(&body, "\"calibrationEnd\":null"), 10);
 }
 
 // ---------------------------------------------------------------- health (WG-17)
