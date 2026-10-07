@@ -95,8 +95,7 @@ pub const LIST_TMP: &str = "/HADiscovery.cfg.tmp";
 pub const HA_STATUS_RECORD_LEN: usize = 8;
 
 // Every message built here fits the buffer with its 5 + 2 header bytes, so a publish only fails
-// on a dead connection or a socket write that stalled.
-const _: () = assert!(5 + 2 + TOPIC_MAX + DISCOVERY_PAYLOAD_MAX <= BUFFER_SIZE as usize);
+// on a dead connection or a socket write that stalled (tests: the contract constants).
 
 /// PublishScheduler slots: common, valves, temperatures, voltages, STM diag, system.
 const SLOT_COMMON: u8 = 0;
@@ -107,7 +106,17 @@ const SLOT_STM: u8 = SLOT_VOLT0 + VOLT_SLOT_COUNT;
 /// stm/status and failsafe
 const SLOT_SYSTEM: u8 = SLOT_STM + 1;
 const SLOT_COUNT: u8 = SLOT_SYSTEM + 1;
-const _: () = assert!(SLOT_COUNT <= PublishScheduler::SLOTS);
+
+/// A topic and its C++ NUL (the C++ `char topic[kTopicMax + 1]`).
+const TOPIC_BUF: usize = TOPIC_MAX + 1;
+/// A segment and its C++ NUL.
+const SEGMENT_BUF: usize = SEGMENT_MAX + 1;
+/// The automatic client id: at most 23 characters and the NUL.
+const CLIENT_ID_BUF: usize = 24;
+/// The payload buffer of a discovery run (payloads up to DISCOVERY_PAYLOAD_MAX).
+const PAYLOAD_BUF: usize = DISCOVERY_PAYLOAD_MAX + 1;
+/// The bytes block of a discovery run: the payload buffer, then the list buffer.
+const RUN_BYTES: usize = PAYLOAD_BUF + LIST_BUFFER;
 
 /// Slots of a full publish per pass; a valve slot uses up the pass.
 const FULL_SLOTS_PER_PASS: u8 = 4;
@@ -129,6 +138,8 @@ const INBOUND_SLOTS: usize = 4;
 const INBOUND_PAYLOAD_MAX: usize = 33;
 /// common/message: the message of the latest Warning+ event (C++ `char[120]`).
 const MESSAGE_MAX: usize = 119;
+/// The message and its C++ NUL.
+const MESSAGE_BUF: usize = MESSAGE_MAX + 1;
 /// writeProfileJson() of PROFILE_MAX_SAMPLES samples with the largest values:
 /// {"valve":12,"count":32,"samples":[[4294967295,65535],...]} is 643 bytes.
 const PROFILE_JSON_MAX: usize = 643;
@@ -632,7 +643,7 @@ impl<C: Clock, N: TcpConnector, W: Watchdog> Out<'_, C, N, W> {
     /// `segment` for the per-item topics ("" otherwise); false also when the topic cannot be
     /// built.
     fn publish(&mut self, t: Topic, segment: &[u8], payload: &[u8]) -> bool {
-        let mut topic = [0u8; TOPIC_MAX + 1];
+        let mut topic = [0u8; TOPIC_BUF];
         let n = build_topic(&self.topics, t, segment, &mut topic);
         if n == 0 {
             return false;
@@ -1124,7 +1135,7 @@ where
         self.out.topics.separate = self.cfg.mqtt.separate;
         self.out.retained = self.cfg.mqtt.retained;
         for (i, seg) in (0..VALVE_COUNT).zip(self.segments.iter_mut()) {
-            let mut buf = [0u8; SEGMENT_MAX + 1];
+            let mut buf = [0u8; SEGMENT_BUF];
             let n = item_segment(&self.cfg, ItemKind::Valve, i, &mut buf);
             copy_string(seg, buf.get(..n).unwrap_or_default());
         }
@@ -1133,13 +1144,13 @@ where
     /// Client id (configured, else from the station and the MAC) and last will topic.
     fn apply_names(&mut self) {
         if c_str(&self.cfg.mqtt.client_id).is_empty() {
-            let mut buf = [0u8; CLIENT_ID_MAX + 1];
+            let mut buf = [0u8; CLIENT_ID_BUF];
             let n = build_mqtt_client_id(&self.cfg.station, &self.mac, &mut buf);
             copy_string(&mut self.names.client_id, buf.get(..n).unwrap_or_default());
         } else {
             copy_string(&mut self.names.client_id, &self.cfg.mqtt.client_id);
         }
-        let mut lwt = [0u8; TOPIC_MAX + 1];
+        let mut lwt = [0u8; TOPIC_BUF];
         let n = build_topic(&self.out.topics, Topic::Status, b"", &mut lwt);
         copy_string(&mut self.names.lwt, lwt.get(..n).unwrap_or_default());
     }
@@ -1158,7 +1169,7 @@ where
         ) -> T,
     ) -> Option<T> {
         let work = self.disc.as_mut()?;
-        let (payload, buf) = work.bytes.split_at_mut_checked(DISCOVERY_PAYLOAD_MAX + 1)?;
+        let (payload, buf) = work.bytes.split_at_mut_checked(PAYLOAD_BUF)?;
         let mut port = ListPort {
             out: &mut self.out,
             fs: self.fs,
@@ -1180,7 +1191,7 @@ where
     /// The context and the buffers of a run (two heap blocks for the run).
     fn alloc_run(&self) -> Option<DiscWork> {
         let ctx = try_block(self.gate, DiscoveryContext::default)?;
-        let bytes = try_bytes(self.gate, DISCOVERY_PAYLOAD_MAX + 1 + LIST_BUFFER)?;
+        let bytes = try_bytes(self.gate, RUN_BYTES)?;
         Some(DiscWork { ctx, bytes })
     }
 
@@ -1559,7 +1570,7 @@ where
     // ------------------------------------------------------------ compat slots
 
     fn publish_common(&mut self, full: bool) {
-        let mut buf = [0u8; TOPIC_MAX + 1];
+        let mut buf = [0u8; TOPIC_BUF];
         if full && self.published.first_publish {
             let n = format_ipv4(self.host.net_ip(), &mut buf);
             let ip = buf.get(..n).unwrap_or_default();
@@ -1648,7 +1659,7 @@ where
         let Some(s) = self.cfg.temps.get(usize::from(i)) else {
             return;
         };
-        let mut seg = [0u8; SEGMENT_MAX + 1];
+        let mut seg = [0u8; SEGMENT_BUF];
         let bus = find_temp_bus(temp_readings(&self.snap), &s.id);
         let sl = sensor_topic_segment(&self.cfg, ItemKind::Temp, i, bus, &mut seg);
         if sl == 0 {
@@ -1680,7 +1691,7 @@ where
         let Some(s) = self.cfg.volts.get(usize::from(i)) else {
             return;
         };
-        let mut seg = [0u8; SEGMENT_MAX + 1];
+        let mut seg = [0u8; SEGMENT_BUF];
         let bus = find_volt_bus(volt_readings(&self.snap), &s.id);
         let sl = sensor_topic_segment(&self.cfg, ItemKind::Volt, i, bus, &mut seg);
         if sl == 0 {
@@ -2134,7 +2145,7 @@ where
     /// events through the aggregator.
     fn handle_event(&mut self, e: &Event, out: bool, now: u32) {
         if e.severity >= Severity::Warning {
-            let mut buf = [0u8; MESSAGE_MAX + 1];
+            let mut buf = [0u8; MESSAGE_BUF];
             let len = format_event_message(e, &mut buf);
             copy_string(
                 &mut self.published.message,

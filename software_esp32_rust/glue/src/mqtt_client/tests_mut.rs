@@ -1709,3 +1709,257 @@ fn discovery_the_list_is_read_through_the_512_b_buffer_of_the_run() {
     assert_eq!(chunks, vec![512, 512, 276]);
     c.disc = None;
 }
+
+#[test]
+fn the_contract_constants() {
+    assert_eq!(BUFFER_SIZE, 2304);
+    assert_eq!(SOCKET_TIMEOUT_S, 5);
+    assert_eq!((BACKOFF_MIN_MS, BACKOFF_MAX_MS), (2000, 60000));
+    assert_eq!((DISCOVERY_PACE_MS, WAIT_MS, IDLE_MS), (20, 100, 500));
+    assert_eq!(
+        (LIST_FILE, LIST_TMP),
+        ("/HADiscovery.cfg", "/HADiscovery.cfg.tmp")
+    );
+    assert_eq!(HA_STATUS_RECORD_LEN, core::mem::size_of::<HaStatusRecord>());
+    // the slots of DESIGN.md "MQTT": 0 common, 1..12 valves, 13..46 temps, 47..54 volts, 55
+    // STM, 56 system
+    assert_eq!(
+        [
+            SLOT_COMMON,
+            SLOT_VALVE0,
+            SLOT_TEMP0,
+            SLOT_VOLT0,
+            SLOT_STM,
+            SLOT_SYSTEM,
+            SLOT_COUNT
+        ],
+        [0, 1, 13, 47, 55, 56, 57]
+    );
+    const { assert!(SLOT_COUNT <= PublishScheduler::SLOTS) };
+    // the largest message fits the packet buffer with its 5 + 2 header bytes
+    const { assert!(5 + 2 + TOPIC_MAX + DISCOVERY_PAYLOAD_MAX <= BUFFER_SIZE as usize) };
+    assert_eq!(
+        (TOPIC_BUF, SEGMENT_BUF, CLIENT_ID_BUF, MESSAGE_BUF),
+        (128, 11, 24, 120)
+    );
+    assert_eq!((PAYLOAD_BUF, LIST_BUFFER, RUN_BYTES), (2048, 512, 2560));
+    assert_eq!(
+        (INBOUND_SLOTS, INBOUND_PAYLOAD_MAX, PROFILE_JSON_MAX),
+        (4, 33, 643)
+    );
+    assert_eq!(
+        (
+            FULL_SLOTS_PER_PASS,
+            MAX_SLOTS_PER_PASS,
+            MAX_DIAG_PER_PASS,
+            EVENTS_PER_PASS
+        ),
+        (4, 2, 4, 4)
+    );
+    assert_eq!(
+        (SENSOR_STALE_MS, COUNTER_PACE_MS, STARTED_TOLERANCE_S),
+        (60000, 10000, 60)
+    );
+}
+
+#[test]
+fn values_common_ip_and_the_configuration_url_are_the_address_of_the_network() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.host.state().ip = u32::from_le_bytes([192, 168, 1, 51]);
+    rig.settle(&mut c, 40);
+    assert_eq!(rig.payloads(IP), vec!["192.168.1.51"]);
+    rig.shared.request_discovery(DiscoveryAction::Publish);
+    rig.run(&mut c, 500);
+    let config = rig.last("homeassistant/text/VdMot/state/config");
+    assert!(
+        config.contains("\"configuration_url\":\"http://192.168.1.51/\""),
+        "{config}"
+    );
+}
+
+#[test]
+fn values_requested_only_with_a_desired_target() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.link_up();
+    rig.settle(&mut c, 40);
+    assert_eq!(rig.count("VdMot/valves/1/requested/value"), 0);
+    assert_eq!(rig.count("VdMot/valves/1/state/value"), 1);
+    rig.snap(|s| {
+        s.valves[0].desired_valid = true;
+        s.valves[0].desired = 55;
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 300);
+    assert_eq!(rig.payloads("VdMot/valves/1/requested/value"), vec!["55"]);
+}
+
+#[test]
+fn values_a_valve_name_of_10_characters_is_its_segment() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        copy_string(&mut c.valves[0].name, b"ABCDEFGHIJ");
+    });
+    rig.link_up();
+    rig.settle(&mut c, 40);
+    assert_eq!(rig.count("VdMot/valves/ABCDEFGHIJ/state/value"), 1);
+    rig.deliver("VdMot/valves/ABCDEFGHIJ/target/set", "33");
+    rig.run(&mut c, 2);
+    let sub = rig.submitted();
+    assert_eq!(sub.len(), 1);
+    assert_eq!((sub[0].valve, sub[0].pos), (0, 33));
+}
+
+#[test]
+fn on_change_a_volt_change_of_10_mv_goes_out() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        c.volts[0].id = one_wire(0x26, 2);
+        copy_string(&mut c.volts[0].unit, b"V");
+    });
+    rig.link_up();
+    rig.snap(|s| {
+        s.volt_count = 1;
+        s.volts[0].id = one_wire(0x26, 2);
+        s.volts[0].vad = 1234;
+        s.volts[0].seen = true;
+    });
+    rig.publish_snap();
+    rig.host.state().uptime_s = Some(1000);
+    rig.settle(&mut c, 40);
+    rig.snap(|s| s.volts[0].vad = 1235);
+    rig.publish_snap();
+    rig.run(&mut c, 300);
+    assert_eq!(
+        rig.payloads("VdMot/sensors/1/value/value"),
+        vec!["12.340", "12.350"]
+    );
+}
+
+#[test]
+fn on_change_off_publishes_every_publish_interval_only() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        c.mqtt.on_change = false;
+        c.mqtt.publish_interval_s = 30;
+        c.mqtt.min_delay_s = 20;
+    });
+    rig.link_up();
+    rig.host.state().uptime_s = Some(1000);
+    let t0 = rig.now();
+    let mut t = Track::default();
+    c.begin();
+    rig.run_tracked(&mut c, 1 + 2000, &mut t, &mut |_, now| {
+        if now == t0 + 2000 {
+            rig.snap(|s| s.valves[0].position = 40);
+            rig.publish_snap();
+        }
+    }); // 40 s
+    assert_eq!(
+        t.times_of(&rig, "VdMot/stm/status"),
+        vec![t0 + 540, t0 + 30540]
+    );
+    assert_eq!(
+        t.times_of(&rig, "VdMot/valves/1/actual/value"),
+        vec![t0 + 100, t0 + 30100]
+    );
+    assert_eq!(rig.payloads("VdMot/valves/1/actual/value"), vec!["0", "40"]);
+}
+
+#[test]
+fn on_change_waits_min_delay_after_the_last_publish_of_the_slot() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        c.mqtt.publish_interval_s = 30;
+        c.mqtt.min_delay_s = 20;
+    });
+    rig.link_up();
+    rig.host.state().uptime_s = Some(1000);
+    let t0 = rig.now();
+    let mut t = Track::default();
+    c.begin();
+    rig.run_tracked(&mut c, 1 + 1500, &mut t, &mut |_, now| {
+        if now == t0 + 2000 {
+            rig.snap(|s| s.valves[0].position = 40);
+            rig.publish_snap();
+        }
+    }); // 30 s
+        // the full publish ends at t0 + 540; the change goes out 20 s after it
+    assert_eq!(
+        t.times_of(&rig, "VdMot/valves/1/actual/value"),
+        vec![t0 + 100, t0 + 20540]
+    );
+}
+
+#[test]
+fn connection_without_a_last_will_topic_no_connect_an_error_with_rc_0() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        copy_string(&mut c.mqtt.root_topic, b"Vd+Mot"); // no safe name: no topic
+    });
+    c.begin();
+    rig.run(&mut c, 3);
+    assert_eq!(rig.connects(), 0);
+    assert_eq!(rig.shared.status().state, MqttState::Error);
+    assert_eq!(rig.shared.status().rc, 0);
+}
+
+#[test]
+fn full_publish_without_up_time_the_uptime_is_no_change_of_common() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| c.mqtt.up_time = false);
+    rig.settle(&mut c, 400); // 8 s: past min_delay_s after the full publish
+    assert_eq!(rig.count(STATE), 1);
+    assert_eq!(rig.count(UPTIME), 0);
+}
+
+#[test]
+fn discovery_a_run_logs_its_configs_and_deletes_without_a_text() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    let stale = "homeassistant/text/VdMot/valves_state_Old/config";
+    rig.dev.fs.put(LIST_FILE, format!("{stale}\n").as_bytes());
+    rig.settle(&mut c, 2);
+    rig.shared.request_discovery(DiscoveryAction::Publish);
+    rig.run(&mut c, 500);
+    let sent = rig.events(EventCode::HaDiscoverySent);
+    assert_eq!(sent.len(), 1);
+    let configs = rig
+        .published()
+        .iter()
+        .filter(|p| p.topic.starts_with(b"homeassistant/") && !p.payload.is_empty())
+        .count();
+    assert_eq!(sent[0].arg1, configs as i32);
+    assert_eq!(sent[0].arg2, 1); // the stale entry
+    assert_eq!(Rig::text(&sent[0]), "");
+}
+
+#[test]
+fn discovery_without_a_ready_file_system_a_left_over_temporary_list_stays() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.dev.fs.put(LIST_TMP, b"x\n");
+    rig.host.state().fs_ready = false;
+    rig.settle(&mut c, 2);
+    rig.shared.request_discovery(DiscoveryAction::Publish);
+    rig.run(&mut c, 500);
+    assert_eq!(rig.events(EventCode::HaDiscoverySent).len(), 1);
+    assert_eq!(rig.dev.fs.read(LIST_TMP).unwrap(), b"x\n");
+}

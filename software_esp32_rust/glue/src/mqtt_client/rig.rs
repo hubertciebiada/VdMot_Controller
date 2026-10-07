@@ -301,7 +301,7 @@ impl MqttHost for FakeHost {
 // ---------------------------------------------------------------- the rig
 
 pub(super) type Client<'a> =
-    MqttClient<'a, FakeClock, FakeFs, ScriptedTcp, FakeHeap, FakeRtc, FakeWatchdog, FakeHost>;
+    MqttClient<'a, FakeClock, FakeFs, ScriptedTcp, FakeHeap, FakeRtc, FakeWatchdog, &'a FakeHost>;
 
 /// A pass hook: called after every pass with the clock before the pass delay and now (after
 /// it), like the C++ `fakes::rtos().onDelay`.
@@ -405,7 +405,7 @@ impl Rig {
                 rtc_offset: RTC_OFFSET,
                 mac: self.dev.system.base_mac(),
             },
-            self.host.clone(),
+            &self.host,
             &self.shared,
         )
     }
