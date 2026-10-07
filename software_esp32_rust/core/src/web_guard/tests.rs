@@ -446,6 +446,32 @@ fn guard_detail_echo_ends_at_a_nul_like_printf_precision() {
 }
 
 #[test]
+fn a_host_of_digits_only_is_taken_for_an_address_and_never_matches_a_name() {
+    // kept C++ quirk (PORT-NOTES.md): the host name of a station named "1234" is "1234", and
+    // the config accepts "1234" as an allowed host, but both are checked as IPv4 addresses
+    let p = HostPolicy {
+        hostname: b"1234",
+        allowed: b"1234,5678",
+        ..policy(b"")
+    };
+    assert!(!host_with("1234", &p));
+    assert!(!host_with("1234:80", &p));
+    assert!(!host_with("5678", &p));
+    assert!(!origin("http://1234", &p));
+    // only the ".local" form of such a name is a name
+    assert!(host_with("1234.local", &p));
+    // a name with a letter is a name
+    assert!(host_with("1vdm", &named_policy(b"1vdm")));
+}
+
+fn named_policy(hostname: &[u8]) -> HostPolicy<'_> {
+    HostPolicy {
+        hostname,
+        ..policy(b"")
+    }
+}
+
+#[test]
 fn host_policy_c_strings_end_at_their_nul() {
     // the hostname and the allow list are C strings: a NUL-padded array works as in C++
     let p = HostPolicy {

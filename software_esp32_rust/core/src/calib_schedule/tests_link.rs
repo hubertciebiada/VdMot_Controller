@@ -408,6 +408,47 @@ fn learn_time_completions_of_other_requests_are_ignored() {
     assert_eq!(s.next(20), "-");
 }
 
+// Rust addition (mutation gate): the completion of the very request that went out, arriving
+// after it stopped being in flight (lost, new session), is ignored too.
+#[test]
+fn learn_time_a_completion_after_the_request_was_lost_or_dropped_is_ignored() {
+    let mut s = Sync::default();
+    s.ls.set_protocol(3);
+    s.ls.set_desired(0);
+    assert_eq!(s.next(0), "gtlnt");
+    assert_eq!(s.next(10_000), "-"); // lost: a failure, held for 60 s
+    s.ok("gtlnt 0", 10_001);
+    assert!(!s.ls.have_stm_value());
+    assert_eq!(s.next(10_002), "-"); // the hold stays
+    assert_eq!(s.next(70_000), "gtlnt");
+    s.ls.on_stm_reboot(); // drops the request in flight
+    s.ok("gtlnt 0", 70_001);
+    assert!(!s.ls.have_stm_value());
+    assert_eq!(s.next(70_002), "gtlnt"); // read again, not Done
+    s.ok("gtlnt 0", 70_003);
+    assert!(s.ls.have_stm_value());
+    assert_eq!(s.next(70_004), "-"); // Done
+}
+
+// Rust addition (mutation gate): a completion with the command of the request in flight but
+// another text (a different stlnt value) is not its completion.
+#[test]
+fn learn_time_a_completion_of_another_stlnt_value_is_ignored() {
+    let mut s = Sync::default();
+    s.ls.set_protocol(3);
+    s.ls.set_desired(0);
+    assert_eq!(s.next(0), "gtlnt");
+    s.ok("gtlnt 5", 10);
+    assert_eq!(s.next(20), "stlnt 0");
+    let other = build_set_learn_time(5);
+    assert_eq!(other.cmd, s.last.cmd);
+    let r = reply("stlnt");
+    s.ls.on_completion(&other, Outcome::Ok, Some(&r), 30);
+    assert_eq!(s.next(40), "-"); // stlnt 0 still in flight
+    s.ok("stlnt", 50);
+    assert_eq!(s.next(60), "gtlnt"); // verify
+}
+
 #[test]
 fn e1_the_slot_epoch_takes_the_utc_offset_of_the_reference_time() {
     let midnight: i64 = 1_790_121_600; // 2026-09-23 00:00 UTC

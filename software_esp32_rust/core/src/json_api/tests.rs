@@ -1395,6 +1395,18 @@ fn health_document() {
     assert!(j.contains("{\"name\":\"\",\"stack\":0,\"minFree\":0}]"));
 }
 
+#[test]
+fn http_method_numbers() {
+    // the C++ enum order (the fuzz loop draws methods by number)
+    let methods = [G, P, D, HttpMethod::Other];
+    for (v, m) in (0u8..).zip(methods) {
+        assert_eq!(m as u8, v);
+        assert_eq!(HttpMethod::from_raw(v), Some(m));
+    }
+    assert_eq!(HttpMethod::from_raw(4), None);
+    assert_eq!(HttpMethod::default(), G);
+}
+
 // ---------------------------------------------------------------- Rust firmware additions
 
 #[test]

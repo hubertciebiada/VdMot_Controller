@@ -334,6 +334,26 @@ fn a_restored_loss_of_exactly_60_s_was_reported_already() {
 }
 
 #[test]
+fn a_failed_sfspo_of_one_valve_re_reads_before_pushing_again() {
+    // Rust addition: a per-valve push that fails keeps its mask bit, and the next attempt
+    // still starts with glcfg (the C++ cases fail only slcfg and sfspo 255 pushes).
+    let mut r = Rig::new();
+    r.lc.set_config(&all_pct(60, 40));
+    start_v3(&mut r, 0);
+    assert_eq!(r.next(0), "glcfg");
+    let mut stm = all_pct(60, 40);
+    stm.failsafe_pct[5] = 50;
+    r.ok(&glcfg(&stm), 0);
+    assert_eq!(r.next(0), "sfspo 5 40");
+    r.timeout(1000);
+    assert_eq!(r.next(60_000), "slhbt 1");
+    r.ok("slhbt 1 3600", 60_000);
+    assert_eq!(r.next(61_000), "glcfg");
+    r.ok(&glcfg(&stm), 61_000);
+    assert_eq!(r.next(61_000), "sfspo 5 40");
+}
+
+#[test]
 fn a_config_value_the_codec_refuses_hands_out_the_empty_request() {
     // Rust addition, a kept C++ quirk (docs/rust/PORT-NOTES.md): next() hands out the empty
     // request a failed build leaves; the link refuses it, so it is lost after LOST_REQUEST_MS

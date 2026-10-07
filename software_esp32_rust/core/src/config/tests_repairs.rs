@@ -704,3 +704,24 @@ fn load_config_blobs_ext_records_that_break_v2_are_repaired_after_the_ext() {
     assert_eq!(li.repairs.mask, 0);
     assert!(li.repairs.first.is_empty());
 }
+
+#[test]
+fn valve_names_clash_also_when_the_later_valve_has_a_topic_override() {
+    // Rust-only (expected values from the C++ on the differential drivers): the name rule
+    // compares the names (' ' == '_'), not the segments, so the override of the later valve
+    // does not keep its name.
+    for (earlier, later) in [("a b", "a_b"), ("Bad", "Bad")] {
+        let mut c = Config::default();
+        strcpy(&mut c.valves[0].name, earlier);
+        strcpy(&mut c.valves[1].name, later);
+        strcpy(&mut c.valves[1].topic, "x");
+        assert_eq!(validate_path(&c), "valves.2.name", "{later}");
+        let mut r = Repairs::default();
+        assert_eq!(sanitize_config(&mut c, Some(&mut r)), REPAIR_VALVE_NAMES);
+        assert_eq!((r.count, r.valve_names, r.valve_topics), (1, 1 << 1, 0));
+        assert_text(&r.first, "valves.2.name");
+        assert!(c.valves[1].name.is_empty());
+        assert_text(&c.valves[1].topic, "x");
+        assert_eq!(validate_path(&c), "OK");
+    }
+}

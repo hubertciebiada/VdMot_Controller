@@ -459,7 +459,9 @@ fn motor_settings_need_room_for_every_line() {
     m.learn_movements = 100;
     m.has_breakaway = true;
     r.command(&m); // three lines, room for two
-    assert_eq!(r.port().with_code(EventCode::StmQueueFull).len(), 1);
+    let ev = r.port().with_code(EventCode::StmQueueFull);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].arg1, Cmd::Smotc as i32); // refused as a whole (Rust addition)
     m.has_breakaway = false;
     r.command(&m); // two lines fit
     assert_eq!(r.port().with_code(EventCode::StmQueueFull).len(), 1);
@@ -846,6 +848,7 @@ fn stray_list_and_reading_replies() {
     let r = &mut t.r;
     r.run(45000);
     assert_eq!(r.port().last.temp_count, 3);
+    let tlists0 = r.count("gonec"); // Rust addition: the stray temp count asks for nothing too
     r.s.on_line(b"gonec 1 ", r.now);
     let vlists0 = r.count("gowvc");
     r.s.on_line(b"gowvc 0 ", r.now);
@@ -855,6 +858,7 @@ fn stray_list_and_reading_replies() {
     r.run(1000);
     // a stray count asks for nothing
     assert_eq!(r.count("gowvc"), vlists0);
+    assert_eq!(r.count("gonec"), tlists0);
     // A stray reading of a known id lands on its index; an unknown id asks for the list.
     let lists = r.count("gonec");
     let known = format!("goned {ID_B} 205 ");
@@ -1694,4 +1698,110 @@ fn an_stm_reset_forgets_pending_service_moves() {
     counted.set(1111);
     r.run(3000);
     assert!(!r.port().has(EventCode::ServiceMoveDone));
+}
+
+// ================================================================ Rust additions (mutation)
+
+#[test]
+fn a_uart_line_holds_1023_chars() {
+    let mut r = Rig::new(3, 0x001);
+    r.start();
+    let now = r.now;
+    let mut line = vec![b'x'; STM_MAX_LINE_LEN];
+    line.extend_from_slice(b"\r\n");
+    r.s.on_rx(&line, now); // fits: parsed, an unknown command
+    assert_eq!(r.s.link().stats().parse_errors, 1);
+    let mut long = vec![b'x'; STM_MAX_LINE_LEN + 1];
+    long.extend_from_slice(b"\r\n");
+    r.s.on_rx(&long, now); // dropped
+    assert_eq!(r.s.link().stats().parse_errors, 1);
+    r.s.publish_if_due(now);
+    assert_eq!(r.port().last.line_overflows, 1);
+}
+
+#[test]
+fn motor_settings_the_breakaway_line_counts_only_when_it_is_sent() {
+    let mut r = Rig::new(3, 0x001);
+    r.start();
+    r.run(10000);
+    r.stm_mut().silent = true;
+    let mut counts: u16 = 100;
+    while r.s.link().queued_with(Priority::User) + r.s.link().queued_with(Priority::Config)
+        < LinkPolicy::QUEUE_CAPACITY - 1
+    {
+        r.command(&service_move(0, counts));
+        counts += 1;
+    }
+    let mut m = cmd0(StmCommandType::SetMotorSettings);
+    m.has_motor = true; // one line, room for one
+    r.command(&m);
+    assert!(!r.port().has(EventCode::StmQueueFull));
+    assert_eq!(
+        r.s.link().queued_with(Priority::User) + r.s.link().queued_with(Priority::Config),
+        LinkPolicy::QUEUE_CAPACITY
+    );
+}
+
+#[test]
+fn v1_valve_states_mark_unknown_valves_known() {
+    let mut r = Rig::new(1, 0x003);
+    r.stm_mut().set_answer("gvlvd", |_, _| String::new());
+    r.stm_mut().set_answer("gvlst", |_, _| {
+        "gvlst 12 8,6,6,8,6,6,6,6,6,6,6,6, ".to_string()
+    });
+    r.start();
+    r.run(30000);
+    assert!(r.count("gvlst") >= 1);
+    let v = &r.port().last.valves;
+    assert!(v[0].known);
+    assert_eq!(v[0].status, 8);
+    assert!(v[1].known);
+    assert_eq!(v[1].status, 6);
+}
+
+#[test]
+fn no_valve_is_reported_for_active_valves_only() {
+    let mut r = Rig::new(3, 0x002);
+    r.stm_mut().set_answer("gvlvy", |l, c| {
+        let v = valve_of(l);
+        let status = if v == 1 || v == 2 { 6 } else { 1 };
+        gvlvy(v, status, c.target[usize::from(v)], 1450, 3)
+    });
+    r.start();
+    r.run(15000);
+    assert!(r.port().last.valves[2].known);
+    let ev = r.port().with_code(EventCode::ValveNoValve);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].valve, 1);
+}
+
+#[test]
+fn the_scheduled_flag_is_consumed_per_valve() {
+    let mut r = Rig::new(3, 0x003);
+    let cal = Rc::new(Cell::new([false, false]));
+    let c2 = cal.clone();
+    r.stm_mut().set_answer("gvlvy", move |l, c| {
+        let v = valve_of(l);
+        let calibrating = c2.get().get(usize::from(v)).copied().unwrap_or(false);
+        let status = if calibrating { 129 } else { 1 };
+        gvlvy(v, status, c.target[usize::from(v)], 1450, 3)
+    });
+    r.start();
+    r.run(10000);
+    let mut c = cmd(StmCommandType::Calibrate, ALL_VALVES);
+    c.scheduled = true;
+    c.attempt = 1;
+    r.command(&c);
+    r.run(1000);
+    cal.set([false, true]);
+    r.run(3000);
+    cal.set([false, false]);
+    r.run(3000);
+    cal.set([false, true]); // valve 1 again: its flag is used up
+    r.run(3000);
+    cal.set([true, true]); // valve 0: its flag is still there
+    r.run(3000);
+    let ev = r.port().with_code(EventCode::CalibStarted);
+    let got: Vec<(u8, i32)> = ev.iter().map(|e| (e.valve, e.arg1)).collect();
+    assert_eq!(got, [(1, 1), (1, 0), (0, 1)]);
 }

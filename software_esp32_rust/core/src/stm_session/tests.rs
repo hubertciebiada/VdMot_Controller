@@ -53,6 +53,9 @@ fn protocol_3_start_up_gproto_and_gvers_first_then_polls_lease_and_learn_time() 
     assert!(!r.port().has(EventCode::StmRebootDetected));
     assert!(r.port().lease_records >= 9);
     assert!(!r.port().lease.lost);
+    // Rust additions: the ghwin id, and every line written counts as sent.
+    assert_eq!(last.hw_id, 1073);
+    assert_eq!(r.s.link().stats().sent as usize, r.stm().lines.len());
 }
 
 #[test]
@@ -126,6 +129,8 @@ fn an_stm_below_1_4_0_gets_gvers_every_30_s_and_targets_only() {
     assert!(!r.port().has(EventCode::LinkDegraded));
     assert_eq!(r.port().with_code(EventCode::StmIncompatible).len(), 1);
     assert!(!r.port().last.valves[0].known);
+    // Rust addition: the later gvers replies forget nothing, the target is not pushed again.
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 1 33"]);
 }
 
 #[test]

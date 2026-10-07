@@ -109,7 +109,7 @@ fn board_check_table_and_tag_rule() {
     let full_too = *b"C123";
     assert_eq!(check_board(&full, &full_too), BoardCheck::Ok);
     assert_eq!(check_board(&full, b"C12"), BoardCheck::Mismatch);
-    // A C string ends at its NUL; a longer array is read up to 4 bytes.
+    // Rust addition: a C string ends at its NUL; a longer array is read up to 4 bytes.
     assert_eq!(check_board(b"C2\0x", b"C2"), BoardCheck::Ok);
     assert_eq!(check_board(b"C123x", b"C123y"), BoardCheck::Ok);
     assert_eq!(check_board(b"\0C2", b"C2"), BoardCheck::Untagged);
@@ -131,7 +131,7 @@ fn board_check_table_and_tag_rule() {
     assert!(!board_tag_valid(b""));
     assert!(!board_tag_valid(&[])); // C++ nullptr
     assert!(!board_tag_valid(&full)); // 3 digits, no NUL inside the 4 bytes
-    assert!(board_tag_valid(b"C1\0x"));
+    assert!(board_tag_valid(b"C1\0x")); // Rust addition: a C string
 
     assert_eq!(board_check_name(BoardCheck::Ok), "ok");
     assert_eq!(board_check_name(BoardCheck::Untagged), "untagged");
@@ -2122,7 +2122,7 @@ fn failures_without_a_flash_address_report_address_0() {
         assert_eq!(rig.f.status().error_address, 0, "{name}");
         assert_eq!(rig.left_clean(), !rig.sim.resets.is_empty(), "{name}");
     }
-    assert!(changed.get());
+    assert!(changed.get()); // Rust addition: the image-changed hook ran
 }
 
 #[test]
@@ -2594,5 +2594,56 @@ fn an_image_of_whole_blocks_is_written_in_exactly_its_blocks() {
     let mut rig = Rig::new(make_image(1024));
     assert_eq!(rig.begin_and_run(), FlashPhase::Done);
     assert_eq!(rig.sim.commands.iter().filter(|&&c| c == 0x31).count(), 4);
+    assert!(rig.flash_matches_image());
+}
+
+// ---------------------------------------------------------------- Rust additions
+
+#[test]
+fn address_frame_checksum_is_the_xor_of_the_address_bytes() {
+    // block addresses end in 0x00; the AN3155 rule holds for any address
+    assert_eq!(address_frame(0x0800_020A), [0x08, 0x00, 0x02, 0x0A, 0x00]);
+    assert_eq!(address_frame(0x1234_5678), [0x12, 0x34, 0x56, 0x78, 0x08]);
+    assert_eq!(address_frame(BASE + 0x300), [0x08, 0x00, 0x03, 0x00, 0x0B]);
+}
+
+#[test]
+fn app_major_or_minor_mismatch() {
+    // the C++ cases differ in the patch or the suffix only
+    for reply in ["gvers 2.4.9_Dev_C1 1 ", "gvers 1.5.9_Dev_C1 1 "] {
+        let mut rig = Rig::new(make_image(1024));
+        rig.sim.app_reply = b(reply);
+        assert_eq!(rig.begin_and_run(), FlashPhase::Failed, "{reply}");
+        assert_eq!(rig.f.status().error, FlashError::AppVersionMismatch);
+    }
+}
+
+#[test]
+fn app_reads_at_most_256_bytes_per_step() {
+    // 702 noise bytes and the reply arrive 3 ms after gvers: 256 + 256 + 213 bytes in three
+    // steps of 1 ms
+    let mut rig = Rig::new(make_image(1024));
+    let mut noise = vec![b'z'; 700];
+    noise.extend_from_slice(b"\r\n");
+    rig.sim.app_noise = noise;
+    assert!(rig.begin());
+    assert_eq!(rig.run_with(|_| {}, 60000, 1), FlashPhase::Done);
+    assert_eq!(rig.sim.gvers_times.len(), 1);
+    assert_eq!(rig.f.status().finished_ms - rig.sim.gvers_times[0], 5);
+}
+
+#[test]
+fn sync_noise_before_every_ack_of_byte_by_byte_replies() {
+    // the noise byte is dropped once; the rest of a reply arrives in later reads
+    let mut rig = Rig::new(make_image(1024));
+    rig.sim.noise_replies = 1000;
+    rig.sim.reply_spacing_ms = 1;
+    assert_eq!(rig.begin_and_run(), FlashPhase::Done);
+    let st = rig.f.status();
+    assert_eq!(st.bootloader_version, 0x31);
+    assert_eq!(st.chip_pid, 0x431);
+    assert_eq!(st.attempt, 0);
+    assert_eq!(rig.sim.writes_equal(&[0x02, 0xFD]), 1);
+    assert_eq!(rig.sim.read_addrs.len(), 4);
     assert!(rig.flash_matches_image());
 }

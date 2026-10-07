@@ -1,5 +1,7 @@
 //! Port of test/native/test_valve_model__mut.cpp: what the resets of assembly, restore,
-//! failsafe, reboot and forget_stm_data leave behind; bus index 0; desired revisions.
+//! failsafe, reboot and forget_stm_data leave behind; bus index 0; desired revisions. The Rust
+//! additions at the end kill the cargo-mutants mutants the C++ cases leave alive and pin a kept
+//! C++ quirk.
 
 use super::*;
 
@@ -208,4 +210,86 @@ fn sensor_model_bus_index_0_for_stray_data_and_stale_readings() {
     assert_eq!(m.valve(0).temp1, 215);
     m.apply_sensor_temps(&s, 100000, 60000, false); // seen before, too old now
     assert_eq!(m.valve(0).temp1, TEMP_READ_ERROR);
+}
+
+// ---------------------------------------------------------------- Rust additions
+
+#[test]
+fn set_desired_target_under_the_override_leaves_a_delivery_in_flight_alone() {
+    let mut m = web_model();
+    let mut pct = [0u8; 12];
+    pct[0] = 30;
+    m.set_failsafe_drive(0x001, &pct);
+    assert_eq!(m.next_target_push(0), Some((0, 30)));
+    assert!(m.set_desired_target(0, 60, TargetSource::Web, 10));
+    assert_eq!(m.valve(0).desired, 60);
+    assert_eq!(m.valve(0).sync, TargetSync::AwaitAck);
+    assert_eq!(m.valve(0).push_attempts, 1);
+    m.on_target_ack(0, 20);
+    m.apply_target(&target(0, 30), 30);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+}
+
+#[test]
+fn set_failsafe_drive_follows_the_mask_bit_of_each_valve() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x0FFF);
+    for v in 0..VALVE_COUNT {
+        m.apply_target(&target(v, 20), 0); // adopted: desired 20
+    }
+    m.set_failsafe_drive(0x0802, &[50; 12]);
+    for v in 0..VALVE_COUNT {
+        assert_eq!(m.valve(v).fs_override, v == 1 || v == 11, "valve {v}");
+    }
+}
+
+#[test]
+fn forget_stm_data_keeps_move_seq_and_fs_pct() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x001);
+    let mut d = ValveEx {
+        valve: 0,
+        target: 30,
+        v3: true,
+        fs_pct: 70,
+        ..ValveEx::default()
+    };
+    d.last_move.requested_counts = 5;
+    m.apply_valve_ex(&d, 0);
+    assert_eq!(m.valve(0).move_seq, 1);
+    assert_eq!(m.valve(0).fs_pct, 70);
+    m.forget_stm_data();
+    assert_eq!(m.valve(0).move_seq, 1);
+    assert_eq!(m.valve(0).fs_pct, 70);
+    assert!(!m.valve(0).has_v3);
+}
+
+/// Kept C++ behaviour (docs/rust/PORT-NOTES.md, valve_model): an inactive valve is never
+/// pushed, so after an STM reboot its forced push stays due, no read-back syncs it and
+/// is_busy() stays true; a valve deactivated while its target is Pending stays busy as well.
+#[test]
+fn an_inactive_valve_with_a_desired_target_stays_busy_after_an_stm_reboot() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x003);
+    m.apply_valve_data(&data(1), 0);
+    m.apply_target(&target(1, 40), 0); // re-sync read-back: adopted, Synced
+    m.set_active_mask(0x001);
+    assert!(!m.is_busy(1));
+    m.on_stm_rebooted(1000);
+    m.apply_target(&target(1, 40), 2000); // equals the desired target
+    assert_eq!(m.next_target_push(100_000), None);
+    m.apply_target(&target(1, 40), 200_000);
+    assert_eq!(m.valve(1).sync, TargetSync::Pending);
+    assert!(m.valve(1).force_push);
+    assert!(m.is_busy(1));
+
+    let mut n = ValveModel::default();
+    n.set_active_mask(0x001);
+    n.apply_valve_data(&data(0), 0);
+    n.apply_target(&target(0, 40), 0);
+    assert!(n.set_desired_target(0, 60, TargetSource::Web, 10));
+    n.set_active_mask(0);
+    n.apply_target(&target(0, 40), 50_000); // the STM still has 40
+    assert_eq!(n.valve(0).sync, TargetSync::Pending);
+    assert!(n.is_busy(0));
 }

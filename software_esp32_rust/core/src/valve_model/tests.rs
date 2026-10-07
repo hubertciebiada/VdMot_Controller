@@ -5,7 +5,10 @@
 //! functions return None, so a check of the untouched variables is the None result.
 
 use super::*;
+use crate::failsafe::LeaseMode;
 use crate::stm_codec::{CAL_FLAG_EARLY_STOP, CAL_FLAG_LAST_FAILED};
+use crate::stm_types::{StmCommand, StmCommandType, StmSaveState, StmSnapshot};
+use crate::version::StmSupport;
 
 fn status_data(valve: u8, status: u8) -> ValveData {
     ValveData {
@@ -321,9 +324,29 @@ fn health_and_change_bits() {
     }
 }
 
-// C++ TEST_CASE("stm types: command numbers and defaults") checks StmCommandType, StmCommand,
-// StmSaveState and StmSnapshot of vdm/stm_types.h; it moves here with the stm_types port
-// (stm_types needs link_policy and stm_flasher as well).
+#[test]
+fn stm_types_command_numbers_and_defaults() {
+    // Command type numbers are external (StmQueueFull arg1): appended only.
+    assert_eq!(StmCommandType::SetTarget as u8, 0);
+    assert_eq!(StmCommandType::ConfigChanged as u8, 12);
+    assert_eq!(StmCommandType::StopValve as u8, 13);
+    assert_eq!(StmCommandType::LeaveSafeMode as u8, 14);
+    let c = StmCommand::default();
+    assert_eq!(c.kind, StmCommandType::ConfigChanged);
+    assert!(c.board.is_empty()); // C++ board[0] == '\0'
+    assert_eq!(c.attempt, 0);
+    assert_eq!(StmSaveState::Idle as u8, 0);
+    assert_eq!(StmSaveState::Waiting as u8, 1);
+    assert_eq!(StmSaveState::Saved as u8, 2);
+    assert_eq!(StmSaveState::Unavailable as u8, 3);
+    assert_eq!(StmSaveState::TimedOut as u8, 4);
+    let s = std::boxed::Box::new(StmSnapshot::default()); // large: not on the stack
+    assert_eq!(s.support, StmSupport::Unknown);
+    assert_eq!(s.lease.mode, LeaseMode::None);
+    assert!(!s.have_learn_time);
+    assert_eq!(s.learn_time_s, 0);
+    assert!(!s.flash_pending);
+}
 
 /// Changes one field of a state.
 type Mutation = fn(&mut ValveState);

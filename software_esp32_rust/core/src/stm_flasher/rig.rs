@@ -121,8 +121,9 @@ impl FlashImage for MemImage {
     }
 }
 
-/// Longest time without any visible progress (phase, percent, frames on the wire, resets,
-/// UART set-ups) that a run may take: the longest wait of a test is an erase of 60 s.
+/// Longest time a run may take without progress (percent, bytes done or session attempt): the
+/// longest waits of the tests are 60 s, for the application or an erase. Frames on the wire do
+/// not count, so a retry or resend loop fails here instead of running for the whole `max_ms`.
 const STALL_MS: u32 = 70_000;
 
 /// The C++ `Rig`: the simulated STM, an image, the flasher and its options.
@@ -143,7 +144,7 @@ impl Rig {
             now: 1000,
             sim: SimStm::new(1000),
             img: MemImage::new(image),
-            f: StmFlasher::new(),
+            f: StmFlasher::default(),
             opt: FlashOptions::default(),
             percents: Vec::new(),
             phases: Vec::new(),
@@ -161,18 +162,13 @@ impl Rig {
         self.f.step(&mut self.sim, &mut self.img, self.now)
     }
 
-    fn progress_key(&self) -> (FlashPhase, u8, usize, usize, usize) {
-        (
-            self.f.status().phase,
-            self.f.status().percent,
-            self.sim.writes.len(),
-            self.sim.resets.len(),
-            self.sim.configs.len(),
-        )
+    fn progress_key(&self) -> (u8, u32, u8) {
+        let st = self.f.status();
+        (st.percent, st.bytes_done, st.attempt)
     }
 
     /// Steps every `step_ms` while the run is active, for at most `max_ms`, calling `hook`
-    /// after every step. Panics when nothing moved for [`STALL_MS`] (a stuck flasher fails
+    /// after every step. Panics after [`STALL_MS`] without progress (a stuck flasher fails
     /// instead of running for the whole `max_ms`).
     pub fn run_with(
         &mut self,
