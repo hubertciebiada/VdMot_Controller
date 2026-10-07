@@ -12,6 +12,8 @@ use crate::valve_model::valve_status_text;
 
 /// chars without NUL; every built topic fits
 pub const TOPIC_MAX: usize = 127;
+/// A scratch buffer that holds any topic and its NUL (C++ `char buf[kTopicMax + 1]`).
+const TOPIC_BUF: usize = TOPIC_MAX + 1;
 /// valve/sensor segment chars
 pub const SEGMENT_MAX: usize = ITEM_NAME_MAX;
 
@@ -556,7 +558,7 @@ fn add_subscription(s: &mut SubscriptionSink<'_>, filter: &[u8], qos: u8) {
     }
     if let Some(slot) = s.out.get_mut(s.n) {
         slot.filter.clear();
-        // a filter is at most TOPIC_MAX bytes: it was built in a TOPIC_MAX + 1 buffer
+        // a filter is at most TOPIC_MAX bytes: it was built in a TOPIC_BUF buffer
         let _ = slot.filter.extend_from_slice(filter);
         slot.qos = qos;
         s.n += 1;
@@ -565,7 +567,7 @@ fn add_subscription(s: &mut SubscriptionSink<'_>, filter: &[u8], qos: u8) {
 
 /// "<main>valves/<seg>/target[/set]" and the same + "/set".
 fn add_target_filters(ctx: &TopicContext, main: &[u8], seg: &[u8], s: &mut SubscriptionSink<'_>) {
-    let mut f = [0u8; TOPIC_MAX + 1];
+    let mut f = [0u8; TOPIC_BUF];
     let mut b = Builder::new(&mut f);
     b.add(main);
     b.add(b"valves/");
@@ -588,12 +590,12 @@ fn add_subscriptions(
     segments: Option<&Segments>,
     s: &mut SubscriptionSink<'_>,
 ) {
-    let mut main = [0u8; TOPIC_MAX + 1];
+    let mut main = [0u8; TOPIC_BUF];
     let ml = build_main_topic(ctx, &mut main);
     let main = main.get(..ml).unwrap_or_default();
     if !main.is_empty() {
         add_target_filters(ctx, main, b"+", s);
-        let mut f = [0u8; TOPIC_MAX + 1];
+        let mut f = [0u8; TOPIC_BUF];
         let mut b = Builder::new(&mut f);
         b.add(main);
         b.add(b"cmd/#");
@@ -608,7 +610,7 @@ fn add_subscriptions(
     if mode == MqttMode::MqttHa {
         add_subscription(s, HA_DEFAULT_STATUS, 1);
         if c_str(ha_prefix) != HA_DEFAULT_PREFIX {
-            let mut f = [0u8; TOPIC_MAX + 1];
+            let mut f = [0u8; TOPIC_BUF];
             let n = build_ha_status_topic(ha_prefix, &mut f);
             add_subscription(s, f.get(..n).unwrap_or_default(), 1);
         }
@@ -751,7 +753,7 @@ pub fn parse_inbound_topic(
     if topic.is_empty() || topic.len() > TOPIC_MAX || topic.contains(&0) {
         return none;
     }
-    let mut ha = [0u8; TOPIC_MAX + 1];
+    let mut ha = [0u8; TOPIC_BUF];
     let hl = build_ha_status_topic(ha_prefix, &mut ha);
     if topic == HA_DEFAULT_STATUS || topic == ha.get(..hl).unwrap_or_default() {
         return InboundTopic {
@@ -760,7 +762,7 @@ pub fn parse_inbound_topic(
         };
     }
     let topic = topic.strip_prefix(b"/").unwrap_or(topic);
-    let mut main = [0u8; TOPIC_MAX + 1];
+    let mut main = [0u8; TOPIC_BUF];
     let ml = build_main_topic(ctx, &mut main);
     let main = main.get(..ml).unwrap_or_default();
     if main.is_empty() {
