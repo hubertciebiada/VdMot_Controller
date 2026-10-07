@@ -42,7 +42,7 @@ impl WallClock for EspWall {
         let mut tv = sys::timeval::default();
         // SAFETY: valid out pointer, no time zone wanted.
         unsafe { sys::gettimeofday(&mut tv, core::ptr::null_mut()) };
-        tv.tv_sec as i64
+        tv.tv_sec
     }
     fn set_time_zone(&self, posix: &str) {
         let _g = self.tz.lock().unwrap_or_else(PoisonError::into_inner);

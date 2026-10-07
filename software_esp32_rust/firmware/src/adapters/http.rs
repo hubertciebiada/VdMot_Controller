@@ -222,7 +222,7 @@ impl HttpRequest for EspRequest {
             );
             (len, err)
         };
-        if err != sys::ESP_OK && err != sys::ESP_ERR_HTTPD_RESULT_TRUNC as i32 {
+        if err != sys::ESP_OK && err != sys::ESP_ERR_HTTPD_RESULT_TRUNC {
             return None;
         }
         let n = len.min(out.len()).min(HEADER_VALUE_MAX);

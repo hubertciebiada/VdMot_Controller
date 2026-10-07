@@ -237,7 +237,7 @@ impl Ethernet for EthPort {
             }
             match e {
                 EthEvent::Connected(h) => {
-                    st.connected.store(h as *mut c_void, Ordering::SeqCst);
+                    st.connected.store(h, Ordering::SeqCst);
                     st.link.store(true, Ordering::SeqCst);
                 }
                 EthEvent::Disconnected(_) | EthEvent::Stopped(_) => {

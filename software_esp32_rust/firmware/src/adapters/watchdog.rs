@@ -85,6 +85,8 @@ unsafe extern "C" fn boot_deadline_fired(arg: *mut c_void) {
 /// Arms the one-shot boot deadline (GLUE-DESIGN-ESP.md 6.4 step 4): `fire` runs on the
 /// esp_timer task after `ms`. False when the timer could not be created or started.
 pub fn arm_boot_deadline(ms: u32, fire: Box<dyn Fn() + Send + Sync>) -> bool {
+    // the closure's fat pointer boxed once more: esp_timer passes one thin `void *`
+    #[allow(clippy::borrowed_box)]
     let arg: &'static Box<dyn Fn() + Send + Sync> = Box::leak(Box::new(fire));
     let args = sys::esp_timer_create_args_t {
         callback: Some(boot_deadline_fired),

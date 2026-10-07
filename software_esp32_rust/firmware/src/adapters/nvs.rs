@@ -19,9 +19,7 @@ impl EspNvs {
         // SAFETY: plain init calls at boot, before any NVS user.
         unsafe {
             let err = sys::nvs_flash_init();
-            if err == sys::ESP_ERR_NVS_NO_FREE_PAGES as i32
-                || err == sys::ESP_ERR_NVS_NEW_VERSION_FOUND as i32
-            {
+            if err == sys::ESP_ERR_NVS_NO_FREE_PAGES || err == sys::ESP_ERR_NVS_NEW_VERSION_FOUND {
                 sys::nvs_flash_erase();
                 return sys::nvs_flash_init();
             }
