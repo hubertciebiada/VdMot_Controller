@@ -271,7 +271,7 @@ fn file_image_reads_at_offsets_refuses_reads_past_the_end() {
     let st = rig.storage();
     mount(&st);
     rig.dev.fs.put("/stm/fw.bin", b"0123456789");
-    let mut img = FileImage::new(rig.dev.fs.clone());
+    let mut img = FileImage::new(rig.dev.fs.clone(), &rig.dev.heap);
     assert!(img.open(b"fw"));
     assert_eq!(img.size(), 10);
     let mut out = [0u8; 4];
@@ -285,6 +285,44 @@ fn file_image_reads_at_offsets_refuses_reads_past_the_end() {
     assert!(!img.open(b"missing"));
     // C++: the image got the 512 B stdio buffer: no Rust form (no stdio layer).
     assert_eq!(rig.dev.fs.open_handles(), 0);
+}
+
+#[test]
+fn file_image_holds_its_first_bytes_in_a_granted_block_until_closed() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    mount(&st);
+    rig.dev.fs.put("/stm/fw.bin", b"0123456789");
+    let mut img = FileImage::new(rig.dev.fs.clone(), &rig.dev.heap);
+    assert!(img.low().is_empty());
+    assert!(!img.hold_low(4)); // nothing open
+    assert!(img.open(b"fw"));
+    assert!(img.hold_low(4));
+    assert_eq!(img.low(), b"0123");
+    assert_eq!(rig.dev.heap.state().granted.last(), Some(&4));
+    // reads go on at their offsets, a second hold replaces the bytes
+    let mut out = [0u8; 3];
+    assert!(img.read(6, &mut out));
+    assert_eq!(&out, b"678");
+    assert!(img.hold_low(10));
+    assert_eq!(img.low(), b"0123456789");
+    // past the end of the file or without memory: false, nothing held
+    assert!(!img.hold_low(11));
+    assert!(img.low().is_empty());
+    assert!(img.hold_low(2));
+    rig.dev.heap.state().fail_all = true;
+    assert!(!img.hold_low(2));
+    assert!(img.low().is_empty());
+    assert_eq!(rig.dev.heap.state().refused.last(), Some(&2));
+    rig.dev.heap.state().fail_all = false;
+    assert!(img.hold_low(2));
+    // closing (or opening another image) frees them
+    img.close();
+    assert!(img.low().is_empty());
+    assert!(img.open(b"fw"));
+    assert!(img.hold_low(3));
+    assert!(img.open(b"fw"));
+    assert!(img.low().is_empty());
 }
 
 #[test]
@@ -346,7 +384,7 @@ fn the_shared_parts_can_be_shared_by_the_tasks() {
     fn sync<T: Sync + Send + ?Sized>() {}
     sync::<StorageShared>();
     sync::<TestStorage<'static>>(); // every task calls storage through one reference
-    sync::<FileImage<crate::testkit::FakeFs>>();
+    sync::<FileImage<crate::testkit::FakeFs, crate::testkit::FakeHeap>>();
 }
 
 #[test]

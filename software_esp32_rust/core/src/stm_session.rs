@@ -208,6 +208,8 @@ pub struct StmSession<P: StmSessionPort> {
     gate_answered: bool,
     pending_flash: StmCommand,
     flash_pending: bool,
+    /// D9: StmSector0Pending was logged in this run
+    sector0_logged: bool,
 }
 
 impl<P: StmSessionPort> StmSession<P> {
@@ -270,6 +272,7 @@ impl<P: StmSessionPort> StmSession<P> {
             gate_answered: false,
             pending_flash: StmCommand::default(),
             flash_pending: false,
+            sector0_logged: false,
         }
     }
 
@@ -590,8 +593,15 @@ impl<P: StmSessionPort> StmSession<P> {
     }
 
     /// Early checks at once; the flash itself waits for the STM EEPROM (normal mode) or starts
-    /// at once (blank mode: the STM is in the ROM bootloader).
+    /// at once (blank mode: the STM is in the ROM bootloader). D9: while sector 0 is pending, a
+    /// flash request starts the next round of its pass at once, with the image of the run (the
+    /// request's image and mode do not matter).
     fn request_flash(&mut self, c: &StmCommand, now_ms: u32) {
+        if self.flasher.retry_sector0(now_ms) {
+            self.snap.flash.clone_from(self.flasher.status());
+            self.dirty = true;
+            return;
+        }
         if self.flashing() || self.gate_action != GateAction::None {
             self.log(EventCode::StmFlashFailed, NO_VALVE, 0, 0, b"busy");
             return;
@@ -624,6 +634,7 @@ impl<P: StmSessionPort> StmSession<P> {
 
     fn begin_flash(&mut self, c: &StmCommand, now_ms: u32) {
         self.flash_pending = false;
+        self.sector0_logged = false;
         self.dirty = true; // a refused start below publishes "idle" again
         let name = c_str(&c.image);
         if !self.port.open_image(name) {
@@ -1124,11 +1135,24 @@ impl<P: StmSessionPort> StmSession<P> {
     }
 
     /// One flasher step while [`flashing`](Self::flashing) (instead of on_rx/poll/next_to_send),
-    /// over the transport of the run.
+    /// over the transport of the run. D9: the first time a run waits with sector 0 pending,
+    /// StmSector0Pending (the error, its address and phase).
     pub fn flash_step(&mut self, transport: &mut dyn FlashTransport, now_ms: u32) {
         let phase = self.flasher.step(transport, self.port.image(), now_ms);
         self.snap.flash.clone_from(self.flasher.status());
         self.dirty = true;
+        if phase == FlashPhase::Sector0Pending && !self.sector0_logged {
+            self.sector0_logged = true;
+            let st = self.flasher.status();
+            let (error, address, phase) = (st.error, st.error_address, st.error_phase);
+            self.log(
+                EventCode::StmSector0Pending,
+                NO_VALVE,
+                error as i32,
+                address as i32,
+                flash_phase_name(phase).as_bytes(),
+            );
+        }
         if phase != FlashPhase::Done && phase != FlashPhase::Failed {
             return;
         }

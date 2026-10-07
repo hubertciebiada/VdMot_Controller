@@ -21,7 +21,7 @@ type C = EventCode;
 /// DESIGN.md section 13, the binding table (registry order): code, number, name, severity,
 /// MQTT class.
 #[rustfmt::skip]
-const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 87] = [
+const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 88] = [
     (C::Boot, 100, "boot", Info, Warn),
     (C::ConfigImported, 101, "config_imported", Info, Warn),
     (C::ConfigSaved, 102, "config_saved", Info, Warn),
@@ -86,6 +86,7 @@ const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 87] = [
     (C::StmEepromWaitTimeout, 323, "stm_eeprom_wait_timeout", Warning, Warn),
     (C::TargetsRestored, 324, "targets_restored", Info, No),
     (C::StmProtectionSuspended, 325, "stm_protection_suspended", Error, Warn),
+    (C::StmSector0Pending, 326, "stm_sector0_pending", Critical, Warn),
     (C::TargetSet, 400, "target_set", Info, Warn),
     (C::ValveStateChanged, 401, "valve_state_changed", Debug, Warn),
     (C::ValveBlocked, 402, "valve_blocked", Error, Warn),
@@ -216,7 +217,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
         assert_eq!(EventCode::from_raw(v), row.map(|r| r.0), "{v}");
         found += usize::from(row.is_some());
     }
-    assert_eq!(found, 87);
+    assert_eq!(found, 88);
     // the registry holds every code once, in the order of the design table
     assert_eq!(CODES.len(), TABLE.len());
     for (ci, row) in CODES.iter().zip(TABLE) {
@@ -227,7 +228,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
 #[test]
 fn event_mqtt_names_lists_every_published_code_in_registry_order() {
     let expected: Vec<&str> = TABLE.iter().filter(|r| r.4 != No).map(|r| r.2).collect();
-    assert_eq!(expected.len(), 80);
+    assert_eq!(expected.len(), 81);
     let mut names = [""; 100];
     assert_eq!(event_mqtt_names(&mut names), expected.len());
     for (i, want) in expected.iter().enumerate() {
@@ -703,6 +704,8 @@ fn event_messages_for_every_code() {
         (ev(C::TargetsRestored, NO_VALVE, 3, 2, ""), "desired targets restored for 3 valves (NVS)"),
         (ev(C::TargetsRestored, NO_VALVE, 3, 3, ""), "desired targets restored for 3 valves (unknown)"),
         (ev(C::StmProtectionSuspended, NO_VALVE, 0, 0, ""), "STM short-circuit and inrush limits suspended until the next STM start"),
+        (ev(C::StmSector0Pending, NO_VALVE, 4, 0x08000100, "writing"), "STM sector 0 pending (error 4 at 0x08000100, writing): keep the power on, retrying"),
+        (ev(C::StmSector0Pending, NO_VALVE, 3, 0, ""), "STM sector 0 pending (error 3 at 0x00000000): keep the power on, retrying"),
         (ev(C::TargetSet, 0, 55, 3, ""), "valve 1: target 55 % (mqtt)"),
         (ev(C::TargetSet, 11, 0, 2, ""), "valve 12: target 0 % (web)"),
         (ev(C::TargetSet, 1, 1, 9, ""), "valve 2: target 1 % (unknown)"),

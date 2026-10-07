@@ -47,6 +47,8 @@ fn phase_names_legacy_status_codes_and_error_names() {
         (FlashPhase::WaitingApp, "waiting_app", 5),
         (FlashPhase::Done, "done", 6),
         (FlashPhase::Failed, "failed", 8),
+        // Rust only (D9)
+        (FlashPhase::Sector0Pending, "sector0_pending", 8),
     ];
     for (i, &(p, name, legacy)) in phases.iter().enumerate() {
         assert_eq!(flash_phase_name(p), name);
@@ -55,7 +57,7 @@ fn phase_names_legacy_status_codes_and_error_names() {
         assert_eq!(FlashPhase::from_raw(i as u8), Some(p));
     }
     // C++ flashPhaseName(200) "unknown", legacyFlashStatus(200) 8: no Rust value
-    assert_eq!(FlashPhase::from_raw(13), None);
+    assert_eq!(FlashPhase::from_raw(14), None);
     assert_eq!(FlashPhase::from_raw(200), None);
 
     let errors = [
@@ -167,6 +169,8 @@ fn option_and_status_defaults_of_the_board_check() {
     assert!(st.board_hw.is_empty());
     assert!(!st.manual_reset);
     assert_eq!(st.baud, 0);
+    assert!(!st.sector0_at_risk);
+    assert_eq!(opt.sector0_retry_ms, 30_000);
     let info = ImageInfo::default();
     assert!(info.hw_tag.is_empty());
     assert!(!info.hw_conflict);

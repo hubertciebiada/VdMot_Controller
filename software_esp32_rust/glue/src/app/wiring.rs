@@ -512,6 +512,7 @@ pub fn stm_link<'a, P: Platform>(
     let p = StmLinkPorts {
         clock: ports.clock,
         fs: ports.fs,
+        heap: ports.heap,
         uart,
         nrst,
         boot0,

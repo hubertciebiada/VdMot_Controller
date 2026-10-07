@@ -5,6 +5,7 @@
 use super::rig::*;
 use super::*;
 use crate::test_support::sim_stm::{SimEvent, SimLcg, WriteRec, BASE, KIB};
+use std::cell::Cell;
 use std::format;
 use std::vec;
 use std::vec::Vec;
@@ -248,29 +249,30 @@ fn a_session_retry_in_the_sector_0_pass_repeats_only_that_pass() {
 }
 
 #[test]
-fn session_retries_count_over_both_passes() {
-    for (sector0_nacks, phase) in [(4, FlashPhase::Done), (8, FlashPhase::Failed)] {
+fn each_pass_has_session_retries_of_its_own() {
+    // the first block above sector 0 takes one session retry, then the first block of the
+    // sector-0 pass fails 4 times (one retry) or 8 times (two: the whole budget of that pass,
+    // which shared with the first pass would have ended the run)
+    for sector0_nacks in [4, 8] {
         let mut rig = Rig::new(make_image(53760));
-        rig.sim.nack_write_data = 4; // the first block above sector 0: one session retry
+        rig.sim.nack_write_data = 4;
         assert!(rig.begin());
         let mut armed = false;
+        let mut upper_attempts = 0;
         rig.run_hook(|r| {
             if !armed && in_sector0_pass(r) {
                 r.sim.nack_write_data = sector0_nacks;
                 armed = true;
+            } else if !armed {
+                upper_attempts = upper_attempts.max(r.f.status().attempt);
             }
         });
+        assert_eq!(upper_attempts, 1);
         let st = rig.f.status();
-        assert_eq!(st.phase, phase, "{sector0_nacks}");
-        assert_eq!(st.attempt, 2);
-        if phase == FlashPhase::Failed {
-            assert_eq!(st.error, FlashError::Nack);
-            assert_eq!(st.error_phase, FlashPhase::Writing);
-            assert_eq!(st.error_address, BASE + 256);
-            assert!(rig.left_clean());
-        } else {
-            assert!(rig.flash_matches_image());
-        }
+        assert_eq!(st.phase, FlashPhase::Done, "{sector0_nacks}");
+        assert_eq!(st.attempt, (sector0_nacks / 4) as u8, "{sector0_nacks}");
+        assert!(rig.flash_matches_image());
+        assert_eq!(rig.sim.resets.len(), 4);
     }
 }
 
@@ -298,34 +300,239 @@ fn the_upper_pass_checks_its_crc_before_sector_0_is_erased() {
 }
 
 #[test]
-fn the_sector_0_pass_checks_the_crc_of_sector_0() {
-    // a sector-0 byte changed on disk before that pass, or on disk and in flash during its
-    // verify: the bytes compare equal, the CRC of sector 0 does not
-    for during_verify in [false, true] {
+fn the_bytes_of_sector_0_are_read_and_checked_before_its_erase() {
+    // changed in the file during the upper pass, not readable, or no memory for them: the run
+    // fails before the erase of sector 0 is even announced, the old sector 0 stays
+    for case in 0..3 {
+        let mut rig = Rig::new(make_image(53760));
+        assert!(rig.begin());
+        let mut armed = false;
+        rig.run_hook(|r| {
+            if !armed && r.f.status().phase == FlashPhase::Writing {
+                match case {
+                    0 => r.img.data[1500] ^= 0x10,
+                    1 => r.img.fail_at = 1500,
+                    _ => r.img.fail_hold = true,
+                }
+                armed = true;
+            }
+        });
+        let st = rig.f.status();
+        assert_eq!(st.phase, FlashPhase::Failed, "{case}");
+        assert_eq!(st.error, FlashError::ImageRead, "{case}");
+        assert_eq!(st.error_phase, FlashPhase::Erasing, "{case}");
+        assert_eq!(st.error_address, 0, "{case}");
+        assert!(!st.sector0_at_risk, "{case}");
+        assert_eq!(rig.img.holds, 1, "{case}");
+        assert_eq!(rig.sim.writes_equal(&ERASE_CMD), 1, "{case}");
+        assert_eq!(rig.sim.erase_frames.len(), 1, "{case}");
+        assert!(sector0_intact(&rig), "{case}");
+        assert!(rig.left_clean(), "{case}");
+    }
+}
+
+#[test]
+fn the_sector_0_pass_writes_the_bytes_read_before_its_erase() {
+    let original = make_image(53760);
+    let mut rig = Rig::new(original.clone());
+    assert!(rig.begin());
+    let mut changed = false;
+    rig.run_hook(|r| {
+        if !changed && has_event(r, &SimEvent::Erase(vec![0])) {
+            // the file changes after its sector-0 bytes were read and cannot be read any more
+            r.img.data[1500] ^= 0x10;
+            r.img.fail_at = 1500;
+            changed = true;
+        }
+    });
+    assert!(changed);
+    assert_eq!(rig.f.status().phase, FlashPhase::Done);
+    assert_eq!(rig.img.holds, 1);
+    assert!(rig.sim.flash[..original.len()] == original[..]);
+}
+
+#[test]
+fn an_exhausted_sector_0_pass_waits_in_the_rom_bootloader_without_a_reset() {
+    let mut rig = Rig::new(make_image(53760));
+    assert!(rig.begin());
+    let mut at_erase = None;
+    let end = rig.run_to(FlashPhase::Sector0Pending, |r| {
+        if at_erase.is_none() && in_sector0_pass(r) {
+            r.sim.nack_write_data = 1000; // every write of the pass is refused
+            at_erase = Some((r.sim.resets.len(), r.sim.configs.len()));
+        }
+    });
+    let (resets, configs) = at_erase.expect("a sector-0 pass");
+    assert_eq!(end, FlashPhase::Sector0Pending);
+    let pending_at = rig.now;
+    let st = rig.f.status().clone();
+    assert!(st.sector0_at_risk);
+    assert!(rig.f.sector0_at_risk());
+    assert!(rig.f.sector0_pending());
+    assert!(rig.f.active());
+    assert_eq!(st.error, FlashError::Nack);
+    assert_eq!(st.error_phase, FlashPhase::Writing);
+    assert_eq!(st.error_address, BASE + 256); // block 1 is the first one of the pass
+    assert_eq!(st.attempt, 2);
+    assert_eq!(st.finished_ms, 0);
+    // the pass and its two retries erased sector 0, no NRST pulse, the UART still at 8E1
+    assert_eq!(rig.sim.erase_frames.len(), 4);
+    assert_eq!(rig.sim.resets.len(), resets);
+    assert_eq!(rig.sim.configs.len(), configs);
+    assert_eq!(rig.sim.configs.last(), Some(&(115_200, true)));
+    // an abort is ignored, nothing goes out while it waits
+    rig.f.abort();
+    let writes = rig.sim.writes.len();
+    rig.run_with(|_| {}, 29_990, 2);
+    assert_eq!(rig.f.status().phase, FlashPhase::Sector0Pending);
+    assert_eq!(rig.sim.writes.len(), writes);
+    // 30 s after it began to wait the next round erases sector 0 again; the fault is gone
+    rig.sim.nack_write_data = 0;
+    assert_eq!(rig.run(), FlashPhase::Done);
+    assert_eq!(
+        rig.sim.writes[writes],
+        (pending_at + 30_000, ERASE_CMD.to_vec())
+    );
+    let st = rig.f.status();
+    assert!(!st.sector0_at_risk);
+    assert_eq!(st.error, FlashError::None);
+    assert_eq!(st.error_phase, FlashPhase::Idle);
+    assert_eq!(st.error_address, 0);
+    assert_eq!(st.attempt, 0);
+    assert!(rig.flash_matches_image());
+    assert!(rig.left_clean());
+    assert!(rig.percent_monotonic());
+    // the pulses into the bootloader and into the new image, no other
+    assert_eq!(rig.sim.resets.len(), 4);
+}
+
+#[test]
+fn retry_sector0_starts_the_next_round_at_once() {
+    let mut rig = Rig::new(make_image(53760));
+    rig.opt.erase_timeout_ms = 2000;
+    assert!(!rig.f.retry_sector0(rig.now)); // nothing runs
+    assert!(rig.begin());
+    assert!(!rig.f.retry_sector0(rig.now)); // nothing pending
+    assert_eq!(rig.f.status().phase, FlashPhase::Validating);
+    let mut armed = false;
+    rig.run_to(FlashPhase::Sector0Pending, |r| {
+        if !armed && in_sector0_pass(r) {
+            r.sim.drop_erase_ack = 3; // sector 0 is erased, the ACK never comes
+            armed = true;
+        }
+    });
+    let st = rig.f.status();
+    assert_eq!(st.phase, FlashPhase::Sector0Pending);
+    assert_eq!(st.error, FlashError::Timeout);
+    assert_eq!(st.error_phase, FlashPhase::Erasing);
+    assert_eq!(st.error_address, BASE);
+    rig.run_with(|_| {}, 10_000, 2);
+    let writes = rig.sim.writes.len();
+    let at = rig.now;
+    assert!(rig.f.retry_sector0(at));
+    assert_eq!(rig.f.status().phase, FlashPhase::Erasing);
+    assert_eq!(rig.f.status().attempt, 0);
+    assert_eq!(rig.run(), FlashPhase::Done);
+    assert_eq!(rig.sim.writes[writes], (at + 2, ERASE_CMD.to_vec()));
+    assert!(rig.flash_matches_image());
+}
+
+#[test]
+fn a_failed_uart_write_after_the_sector_0_erase_keeps_the_rom_session() {
+    let mut rig = Rig::new(make_image(53760));
+    assert!(rig.begin());
+    let mut resets = None;
+    rig.run_to(FlashPhase::Sector0Pending, |r| {
+        if resets.is_none() && has_event(r, &SimEvent::Erase(vec![0])) {
+            r.sim.write_limit = 3; // the next write command fits, its address frame does not
+            resets = Some(r.sim.resets.len());
+        }
+    });
+    let st = rig.f.status();
+    assert_eq!(st.phase, FlashPhase::Sector0Pending);
+    assert_eq!(st.error, FlashError::TransportWrite);
+    assert_eq!(st.error_phase, FlashPhase::Writing);
+    assert_eq!(rig.sim.resets.len(), resets.expect("sector 0 erased"));
+    rig.sim.write_limit = usize::MAX;
+    assert_eq!(rig.run(), FlashPhase::Done);
+    assert!(rig.flash_matches_image());
+    assert!(rig.left_clean());
+}
+
+#[test]
+fn a_sector_0_copy_changed_in_ram_is_read_again_before_the_next_erase() {
+    // the copy changes during the verify of the sector-0 pass (the same change in flash: the
+    // bytes compare equal, the CRC of sector 0 does not); with the file intact the next round
+    // reads it again, with the file changed too the round waits again without an erase
+    for file_changed in [false, true] {
         let mut rig = Rig::new(make_image(53760));
         assert!(rig.begin());
         let mut changed = false;
-        rig.run_hook(|r| {
-            let s0 = has_event(r, &SimEvent::Erase(vec![0]));
-            let due = if during_verify {
-                s0 && r.f.status().phase == FlashPhase::Verifying
-            } else {
-                r.f.status().phase == FlashPhase::Writing
-            };
-            if !changed && due {
-                r.img.data[1500] ^= 0x10;
-                if during_verify {
-                    r.sim.flash[1500] = r.img.data[1500];
-                }
+        rig.run_to(FlashPhase::Sector0Pending, |r| {
+            let verifying = r.f.status().phase == FlashPhase::Verifying;
+            if !changed && verifying && has_event(r, &SimEvent::Erase(vec![0])) {
+                r.img.held[1500] ^= 0x10;
+                r.sim.flash[1500] = r.img.held[1500];
                 changed = true;
             }
         });
         let st = rig.f.status();
-        assert_eq!(st.phase, FlashPhase::Failed, "{during_verify}");
+        assert_eq!(st.phase, FlashPhase::Sector0Pending, "{file_changed}");
         assert_eq!(st.error, FlashError::ImageRead);
         assert_eq!(st.error_phase, FlashPhase::Verifying);
-        assert_eq!(rig.sim.erase_frames.len(), 2);
-        assert!(rig.left_clean());
+        assert_eq!(rig.img.holds, 1);
+        let erases = rig.sim.erase_frames.len();
+        assert_eq!(erases, 2);
+        if file_changed {
+            rig.img.data[1500] ^= 0x10;
+            rig.run_with(|_| {}, 30_100, 2);
+            let st = rig.f.status();
+            assert_eq!(st.phase, FlashPhase::Sector0Pending);
+            assert_eq!(st.error, FlashError::ImageRead);
+            assert_eq!(st.error_phase, FlashPhase::Erasing);
+            assert_eq!(rig.img.holds, 2);
+            assert_eq!(rig.sim.erase_frames.len(), erases);
+            rig.img.data[1500] ^= 0x10; // the file is back
+        }
+        assert_eq!(rig.run(), FlashPhase::Done, "{file_changed}");
+        assert_eq!(rig.img.holds, if file_changed { 3 } else { 2 });
+        assert!(rig.flash_matches_image());
+    }
+}
+
+#[test]
+fn an_abort_is_taken_up_to_the_erase_of_sector_0_and_ignored_after_it() {
+    // up to the erase command of sector 0 an abort resets the STM into its old sector 0; once
+    // the sector list went out it is ignored and the run ends with the new image
+    for after_erase in [false, true] {
+        let mut rig = Rig::new(make_image(53760));
+        assert!(rig.begin());
+        let mut aborted = false;
+        rig.run_hook(|r| {
+            let due = if after_erase {
+                has_event(r, &SimEvent::Erase(vec![0]))
+            } else {
+                in_sector0_pass(r)
+            };
+            if !aborted && due {
+                assert_eq!(r.f.sector0_at_risk(), after_erase);
+                r.f.abort();
+                aborted = true;
+            }
+        });
+        assert!(aborted);
+        let st = rig.f.status();
+        if after_erase {
+            assert_eq!(st.phase, FlashPhase::Done);
+            assert_eq!(st.error, FlashError::None);
+            assert!(rig.flash_matches_image());
+        } else {
+            assert_eq!(st.phase, FlashPhase::Failed);
+            assert_eq!(st.error, FlashError::Aborted);
+            assert_eq!(st.error_phase, FlashPhase::Erasing);
+            assert!(sector0_intact(&rig));
+        }
+        assert!(rig.left_clean(), "{after_erase}");
     }
 }
 
@@ -423,7 +630,7 @@ fn the_largest_image_keeps_sector_0_for_last() {
 #[test]
 fn fault_fuzz_never_touches_sector_0_before_the_rest_is_verified() {
     let mut r = SimLcg::new(0xD9);
-    let (mut done, mut failed, mut sector0_failures) = (0, 0, 0);
+    let (mut done, mut failed, mut pending) = (0, 0, 0);
     for iter in 0..60u32 {
         let size = S0 + 4 + 4 * r.below(6000) as usize;
         let mut rig = Rig::new(make_image_seeded(
@@ -451,28 +658,52 @@ fn fault_fuzz_never_touches_sector_0_before_the_rest_is_verified() {
         let late_nacks = r.below(6) as i32;
         let late_corrupt = r.below(3) as i32;
         assert!(rig.begin());
-        let mut armed = false;
-        let mut checked_at_erase = false;
-        rig.run_hook(|g| {
-            if !armed && in_sector0_pass(g) {
+        let armed = Cell::new(false);
+        let checked_at_erase = Cell::new(false);
+        // resets and UART configurations when sector 0 was erased
+        let at_erase: Cell<Option<(usize, usize)>> = Cell::new(None);
+        let mut hook = |g: &mut Rig| {
+            if !armed.get() && in_sector0_pass(g) {
                 g.sim.nack_write_data += late_nacks;
                 g.sim.corrupt_reads += late_corrupt;
-                armed = true;
+                armed.set(true);
             }
             if !has_event(g, &SimEvent::Erase(vec![0])) {
                 assert!(sector0_intact(g), "{iter}");
-            } else if !checked_at_erase {
-                checked_at_erase = true;
+            } else if !checked_at_erase.get() {
+                checked_at_erase.set(true);
+                at_erase.set(Some((g.sim.resets.len(), g.sim.configs.len())));
                 let d = &g.img.data;
                 assert!(g.sim.flash[S0..d.len()] == d[S0..], "{iter}");
             }
-        });
+        };
+        let mut end = rig.run_to(FlashPhase::Sector0Pending, &mut hook);
+        if end == FlashPhase::Sector0Pending {
+            // no reset and no UART change since sector 0 was erased: the STM waits in its
+            // bootloader; once the faults are gone a request ends the run
+            pending += 1;
+            assert!(rig.f.sector0_at_risk(), "{iter}");
+            let (resets, configs) = at_erase.get().expect("sector 0 erased");
+            assert_eq!(rig.sim.resets.len(), resets, "{iter}");
+            assert_eq!(rig.sim.configs.len(), configs, "{iter}");
+            rig.sim.nack_write_data = 0;
+            rig.sim.drop_write_ack = 0;
+            rig.sim.corrupt_reads = 0;
+            rig.sim.noise_replies = 0;
+            rig.sim.drop_erase_ack = 0;
+            rig.sim.nack_erase = 0;
+            rig.sim.stuck.clear();
+            assert!(rig.f.retry_sector0(rig.now), "{iter}");
+            end = rig.run_hook(&mut hook);
+            assert_eq!(end, FlashPhase::Done, "{iter}");
+        }
         let st = rig.f.status();
         let why = format!(
             "{iter}: {} in {}",
             flash_error_name(st.error),
             flash_phase_name(st.error_phase)
         );
+        assert_eq!(end, st.phase, "{why}");
         assert!(rig.left_clean(), "{why}");
         assert!(rig.percent_monotonic(), "{why}");
         assert_eq!(st.finished_ms, rig.now, "{why}");
@@ -509,12 +740,13 @@ fn fault_fuzz_never_touches_sector_0_before_the_rest_is_verified() {
             done += 1;
             assert!(rig.flash_matches_image(), "{why}");
         } else {
+            // only a run that never erased sector 0 resets the STM after a failure
             failed += 1;
             assert_ne!(st.error, FlashError::None, "{why}");
-            sector0_failures += usize::from(s0 < events.len());
+            assert_eq!(s0, events.len(), "{why}");
         }
     }
     assert!(done > 0);
     assert!(failed > 0);
-    assert!(sector0_failures > 0);
+    assert!(pending > 0);
 }

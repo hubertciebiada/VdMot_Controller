@@ -665,6 +665,10 @@ A half-flashed image therefore stays in its window and can be flashed again remo
 sector-0 pass itself needs BOOT0 when it is cut. Images of at most 16 KiB (none today) have no
 application part: their record holds length 0.
 
+A sector-0 pass that fails without a cut (NACKs or timeouts after its retries, an image read
+error, a CRC mismatch) does not reset the STM: the Rust ESP flasher keeps the ROM session and
+repeats the pass (`sector0_pending`, F4 of [REVIEW-ESP-SAFETY.md](REVIEW-ESP-SAFETY.md)).
+
 ### 5.11 The record of the application part (B8)
 
 The format the boot stage, the patch step, the image check and the ESP flasher share

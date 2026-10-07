@@ -496,7 +496,7 @@ fn file_image_names_the_end_of_the_file_seeks_only_when_needed() {
     let n39 = "f".repeat(39);
     rig.dev.fs.put(&format!("/stm/{n38}.bin"), b"0123456789");
     rig.dev.fs.put(&format!("/stm/{n39}.bin"), b"0123456789");
-    let mut img = FileImage::new(rig.dev.fs.clone());
+    let mut img = FileImage::new(rig.dev.fs.clone(), &rig.dev.heap);
     // C++ open(nullptr): no Rust form; the empty name opens nothing
     assert!(!img.open(b""));
     assert!(!img.open(n39.as_bytes()));
@@ -665,7 +665,7 @@ fn file_image_a_second_open_closes_the_first_file() {
     mount(&st);
     rig.dev.fs.put("/stm/a.bin", b"aaaa");
     rig.dev.fs.put("/stm/b.bin", b"bb");
-    let mut img = FileImage::new(&rig.dev.fs);
+    let mut img = FileImage::new(&rig.dev.fs, &rig.dev.heap);
     assert!(img.open(b"a"));
     assert!(img.open(b"b"));
     assert_eq!(rig.dev.fs.open_handles(), 1);

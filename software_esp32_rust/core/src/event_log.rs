@@ -206,6 +206,10 @@ pub enum EventCode {
     /// arg1 valves, arg2 1 RTC, 2 NVS
     TargetsRestored = 324,
     StmProtectionSuspended = 325,
+    /// Rust only (D9): the sector-0 pass of an STM flash failed after the erase of sector 0, the
+    /// STM waits in its ROM bootloader and the pass runs again; arg1 FlashError, arg2 failing
+    /// address; text phase
+    StmSector0Pending = 326,
     // valves 4xx (valve = 0-based index in Event::valve)
     /// arg1 new target, arg2 TargetSource
     TargetSet = 400,
@@ -483,7 +487,7 @@ const fn special(
 
 /// Registry order = the order of [`event_mqtt_names`].
 #[rustfmt::skip]
-static CODES: [CodeInfo; 87] = {
+static CODES: [CodeInfo; 88] = {
     use EventCode as C;
     use EventMqtt::{Always, No, WarnPlus as Warn};
     use Severity::{Critical, Debug, Error, Info, Warning};
@@ -633,6 +637,9 @@ static CODES: [CodeInfo; 87] = {
             concat!("desired targets restored for ", arg1!(), " valves (", name2!("t"), ")")),
         templated(C::StmProtectionSuspended, Error, Warn, "stm_protection_suspended",
             "STM short-circuit and inrush limits suspended until the next STM start"),
+        templated(C::StmSector0Pending, Critical, Warn, "stm_sector0_pending",
+            concat!("STM sector 0 pending (error ", arg1!(), " at 0x", name2!("8"), if_txt!(), ", ",
+                    txt!(), end_txt!(), "): keep the power on, retrying")),
         templated(C::TargetSet, Info, Warn, "target_set",
             concat!("target ", arg1!(), " % (", name2!("u"), ")")),
         templated(C::ValveStateChanged, Debug, Warn, "valve_state_changed",

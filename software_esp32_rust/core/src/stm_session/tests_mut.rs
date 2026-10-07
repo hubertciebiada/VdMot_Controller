@@ -7,6 +7,7 @@ use crate::common::{parse_one_wire_id, TEMP_POWER_ON, TEMP_READ_ERROR, VAD_FAILE
 use crate::config::MqttMode;
 use crate::test_support::line_stm::AnswerCtx;
 use crate::test_support::session_rig::{cmd, cmd0, name, Rig, Session, TestPort};
+use crate::test_support::sim_stm::SimEvent;
 use crate::valve_model::{TargetSource, TargetSync, HEALTH_STALE};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -803,6 +804,74 @@ fn without_a_running_stm_the_chosen_board_is_used() {
     q.command(&c);
     q.run_until(|q| !q.s.flashing(), 120000);
     assert!(q.port().with_code(EventCode::StmFlashDone).is_empty());
+}
+
+/// [`image`] of `size` bytes (D9: above 16 KiB it is flashed in two passes, sector 0 last).
+fn big_image(hw: &str, size: usize) -> Vec<u8> {
+    let mut v = image(hw);
+    v.resize(size, 0x80);
+    v
+}
+
+#[test]
+fn a_pending_sector_0_is_logged_once_and_a_flash_request_retries_it_at_once() {
+    let mut r = Rig::new(3, 0x001);
+    r.start();
+    r.run(10000);
+    r.port_mut().image.data = big_image("C2", 20480);
+    r.sim.boot_pin_resets = 1; // blank: the STM starts in the ROM bootloader
+    r.command(&flash_cmd("new.bin", true));
+    assert!(r.run_until(|r| r.sim.events.contains(&SimEvent::Erase(vec![0])), 120000));
+    // every write after the erase of sector 0 is refused: the pass and its retries fail
+    r.sim.nack_write_data = 1000;
+    assert!(r.run_until(
+        |r| r.port().last.flash.phase == FlashPhase::Sector0Pending,
+        60000
+    ));
+    let ev = r.port().with_code(EventCode::StmSector0Pending);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].arg1, FlashError::Nack as i32);
+    assert_eq!(ev[0].arg2, 0x0800_0100);
+    assert_eq!(text(&ev[0]), "writing");
+    assert!(r.port().last.flash.sector0_at_risk);
+    assert!(r.s.flashing());
+    assert!(r.port().with_code(EventCode::StmFlashFailed).is_empty());
+    // the round 30 s later fails again: no second event
+    let erases = r.sim.erase_frames.len();
+    r.run(31000);
+    assert!(r.sim.erase_frames.len() > erases);
+    assert_eq!(r.port().last.flash.phase, FlashPhase::Sector0Pending);
+    assert_eq!(r.port().with_code(EventCode::StmSector0Pending).len(), 1);
+    // a flash request (of any image, in any mode) starts the next round at once
+    r.sim.nack_write_data = 0;
+    r.run(5000);
+    let erases = r.sim.erase_frames.len();
+    r.command(&flash_cmd("other.bin", false));
+    r.run(200);
+    assert_eq!(r.port().last.flash.phase, FlashPhase::Erasing);
+    assert_eq!(r.sim.erase_frames.len(), erases + 1);
+    assert!(r.run_until(|r| !r.s.flashing(), 60000));
+    assert_eq!(r.port().opened, ["new.bin"]);
+    assert!(r.port().with_code(EventCode::StmFlashFailed).is_empty());
+    assert_eq!(r.port().with_code(EventCode::StmFlashDone).len(), 1);
+    assert_eq!(r.port().last_good, ["new.bin"]);
+    r.run(200);
+    let flash = &r.port().last.flash;
+    assert_eq!(flash.phase, FlashPhase::Done);
+    assert!(!flash.sector0_at_risk);
+    assert_eq!(flash.error, FlashError::None);
+    // the next run logs its own pending sector 0
+    r.run(10000);
+    r.sim.boot_pin_resets = 1;
+    let erases = r.sim.erase_frames.len();
+    r.command(&flash_cmd("new.bin", true));
+    assert!(r.run_until(|r| r.sim.erase_frames.len() == erases + 2, 120000));
+    r.sim.nack_write_data = 1000;
+    assert!(r.run_until(
+        |r| r.port().last.flash.phase == FlashPhase::Sector0Pending,
+        60000
+    ));
+    assert_eq!(r.port().with_code(EventCode::StmSector0Pending).len(), 2);
 }
 
 #[test]

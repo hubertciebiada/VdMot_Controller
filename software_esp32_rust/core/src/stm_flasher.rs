@@ -16,12 +16,28 @@
 //! rest of the new image is written and verified, so an interrupted flash leaves the STM without
 //! a bootable vector table for the sector-0 pass only (about 2 s) instead of the whole run. Each
 //! pass compares the CRC32 of the image bytes it verified with the one the Validating phase
-//! found for them; a session retry repeats the current pass, and the retries of both passes
-//! count against `session_retries`. An erase failure reports the first address of the erased
+//! found for them; a session retry repeats the current pass, and each pass has the
+//! `session_retries` of its own. An erase failure reports the first address of the erased
 //! range. An image of at most 16 KiB is flashed exactly as in C++. Percent and the byte counters
 //! run over both passes: `bytes_done` counts the bytes written (Writing) or verified (Verifying)
 //! of the whole image, and the percent stays where the first verify left it until the second
 //! verify passes it.
+//!
+//! The sector-0 pass of D9 is made as hard to fail as the protocol allows, because the boards do
+//! not wire BOOT0 and an STM32F4 whose sector 0 is erased never reaches its ROM bootloader again:
+//! - the pass writes the image bytes of sector 0 from RAM: before every erase of sector 0 they
+//!   are checked against the CRC32 the Validating phase found for them, and read from the image
+//!   into RAM ([`FlashImage::hold_low`]) when they are not there yet or differ; when that fails,
+//!   the erase is not sent;
+//! - once the erase of sector 0 was sent, a failure never pulses NRST: the run enters
+//!   [`FlashPhase::Sector0Pending`] with the STM still in its ROM bootloader, starts a new round
+//!   of the pass every `sector0_retry_ms` ([`StmFlasher::retry_sector0`] at once), and an abort
+//!   is ignored; only a sector 0 that verified ends the run with the NRST pulse into the new
+//!   image ([`FlashStatus::sector0_at_risk`] tells the firmware around it not to restart the
+//!   ESP, whose restart resets the STM too).
+//!
+//! An image of at most 16 KiB (no VdMot STM firmware is that small) keeps the C++ behaviour: its
+//! only pass erases sector 0, and a failure after that erase resets the STM.
 
 use crate::common::{bounded_length, c_str, copy_string, elapsed_ms, Text};
 use crate::stm_codec::build_get_version;
@@ -48,6 +64,12 @@ pub trait FlashImage {
     fn size(&self) -> u32;
     /// Reads `out.len()` bytes at `offset`; false on I/O error or out of range.
     fn read(&mut self, offset: u32, out: &mut [u8]) -> bool;
+    /// D9: reads the image bytes [0, len) into RAM (in place of an earlier copy) and keeps them
+    /// for the rest of the run: the sector-0 pass writes and verifies them, not the file; false
+    /// when they cannot be read or held (an I/O error, no memory).
+    fn hold_low(&mut self, len: u32) -> bool;
+    /// The bytes [`hold_low`](Self::hold_low) keeps; empty before it and after a failed one.
+    fn low(&self) -> &[u8];
 }
 
 // ---------------------------------------------------------------- phases, errors
@@ -80,10 +102,15 @@ pub enum FlashPhase {
     WaitingApp = 10,
     Done = 11,
     Failed = 12,
+    /// D9 (Rust only): the sector-0 pass failed after the erase of sector 0. The STM stays in its
+    /// ROM bootloader (a reset would start an erased or half-written sector 0, and without the
+    /// boot stage there is no way back into the bootloader); the pass runs again every
+    /// `sector0_retry_ms` and on [`StmFlasher::retry_sector0`]. The run is active.
+    Sector0Pending = 13,
 }
 
 /// Indexed by the phase number.
-const PHASES: [FlashPhase; 13] = [
+const PHASES: [FlashPhase; 14] = [
     FlashPhase::Idle,
     FlashPhase::Validating,
     FlashPhase::Resetting,
@@ -97,6 +124,7 @@ const PHASES: [FlashPhase; 13] = [
     FlashPhase::WaitingApp,
     FlashPhase::Done,
     FlashPhase::Failed,
+    FlashPhase::Sector0Pending,
 ];
 
 impl FlashPhase {
@@ -106,7 +134,7 @@ impl FlashPhase {
 }
 
 /// "idle", "validating", "resetting", "handshake", "sync", "getid", "erasing", "writing",
-/// "verifying", "starting", "waiting_app", "done", "failed".
+/// "verifying", "starting", "waiting_app", "done", "failed", "sector0_pending".
 pub fn flash_phase_name(p: FlashPhase) -> &'static str {
     match p {
         FlashPhase::Idle => "idle",
@@ -122,10 +150,12 @@ pub fn flash_phase_name(p: FlashPhase) -> &'static str {
         FlashPhase::WaitingApp => "waiting_app",
         FlashPhase::Done => "done",
         FlashPhase::Failed => "failed",
+        FlashPhase::Sector0Pending => "sector0_pending",
     }
 }
 
-/// Legacy /stmupdstatus status code 0..8 for the old UI.
+/// Legacy /stmupdstatus status code 0..8 for the old UI (sector 0 pending: 8, the run has not
+/// finished and needs the user's attention).
 pub fn legacy_flash_status(p: FlashPhase) -> u8 {
     match p {
         FlashPhase::Idle => 0,
@@ -138,7 +168,7 @@ pub fn legacy_flash_status(p: FlashPhase) -> u8 {
         FlashPhase::Writing => 4,
         FlashPhase::Verifying | FlashPhase::Starting | FlashPhase::WaitingApp => 5,
         FlashPhase::Done => 6,
-        FlashPhase::Failed => 8,
+        FlashPhase::Failed | FlashPhase::Sector0Pending => 8,
     }
 }
 
@@ -690,8 +720,11 @@ pub struct FlashOptions {
     pub ack_timeout_ms: u16,
     pub erase_timeout_ms: u32,
     pub block_retries: u8,
-    /// whole erase+write+verify again, same ROM session (D9: of the current pass)
+    /// whole erase+write+verify again, same ROM session (D9: of the current pass, each pass has
+    /// these retries of its own)
     pub session_retries: u8,
+    /// D9: wait in [`FlashPhase::Sector0Pending`] before the next round of the sector-0 pass
+    pub sector0_retry_ms: u32,
     /// after the final reset, before the first gvers
     pub app_boot_ms: u16,
     /// gvers period
@@ -721,6 +754,7 @@ impl Default for FlashOptions {
             erase_timeout_ms: 60_000,
             block_retries: 3,
             session_retries: 2,
+            sector0_retry_ms: 30_000,
             app_boot_ms: 4000,
             app_poll_ms: 1000,
             app_timeout_ms: 60_000,
@@ -747,7 +781,8 @@ pub struct FlashStatus {
     pub chip_pid: u16,
     /// from GET (0x00) when read
     pub bootloader_version: u8,
-    /// session retry number (0 = first)
+    /// session retry number (0 = first; D9: of the current pass, and of the current round of a
+    /// pending sector 0)
     pub attempt: u8,
     pub started_ms: u32,
     pub finished_ms: u32,
@@ -762,6 +797,10 @@ pub struct FlashStatus {
     pub manual_reset: bool,
     /// baud of the current/last session
     pub baud: u32,
+    /// D9: the erase of sector 0 was sent and sector 0 has not verified since: the STM must not
+    /// be reset (an ESP restart resets it too), an abort is ignored and a failure keeps the ROM
+    /// session ([`FlashPhase::Sector0Pending`])
+    pub sector0_at_risk: bool,
 }
 
 // ---------------------------------------------------------------- flasher
@@ -958,19 +997,42 @@ impl StmFlasher {
     }
 
     /// Requests an abort: the STM is reset into the application (which may be gone if erase
-    /// already started; then the status says Failed/Aborted).
+    /// already started; then the status says Failed/Aborted). Ignored once the erase of sector 0
+    /// was sent (D9): the reset would start an erased sector 0. The next step takes it, before
+    /// anything else of the run.
     pub fn abort(&mut self) {
-        if self.active() {
+        if self.active() && !self.st.sector0_at_risk {
             self.abort_requested = true;
         }
     }
 
-    /// Phase not Idle/Done/Failed.
+    /// Phase not Idle/Done/Failed (Sector0Pending is active).
     pub fn active(&self) -> bool {
         !matches!(
             self.st.phase,
             FlashPhase::Idle | FlashPhase::Done | FlashPhase::Failed
         )
+    }
+
+    /// D9: the erase of sector 0 was sent and sector 0 has not verified since: the STM must not
+    /// be reset (an abort is ignored, a failure keeps the ROM session).
+    pub fn sector0_at_risk(&self) -> bool {
+        self.st.sector0_at_risk
+    }
+
+    /// D9: the sector-0 pass failed after its erase; the STM waits in its ROM bootloader.
+    pub fn sector0_pending(&self) -> bool {
+        self.st.phase == FlashPhase::Sector0Pending
+    }
+
+    /// D9: a new round of the sector-0 pass now (a flash request while sector 0 is pending),
+    /// with the image bytes held since before its erase; false when sector 0 is not pending.
+    pub fn retry_sector0(&mut self, now_ms: u32) -> bool {
+        if !self.sector0_pending() {
+            return false;
+        }
+        self.sector0_round(now_ms);
+        true
     }
 
     pub fn status(&self) -> &FlashStatus {
@@ -1001,10 +1063,11 @@ impl StmFlasher {
             FlashPhase::Handshake => self.step_handshake(t, now),
             FlashPhase::Sync => self.step_sync(t, now),
             FlashPhase::GetId => self.step_get_id(t, now),
-            FlashPhase::Erasing => self.step_erasing(t, now),
+            FlashPhase::Erasing => self.step_erasing(t, img, now),
             FlashPhase::Writing => self.step_writing(t, img, now),
             FlashPhase::Verifying => self.step_verifying(t, img, now),
             FlashPhase::WaitingApp => self.step_waiting_app(t, now),
+            FlashPhase::Sector0Pending => self.step_sector0_pending(now),
             FlashPhase::Idle | FlashPhase::Done | FlashPhase::Failed => {}
         }
     }
@@ -1030,6 +1093,11 @@ impl StmFlasher {
         self.st.error = e;
         self.st.error_phase = self.st.phase;
         self.st.error_address = address;
+        if self.st.sector0_at_risk {
+            // D9: no reset into an erased or half-written sector 0; the ROM session stays
+            self.enter(FlashPhase::Sector0Pending, now);
+            return;
+        }
         if self.touched {
             self.cleanup = true;
             self.sub = 0;
@@ -1139,12 +1207,34 @@ impl StmFlasher {
         }
     }
 
-    /// tx = N-1, data (image bytes, then 0xFF padding), checksum N-1^D0^..^DN.
+    /// D9: the sector-0 pass of an image of two passes runs (or waits in Sector0Pending): its
+    /// bytes come from RAM.
+    fn sector0_pass(&self) -> bool {
+        !self.upper && self.st.image.padded_size > SECTOR0_BYTES
+    }
+
+    /// D9: the image bytes of sector 0 (all of it: the image is larger) are in RAM and match the
+    /// CRC32 the Validating phase found for them.
+    fn sector0_held(&self, img: &dyn FlashImage) -> bool {
+        let low = img.low();
+        low.len() == SECTOR0_BYTES as usize && crc32_update(0xFFFF_FFFF, low) == self.crc_low
+    }
+
+    /// D9, before an erase of sector 0: its image bytes are in RAM and checked, read from the
+    /// image when they are not there yet or differ (changed in RAM); false when they cannot be
+    /// read or held, or differ from the validated ones.
+    fn sector0_ready(&self, img: &mut dyn FlashImage) -> bool {
+        self.sector0_held(img) || (img.hold_low(SECTOR0_BYTES) && self.sector0_held(img))
+    }
+
+    /// tx = N-1, data (image bytes, then 0xFF padding), checksum N-1^D0^..^DN. The sector-0 pass
+    /// of D9 takes the bytes held in RAM, every other pass reads the image.
     fn load_block(&mut self, img: &mut dyn FlashImage, block: u32) -> bool {
         let len = self.block_len(block) as usize;
         let off = block * BLOCK_SIZE;
         // at least one image byte: blocks start below padded_size, at most 3 bytes above size
         let avail = (self.st.image.size.saturating_sub(off) as usize).min(len);
+        let held = self.sector0_pass();
         let Some((n, rest)) = self.tx.split_first_mut() else {
             return false;
         };
@@ -1152,7 +1242,13 @@ impl StmFlasher {
             return false;
         };
         let (bytes, pad) = data.split_at_mut(avail);
-        if !img.read(off, bytes) {
+        if held {
+            let from = off as usize;
+            let Some(src) = img.low().get(from..from + avail) else {
+                return false;
+            };
+            bytes.copy_from_slice(src);
+        } else if !img.read(off, bytes) {
             return false;
         }
         pad.fill(0xFF);
@@ -1406,9 +1502,13 @@ impl StmFlasher {
     }
 
     /// 0x44 with the sector list of the pass: N-1 (2 bytes), sector numbers (2 bytes each), XOR
-    /// of all of them.
-    fn step_erasing(&mut self, t: &mut dyn FlashTransport, now: u32) {
+    /// of all of them. D9: the erase of sector 0 waits for its image bytes in RAM.
+    fn step_erasing(&mut self, t: &mut dyn FlashTransport, img: &mut dyn FlashImage, now: u32) {
         if self.sub == 0 {
+            if self.sector0_pass() && !self.sector0_ready(img) {
+                self.fail(FlashError::ImageRead, 0, now);
+                return;
+            }
             if !self.send(t, &ERASE_CMD, now, self.ack_timeout()) {
                 return;
             }
@@ -1436,6 +1536,10 @@ impl StmFlasher {
             }
             let cs = frame.iter().fold(0, |cs, &b| cs ^ b);
             let _ = frame.push(cs);
+            if self.sector0_pass() {
+                // D9: from this frame on sector 0 may be erased, until it verifies
+                self.st.sector0_at_risk = true;
+            }
             if !self.send(t, &frame, now, self.opt.erase_timeout_ms) {
                 return;
             }
@@ -1590,11 +1694,19 @@ impl StmFlasher {
             return;
         }
         if self.upper {
-            // D9: sectors 1..n are written and verified; sector 0 now.
+            // D9: sectors 1..n are written and verified; sector 0 now, with session retries of
+            // its own
             self.upper = false;
+            self.st.attempt = 0;
             self.enter(FlashPhase::Erasing, now);
             return;
         }
+        // Sector 0 verified (D9): a reset starts the new image, and the failure of an earlier round
+        // of its pass (Sector0Pending) is history. (Every other failure ended the run.)
+        self.st.sector0_at_risk = false;
+        self.st.error = FlashError::None;
+        self.st.error_phase = FlashPhase::Idle;
+        self.st.error_address = 0;
         if self.opt.blank {
             // BOOT0 is still set: a reset would start the ROM bootloader again. The user
             // removes the jumper and resets the STM.
@@ -1605,6 +1717,21 @@ impl StmFlasher {
         }
         self.enter(FlashPhase::Starting, now);
         self.set_percent(95);
+    }
+
+    /// D9: the STM waits in its ROM bootloader with sector 0 not verified; a new round of the
+    /// sector-0 pass every `sector0_retry_ms`.
+    fn step_sector0_pending(&mut self, now: u32) {
+        if elapsed_ms(now, self.phase_start_ms) >= self.opt.sector0_retry_ms {
+            self.sector0_round(now);
+        }
+    }
+
+    /// D9: the sector-0 pass again (erase, write, verify) in the same ROM session, with its
+    /// retries of its own; the bytes come from RAM, the error of the last failure stays visible.
+    fn sector0_round(&mut self, now: u32) {
+        self.st.attempt = 0;
+        self.enter(FlashPhase::Erasing, now);
     }
 
     /// One more session at fallback_baud: new NRST pulse, then the handshake at 115200 (normal

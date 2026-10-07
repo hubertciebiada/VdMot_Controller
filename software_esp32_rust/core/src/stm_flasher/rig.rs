@@ -81,6 +81,13 @@ pub struct MemImage {
     pub size_override: u32,
     pub bytes_read: usize,
     pub max_read: usize,
+    /// D9: `hold_low` fails (no memory)
+    pub fail_hold: bool,
+    /// D9: the copy `hold_low` made (later changes of `data` do not reach it, as the glue's RAM
+    /// copy of the file)
+    pub held: Vec<u8>,
+    /// D9: `hold_low` calls
+    pub holds: usize,
 }
 
 impl MemImage {
@@ -91,6 +98,9 @@ impl MemImage {
             size_override: 0,
             bytes_read: 0,
             max_read: 0,
+            fail_hold: false,
+            held: Vec::new(),
+            holds: 0,
         }
     }
 }
@@ -119,6 +129,26 @@ impl FlashImage for MemImage {
         out.copy_from_slice(&self.data[offset..offset + len]);
         true
     }
+
+    fn hold_low(&mut self, len: u32) -> bool {
+        self.holds += 1;
+        self.held.clear();
+        let len = len as usize;
+        if self.fail_hold || len > self.data.len() {
+            return false;
+        }
+        // a read like any other (the fail_at knob reaches it)
+        let mut copy = std::vec![0u8; len];
+        if !self.read(0, &mut copy) {
+            return false;
+        }
+        self.held = copy;
+        true
+    }
+
+    fn low(&self) -> &[u8] {
+        &self.held
+    }
 }
 
 /// Longest time a run may take without progress (percent, bytes done or session attempt): the
@@ -136,6 +166,8 @@ pub struct Rig {
     pub percents: Vec<u8>,
     pub phases: Vec<FlashPhase>,
     pub steps: usize,
+    /// D9: a run stops in this phase too (it stays active in Sector0Pending)
+    pub stop: Option<FlashPhase>,
 }
 
 impl Rig {
@@ -149,6 +181,7 @@ impl Rig {
             percents: Vec::new(),
             phases: Vec::new(),
             steps: 0,
+            stop: None,
         }
     }
 
@@ -179,7 +212,10 @@ impl Rig {
         let start = self.now;
         let mut key = self.progress_key();
         let mut moved_at = self.now;
-        while self.f.active() && self.now.wrapping_sub(start) < max_ms {
+        while self.f.active()
+            && Some(self.f.status().phase) != self.stop
+            && self.now.wrapping_sub(start) < max_ms
+        {
             self.now = self.now.wrapping_add(step_ms);
             self.step();
             self.steps += 1;
@@ -210,6 +246,15 @@ impl Rig {
 
     pub fn run(&mut self) -> FlashPhase {
         self.run_hook(|_| {})
+    }
+
+    /// [`run_hook`](Self::run_hook) until the run ends or reaches `phase` (D9: Sector0Pending,
+    /// where it stays active).
+    pub fn run_to(&mut self, phase: FlashPhase, hook: impl FnMut(&mut Rig)) -> FlashPhase {
+        self.stop = Some(phase);
+        let end = self.run_hook(hook);
+        self.stop = None;
+        end
     }
 
     pub fn begin_and_run(&mut self) -> FlashPhase {

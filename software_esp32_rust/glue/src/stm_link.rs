@@ -125,7 +125,7 @@ pub struct SessionPort<'a, P: Platform, H> {
     host: H,
     clock: &'a P::Clock,
     nrst: Arc<Mutex<P::OutputPin>>,
-    image: FileImage<&'a P::Fs>,
+    image: FileImage<&'a P::Fs, &'a P::HeapGate>,
 }
 
 impl<P: Platform, H: StmLinkHost> StmSessionPort for SessionPort<'_, P, H> {
@@ -212,6 +212,8 @@ pub struct StmLinkPorts<'a, P: Platform> {
     pub clock: &'a P::Clock,
     /// The STM images of a flash run.
     pub fs: &'a P::Fs,
+    /// The sector 0 a flash run holds in RAM (D9, 16 KiB while the run lasts).
+    pub heap: &'a P::HeapGate,
     pub uart: P::Uart,
     pub nrst: P::OutputPin,
     pub boot0: P::OutputPin,
@@ -250,7 +252,7 @@ impl<'a, P: Platform, H: StmLinkHost + Clone> StmLink<'a, P, H> {
             host: host.clone(),
             clock: ports.clock,
             nrst: nrst.clone(),
-            image: FileImage::new(ports.fs),
+            image: FileImage::new(ports.fs, ports.heap),
         };
         StmLink {
             clock: ports.clock,

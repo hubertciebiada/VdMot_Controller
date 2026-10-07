@@ -558,7 +558,7 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
             }
             e.clone()
         };
-        let mut img = FileImage::new(&self.fs);
+        let mut img = FileImage::new(&self.fs, &self.gate);
         let mut info = ImageInfo::default();
         let check = if img.open(&entry.name) {
             validate_image(&mut img, 0, true, &mut info)
@@ -582,22 +582,28 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
     }
 }
 
-/// A LittleFS image for the flasher and the validator (core [`FlashImage`]).
-pub struct FileImage<F: Fs> {
+/// A LittleFS image for the flasher and the validator (core [`FlashImage`]). The first bytes
+/// the flasher holds for the sector-0 pass of D9 (`hold_low`, 16 KiB) live in a heap block of
+/// the run, freed by `close`.
+pub struct FileImage<F: Fs, G: HeapGate> {
     fs: F,
+    gate: G,
     file: Option<F::File>,
     size: u32,
     pos: u32,
+    low: Option<Vec<u8>>,
 }
 
-impl<F: Fs> FileImage<F> {
-    /// A closed image over `fs`.
-    pub fn new(fs: F) -> Self {
+impl<F: Fs, G: HeapGate> FileImage<F, G> {
+    /// A closed image over `fs`; `gate` grants the block of `hold_low`.
+    pub fn new(fs: F, gate: G) -> Self {
         FileImage {
             fs,
+            gate,
             file: None,
             size: 0,
             pos: 0,
+            low: None,
         }
     }
 
@@ -617,15 +623,16 @@ impl<F: Fs> FileImage<F> {
         true
     }
 
-    /// Closes the file; the size reads 0.
+    /// Closes the file; the size reads 0, the held bytes are freed.
     pub fn close(&mut self) {
         self.file = None;
         self.size = 0;
         self.pos = 0;
+        self.low = None;
     }
 }
 
-impl<F: Fs> FlashImage for FileImage<F> {
+impl<F: Fs, G: HeapGate> FlashImage for FileImage<F, G> {
     fn size(&self) -> u32 {
         self.size
     }
@@ -651,5 +658,23 @@ impl<F: Fs> FlashImage for FileImage<F> {
         }
         self.pos += len as u32;
         true
+    }
+
+    /// The bytes [0, len) into a heap block of the run (no memory or a read error: false, nothing
+    /// held).
+    fn hold_low(&mut self, len: u32) -> bool {
+        self.low = None;
+        let Some(mut block) = try_bytes(&self.gate, len as usize) else {
+            return false;
+        };
+        if !self.read(0, &mut block) {
+            return false;
+        }
+        self.low = Some(block);
+        true
+    }
+
+    fn low(&self) -> &[u8] {
+        self.low.as_deref().unwrap_or_default()
     }
 }

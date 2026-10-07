@@ -202,6 +202,7 @@ impl Rig {
         let ports = StmLinkPorts {
             clock: &self.dev.clock,
             fs: &self.dev.fs,
+            heap: &self.dev.heap,
             uart: self.dev.uart.clone(),
             nrst: self.dev.gpio.output(15),
             boot0: self.dev.gpio.output(14),

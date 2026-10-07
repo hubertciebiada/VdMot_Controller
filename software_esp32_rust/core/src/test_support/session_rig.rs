@@ -29,6 +29,8 @@ use crate::valve_model::TargetSource;
 #[derive(Default)]
 pub struct MemImage {
     pub data: Vec<u8>,
+    /// D9: the bytes `hold_low` copied
+    pub held: Vec<u8>,
 }
 
 impl FlashImage for MemImage {
@@ -45,6 +47,20 @@ impl FlashImage for MemImage {
             }
             None => false,
         }
+    }
+
+    fn hold_low(&mut self, len: u32) -> bool {
+        match self.data.get(..len as usize) {
+            Some(src) => {
+                self.held = src.to_vec();
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn low(&self) -> &[u8] {
+        &self.held
     }
 }
 

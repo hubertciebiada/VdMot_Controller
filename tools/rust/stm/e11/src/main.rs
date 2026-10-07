@@ -64,7 +64,8 @@ impl FlashTransport for Port {
     }
 }
 
-struct Image(Vec<u8>);
+/// The image bytes and the copy of its sector 0 the flasher keeps (D9).
+struct Image(Vec<u8>, Vec<u8>);
 
 impl FlashImage for Image {
     fn size(&self) -> u32 {
@@ -80,6 +81,21 @@ impl FlashImage for Image {
             }
             None => false,
         }
+    }
+
+    fn hold_low(&mut self, len: u32) -> bool {
+        self.1.clear();
+        match self.0.get(..len as usize) {
+            Some(src) => {
+                self.1.extend_from_slice(src);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn low(&self) -> &[u8] {
+        &self.1
     }
 }
 
@@ -100,7 +116,7 @@ fn load(spec: &str) -> Result<Job, String> {
         None => (spec, None),
     };
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut image = Image(bytes);
+    let mut image = Image(bytes, Vec::new());
     let mut info = ImageInfo::default();
     let e = validate_image(&mut image, 0, true, &mut info);
     if e != FlashError::None {
