@@ -65,6 +65,26 @@ fn a_calibration_stroke_whose_count_runs_out_fails_with_a_stroke_timeout() {
 }
 
 #[test]
+fn strokes_shorter_than_four_sample_periods_learn_no_mean_current() {
+    for rev in REVS {
+        let mut b = start_valves(rev);
+        b.m.no_of_min_counts = 100;
+        // 1200 pulses at 1 pulse/ms: about 123 turning cycles per stroke, so the samples of the
+        // 51st and 102nd cycle only (MIN_MEAN_SAMPLES is 4)
+        b.rig.valve[0].stroke = 1200;
+        b.rig.valve[0].position = 0;
+        b.rig.valve[0].pulses_per_ms = 1.0;
+        b.m.mots[0].target_position = 0;
+        assert_eq!(b.m.mots[0].meancurrent, 20);
+        b.learn(0);
+        assert_eq!(b.m.mots[0].calib_seq, 1);
+        assert_eq!(b.m.mots[0].opening_count, 1200);
+        // the previous mean current stays
+        assert_eq!(b.m.mots[0].meancurrent, 20);
+    }
+}
+
+#[test]
 fn motor_parameters_go_to_ram_and_to_the_eeprom_mirror() {
     let mut b = Bench::new(BoardRev::C2);
     let p = MotorParams {
