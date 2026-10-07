@@ -458,10 +458,10 @@ buffer of D§12 stays shared. A handler waits only on its own socket (`httpd_req
 | C++ 2.1.7 | Rust |
 |---|---|
 | 2 × 12 KB response slots, a slot released in `onDisconnect` after the response left | 1 × 12 KB response buffer: `httpd_send` returns when lwIP has copied the bytes, so the buffer is free for the next request |
-| Scratch (views, event/image/file lists, status and health snapshots, health text, a profile) | the same, as one boxed `enum Scratch` sized by its largest variant (no unsafe reinterpretation) |
+| Scratch (views, event/image/file lists, status and health snapshots, health text, a profile) | the same, as one boxed `enum Scratch` sized by its largest variant (no unsafe reinterpretation). *Implementation:* the lists are a heap block of the request, the snapshots and the profile values on the handler's stack (PORT-NOTES.md, web_server "Design deviation (4.3)") |
 | `StaticJsonDocument<512>` | the 32-slot pool of `json_body` in the working set |
 | Guard detail 160 B, snapshot and config copies | same |
-| `/api/health`: 1 KB text copied into an AsyncWebServer `String` | text built in the scratch and sent from there |
+| `/api/health`: 1 KB text copied into an AsyncWebServer `String` | text built in the scratch and sent from there. *Implementation:* built in the response buffer and sent from there |
 | JSON body: heap buffer of its Content-Length, one body at a time (409 `busy` for a second) | same buffer; with serial handling a second body never meets the first |
 | `POST /api/config`: slot reserved first (503 `busy`, nothing applied), patched heap copy | the response buffer is always free; the patch goes into the web config copy, which is reloaded from the active config when the patch, the validation or the save fails |
 | `beginResponse_P` (Content-Length, the slot's bytes) | the head of AsyncWebServer's `_assembleHead` (`http_parse::response_head`: "HTTP/1.1 NNN Text" from its reason table, Content-Length, Content-Type, the headers, `Accept-Ranges: none`) and the body, sent with `httpd_send` (§1.2) |
@@ -499,13 +499,17 @@ received chunk so the idle task of core 0 runs during long flash writes (TWDT id
   same gzip bytes (level 9, mtime 0) and ETags (CRC32 of the gzip bytes) as the C++ header, as
   `&'static [u8]` tables; the firmware passes the table to `Web`, tests pass their own. A GET with a
   matching `If-None-Match` gets `304` (Content-Length 0); otherwise `200` with `Content-Encoding:
-  gzip`, `ETag`, `Cache-Control: no-cache`, sent from flash without a copy.
+  gzip`, `ETag`, `Cache-Control: no-cache`, sent from flash without a copy. *Implementation:* no
+  `--rust` mode; `glue/build.rs` (feature `dashboard`) imports `gen_web_assets.py` and calls its
+  functions (`collect`, `gzip_bytes`, the content types, the budget).
 - 410 table and legacy aliases: core `legacy_http`, answered before the guard and the body.
 - `GET /api/log`: one download at a time (409 `busy`), `logger.request_flush()`, then
   `begin_chunked` and `chunk` (Transfer-Encoding chunked as in C++, the chunk framing of
   `http_parse` sent with `httpd_send`) reading
   `events.1.log` then `events.log` through the response buffer. An open log file blocks the rotation
-  (`rename` fails with EBUSY), as D§9 describes for C++.
+  (`rename` fails with EBUSY), as D§9 describes for C++. *Implementation:* the server serves one
+  request at a time, so a second download waits in the backlog and the 409 is never sent (§4.7
+  row 4).
 
 ### 4.7 Behaviour that changes
 
@@ -680,7 +684,7 @@ State of the running image (each image runs the same machine when it boots):
 | Record | Where | Content |
 |---|---|---|
 | `otaOk` | NVS `vdmrev`, blob 16 B | "VDOK", the `AppId` of the confirmed image, CRC32; removed when that image is left by an upload or by a manual switch, so it runs a trial when it comes back (also after the C++ firmware ran in between) |
-| `otaTrial` | NVS `vdmrev`, blob 32 B | "VDOT", version 1, state (`Trial`, `SwitchedBack`), boots, flags (bit0 stm required), `AppId` of the image on trial, `AppId` of the last image the guard switched away from, fallback slot address, CRC32 |
+| `otaTrial` | NVS `vdmrev`, blob 32 B | "VDOT", version 1, state (`Trial`, `SwitchedBack`), boots, flags (bit0 stm required, bit1 an image switched away from is recorded), `AppId` of the image on trial, `AppId` of the last image the guard switched away from, fallback slot address, CRC32 |
 | Guard mirror | RTC block, first record, 28 B | "VBGD", `AppId` on trial, boots, breadcrumb of the last switch (`AppId` switched away from, reason 1 boot limit / 2 health), CRC32 |
 | Other RTC records | RTC block after the mirror | net watchdog count ("VNWD"), desired targets (46 B), ESP lease emulation, HA status: the C++ formats, each with its own check |
 

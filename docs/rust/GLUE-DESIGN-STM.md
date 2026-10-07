@@ -352,7 +352,9 @@ Proposal: keep the existing terminal, minimal and 1:1 (D7).
 - The `commDebug` / `appDebug` lines (on in every C++ release env) are kept 1:1 through a
   `DebugOut` writer on USART6. The glue suites assert some of them.
 - Everything sits behind the cargo feature `terminal` (default on), so it can go later
-  without touching the ESP contract. Estimated cost 3-5 KiB of flash.
+  without touching the ESP contract. Estimated cost 3-5 KiB of flash. *Implementation:* the
+  feature gates the terminal (its commands, the banner, the fault line); the debug lines go to
+  USART6 in every build.
 
 ## 5. Boot and flashing safety
 
@@ -675,7 +677,7 @@ it before it erases anything (F9).
 | `f401` / `f411` | `embassy-stm32/stm32f401cc` / `stm32f411ce`, `memory/f401.x` / `f411.x`, PLL 84 / 96 MHz |
 | `c1` / `c2` | `BoardRev::C1` / `C2` (MUX on = high / low, even valve on MUX on), marker `VDM-HW:C1` / `C2` |
 | `dev` | version suffix `-dev`, build field = build time (the C++ dev envs: `__TIME_UNIX__`) |
-| `terminal` (default) | debug terminal and debug lines (§4.2) |
+| `terminal` (default) | debug terminal (§4.2; the debug lines are in every build) |
 
 `compile_error!` unless exactly one chip and one board are set. Release build:
 `cargo build --release --features f401,c2` in `firmware/`, then `llvm-objcopy -O binary`

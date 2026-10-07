@@ -71,3 +71,17 @@ The same rule for `software_stm32/src/motor.cpp` and its port `software_stm32_ru
 | what | why it matters |
 |---|---|
 | The button line of `loop_system()` prints "Button pressed" on every other 100 ms tick while the button is held (`buttontest` is set by one tick and cleared by the next), not once per press; test_main.cpp asserts this. The Rust does the same. | Debug output on USART6 only. |
+
+## C++ tests without a Rust form
+
+Cases and assertions of the glue suites (`software_stm32/test/native/glue`) that the Rust glue
+cannot express; the pairing of every case is in [PARITY-TESTS.md](PARITY-TESTS.md). The rest of
+each case is ported.
+
+| C++ | Rust | why |
+|---|---|---|
+| `test_fakes.cpp` "UART: readBytes() of missing bytes waits its timeout in fake time", "UART: end() drops the received bytes and stops the reception" | `test_support/tests.rs::uart_read_bytes_and_end_have_no_rust_form` checks what the trait has | The glue's `Serial` trait has neither `readBytes` nor `end`. |
+| `test_fakes.cpp` "PRIMASK: __get/__set restore the previous state and count the disables"; the `irqDisables` and PRIMASK checks of `test_motor.cpp` (appsetaction) | comments in `test_support/fake_board/tests.rs` and `motor/tests.rs` | The glue never touches the interrupt mask: the firmware's `IsrCell::lock` hands out `&mut MotorShared` (GLUE-DESIGN-STM.md 2.3). |
+| `test_fakes.cpp` "runner hooks: warm RAM is 0xA5 after power-on and survives pin, software and watchdog resets", "runner hooks: noinitSnapshot() copies the whole .noinit section", "glue::run turns a system reset into a software reboot and a watchdog reset into a watchdog reboot" | `system/bench.rs` (a reboot is a new controller over the EEPROM bytes, the `NOINIT` image and the CSR flags; `FakeNoinit` starts at 0xA5); the 27 goldens compare the `NOINIT` bytes of every boot | No fork-per-case runner (GLUE-DESIGN-STM.md 7.2). |
+| The set-up assertions of the firmware's part: USART1 on PA10/PA9 at 115200 8N1 (`communication_setup`), USART6 on PA12/PA11 (`Terminal_Init`), USART1 8E1 of the boot window (`BootSetup`), the `Wire` pins PB6/PB7, `IWatchdog.begin(8000000)` before `Wire.begin()`, the `ITimer0`/`ITimer1` callbacks, the pin modes of `valve_setup` and `setup_system` | the rest of each case is ported; the firmware sets these up (`firmware/src/app.rs`, `board.rs`, `isr.rs`), Renode checks the USART1 framing (`boot.robot` E1, E5, E6) and the terminal output (`app.robot`) | The firmware crate holds the register set-up without decisions (GLUE-DESIGN-STM.md 1.1). |
+| `glue_motor_c1`, the C1 build of `test_motor.cpp` | `BoardRev` values in one binary: the motor cases run for both revisions, `board/tests.rs` | One test binary for both boards (GLUE-DESIGN-STM.md 7.1). |
