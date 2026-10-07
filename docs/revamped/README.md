@@ -6,6 +6,8 @@
 > the upstream project. Every artifact carries the suffix `-revamped`, so it
 > cannot be confused with the official firmware.
 
+The Rust port of this firmware (2.2.0-revamped) is described in [docs/rust/README.md](../rust/README.md).
+
 Version: **2.1.0-revamped** (ESP32 and STM32).
 Base: branch `hc-version` = upstream `developer` 1.4.12 plus the owner's fixes,
 a pinned toolchain and CI.
