@@ -208,3 +208,14 @@ fn health_found_tasks_and_the_smallest_largest_block() {
     a.set_min_largest(110_000);
     assert_eq!(a.min_largest(), 110_000);
 }
+
+#[test]
+fn boot_the_app_thread_running_is_kept_once_marked() {
+    // Rust addition: the boot deadline reads it (GLUE-DESIGN-ESP.md 6.3)
+    let a = AppShared::new();
+    assert!(!a.app_running());
+    a.mark_app_running();
+    assert!(a.app_running());
+    a.mark_app_running();
+    assert!(a.app_running());
+}
