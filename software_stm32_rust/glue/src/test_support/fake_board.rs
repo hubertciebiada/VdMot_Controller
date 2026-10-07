@@ -60,6 +60,11 @@ pub struct Event {
 #[derive(Debug)]
 pub struct Stop;
 
+/// Panic payload of the firmware's fault handler (no C++ counterpart): a misuse of the state the
+/// interrupts share (`irq::CellGuard`).
+#[derive(Debug)]
+pub struct Fault;
+
 /// An SDA level for the reads during a recovery, from the events so far; None: the line level
 /// (pulled up unless driven low).
 pub type SdaInput = Box<dyn Fn(&[Ev]) -> Option<bool>>;
@@ -535,15 +540,17 @@ impl System for FakeSystem {
     }
 }
 
-/// The panics that end a boot ([`SystemReset`], [`WatchdogReset`], [`Stop`]) print nothing; every
-/// other panic keeps the default message. Installed once for the whole test binary.
+/// The panics that end a boot ([`SystemReset`], [`WatchdogReset`], [`Stop`]) or stand for the
+/// fault handler ([`Fault`]) print nothing; every other panic keeps the default message.
+/// Installed once for the whole test binary.
 pub fn quiet_expected_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let default = std::panic::take_hook();
         std::panic::set_hook(std::boxed::Box::new(move |info| {
             let p = info.payload();
-            if p.is::<SystemReset>() || p.is::<WatchdogReset>() || p.is::<Stop>() {
+            if p.is::<SystemReset>() || p.is::<WatchdogReset>() || p.is::<Stop>() || p.is::<Fault>()
+            {
                 return;
             }
             default(info);

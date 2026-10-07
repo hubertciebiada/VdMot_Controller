@@ -40,8 +40,9 @@ use crate::hal::{
     Clock, ControlTimer, In, NoinitStore, Out, Pins, RevIrq, System, Watchdog, NOINIT_SIZE,
 };
 use crate::i2c_bus::{self, Wire};
+use crate::irq::Masks;
 use crate::motor::{timer_handler0, valve_loop, valve_pins_safe, IsrFlags, MotorShared, Pulse};
-use crate::serial::{Port, PortSerial, Tx, UsartTx, SR_TC, SR_TXE};
+use crate::serial::{Port, PortSerial, UsartRegs, SR_TC, SR_TXE};
 use crate::sysstat::Sysstat;
 use crate::test_support::eeprom_fake::{FakeEeprom, EEPROM_SIZE};
 use crate::test_support::fake_board::{
@@ -192,28 +193,40 @@ pub struct BenchUsart {
     under_lock: Option<(&'static Cell<bool>, &'static RefCell<Vec<u8>>)>,
 }
 
-impl UsartTx for BenchUsart {
-    fn start(&self) {
-        while let Tx::Send(b) = self.port.on_irq(SR_TXE, 0) {
-            self.out.borrow_mut().push(b);
-            if let Some((locked, log)) = self.under_lock {
-                if locked.get() {
-                    log.borrow_mut().push(b);
-                }
-            }
-        }
-    }
-
-    fn masked(&self) -> bool {
-        false
-    }
-
+impl UsartRegs for BenchUsart {
     fn sr(&self) -> u32 {
         SR_TXE + SR_TC
     }
 
-    fn send(&self, byte: u8) {
+    fn read_dr(&self) -> u8 {
+        0
+    }
+
+    fn write_dr(&self, byte: u8) {
         self.out.borrow_mut().push(byte);
+        if let Some((locked, log)) = self.under_lock {
+            if locked.get() {
+                log.borrow_mut().push(byte);
+            }
+        }
+    }
+
+    /// TXEIE on: the interrupt runs at once, until the ring is empty
+    fn set_txeie(&self, on: bool) {
+        while on && self.port.tx_pending() != 0 {
+            self.port.irq(self);
+        }
+    }
+}
+
+/// Every writer of the system suites runs with the interrupts on.
+impl Masks for BenchUsart {
+    fn primask(&self) -> bool {
+        false
+    }
+
+    fn basepri(&self) -> u8 {
+        0
     }
 }
 

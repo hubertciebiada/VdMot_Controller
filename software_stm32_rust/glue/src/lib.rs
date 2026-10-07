@@ -17,6 +17,7 @@ pub mod hal;
 pub mod hw_timer;
 pub mod i2c_bus;
 pub mod i2c_master;
+pub mod irq;
 pub mod main_loop;
 pub mod motor;
 pub mod onewire;

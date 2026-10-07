@@ -18,20 +18,22 @@ use stm32_metapac as pac;
 use stm32_metapac::gpio::regs::Bsrr;
 use stm32_metapac::timer::vals::Urs;
 use vdm_stm_glue::eeprom24::I2cEeprom;
-use vdm_stm_glue::i2c_master::I2cV1;
 use vdm_stm_glue::hal::{
     Clock, ControlTimer, CurrentAdc, In, NoinitStore, Out, Pins, RevIrq, System, Watchdog,
     NOINIT_SIZE,
 };
 use vdm_stm_glue::hw_timer;
+use vdm_stm_glue::i2c_master::I2cV1;
+use vdm_stm_glue::irq::Masks;
 use vdm_stm_glue::motor::MotorShared;
+use vdm_stm_glue::onewire::PinLine;
 use vdm_stm_glue::ow_devices::LineBus;
-use vdm_stm_glue::serial::{PortSerial, UsartTx};
+use vdm_stm_glue::serial::{PortSerial, UsartRegs};
 use vdm_stm_glue::system::Platform;
 
 use crate::boot_hw::iwdg_key;
 use crate::i2c::FwI2c;
-use crate::isr::{self, IsrCell, TimerIrq, PRIO_USART};
+use crate::isr::{self, IsrCell, TimerIrq};
 use crate::noinit;
 use crate::one_wire::FwOneWire;
 
@@ -196,30 +198,39 @@ impl ControlTimer for FwTimer {
     }
 }
 
-/// USART1 or USART6 behind a glue serial port.
+/// USART1 or USART6 behind a glue serial port: its registers, and the core's masks of the
+/// context that writes.
 #[derive(Clone, Copy)]
 pub struct FwUsart(pub pac::usart::Usart);
 
-impl UsartTx for FwUsart {
-    fn start(&self) {
-        self.0.cr1().modify(|w| w.set_txeie(true));
-    }
-
-    /// PRIMASK set (cortex-m: the exceptions are "inactive"), or BASEPRI masks the USART
-    /// priority: its interrupt cannot run
-    fn masked(&self) -> bool {
-        let level = basepri::read();
-        primask::read().is_inactive() || (level != 0 && level <= PRIO_USART as u8)
-    }
-
+impl UsartRegs for FwUsart {
     fn sr(&self) -> u32 {
         self.0.sr().read().0
     }
 
-    fn send(&self, byte: u8) {
+    fn read_dr(&self) -> u8 {
+        self.0.dr().read().0 as u8
+    }
+
+    fn write_dr(&self, byte: u8) {
         self.0
             .dr()
             .write_value(pac::usart::regs::Dr(u32::from(byte)));
+    }
+
+    fn set_txeie(&self, on: bool) {
+        self.0.cr1().modify(|w| w.set_txeie(on));
+    }
+}
+
+impl Masks for FwUsart {
+    /// PRIMASK = 1 (cortex-m: the configurable exceptions are "inactive")
+    fn primask(&self) -> bool {
+        primask::read().is_inactive()
+    }
+
+    fn basepri(&self) -> u8 {
+        basepri::read()
     }
 }
 
@@ -253,6 +264,6 @@ impl Platform for Fw {
     type Timer = FwTimer;
     type Eeprom = I2cEeprom<I2cV1<FwI2c, FwBoard>, FwBoard>;
     type I2c = FwI2c;
-    type OneWire = LineBus<FwOneWire, FwBoard>;
+    type OneWire = LineBus<PinLine<FwOneWire>, FwBoard>;
     type Motor = IsrCell<MotorShared>;
 }

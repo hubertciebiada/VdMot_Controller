@@ -20,6 +20,7 @@ use vdm_stm_glue::eeprom24::{I2cEeprom, DEVICEADDRESS};
 use vdm_stm_glue::hal::{Out, Pins};
 use vdm_stm_glue::i2c_master::I2cV1;
 use vdm_stm_glue::motor::MotorShared;
+use vdm_stm_glue::onewire::PinLine;
 use vdm_stm_glue::ow_devices::LineBus;
 use vdm_stm_glue::serial::PortSerial;
 use vdm_stm_glue::sysstat::Sysstat;
@@ -46,10 +47,13 @@ pub fn run(token: BootToken) -> ! {
     fault::stack_guard();
     let p = embassy_stm32::init(clocks::config(hse));
     board::set_boot_ms(token.boot_ms());
-    // the cycle counter of the 1-Wire slots
-    if let Some(mut core) = cortex_m::Peripherals::take() {
-        core.DCB.enable_trace();
-        core.DWT.enable_cycle_counter();
+    // the cycle counter of the 1-Wire slots (the core peripherals are taken only here)
+    match cortex_m::Peripherals::take() {
+        Some(mut core) => {
+            core.DCB.enable_trace();
+            core.DWT.enable_cycle_counter();
+        }
+        None => fault::on_panic(),
     }
 
     // pin modes (include/hardware.h); the levels are the glue's, through BSRR. The boot stage
@@ -65,12 +69,11 @@ pub fn run(token: BootToken) -> ! {
     // valve PSU: latch high before open drain (valve_pins_safe)
     keep(OutputOpenDrain::new(p.PB9, Level::High, Speed::Low));
     // the LED keeps the level the boot window left (pinMode does not touch the latch)
-    let led = if FwBoard.latch(Out::Led) {
-        Level::High
-    } else {
-        Level::Low
-    };
-    keep(Output::new(p.PC13, led, Speed::Low));
+    keep(Output::new(
+        p.PC13,
+        Level::from(FwBoard.latch(Out::Led)),
+        Speed::Low,
+    ));
     keep(Input::new(p.PB2, Pull::Up));
     // REVIN: EXTI4 on the rising edge, detached until a motor start attaches it
     keep(ExtiInput::new_blocking(
@@ -124,7 +127,7 @@ pub fn run(token: BootToken) -> ! {
         tim2: FwTimer::Tim2(Timer::new(p.TIM2)),
         eeprom: I2cEeprom::new(I2cV1::new(FwI2c, FwBoard), FwBoard, DEVICEADDRESS),
         i2c: FwI2c,
-        one_wire: LineBus::new(FwOneWire, FwBoard),
+        one_wire: LineBus::new(PinLine(FwOneWire), FwBoard),
     };
     let reset = token.reset();
     let sysstat = Sysstat::new(

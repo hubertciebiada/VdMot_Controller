@@ -37,7 +37,12 @@ Rules:
   the C++ suites. `Controller` implements them by delegation; tests implement them with stubs
   that log calls (port of `test/native/glue/stubs`).
 - Every decision lives in boot or glue (mutation-gated). The firmware maps traits to registers
-  and has no branching beyond that.
+  and has no branching beyond that: an `if` or a `match` there selects a register, a bit or a
+  constant from its own argument (a pin, a level, a timer, a line mode). A branch on a value
+  read from the hardware or on state, a poll, a retry, a bounded wait and a misuse check are
+  glue (application stage) or boot crate (boot stage: it stays in sector 0, D9), each behind a
+  trait whose calls are single register accesses (`I2cRegs`, `UsartRegs`, `OneWirePin`,
+  `CellCore`). The exceptions are listed below the table of `firmware/` in §1.2.
 - `unsafe` only in `firmware/src/{main.rs, boot_hw.rs, isr.rs, noinit.rs, fault.rs}`, each
   block with a `SAFETY:` comment.
 
@@ -54,7 +59,7 @@ Rules:
 | `i2c_bus.cpp` (52) | `i2c_bus.rs` | glue | bus recovery over a pin trait |
 | STM32 core `Wire` (twi.c) | `i2c_master.rs` | glue | the I2C v1 register sequence over `I2cRegs` (§1.3) |
 | `owDevices.cpp` / `.h` (372 / 72) | `ow_devices.rs` | glue | |
-| OneWire 2.3.7, patched (library) | `onewire.rs` | glue | search, CRC-8, select, byte I/O; bit timing in fw |
+| OneWire 2.3.7, patched (library) | `onewire.rs`, `onewire/slots.rs` | glue | search, CRC-8, select, byte I/O; the bit slots and `delayMicroseconds` over `OneWirePin` (§1.3) |
 | DallasTemperature 3.9.0 (library) | `dallas.rs` | glue | `begin`, `requestTemperatures`, `getTemp`, `millisToWaitForConversion`, `getResolution`, `validAddress`, `validFamily`, `getDeviceCount` |
 | `DS2438.cpp` (467) | `ds2438.rs` | glue | `setAddress`, `readVAD` |
 | `terminal.cpp` / `.h` (517 / 58) | `terminal.rs` | glue | §4.2 |
@@ -62,7 +67,8 @@ Rules:
 | `otasupport.cpp` (97) | `window.rs`; `boot_hw.rs` | boot; fw | logic; registers |
 | `boot_jump.cpp` (118) | `boot_hw.rs` | fw | |
 | `hardware.h`, `compile_time.h` | `board.rs`; `build.rs` | glue; fw | pin map, `BoardRev` (C1/C2 MUX level); ID block, version |
-| Arduino `Print`, `HardwareSerial` | `print.rs`, `serial.rs` | glue | number formatting; rings and HAL UART error codes |
+| Arduino `Print`, `HardwareSerial` | `print.rs`, `serial.rs` | glue | number formatting; rings, HAL UART error codes, the USART interrupt over `UsartRegs` |
+| STM32 core interrupt priorities (`UART_IRQ_PRIO`, `EXTI_IRQ_PRIO`, `TIM_IRQ_PRIO`), `__disable_irq` sections | `irq.rs` | glue | priorities, which context blocks an interrupt, the access protocol of the shared motor state (§2.3) |
 | STM32_TimerInterrupt 1.3.0 / `HardwareTimer` | `hw_timer.rs` | glue | PSC/ARR formula (§2.4) |
 | `rs485.cpp` (96) | — | — | not built today, not ported |
 | ArduinoMenu 4.21.5, ArduinoJson 6.21.6 | — | — | dropped: no source includes them; the 2.1.7 link loads the ArduinoMenu archive but takes no member (*measured*, map file) |
@@ -73,13 +79,23 @@ What stays in `firmware/` (embassy and PAC, no decisions):
 |---|---|
 | `main.rs` | `#[entry]`: `boot::run()`, then `app::run(token)`; nothing else |
 | `boot_hw.rs` | `BootIo` on registers: RCC, GPIOA/C, USART1 polled, SysTick, ID block reads, the jump |
-| `app.rs` | the application stage: IWDG start, HSE probe (`vdm_stm_boot::stage::probe_app_hse`), MPU guard, `embassy_stm32::init`, pin modes, the shared state, the serial ports, then `Controller::run` of the glue |
+| `app.rs` | the application stage: IWDG set-up again (§5.4), HSE probe (`vdm_stm_boot::stage::probe_app_hse`), MPU guard, `embassy_stm32::init`, pin modes, the shared state, the serial ports, then `Controller::run` of the glue |
 | `clocks.rs` | `embassy_stm32::Config` from the probe result (§5.3) |
 | `board.rs` | the HAL trait implementations of §1.3 and the glue's `Platform` (`Fw`) |
-| `i2c.rs`, `one_wire.rs` | the I2C1 registers under the glue's master, the 1-Wire line (§1.3) |
-| `isr.rs` | `TIM1_UP_TIM10`, `TIM2`, `EXTI4`, `USART1`, `USART6` handlers, `IsrCell` (§2.3) |
+| `i2c.rs`, `one_wire.rs` | the I2C1 registers under the glue's master; the 1-Wire pin and the DWT cycle counter under the glue's slots (§1.3) |
+| `isr.rs` | `TIM1_UP_TIM10`, `TIM2`, `EXTI4`, `USART1`, `USART6` handlers (the flag, then the glue); `IsrCell`: the value, stored and reached only inside the closures of the glue's `CellGuard` (§2.3) |
 | `noinit.rs`, `fault.rs` | `NOINIT` access (§3.2); fault handlers, panic handler, MPU guard (§5.5) |
 | `memory/*.x`, `build.rs` | linker scripts per chip (§5.6), ID block and version (§6.2) |
+
+Branches and loops that stay in `firmware/`:
+
+| where | what | why it stays |
+|---|---|---|
+| `app.rs` | the second arm of the driver set-up results (`Uart::new_blocking`, `cortex_m::Peripherals::take`) | an embassy or cortex-m call with a fixed configuration, run once; its other arm is the fault handler (B5), and the glue does not link those drivers |
+| `isr.rs` `rev_irq`, `board.rs`, `i2c.rs`, `clocks.rs`, `boot_hw.rs` `set_led`, `outputs` | `if`/`match` on the function's argument | mapping (§1.1): a pin, port, level, timer or clock source to its register, bit or constant |
+| `fault.rs` `halt` | the endless loop at the end of a fault | the state the IWDG ends; nothing to decide |
+| `noinit.rs` `read`/`write`, `boot_hw.rs` `flash_bytes` | word and byte copies of a fixed region | access, no decision |
+| `boot_hw.rs` (with `watchdog_start`, which `app.rs` calls again) | the bounded polls of the boot stage and of the IWDG start (SWS, TXE, TC, HSIRDY, IWDG_SR), the RXNE check of the polled USART1, the pin-field loop, the jump sequence | still in the firmware; they belong to `vdm-stm-boot` (sector 0, D9) |
 
 ### 1.3 HAL traits and their implementation
 
@@ -119,9 +135,9 @@ pub trait System { fn reset(&self) -> !; fn dev_id(&self) -> u16; }
 | `CurrentAdc` | two `analogRead` in `TimerHandler0`: PA0 then PA1, 12 bit, 15 cycles, PCLK2/4 | `adc::Adc::new(p.ADC1)`, `blocking_read(&mut pa0, SampleTime::CYCLES15)` then PA1; the prescaler from PCLK2 is /4 (21 MHz F401, 24 MHz F411) like STM32duino; owned by the TIM1 context |
 | `RevIrq` | `attachInterrupt(REVINPIN, isr_count, RISING)`, `detachInterrupt` | `exti::ExtiInput::<Blocking>::new_blocking(p.PA4, p.EXTI4, Pull::None, TriggerEdge::Rising)` (feature `exti`; no `bind_interrupts!`, own handler); attach = `enable_interrupt()` + NVIC EXTI4 enable; detach = `disable_interrupt()` + NVIC disable; neither clears a pending edge (STM32duino does not either); IMR changes in a critical section. *Implementation:* `ExtiInput` only configures PA4 and the rising edge once; attach and detach (`isr::rev_irq`) set EXTI IMR line 4 through the PAC in a critical section and switch the NVIC line, because the board handle is a `Copy` value used from the handlers and cannot own the `ExtiInput` |
 | control timers (fw) | `STM32Timer` on TIM1 (1 ms) and TIM2 (10 ms) | `timer::low_level::Timer::new(p.TIM1 / p.TIM2)`; PSC and ARR from `hw_timer::overflow()` through `regs_core()`; `enable_update_interrupt(true)`, `start()`; the ISR calls `clear_update_interrupt()`. `set_frequency` / `set_period_us` are not used: their `calculate_psc_arr` counts the 32-bit TIM2 without prescaler (10.000 ms) where the C++ runs 9.99994 ms |
-| `Serial` | `HardwareSerial` Serial1 (USART1 PA9/PA10) and Serial6 (USART6 PA11/PA12), rings 1024/1024 | `usart::Uart::new_blocking(peri, rx, tx, Config { baudrate: 115_200, .. })` sets pins, clock, BRR and frame; RXNE/TXE/error interrupts by own `#[interrupt] fn USART1/USART6` on `pac::USARTx` with the `serial.rs` logic. `BufferedUart` is not used: it has no error counters and another overflow rule. *Implementation:* glue `serial::Port` (the two rings and the counters, lock-free between one interrupt and thread mode) and `PortSerial` over the firmware's `UsartTx` (`FwUsart`: TXEIE on, SR, DR). A write that finds the USART interrupt masked (PRIMASK, or BASEPRI at P1 or above) sends from the ring itself by polling TXE, so output from a critical section cannot wait for an interrupt that cannot come |
+| `Serial` | `HardwareSerial` Serial1 (USART1 PA9/PA10) and Serial6 (USART6 PA11/PA12), rings 1024/1024 | `usart::Uart::new_blocking(peri, rx, tx, Config { baudrate: 115_200, .. })` sets pins, clock, BRR and frame; RXNE/TXE/error interrupts by own `#[interrupt] fn USART1/USART6` on `pac::USARTx` with the `serial.rs` logic. `BufferedUart` is not used: it has no error counters and another overflow rule. *Implementation:* glue `serial::Port` (the two rings and the counters, lock-free between one interrupt and thread mode) and `PortSerial` over the traits `UsartRegs` (SR, DR, CR1.TXEIE) and `irq::Masks` (PRIMASK, BASEPRI), which the firmware's `FwUsart` maps to `pac::USARTx` and the core registers. The handlers call `Port::irq`: SR; DR only when SR holds RXNE or an error flag (the pair clears them; a DR read without them could take a byte that arrives meanwhile); then the next byte into DR, or TXEIE off with the ring empty. A write that finds the USART interrupt blocked (`irq::blocked`: PRIMASK, or BASEPRI at P1 or above) sends from the ring itself by polling TXE, so output from a critical section cannot wait for an interrupt that cannot come |
 | `I2cMaster` | `Wire`: I2C1 PB6/PB7, 100 kHz, 100 ms per phase (`I2C_TIMEOUT_TICK`) | `i2c::I2c::new_blocking(p.I2C1, p.PB6, p.PB7, Config { frequency: 100 kHz, timeout: 100 ms, .. })`; `blocking_write` and `blocking_read` as separate transactions with a STOP between (as `endTransmission` + `requestFrom`); `Error::Nack` -> 2, `Timeout` -> 5, others -> 4; `restart()` drops the driver, runs `i2c_bus::recover` on `gpio::Flex` pins and creates the driver again. *Implementation:* an own blocking master, not the embassy v1 driver: its `blocking_write` of zero bytes (the address probe of the EEPROM's ready polling) waits for BTF, which never comes without a data byte, and a NACK leaves the bus without a STOP. The sequence is glue (`i2c_master.rs`, `I2cV1` over the trait `I2cRegs`, host-tested against a model of the I2C v1 peripheral); the firmware only maps `I2cRegs` to `pac::I2C1` (`firmware/src/i2c.rs`). Each transfer has its own START and STOP; every wait is bounded by 100 ms; NACK -> 2 with STOP, timeout -> 5, ARLO/BERR -> 4, a bus busy for 100 ms -> 4 without START; a read clears ACK and sets STOP before its last byte (one byte: before ADDR is cleared, RM0368 §18.3.3); `restart()` and the set-up recovery run `i2c_bus::recover` with the peripheral off and the lines as GPIO |
-| `OneWireLine` | patched OneWire 2.3.7: open drain on PB10, `noInterrupts()` around each timed window | `gpio::Flex::new(p.PB10)` + `set_as_input_output(Speed::Medium)` (open drain with input); each timed window inside `critical_section::with`; µs waits on the DWT cycle counter like STM32duino `delayMicroseconds`; slot values per risk R5. *Implementation:* `firmware/src/one_wire.rs`, windows in `cortex_m::interrupt::free` (the single-core critical section), the line through BSRR and IDR |
+| `OneWireLine` | patched OneWire 2.3.7: open drain on PB10, `noInterrupts()` around each timed window | `gpio::Flex::new(p.PB10)` + `set_as_input_output(Speed::Medium)` (open drain with input); each timed window inside `critical_section::with`; µs waits on the DWT cycle counter like STM32duino `delayMicroseconds`; slot values per risk R5. *Implementation:* glue `onewire::PinLine`: the slots of `OneWire.cpp` (reset: released line, at most 124 waits of 2 us for it to read high, 480 us low, the sample 70 us after the release, 410 us; write 10/55 and 65/5 us; read 3 us low, the sample 10 us after the release, 53 us; each timed window masked) over the trait `OneWirePin` (drive low, release, level, wait, masked window), host-tested against a line model with devices. `firmware/src/one_wire.rs` maps `OneWirePin` to BSRR and IDR of PB10, `cortex_m::interrupt::free` (the single-core critical section) and the DWT cycle counter (glue `spin_us`) |
 | `Watchdog` | `IWatchdog.begin(8000000)`, `reload()` | `pac::IWDG` key sequence: it starts before `embassy_stm32::init` (§5.4). Same registers as `wdg::IndependentWatchdog::new(p.IWDG, 8_000_000)` + `unleash()` / `pet()` (PR /64, RLR 3999), which needs the peripherals only `init` hands out |
 | `Clock` | `millis`, `micros`, `delay`, `delayMicroseconds` | `embassy_time::Instant::now()` (time driver `time-driver-tim5`, 1 MHz tick) plus the boot-window offset (§5.2); `embassy_time::block_for` |
 | `NoinitStore` | `__attribute__((noinit))` cells | volatile word copies of the `NOINIT` linker region (§3.2) |
@@ -194,7 +210,7 @@ pub fn window(io: &mut impl BootIo, id: &ImageId) -> WindowEnd;        // Update
 | context | Rust | priority | glue entry |
 |---|---|---|---|
 | time base | embassy-time driver on TIM5 (16-bit periods of 2^15 ticks at 1 MHz: IRQ every 32.8 ms) | P0 (embassy default) | `Clock` |
-| USART1, USART6 | `#[interrupt] fn USART1 / USART6` | P1 | `serial::Port::on_irq(sr, dr)` |
+| USART1, USART6 | `#[interrupt] fn USART1 / USART6` | P1 | `serial::Port::irq` |
 | EXTI4 | `#[interrupt] fn EXTI4` | P6 | `motor::Pulse::on_edge` |
 | TIM1 | `#[interrupt] fn TIM1_UP_TIM10` | P14 | `motor::timer_handler0` |
 | TIM2 | `#[interrupt] fn TIM2` | P14 | `motor::valve_loop` |
@@ -221,7 +237,7 @@ the same as `NVIC_PRIORITYGROUP_4`.
 | C++ data | used by | Rust |
 |---|---|---|
 | `isr_counter`, `isr_target`, `isr_turning`, `isr_stop_request` | EXTI <-> TIM1, TIM2 | `motor::Pulse`: `AtomicU32` / `AtomicBool` fields; EXTI preempts, so no lock |
-| `myvalvemots[]`, `myvalves[]`, `command`, `valvenr`, `poschangecmd`, `moveflagscmd`, `svc_*`, `stop_request`, `calib_escalation`, end-stop detector, move state, `valve_records`, `isr_valvenr/go/fin`, `isr_overcurrentevent`, `current_mA`, `analog_current` | TIM1 + TIM2 (same priority) <-> main | `motor::MotorShared` in a firmware `IsrCell<MotorShared>`: `IsrCell::isr` only from the two P14 handlers (debug assertion on the active vector), `IsrCell::lock` from the main loop = `critical_section::with` (PRIMASK), as `__disable_irq`. *Implementation:* `IsrCell::with_isr` in the P14 handlers, the glue's `MotorLock::lock` in thread mode raises BASEPRI to P14 (`basepri_max`), so only TIM1 and TIM2 wait while EXTI4 and the USARTs go on; a nested lock or a use before `init` ends in the fault handler (§5.5) |
+| `myvalvemots[]`, `myvalves[]`, `command`, `valvenr`, `poschangecmd`, `moveflagscmd`, `svc_*`, `stop_request`, `calib_escalation`, end-stop detector, move state, `valve_records`, `isr_valvenr/go/fin`, `isr_overcurrentevent`, `current_mA`, `analog_current` | TIM1 + TIM2 (same priority) <-> main | `motor::MotorShared` in a firmware `IsrCell<MotorShared>`: `IsrCell::isr` only from the two P14 handlers (debug assertion on the active vector), `IsrCell::lock` from the main loop = `critical_section::with` (PRIMASK), as `__disable_irq`. *Implementation:* `IsrCell::with_isr` in the P14 handlers, the glue's `MotorLock::lock` in thread mode raises BASEPRI to P14 (`basepri_max`), so only TIM1 and TIM2 wait while EXTI4 and the USARTs go on; a second `init`, a nested lock or a use before `init` ends in the fault handler (§5.5). The checks and the BASEPRI sequence (read, raise, check, body, restore) are the glue's `irq::CellGuard` over the trait `CellCore` (host-tested against a model of BASEPRI_MAX); the firmware's `IsrCell` holds the value and dereferences it only inside the guard's closures. No check of the active vector: the guard checks the init, BASEPRI keeps the timers out of a lock |
 | `valve_loop_ticks`, `valve_loop_stalled`, temperature `lock`, `temp_refresh_request`, `temp_gap_timeout`, `protect_suspended`, `protect_enforce` | TIM2 <-> main | atomics in `motor::IsrFlags` |
 | `warm_state` (also written by `app_warm_moving` inside the `appsetaction` hand-over) | main only | `NoinitStore`, main context |
 | ADC | TIM1 only | owned by the TIM1 context |
@@ -762,8 +778,10 @@ catches (`catch_unwind`), as the C++ fakes throw `SystemReset`, `BootloaderJump`
 | module | content |
 |---|---|
 | `onewire`, `dallas`, `ds2438` | against a bit-level bus simulator: ROM search order, CRC-8, scratchpad CRC and all-zero checks, `DEVICE_DISCONNECTED_RAW`, DS18S20 extended math (C integer promotion, the `COUNT_PER_C` = 0 guard), DS2438 `readVAD` float steps (R6) |
+| `onewire` slots | the slot sequences and times of `OneWire.cpp` against a line model in microseconds (a device's presence pulse and 0 bits, a line held low, a line that rises at the last wait), the masked windows; `delayMicroseconds` on a wrapping cycle counter |
 | `eeprom24` | 30-byte and 32-byte page splits, ready polling, error propagation, short reads |
-| `serial` | HAL error-code rules per interrupt, 1023-byte rings, drop counting, blocking TX |
+| `serial` | HAL error-code rules per interrupt, 1023-byte rings, drop counting, blocking TX; the register sequence of the interrupt (DR only with RXNE or an error flag); a writer sends itself only while PRIMASK or BASEPRI blocks the USART interrupt |
+| `irq` | the STM32duino priorities; which PRIMASK and BASEPRI values block an interrupt; the misuse checks and the BASEPRI sequence of the shared motor state |
 | `hw_timer` | the PSC/ARR values of §2.4 |
 | `vdm-stm-boot` | ESP 2.1 pattern (9-byte period, stray bytes), legacy pattern, flood of garbage |
 | ID block | NUL layout, at most 64 bytes, scanner finds version and tag (also C4) |

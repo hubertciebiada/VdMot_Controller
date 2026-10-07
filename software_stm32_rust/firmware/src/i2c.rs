@@ -88,9 +88,7 @@ impl I2cRegs for FwI2c {
 
     /// rc_w0 flags: 0 clears, 1 keeps; no read-modify-write that could clear a flag set meanwhile
     fn clear_sr1(&self, flags: u16) {
-        pac::I2C1
-            .sr1()
-            .write_value(Sr1(u32::from(!flags)));
+        pac::I2C1.sr1().write_value(Sr1(u32::from(!flags)));
     }
 
     fn start(&self, ack: bool) {

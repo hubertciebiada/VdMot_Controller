@@ -1,7 +1,8 @@
 //! OneWire 2.3.7 as vendored in `software_stm32/lib/OneWire` (patched to drive the line open
 //! drain): the ROM search, the CRC-8, the ROM select and the byte I/O over the bit slots of a
-//! [`OneWireLine`]. The slot timing (reset 480/70/410 us, write 10/55 and 65/5 us, read 3/10/53
-//! us, interrupts masked inside each window) belongs to the firmware's line.
+//! [`OneWireLine`]. The slots themselves (reset 480/70/410 us, write 10/55 and 65/5 us, read
+//! 3/10/53 us, interrupts masked inside each window) are [`PinLine`] on the firmware's pin
+//! (module `slots`).
 //!
 //! Not ported: `write(v, power)` keeps the line driven high after a byte for parasite devices;
 //! with the open-drain output of the patch a high level is the released line, so `power` has no
@@ -10,6 +11,9 @@
 
 use crate::hal::OneWireLine;
 use vdm_stm_core::onewire_check;
+
+mod slots;
+pub use slots::{spin_us, CycleCounter, OneWirePin, PinLine};
 
 /// A ROM address: family code, 48-bit serial, CRC-8 (C++ `DeviceAddress`).
 pub type DeviceAddress = [u8; 8];

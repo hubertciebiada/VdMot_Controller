@@ -2,8 +2,9 @@
 //! `HardwareSerial.cpp`, `uart.c` and the F4 HAL's `HAL_UART_IRQHandler`), docs/rust/
 //! GLUE-DESIGN-STM.md §4.1: a receive ring and a transmit ring of 1024 slots each (1023 bytes
 //! usable: a byte that would make the head reach the tail is dropped), filled and drained by
-//! the USART interrupt. The firmware's interrupt handler only reads USART_SR and USART_DR and
-//! hands them to [`Port::on_irq`]; what happens with them is decided here.
+//! the USART interrupt. The firmware's interrupt handler calls [`Port::irq`] with the registers
+//! of its USART ([`UsartRegs`]); which registers the interrupt reads and writes, and what happens
+//! with the bytes, is decided here.
 //!
 //! Per receive interrupt the error flags of SR become the HAL error code of that byte (PE, NE,
 //! FE, ORE), the byte is stored all the same, and the counters of gstax count the code and a
@@ -20,6 +21,7 @@ use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
 use vdm_stm_core::uart_errors::{count_uart_errors, UartErrorCounters};
 
 use crate::hal::Serial;
+use crate::irq::{blocked, Masks, PRIO_USART};
 
 /// `SERIAL_RX_BUFFER_SIZE`, `SERIAL_TX_BUFFER_SIZE` of the C++ release envs.
 pub const RING_SIZE: usize = 1024;
@@ -33,11 +35,29 @@ pub const SR_RXNE: u32 = 1 << 5;
 pub const SR_TC: u32 = 1 << 6;
 pub const SR_TXE: u32 = 1 << 7;
 
+/// The SR flags that make the interrupt read DR: a received byte, or an error flag that only the
+/// SR-then-DR pair clears (the HAL reads DR for it in its error callback; with RXNEIE set, an
+/// ORE left standing raises the interrupt again and again).
+const SR_READ_DR: u32 = SR_RXNE | SR_ORE | SR_NE | SR_FE | SR_PE;
+
 /// `HAL_UART_ERROR_*` (stm32f4xx_hal_uart.h); core `UART_ERROR_*` has the same values.
 pub const HAL_UART_ERROR_PE: u32 = 0x01;
 pub const HAL_UART_ERROR_NE: u32 = 0x02;
 pub const HAL_UART_ERROR_FE: u32 = 0x04;
 pub const HAL_UART_ERROR_ORE: u32 = 0x08;
+
+/// The registers of one USART (firmware: `pac::USART1`, `pac::USART6`). Every call is one
+/// register access, no decision.
+pub trait UsartRegs {
+    /// reads USART_SR
+    fn sr(&self) -> u32;
+    /// reads USART_DR; after an SR read it clears RXNE and the error flags PE, FE, NE and ORE
+    fn read_dr(&self) -> u8;
+    /// writes USART_DR
+    fn write_dr(&self, byte: u8);
+    /// CR1.TXEIE: the transmit interrupt on or off
+    fn set_txeie(&self, on: bool);
+}
 
 /// What the interrupt handler does with the transmitter after [`Port::on_irq`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,8 +179,27 @@ impl Port {
         }
     }
 
-    /// The USART interrupt: `sr` is USART_SR as read first, `dr` USART_DR as read after it
-    /// (only meaningful with RXNE). Returns what the handler does with the transmitter.
+    /// The USART interrupt on its registers (the firmware's `USART1` and `USART6` handlers):
+    /// SR; DR only when SR holds a byte or an error flag (the pair clears them); the receive side
+    /// of [`Port::on_irq`]; then the transmitter: the next byte into DR, or TXEIE off when the
+    /// ring is empty, nothing while TXE is clear.
+    pub fn irq(&self, usart: &impl UsartRegs) {
+        let sr = usart.sr();
+        let dr = if sr & SR_READ_DR != 0 {
+            usart.read_dr()
+        } else {
+            0
+        };
+        match self.on_irq(sr, dr) {
+            Tx::Send(byte) => usart.write_dr(byte),
+            Tx::Idle => usart.set_txeie(false),
+            Tx::None => {}
+        }
+    }
+
+    /// The decisions of the USART interrupt: `sr` is USART_SR as read first, `dr` USART_DR as
+    /// read after it (only meaningful with RXNE). Returns what the handler does with the
+    /// transmitter.
     pub fn on_irq(&self, sr: u32, dr: u8) -> Tx {
         if sr & SR_RXNE != 0 {
             let full = self.rx.full();
@@ -217,39 +256,33 @@ impl Port {
     }
 }
 
-/// What a writer needs of the USART besides the rings (the firmware's registers).
-pub trait UsartTx {
-    /// TXE interrupt on: the interrupt sends what the ring holds.
-    fn start(&self);
-    /// The USART interrupt cannot run here (interrupts masked at its priority): nobody else
-    /// drains the transmit ring.
-    fn masked(&self) -> bool;
-    /// USART_SR
-    fn sr(&self) -> u32;
-    /// writes USART_DR
-    fn send(&self, byte: u8);
-}
-
-/// A port with its USART as a [`Serial`]: a handle the modules may copy.
+/// A port with its USART (registers and the core's interrupt masks) as a [`Serial`]: a handle
+/// the modules may copy.
 #[derive(Clone, Copy)]
 pub struct PortSerial<'a, U> {
     pub port: &'a Port,
     pub usart: U,
 }
 
-impl<U: UsartTx> PortSerial<'_, U> {
-    /// While the interrupt cannot run, one byte goes out from here when the transmitter takes
-    /// it (STM32duino would wait for ever, until the IWDG resets).
+impl<U: UsartRegs + Masks> PortSerial<'_, U> {
+    /// The TXE interrupt on: the interrupt sends what the ring holds.
+    fn start(&self) {
+        self.usart.set_txeie(true);
+    }
+
+    /// While the USART interrupt cannot run here (PRIMASK, or BASEPRI at its priority or above:
+    /// nobody else drains the ring), one byte goes out from here when the transmitter takes it
+    /// (STM32duino would wait for ever, until the IWDG resets).
     fn poll(&self) {
-        if self.usart.masked() && self.usart.sr() & SR_TXE != 0 {
+        if blocked(&self.usart, PRIO_USART) && self.usart.sr() & SR_TXE != 0 {
             if let Some(byte) = self.port.pop_tx() {
-                self.usart.send(byte);
+                self.usart.write_dr(byte);
             }
         }
     }
 }
 
-impl<U: UsartTx> Serial for PortSerial<'_, U> {
+impl<U: UsartRegs + Masks> Serial for PortSerial<'_, U> {
     fn available(&self) -> usize {
         self.port.available()
     }
@@ -265,17 +298,17 @@ impl<U: UsartTx> Serial for PortSerial<'_, U> {
         }
         for &byte in bytes {
             while !self.port.push_tx(byte) {
-                self.usart.start();
+                self.start();
                 self.poll();
             }
         }
-        self.usart.start();
+        self.start();
     }
 
     /// The transmit ring empty and the last byte out of the shift register (TC).
     fn flush(&mut self) {
         while self.port.tx_pending() != 0 || self.usart.sr() & SR_TC == 0 {
-            self.usart.start();
+            self.start();
             self.poll();
         }
     }

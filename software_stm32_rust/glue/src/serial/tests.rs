@@ -1,12 +1,13 @@
 // New cases (design §7.3, no C++ counterpart: the C++ suites run against a fake HardwareSerial):
-// the HAL error-code rule per interrupt, the 1023-byte rings, the drop counting, the order of
-// the transmitter and the blocking writes.
+// the HAL error-code rule per interrupt, the register sequence of the interrupt, the 1023-byte
+// rings, the drop counting, the order of the transmitter and the blocking writes.
 
 use std::cell::{Cell, RefCell};
 use std::vec;
 use std::vec::Vec;
 
 use super::*;
+use crate::irq::{PRIO_EXTI, PRIO_MOTOR};
 use crate::test_support::io_fakes::FakeSerial;
 use vdm_stm_core::uart_errors::{
     UART_ERROR_FRAMING, UART_ERROR_NOISE, UART_ERROR_OVERRUN, UART_ERROR_PARITY,
@@ -164,223 +165,325 @@ fn tx_the_ring_takes_1023_bytes() {
     assert_eq!(port.pop_tx(), None);
 }
 
-/// A USART for the writer: the interrupt runs at once when `isr` is set (it drains the ring
-/// into `wire`), otherwise only a masked writer sends; SR as set by the test.
+// ---- the interrupt on the registers (the firmware's USART1 and USART6 handlers)
+
+/// A register access of the interrupt, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reg {
+    Sr,
+    ReadDr,
+    WriteDr(u8),
+    TxeIe(bool),
+}
+
+/// USART_SR and USART_DR as the interrupt finds them.
+struct Regs {
+    sr: u32,
+    dr: u8,
+    ops: RefCell<Vec<Reg>>,
+}
+
+impl UsartRegs for Regs {
+    fn sr(&self) -> u32 {
+        self.ops.borrow_mut().push(Reg::Sr);
+        self.sr
+    }
+
+    fn read_dr(&self) -> u8 {
+        self.ops.borrow_mut().push(Reg::ReadDr);
+        self.dr
+    }
+
+    fn write_dr(&self, byte: u8) {
+        self.ops.borrow_mut().push(Reg::WriteDr(byte));
+    }
+
+    fn set_txeie(&self, on: bool) {
+        self.ops.borrow_mut().push(Reg::TxeIe(on));
+    }
+}
+
+/// One interrupt with this SR and DR; its register accesses.
+fn irq(port: &Port, sr: u32, dr: u8) -> Vec<Reg> {
+    let regs = Regs {
+        sr,
+        dr,
+        ops: RefCell::new(Vec::new()),
+    };
+    port.irq(&regs);
+    regs.ops.take()
+}
+
+#[test]
+fn irq_a_received_byte_reads_sr_then_dr_and_is_stored() {
+    let port = Port::new();
+    assert_eq!(irq(&port, SR_RXNE, b'a'), vec![Reg::Sr, Reg::ReadDr]);
+    assert_eq!(port.read(), Some(b'a'));
+    assert_eq!(port.errors(), UartErrorCounters::default());
+}
+
+#[test]
+fn irq_a_byte_with_an_error_is_stored_and_counted() {
+    let port = Port::new();
+    assert_eq!(
+        irq(&port, SR_RXNE + SR_FE, b'b'),
+        vec![Reg::Sr, Reg::ReadDr]
+    );
+    assert_eq!(port.read(), Some(b'b'));
+    assert_eq!(port.errors().framing, 1);
+}
+
+#[test]
+fn irq_each_error_flag_alone_is_cleared_by_a_dr_read_that_stores_nothing() {
+    for flag in [SR_ORE, SR_NE, SR_FE, SR_PE] {
+        let port = Port::new();
+        assert_eq!(
+            irq(&port, flag, b'x'),
+            vec![Reg::Sr, Reg::ReadDr],
+            "{flag:#x}"
+        );
+        assert_eq!(port.available(), 0);
+        assert_eq!(port.errors(), UartErrorCounters::default());
+    }
+}
+
+#[test]
+fn irq_without_a_byte_or_an_error_never_reads_dr() {
+    // a DR read here could take a byte that arrives after the SR read, unstored
+    let port = Port::new();
+    assert_eq!(irq(&port, 0, b'x'), vec![Reg::Sr]);
+    assert_eq!(irq(&port, SR_TC, b'x'), vec![Reg::Sr]);
+    assert_eq!(
+        irq(&port, SR_TXE + SR_TC, b'x'),
+        vec![Reg::Sr, Reg::TxeIe(false)]
+    );
+    assert_eq!(port.available(), 0);
+}
+
+#[test]
+fn irq_txe_sends_the_next_byte_then_turns_its_interrupt_off_when_the_ring_is_empty() {
+    let port = Port::new();
+    assert!(port.push_tx(b'1'));
+    assert!(port.push_tx(b'2'));
+    assert_eq!(irq(&port, SR_TXE, 0), vec![Reg::Sr, Reg::WriteDr(b'1')]);
+    assert_eq!(
+        irq(&port, SR_TXE + SR_TC, 0),
+        vec![Reg::Sr, Reg::WriteDr(b'2')]
+    );
+    assert_eq!(irq(&port, SR_TXE, 0), vec![Reg::Sr, Reg::TxeIe(false)]);
+    assert_eq!(port.tx_pending(), 0);
+}
+
+#[test]
+fn irq_a_byte_in_and_a_byte_out_in_one_interrupt() {
+    let port = Port::new();
+    assert!(port.push_tx(b'o'));
+    assert_eq!(
+        irq(&port, SR_RXNE + SR_TXE, b'i'),
+        vec![Reg::Sr, Reg::ReadDr, Reg::WriteDr(b'o')]
+    );
+    assert_eq!(
+        irq(&port, SR_RXNE + SR_ORE + SR_TXE, b'j'),
+        vec![Reg::Sr, Reg::ReadDr, Reg::TxeIe(false)]
+    );
+    assert_eq!(drain(&port), b"ij".to_vec());
+    assert_eq!(port.errors().overrun, 1);
+}
+
+#[test]
+fn irq_while_txe_is_clear_the_transmitter_is_left_alone() {
+    let port = Port::new();
+    assert!(port.push_tx(b'w'));
+    assert_eq!(irq(&port, SR_RXNE, b'r'), vec![Reg::Sr, Reg::ReadDr]);
+    assert_eq!(port.tx_pending(), 1);
+}
+
+// ---- the writer
+
+/// A USART for the writer: TXEIE on lets the interrupt run at once when `isr` is set (it drains
+/// the ring onto `wire` through [`Port::irq`]); otherwise only a writer that finds the
+/// interrupt blocked sends. SR, PRIMASK and BASEPRI as set by the test.
 struct TestUsart<'a> {
     port: &'a Port,
     wire: &'a RefCell<Vec<u8>>,
     starts: &'a Cell<u32>,
     isr: bool,
-    masked: bool,
+    primask: bool,
+    basepri: u8,
     sr: &'a Cell<u32>,
+    txeie: Cell<bool>,
 }
 
-impl UsartTx for TestUsart<'_> {
-    fn start(&self) {
-        self.starts.set(self.starts.get() + 1);
-        if self.isr {
-            while let Tx::Send(b) = self.port.on_irq(SR_TXE, 0) {
-                self.wire.borrow_mut().push(b);
-            }
-        }
-    }
-
-    fn masked(&self) -> bool {
-        self.masked
-    }
-
+impl UsartRegs for TestUsart<'_> {
     fn sr(&self) -> u32 {
         self.sr.get()
     }
 
-    fn send(&self, byte: u8) {
+    fn read_dr(&self) -> u8 {
+        0
+    }
+
+    fn write_dr(&self, byte: u8) {
         self.wire.borrow_mut().push(byte);
+    }
+
+    fn set_txeie(&self, on: bool) {
+        self.txeie.set(on);
+        if on {
+            self.starts.set(self.starts.get() + 1);
+            while self.isr && self.txeie.get() {
+                self.port.irq(self);
+            }
+        }
+    }
+}
+
+impl Masks for TestUsart<'_> {
+    fn primask(&self) -> bool {
+        self.primask
+    }
+
+    fn basepri(&self) -> u8 {
+        self.basepri
+    }
+}
+
+/// What a writer test works with.
+struct Rig {
+    port: Port,
+    wire: RefCell<Vec<u8>>,
+    starts: Cell<u32>,
+    sr: Cell<u32>,
+}
+
+impl Rig {
+    fn new(sr: u32) -> Self {
+        Rig {
+            port: Port::new(),
+            wire: RefCell::new(Vec::new()),
+            starts: Cell::new(0),
+            sr: Cell::new(sr),
+        }
+    }
+
+    /// A writer whose interrupt runs (`isr`) or not, with the masks of its context.
+    fn serial(&self, isr: bool, primask: bool, basepri: u8) -> PortSerial<'_, TestUsart<'_>> {
+        PortSerial {
+            port: &self.port,
+            usart: TestUsart {
+                port: &self.port,
+                wire: &self.wire,
+                starts: &self.starts,
+                isr,
+                primask,
+                basepri,
+                sr: &self.sr,
+                txeie: Cell::new(false),
+            },
+        }
+    }
+
+    fn wire(&self) -> Vec<u8> {
+        self.wire.borrow().clone()
     }
 }
 
 #[test]
 fn write_queues_the_bytes_and_starts_the_interrupt_once_per_write() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE + SR_TC);
-    let mut s = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: false,
-            masked: false,
-            sr: &sr,
-        },
-    };
+    let rig = Rig::new(SR_TXE + SR_TC);
+    let mut s = rig.serial(false, false, 0);
     s.write(b"hello");
-    assert_eq!(port.tx_pending(), 5);
-    assert_eq!(starts.get(), 1);
+    assert_eq!(rig.port.tx_pending(), 5);
+    assert_eq!(rig.starts.get(), 1);
+    assert!(s.usart.txeie.get());
     // nothing written: no start
     s.write(b"");
-    assert_eq!(starts.get(), 1);
-    assert!(wire.borrow().is_empty());
+    assert_eq!(rig.starts.get(), 1);
+    assert!(rig.wire().is_empty());
 }
 
 #[test]
 fn write_of_more_than_the_ring_waits_for_the_interrupt() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE + SR_TC);
-    let mut s = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: true,
-            masked: false,
-            sr: &sr,
-        },
-    };
+    let rig = Rig::new(SR_TXE + SR_TC);
+    let mut s = rig.serial(true, false, 0);
     let text: Vec<u8> = (0..3000u32).map(|i| b'a' + (i % 26) as u8).collect();
     s.write(&text);
-    assert_eq!(*wire.borrow(), text);
+    assert_eq!(rig.wire(), text);
     // the ring filled twice: started for room, then once at the end
-    assert_eq!(starts.get(), 3);
+    assert_eq!(rig.starts.get(), 3);
+    // the interrupt turned itself off with the ring empty
+    assert!(!s.usart.txeie.get());
 }
 
 #[test]
-fn write_with_the_interrupt_masked_sends_from_the_writer_when_txe_is_set() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE);
-    let mut s = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: false,
-            masked: true,
-            sr: &sr,
-        },
-    };
+fn write_with_primask_set_sends_from_the_writer_when_txe_is_set() {
+    let rig = Rig::new(SR_TXE);
+    let mut s = rig.serial(false, true, 0);
     let text = vec![b'm'; 1100];
     s.write(&text);
     // 1100 - 1023 bytes had to go out before the rest fitted
-    assert_eq!(wire.borrow().len(), 1100 - (RING_SIZE - 1));
-    assert_eq!(port.tx_pending(), RING_SIZE - 1);
+    assert_eq!(rig.wire().len(), 1100 - (RING_SIZE - 1));
+    assert_eq!(rig.port.tx_pending(), RING_SIZE - 1);
 }
 
 #[test]
-fn write_unmasked_never_sends_from_the_writer_and_masked_not_without_txe() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE + SR_TC);
-    let unmasked = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: false,
-            masked: false,
-            sr: &sr,
-        },
-    };
-    assert!(port.push_tx(1));
-    unmasked.poll();
-    assert!(wire.borrow().is_empty());
-    sr.set(0);
-    let masked = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: false,
-            masked: true,
-            sr: &sr,
-        },
-    };
-    masked.poll();
-    assert!(wire.borrow().is_empty());
-    sr.set(SR_TXE);
-    masked.poll();
-    assert_eq!(*wire.borrow(), vec![1]);
+fn write_with_basepri_at_the_usart_level_sends_from_the_writer() {
+    let rig = Rig::new(SR_TXE);
+    let mut s = rig.serial(false, false, PRIO_USART);
+    s.write(&vec![b'u'; RING_SIZE + 9]);
+    assert_eq!(rig.wire().len(), 10);
+}
+
+#[test]
+fn poll_sends_only_while_the_usart_interrupt_is_blocked_and_txe_is_set() {
+    let rig = Rig::new(SR_TXE + SR_TC);
+    assert!(rig.port.push_tx(1));
+    // nothing masked, or BASEPRI of the motor lock (TIM1, TIM2) or at EXTI4: the interrupt
+    // runs, so the writer leaves the ring to it
+    for basepri in [0, PRIO_MOTOR, PRIO_EXTI] {
+        rig.serial(false, false, basepri).poll();
+        assert!(rig.wire().is_empty(), "{basepri:#x}");
+    }
+    // blocked, but the transmitter is busy
+    rig.sr.set(0);
+    rig.serial(false, true, 0).poll();
+    assert!(rig.wire().is_empty());
+    rig.sr.set(SR_TXE);
+    rig.serial(false, true, 0).poll();
+    assert_eq!(rig.wire(), vec![1]);
     // an empty ring sends nothing
-    masked.poll();
-    assert_eq!(wire.borrow().len(), 1);
+    rig.serial(false, true, 0).poll();
+    assert_eq!(rig.wire().len(), 1);
 }
 
 #[test]
 fn flush_waits_for_the_empty_ring_and_tc() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE + SR_TC);
-    let mut s = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: true,
-            masked: false,
-            sr: &sr,
-        },
-    };
+    let rig = Rig::new(SR_TXE + SR_TC);
+    let mut s = rig.serial(true, false, 0);
     // empty ring and TC: returns at once
     s.flush();
-    assert_eq!(starts.get(), 0);
-    assert!(port.push_tx(b'x'));
+    assert_eq!(rig.starts.get(), 0);
+    assert!(rig.port.push_tx(b'x'));
     s.flush();
-    assert_eq!(*wire.borrow(), b"x".to_vec());
-    assert_eq!(starts.get(), 1);
+    assert_eq!(rig.wire(), b"x".to_vec());
+    assert_eq!(rig.starts.get(), 1);
 }
 
 #[test]
-fn flush_with_the_interrupt_masked_drains_the_ring_itself() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE + SR_TC);
-    let mut s = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: false,
-            masked: true,
-            sr: &sr,
-        },
-    };
+fn flush_with_the_interrupt_blocked_drains_the_ring_itself() {
+    let rig = Rig::new(SR_TXE + SR_TC);
+    let mut s = rig.serial(false, true, 0);
     s.write(b"abc");
     s.flush();
-    assert_eq!(*wire.borrow(), b"abc".to_vec());
-    assert_eq!(port.tx_pending(), 0);
+    assert_eq!(rig.wire(), b"abc".to_vec());
+    assert_eq!(rig.port.tx_pending(), 0);
 }
 
 #[test]
 fn serial_reads_what_the_interrupt_received() {
-    let port = Port::new();
-    let wire = RefCell::new(Vec::new());
-    let starts = Cell::new(0);
-    let sr = Cell::new(SR_TXE + SR_TC);
-    let mut s = PortSerial {
-        port: &port,
-        usart: TestUsart {
-            port: &port,
-            wire: &wire,
-            starts: &starts,
-            isr: false,
-            masked: false,
-            sr: &sr,
-        },
-    };
-    receive(&port, b"ok");
+    let rig = Rig::new(SR_TXE + SR_TC);
+    let mut s = rig.serial(false, false, 0);
+    receive(&rig.port, b"ok");
     assert_eq!(s.available(), 2);
     assert_eq!(s.read(), Some(b'o'));
     assert_eq!(s.read(), Some(b'k'));
