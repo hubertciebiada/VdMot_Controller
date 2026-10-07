@@ -258,6 +258,42 @@ fn clean_session_only_after_a_topic_config_change() {
 }
 
 #[test]
+fn a_station_renamed_at_run_time_reconnects_with_its_client_id_will_and_topics() {
+    // reloadConfig: the station is the host part of the client id, the main topic and the
+    // topic of the last will; a rename is a topic change (no C++ case either)
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.settle(&mut c, 2);
+    let first = rig.broker.state().connects[0].clone();
+    assert!(
+        first.client_id.starts_with(b"VdMot-"),
+        "{}",
+        s(&first.client_id)
+    );
+    assert_eq!(
+        first.will_topic.as_deref(),
+        Some(b"VdMot/status".as_slice())
+    );
+    rig.cfg(|c| {
+        copy_string(&mut c.station, b"Haus");
+    });
+    rig.new_revision();
+    rig.run(&mut c, 2);
+    assert_eq!(rig.connects(), 2);
+    assert!(rig.clean_session());
+    let second = rig.broker.state().connects[1].clone();
+    let mac = &first.client_id[b"VdMot".len()..];
+    assert_eq!(second.client_id, [b"Haus".as_slice(), mac].concat());
+    assert_eq!(
+        second.will_topic.as_deref(),
+        Some(b"Haus/status".as_slice())
+    );
+    assert_eq!(rig.last("Haus/status"), "online");
+    assert!(rig.subscribed().iter().any(|(t, _)| t == "Haus/cmd/#"));
+}
+
+#[test]
 fn a_config_reload_takes_no_heap_block_a_topic_change_reconnects_in_the_same_pass() {
     // C++ "without memory for the reload copy the old config stays until the next pass": the
     // Rust reload compares and copies under the config lock without a second copy (design 2.4)

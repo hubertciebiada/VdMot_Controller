@@ -407,6 +407,83 @@ fn values_valve_temperatures_with_the_offset_of_their_1_based_slot() {
 }
 
 #[test]
+fn values_the_topic_and_payload_options_of_the_config_reach_the_broker() {
+    // retained, pathAsRoot, plainText, germanDecimal and diag as the task applies them, and the
+    // payloads of calibration/repetitions and diag/moves (the core pins the formatters; the
+    // C++ suite had no task case of them either)
+    for flipped in [false, true] {
+        let rig = Rig::new();
+        let mut c = rig.client();
+        rig.use_mqtt(MqttMode::Mqtt);
+        rig.cfg(|c| {
+            c.mqtt.retained = !flipped;
+            c.mqtt.path_as_root = flipped;
+            c.mqtt.plain_text = !flipped;
+            c.mqtt.german_decimal = flipped;
+            c.mqtt.diag = !flipped;
+        });
+        rig.link_up();
+        rig.snap(|s| {
+            let v = &mut s.valves[0];
+            v.status = 1;
+            v.temp1 = 215;
+            v.sensor_slot[0] = 0;
+            v.calib_retries = 2;
+            v.moves = 7;
+        });
+        rig.publish_snap();
+        rig.settle(&mut c, 40);
+        let root = if flipped { "/VdMot/" } else { "VdMot/" };
+        let last = |t: &str| {
+            let topic = format!("{root}{t}");
+            let p = rig.published();
+            let found = p.iter().rev().find(|p| p.topic == topic.as_bytes());
+            found
+                .unwrap_or_else(|| panic!("{topic} not published"))
+                .clone()
+        };
+        // the setting topics follow `retained`, the availability topics are always retained
+        assert_eq!(last("valves/1/actual/value").retain, !flipped);
+        assert_eq!(last("valves/1/state/value").retain, !flipped);
+        assert!(last("status").retain);
+        assert!(last("stm/status").retain);
+        let (state, temp) = if flipped {
+            ("1", "21,5")
+        } else {
+            ("idle", "21.5")
+        };
+        assert_eq!(s(&last("valves/1/state/value").payload), state);
+        assert_eq!(s(&last("valves/1/temp1/value").payload), temp);
+        let system = s(&last("common/state/value").payload);
+        assert_eq!(
+            system.bytes().all(|b| b.is_ascii_digit()),
+            flipped,
+            "{system}"
+        );
+        assert_eq!(
+            s(&last("valves/1/calibration/repetitions/value").payload),
+            "2"
+        );
+        // the legacy diag topics only with `diag`
+        let diag: std::collections::BTreeSet<Vec<u8>> = rig
+            .published()
+            .into_iter()
+            .map(|p| p.topic)
+            .filter(|t| t.starts_with(format!("{root}valves/1/diag/").as_bytes()))
+            .collect();
+        assert_eq!(diag.len(), if flipped { 0 } else { 5 });
+        if !flipped {
+            assert_eq!(s(&last("valves/1/diag/moves/value").payload), "7");
+        }
+        // every topic under the root
+        assert!(rig
+            .published()
+            .iter()
+            .all(|p| p.topic.starts_with(root.as_bytes())));
+    }
+}
+
+#[test]
 fn values_valve_state_diag_counters_no_calibration_date_inactive_valves() {
     let rig = Rig::new();
     let mut c = rig.client();
