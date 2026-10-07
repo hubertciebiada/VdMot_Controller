@@ -26,6 +26,21 @@ fn terminal_serve_at_most_256_bytes_are_taken_per_call() {
 }
 
 #[test]
+fn terminal_serve_a_line_of_127_characters_is_a_command_one_of_128_is_dropped() {
+    // TERM_LINE_SIZE 128: 127 characters and the terminator
+    let mut r = Rig::begin();
+    let line = |n: usize| format!("{:<n$}\n", "help");
+    assert_eq!(line(127).len(), 128);
+    let (res, out) = r.command(&line(127));
+    assert_eq!(res, CMD_HELP);
+    assert_eq!(out, "Help:\r\n*********************\r\n");
+    let (res, out) = r.command(&line(128));
+    assert_eq!(res, -1);
+    assert!(out.is_empty());
+    assert_eq!(r.command("help\n").0, CMD_HELP);
+}
+
+#[test]
 fn learn_the_full_16_bit_range_a_refused_command_bad_arguments() {
     let mut r = Rig::begin();
     let (res, out) = r.command("learn 65535\n");

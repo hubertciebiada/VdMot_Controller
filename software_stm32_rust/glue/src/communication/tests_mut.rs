@@ -487,6 +487,18 @@ fn an_overlong_line_counts_as_overflow_and_a_partial_line_waits_for_its_end() {
 }
 
 #[test]
+fn a_request_of_127_characters_is_answered_one_of_128_is_an_overflow() {
+    // COMM_LINE_SIZE 128: 127 characters and the terminator
+    let mut r = Rig::begin();
+    let line = |n: usize| format!("{:<n$}\n", "gtgtp 3");
+    assert_eq!(line(127).len(), 128);
+    assert_eq!(r.request(&line(127)), "gtgtp 3 0 \r\n");
+    assert_eq!(r.request("gstat\n"), "gstat 0 0 0 0 0 0\r\n");
+    assert!(r.request(&line(128)).is_empty());
+    assert_eq!(r.request("gstat\n"), "gstat 0 0 0 1 0 0\r\n");
+}
+
+#[test]
 fn smotc_and_scalx_store_only_a_change_slcfg_keeps_an_equal_timeout_unmarked() {
     let mut r = Rig::begin();
     // a value out of range: "smotc err", the values in range applied and stored
