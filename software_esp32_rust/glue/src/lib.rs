@@ -10,6 +10,7 @@ pub mod heap;
 pub mod http_parse;
 pub mod json_body;
 pub mod logger;
+pub mod mqtt_client;
 pub mod mqtt_conn;
 pub mod net;
 pub mod ota;
