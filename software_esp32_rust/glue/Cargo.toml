@@ -11,6 +11,10 @@ publish.workspace = true
 vdm-esp-core = { path = "../core" }
 heapless.workspace = true
 
+[dev-dependencies]
+# the golden STM replies and the AN3155 simulator of testkit/fake_stm.rs
+vdm-esp-core = { path = "../core", features = ["test-support"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 

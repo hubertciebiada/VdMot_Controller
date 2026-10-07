@@ -4,7 +4,7 @@
 //! No heap, no unsafe, fixed-size storage, every input bounded (docs/rust/PORTING.md).
 #![no_std]
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 extern crate std;
 
 pub mod calib_schedule;
@@ -45,5 +45,9 @@ pub mod valve_model;
 pub mod version;
 pub mod web_guard;
 
-#[cfg(test)]
-mod test_support;
+/// Shared test helpers (port of test/native/support): the core tests, and with the feature
+/// `test-support` the glue tests (the golden STM replies and the AN3155 simulator of the fake
+/// STM). Never part of the firmware.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::should_implement_trait)] // the helpers keep the C++ names (`SimLcg::next`)
+pub mod test_support;

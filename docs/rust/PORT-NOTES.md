@@ -181,6 +181,16 @@ where they cannot follow it (the library wrote past its memory or hung).
 | storage | Port form: the legacy reader sees a stored string longer than the C++ buffer as the copy the port refuses (the C++ compared the length with `cap`) and zeroes the output of a blob whenever its copy fails (C++: when its length exceeds `cap`; on the port only that fails). | The same keys are read, rejected and counted (tests `import_*`, `reader_*`). |
 | storage | No Rust form: `deleteFile(nullptr)`, `deleteImage(nullptr)`, `FileImage::open(nullptr)`, `loadTargets(nullptr, 8)`, `applyConfig(c, nullptr, 16)` (the empty slices are tested: BadPath, NotFound, false, 0, `Err(0)`); the `bufferSizes`/`unbuffered` checks of the 512 B stdio buffers (`kFileBufferSize`): the port has no stdio layer, the cases count the opens instead. A second `loadConfig` of a C++ case that stands for the next boot runs in a new boot of the fake board. | |
 
+## stm_link
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Port form | The session reads the config under the config lock (`StmLinkHost::with_config`, design 2.4): the C++ heap copy of 2.5 KB, its retry in a later pass and the wait loop for it at the start of the task are gone. The C++ cases "a config change without memory for its copy is applied by the next pass" and "without memory for the config the session waits, then begins with it" keep their subjects as `task_a_config_change_takes_no_heap_block_and_is_applied_in_the_pass_that_sees_it` and `task_the_session_begins_with_its_config_without_a_heap_block`. | A config change reaches the session in the pass that sees it, also without free heap. |
+| Port form | The flasher's input discard reads until a read is empty, at most 64 reads of 64 bytes; the C++ asked `available()` before each read, which the `Uart` port does not have. The discard cases count one look per round (64 looks, 1024 bytes left with 80 bytes per look; 2 looks for a single byte) instead of the C++ two. | Same bound and the same bytes left in the ring. |
+| Port form | The NRST pin is shared by the session's port (the policy and user pulses) and the flash transport (the flasher's pulses) behind a mutex only the stm thread locks; the UART stays with the task and goes to the transport for each flasher step. The pins 5/17, the ring sizes and `pinMode` belong to the adapters (board.rs, GLUE-DESIGN-ESP.md 1.2): the C++ "begin" case checks the one `configure` call and the released pins instead. | |
+| Port form | The session (about 14 KB on the 64-bit host) is a boot block built by value (`StmSession::new`): without the in-place construction of an optimised build it passes the stack of `main` once. The C++ constructed it in place on the heap. | `main` needs the stack for it (the firmware spike has 12288 B, freed when `main` returns). |
+| Port form | Test support: `testkit/fake_stm.rs` is `support/fake_stm.cpp` over the core's `test_support` (golden replies, AN3155 simulator) through the core feature `test-support`; `.cargo/mutants.toml` keeps that code out of the mutation runs. The fake records the NRST writes with their times (the C++ tests chained a GPIO hook of their own). | One source of the golden replies and the simulator. |
+
 ## stm_service
 
 | Kind | What | Why it matters |

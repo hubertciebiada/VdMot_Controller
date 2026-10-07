@@ -1,0 +1,5 @@
+# cargo-mutants (tools/rust/docker.sh mutate) for both crates of the workspace.
+# core/src/test_support holds the shared test helpers. They are test code, but the feature
+# `test-support` (the glue tests use the golden STM replies and the AN3155 simulator) compiles
+# them outside cfg(test), which hides them from cargo-mutants' cfg(test) check.
+exclude_globs = ["core/src/test_support/**"]

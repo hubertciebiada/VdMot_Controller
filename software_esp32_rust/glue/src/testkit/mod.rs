@@ -11,6 +11,7 @@
 pub(crate) mod board;
 pub(crate) mod broker;
 pub(crate) mod clock;
+pub(crate) mod fake_stm;
 pub(crate) mod fs;
 pub(crate) mod http;
 pub(crate) mod md5;
@@ -27,6 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub(crate) use board::{run, Device, Ended, FakeBoard, Reset};
 pub(crate) use broker::FakeBroker;
 pub(crate) use clock::{FakeClock, FakeWall};
+pub(crate) use fake_stm::FakeStm;
 pub(crate) use fs::FakeFs;
 pub(crate) use http::{FakeHttpServer, FakeRequest};
 pub(crate) use md5::FakeMd5;

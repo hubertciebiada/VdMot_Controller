@@ -91,6 +91,10 @@ impl FakeUart {
     pub(crate) fn take_tx(&self) -> Vec<u8> {
         std::mem::take(&mut lock(&self.state).tx)
     }
+    /// Bytes in the ring, without a look at the peer (C++ `serial(2).rx.size()`).
+    pub(crate) fn ring_len(&self) -> usize {
+        lock(&self.state).ring.len()
+    }
     /// Bytes waiting in the ring now.
     pub(crate) fn available(&self) -> usize {
         let mut s = lock(&self.state);
