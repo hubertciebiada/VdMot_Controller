@@ -15,6 +15,8 @@ pub mod mqtt_conn;
 pub mod net;
 pub mod ota;
 pub mod port;
+pub mod shared;
+pub mod stm_service;
 pub mod storage;
 
 #[cfg(test)]
