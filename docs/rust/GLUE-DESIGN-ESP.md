@@ -673,13 +673,13 @@ State of the running image (each image runs the same machine when it boots):
 | Trial | 120 s healthy, or a user restart while net (and stm when required) are up | Confirmed |
 | Trial | 15 min without 120 s of health | SwitchedBack, restart into the fallback |
 | Trial | no valid fallback, or the fallback is the image last switched away from | Confirmed (event 107 arg1 -3) |
-| any | `POST /api/system/ota/switch-back` | restart into the fallback (SwitchedBack when on trial) |
+| any | `POST /api/system/ota/switch-back` | restart into the fallback (SwitchedBack when on trial); from a confirmed image no image stays confirmed, so the target runs a trial with this image as its fallback |
 
 ### 6.1 Records
 
 | Record | Where | Content |
 |---|---|---|
-| `otaOk` | NVS `vdmrev`, blob 16 B | "VDOK", the `AppId` of the last confirmed image, CRC32 |
+| `otaOk` | NVS `vdmrev`, blob 16 B | "VDOK", the `AppId` of the confirmed image, CRC32; removed when that image is left by an upload or by a manual switch, so it runs a trial when it comes back (also after the C++ firmware ran in between) |
 | `otaTrial` | NVS `vdmrev`, blob 32 B | "VDOT", version 1, state (`Trial`, `SwitchedBack`), boots, flags (bit0 stm required), `AppId` of the image on trial, `AppId` of the last image the guard switched away from, fallback slot address, CRC32 |
 | Guard mirror | RTC block, first record, 28 B | "VBGD", `AppId` on trial, boots, breadcrumb of the last switch (`AppId` switched away from, reason 1 boot limit / 2 health), CRC32 |
 | Other RTC records | RTC block after the mirror | net watchdog count ("VNWD"), desired targets (46 B), ESP lease emulation, HA status: the C++ formats, each with its own check |
@@ -714,7 +714,7 @@ across software, panic and watchdog resets; a power cycle then restarts the coun
 | `OtaValidator` → MarkValid (120 s healthy) | `otaOk` := running `AppId`, `otaTrial` removed, RTC mirror cleared, event 108 (seconds after boot) |
 | `OtaValidator` → Rollback (15 min without 120 s of health) | restart reason 4 with the missing checks (D§16 path: STM EEPROM gate, target flush, log flush, MQTT offline); at its end `otaTrial` := `SwitchedBack`, breadcrumb (reason 2), `set_boot(fallback)`, restart; a refused `set_boot` → event 107 arg1 -3, trial ended as confirmed, keep running |
 | User restart (reasons 0 and 3) during a trial | `confirmBeforeRestart`: net up and (stm when required) → confirm first, as C++; otherwise the restart counts as a boot |
-| `POST /api/system/ota/switch-back` `{"confirm":"switch-back"}` | refused with 400 `confirm_required`, 409 `busy` (upload or flash), 409 `restarting`, 409 `no_fallback` (`other().app` is `None`); else restart reason 7 (new, Info) → at the end of the restart path `set_boot(fallback)` (+ `SwitchedBack` when on trial) and restart. Works in any state: it is the remedy for a confirmed image that misbehaves |
+| `POST /api/system/ota/switch-back` `{"confirm":"switch-back"}` | refused with 400 `confirm_required`, 409 `busy` (upload or flash), 409 `restarting`, 409 `no_fallback` (`other().app` is `None`); else restart reason 7 (new, Info) → at the end of the restart path `set_boot(fallback)` and restart; on trial `SwitchedBack` and the fallback becomes `otaOk`, from a confirmed image `otaOk` is removed (the target may be the image that failed its last trial or one that never ran: it runs a trial with this image as its fallback). Works in any state: it is the remedy for a confirmed image that misbehaves |
 | ESP upload during a trial | refused: `409 upload_failed "image on trial"`; the upload would overwrite the fallback |
 | Heap guard, network watchdog, TWDT or panic reset during a trial | counts as a boot |
 | Boot deadline: `setup` has not finished (first app-task pass) 60 s after the start of `main` | `esp_timer` one-shot → `System::restart()`; counts as a boot |
@@ -746,13 +746,13 @@ event (reset reason `sw`).
 
 | With | Rule |
 |---|---|
-| OTA upload | goes to the fallback slot, so it is refused while a trial runs (decision 7.5) and allowed otherwise; the uploaded image's first boot finds a new `AppId` and starts its trial with the uploading image as fallback. `otaStm` is written by the restart path as in C++ and read once into `otaTrial` |
+| OTA upload | goes to the fallback slot, so it is refused while a trial runs (decision 7.5) and allowed otherwise; the uploaded image's first boot finds a new `AppId` and starts its trial with the uploading image as fallback. `otaStm` is written by the restart path as in C++ and read once into `otaTrial`; the restart path also removes `otaOk` (the uploading image, installed again later by another firmware, runs a trial) |
 | First Rust boot after the C++ firmware uploaded it | no `otaOk` (C++ never writes it) → trial with the C++ image as fallback |
 | User restarts | §6.3; the restart path is unchanged otherwise |
 | Network trial (D§16) | a network change during an OTA trial restarts with reason 0 → confirms the image when healthy; a network revert restarts with reason 5 → counts as a boot |
 | Factory reset (HTTP or GPIO2) | keeps `frLatch`, `otaOk` and `otaTrial` (Rust only; a C++ factory reset erases them, and the next Rust boot validates itself again) |
 | STM flash | a switch at run time waits like every restart (no restart during a flash); the boot-time switch happens before the STM link starts |
-| Ping-pong | an automatic switch never goes back to the image that failed the last trial (§6.2 step 4); a manual switch is always allowed |
+| Ping-pong | an automatic switch never goes back to the image that failed the last trial (§6.2 step 4); a manual switch is always allowed, and from a confirmed image its target runs a trial |
 
 ### 6.6 Coverage
 

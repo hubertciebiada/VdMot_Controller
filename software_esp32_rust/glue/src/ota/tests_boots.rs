@@ -8,7 +8,7 @@ use super::support::*;
 use super::*;
 use crate::boot_guard::{BootVerdict, GuardEvent, SwitchReason};
 use crate::port::EspErr;
-use crate::testkit::board::{APP_A, APP_B};
+use crate::testkit::board::{Booted, APP_A, APP_B, APP_CPP};
 use crate::testkit::ota::SLOT_ADDR;
 use crate::testkit::{run, Ended, FakeBoard, FakeMd5, Reset, SlotImage};
 
@@ -173,12 +173,14 @@ fn a_manual_switch_back_restarts_a_confirmed_image_into_the_other_one() {
     restart_path(&rig, &mut svc, 1000);
     assert_eq!(rig.dev.ota.knobs().set_boots, vec![SLOT_ADDR[1]]);
     assert!(at_least_once(&rig, "logger.flush"));
+    assert_eq!(rig.confirmed_app(), None); // B never ran here: it has to prove itself
     drop(svc);
     let rig = reboot(rig);
     assert_eq!(rig.dev.ota.running().app, Some(APP_B));
-    assert_eq!(rig.guard.verdict(), BootVerdict::Confirmed);
+    assert_eq!(rig.guard.verdict(), trial(1, false)); // with A as its fallback
     let _svc = rig.begun();
     assert!(rig.host.state().events.is_empty());
+    assert!(rig.shared.on_trial());
 }
 
 fn at_least_once(rig: &Rig, entry: &str) -> bool {
@@ -208,12 +210,41 @@ fn an_upload_that_ends_while_a_switch_back_waits_replaces_it_and_runs_on_trial()
     rig.dev.clock.set_ms(1000);
     restart_path(&rig, &mut svc, 1000);
     assert!(rig.dev.ota.knobs().set_boots.is_empty()); // a plain restart into the upload
-    assert_eq!(rig.confirmed_app(), Some(APP_A.0));
+    assert_eq!(rig.confirmed_app(), None); // the restart into an upload confirms nothing
     drop(up);
     drop(svc);
     let rig = reboot(rig);
     assert_eq!(rig.dev.ota.running().app, Some(APP_B));
     assert_eq!(rig.guard.verdict(), trial(1, false)); // with A as its fallback
+}
+
+#[test]
+fn an_upload_of_the_cpp_firmware_leaves_no_confirmation_behind() {
+    // A uploads the C++ firmware; when the C++ firmware installs A again later, A proves itself
+    // on trial instead of trusting its confirmation from before the C++ firmware ran
+    let rig = Rig::confirmed();
+    let mut svc = rig.begun();
+    let mut up = rig.upload();
+    let img = image(5000);
+    assert!(up.upload_begin(img.len(), b""));
+    assert!(up.upload_write(&img));
+    assert!(up.upload_end(true));
+    rig.dev.clock.set_ms(1000);
+    restart_path(&rig, &mut svc, 1000);
+    assert_eq!(rig.confirmed_app(), None);
+    assert!(at_least_once(&rig, "nvs remove vdmrev/otaOk"));
+    drop(up);
+    drop(svc);
+    let board = rig.board.clone();
+    drop(rig);
+    board.ota().store().slots[1] = SlotImage::foreign(APP_CPP);
+    assert!(matches!(board.boot_any(), Booted::Foreign(a) if a == APP_CPP));
+    // the C++ firmware uploads A into slot 0 again and restarts into it
+    board.ota().store().otadata = 0;
+    board.reset(Reset::Software);
+    let rig = Rig::boot(&board);
+    assert_eq!(rig.dev.ota.running().app, Some(APP_A));
+    assert_eq!(rig.guard.verdict(), trial(1, false)); // the C++ firmware as its fallback
 }
 
 #[test]

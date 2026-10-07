@@ -7,10 +7,13 @@
 //! checks and the manual switch back are driven by the `ota` glue through [`BootGuard`].
 //!
 //! With the choices the firmware spike proved in QEMU (`firmware/src/boot_guard.rs`): no trial
-//! when the other slot holds no image that validates; every switch makes its target the
-//! confirmed image before the restart (two images that both wait for a network that is down
-//! must not take turns); every confirmation also marks the image valid in otadata (for a
-//! bootloader with rollback support); NVS is never erased, only the guard's keys are removed.
+//! when the other slot holds no image that validates; a switch away from an image on trial makes
+//! its fallback, which ran before that image was uploaded, the confirmed image before the restart
+//! (two images that both wait for a network that is down must not take turns); a manual switch
+//! away from a confirmed image confirms no image (its target may be the image that failed its
+//! last trial, or one that never ran): the target boots on trial with this image as its
+//! fallback; every confirmation also marks the image valid in otadata (for a bootloader with
+//! rollback support); NVS is never erased, only the guard's keys are removed.
 //!
 //! Records (little endian, each with a CRC-32 over the bytes before it):
 //! - `otaOk` (NVS `vdmrev`, blob 16 B): "VDOK", the `AppId` of the last confirmed image.
@@ -353,21 +356,26 @@ fn write_trial(ns: Option<&mut impl NvsNamespace>, rtc: &impl Rtc, t: &TrialReco
     );
 }
 
-/// Selects the slot at `address` and restarts; the image there becomes the confirmed one first
-/// (it ran before this one was uploaded: two images that both wait for a network that is down
-/// must not take turns). Returns only when the selection is refused.
+/// Selects the slot at `address` and restarts. `confirm`: the image there becomes the confirmed
+/// one first (the fallback of a trial: it ran before the image on trial was uploaded, and two
+/// images that both wait for a network that is down must not take turns); `None`: no image is
+/// confirmed any more, so a glue image there boots on trial with this one as its fallback.
+/// Returns only when the selection is refused.
 fn switch_and_restart<NS: NvsNamespace>(
     mut ns: Option<NS>,
     ota: &impl Ota,
     system: &impl System,
     address: u32,
-    target: Option<AppId>,
+    confirm: Option<AppId>,
 ) -> Option<NS> {
     if ota.set_boot(address).is_err() {
         return ns;
     }
-    if let (Some(n), Some(t)) = (ns.as_mut(), target) {
-        n.set_blob(KEY_OK, &encode_ok(t));
+    if let Some(n) = ns.as_mut() {
+        match confirm {
+            Some(t) => n.set_blob(KEY_OK, &encode_ok(t)),
+            None => n.remove(KEY_OK),
+        };
     }
     drop(ns);
     system.restart()
@@ -515,6 +523,16 @@ impl BootGuard {
         self.confirm(ns.as_mut(), ota, rtc, app);
     }
 
+    /// The restart into an uploaded image (restart reason 1): no image stays confirmed. The
+    /// uploaded image runs on trial by its own `AppId` anyway; this image, should another
+    /// firmware (the C++ one) run in between and install it again, proves itself on trial
+    /// instead of trusting a confirmation from before that firmware ran.
+    pub fn leave_for_upload<N: Nvs>(&self, nvs: &N) {
+        if let Some(mut ns) = nvs.open(NVS_NAMESPACE, true) {
+            ns.remove(KEY_OK);
+        }
+    }
+
     /// A switch is possible at all: the other slot holds an app (`409 no_fallback` otherwise).
     pub fn fallback_available<O: Ota>(ota: &O) -> bool {
         ota.other().and_then(|o| o.app).is_some()
@@ -522,9 +540,12 @@ impl BootGuard {
 
     /// The switch at the end of the restart path (6.3): during a trial `otaTrial` becomes
     /// switched back (after the health checks with the breadcrumb, reason 2), then the other slot
-    /// is selected, its image becomes the confirmed one and the chip restarts. Returns only when
-    /// the other slot cannot be selected: the image keeps running, a trial ends as confirmed,
-    /// and the caller logs the returned event (107 arg1 -3).
+    /// is selected, its image (the trial's fallback) becomes the confirmed one and the chip
+    /// restarts. From a confirmed image (only the manual switch) the confirmation is removed
+    /// instead: the other image may be the one that failed its last trial or one that never ran,
+    /// so it boots on trial with this image as its fallback. Returns only when the other slot
+    /// cannot be selected: the image keeps running, a trial ends as confirmed, and the caller
+    /// logs the returned event (107 arg1 -3).
     pub fn switch_to_fallback<N: Nvs, O: Ota, R: Rtc, S: System>(
         &mut self,
         nvs: &N,
@@ -554,8 +575,11 @@ impl BootGuard {
             }
         }
         let address = self.trial.map(|t| t.fallback).or(other.map(|o| o.address));
+        // only a trial's fallback ran before this image: from a confirmed image nothing is
+        // confirmed, the target proves itself on trial
+        let confirm = self.trial.and(other).and_then(|o| o.app);
         if let Some(a) = address {
-            ns = switch_and_restart(ns, ota, system, a, other.and_then(|o| o.app));
+            ns = switch_and_restart(ns, ota, system, a, confirm);
         }
         if let (Some(app), Some(_)) = (self.app, self.trial) {
             self.confirm(ns.as_mut(), ota, rtc, app);

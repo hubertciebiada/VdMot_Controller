@@ -879,7 +879,8 @@ fn a_refused_switch_at_run_time_ends_the_trial_as_confirmed() {
 
 #[test]
 fn a_manual_switch_back_works_in_any_state() {
-    // a confirmed image switches to the other slot, whose image becomes the confirmed one
+    // a confirmed image switches to the other slot; nothing is confirmed any more, so the other
+    // image (B never ran here) boots on trial with A as its fallback
     let board = uploaded_b();
     board.ota().store().otadata = 0;
     let (dev, r) = boot(&board);
@@ -896,12 +897,19 @@ fn a_manual_switch_back_works_in_any_state() {
     });
     assert_eq!(e, Ended::Reset(Reset::Software));
     assert_eq!(trial_record(&dev.nvs), None);
-    assert_eq!(ok_record(&dev.nvs), Some(APP_B));
+    assert_eq!(ok_record(&dev.nvs), None);
+    // the selection first: a refused one leaves the confirmation as it was
+    assert!(dev.journal.entries().ends_with(&[
+        "ota set_boot 0x150000".into(),
+        "nvs remove vdmrev/otaOk".into(),
+        "esp_restart".into()
+    ]));
     drop(dev);
     let (dev, r) = boot(&board);
     assert_eq!(dev.ota.running().app, Some(APP_B));
     let (_, report) = r.returned();
-    assert_eq!(report.verdict, BootVerdict::Confirmed);
+    assert_eq!(report.verdict, trial(1, false));
+    assert_eq!(trial_record(&dev.nvs).unwrap().fallback, SLOT_ADDR[0]);
     drop(dev);
     // during a trial: switched back without a breadcrumb
     let board = uploaded_b();
@@ -926,6 +934,106 @@ fn a_manual_switch_back_works_in_any_state() {
     let (_, report) = r.returned();
     assert_eq!(report.verdict, BootVerdict::Confirmed);
     assert_eq!(events(&report), vec![]);
+}
+
+#[test]
+fn a_manual_switch_to_the_image_that_failed_its_trial_gives_it_a_new_trial() {
+    // B failed its trial and the guard went back to A. A manual switch from the confirmed A to
+    // B must not make B the confirmed image: B crashes again and the guard returns to A, where
+    // a confirmed B would crash at every boot with nothing left to switch back to
+    let board = FakeBoard::with_slots([SlotImage::glue(APP_A), SlotImage::glue(APP_B)], 0);
+    board
+        .nvs()
+        .set_blob(NVS_NAMESPACE, KEY_OK, &encode_ok(APP_A));
+    let failed = TrialRecord {
+        state: STATE_SWITCHED_BACK,
+        boots: 4,
+        stm_required: false,
+        app: APP_B,
+        away: Some(APP_B),
+        fallback: SLOT_ADDR[0],
+    };
+    board
+        .nvs()
+        .set_blob(NVS_NAMESPACE, KEY_TRIAL, &encode_trial(&failed));
+    let (dev, r) = boot(&board);
+    let (mut g, report) = r.returned();
+    assert_eq!(report.verdict, BootVerdict::Confirmed);
+    let e = run(|| {
+        g.switch_to_fallback(
+            &dev.nvs,
+            &dev.ota,
+            &dev.rtc,
+            &dev.system,
+            SwitchCause::Manual,
+        )
+    });
+    assert_eq!(e, Ended::Reset(Reset::Software));
+    assert_eq!(ok_record(&dev.nvs), None);
+    drop(dev);
+    let report = crash_loop(&board, 3, Reset::Panic);
+    assert_eq!(report.verdict, trial(3, false));
+    let (dev, r) = boot(&board);
+    assert_eq!(r, Ended::Reset(Reset::Software)); // boot 4 of B: back to A
+    assert_eq!(ok_record(&dev.nvs), Some(APP_A));
+    drop(dev);
+    let (dev, r) = boot(&board);
+    assert_eq!(dev.ota.running().app, Some(APP_A));
+    let (_, report) = r.returned();
+    assert_eq!(report.verdict, BootVerdict::Confirmed);
+    assert_eq!(
+        events(&report),
+        vec![GuardEvent::PreviousImageFailed(SwitchReason::BootLimit)]
+    );
+}
+
+#[test]
+fn a_manual_switch_to_the_cpp_firmware_leaves_no_confirmation_behind() {
+    // A switches to the C++ firmware by hand; when the C++ firmware installs A again later, A
+    // proves itself on trial instead of running as the image confirmed before the switch
+    let board = FakeBoard::with_slots([SlotImage::foreign(APP_CPP), SlotImage::glue(APP_A)], 1);
+    board
+        .nvs()
+        .set_blob(NVS_NAMESPACE, KEY_OK, &encode_ok(APP_A));
+    let (dev, r) = boot(&board);
+    let (mut g, report) = r.returned();
+    assert_eq!(report.verdict, BootVerdict::Confirmed);
+    let e = run(|| {
+        g.switch_to_fallback(
+            &dev.nvs,
+            &dev.ota,
+            &dev.rtc,
+            &dev.system,
+            SwitchCause::Manual,
+        )
+    });
+    assert_eq!(e, Ended::Reset(Reset::Software));
+    drop(dev);
+    assert!(matches!(board.boot_any(), Booted::Foreign(a) if a == APP_CPP));
+    // the C++ firmware uploads A into the other slot again and restarts into it
+    board.ota().store().otadata = 1;
+    board.reset(Reset::Software);
+    let (dev, r) = boot(&board);
+    assert_eq!(r.returned().1.verdict, trial(1, false));
+    assert_eq!(trial_record(&dev.nvs).unwrap().fallback, SLOT_ADDR[0]);
+}
+
+#[test]
+fn leaving_for_an_upload_removes_the_confirmation_only() {
+    let board = uploaded_b();
+    board.ota().store().otadata = 0;
+    let (dev, r) = boot(&board);
+    let (g, report) = r.returned();
+    assert_eq!(report.verdict, BootVerdict::Confirmed);
+    dev.journal.clear();
+    g.leave_for_upload(&dev.nvs);
+    assert_eq!(ok_record(&dev.nvs), None);
+    assert_eq!(dev.journal.entries(), vec!["nvs remove vdmrev/otaOk"]);
+    assert!(!g.on_trial());
+    // without NVS nothing changes and nothing breaks
+    dev.nvs.knobs().init_failed = true;
+    g.leave_for_upload(&dev.nvs);
+    assert_eq!(dev.journal.entries(), vec!["nvs remove vdmrev/otaOk"]);
 }
 
 #[test]
