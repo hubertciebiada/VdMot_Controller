@@ -8,6 +8,9 @@
 #                                                   (features: comma list, "" = default = wifi;
 #                                                   e.g. "qemu", "qemu,fail-boot", "nowifi")
 #   tools/rust/esp/docker.sh size [features]        build, then the image size against the budget
+#   tools/rust/esp/docker.sh lint                   clippy -D warnings of the default, nowifi and
+#                                                   QEMU test builds (the firmware is outside the
+#                                                   clippy run of the host workspace)
 #   tools/rust/esp/docker.sh qemu [scenarios...]    build the QEMU variants, then the end-to-end
 #                                                   harness (tools/rust/esp/qemu/harness.py)
 #   tools/rust/esp/docker.sh run <command...>       any command in the container, repo at /src
@@ -19,7 +22,8 @@
 # map) and /target/qemu/ (flash files, serial logs) in the target volume.
 #
 # Environment: VDM_RUST_ESP_IMAGE (default vdmot-rust-esp:<hash of the Dockerfile>), DOCKER_ARGS
-# (extra arguments of docker run).
+# (extra arguments of docker run), VDM_FETCH_CPP=1 (qemu: fetch the C++ 2.1.7 release asset with
+# gh when tools/rust/esp/qemu/cache does not hold it).
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -89,20 +93,39 @@ python3 /src/tools/rust/esp/image_size.py "$out/vdm-esp-fw.bin" "$out/vdm-esp-fw
 EOS
 }
 
-# The C++ firmware 2.1.7 for the QEMU harness: the GitHub release asset (gh, checked against the
-# release's SHA256SUMS), cached in tools/rust/esp/qemu/cache; without gh the 2.0.0 release of the
-# repository (releases/revamped/2.0.0-revamped).
+# Container script: clippy of the firmware for every feature set the images use.
+lint_script() {
+  cat <<'EOS'
+exec 9>/opt/espressif/.vdm-build.lock
+if ! flock -n 9; then echo 'waiting for another ESP-IDF build (vdmot-esp-idf)' >&2; flock 9; fi
+cd /src/software_esp32_rust/firmware
+export CARGO_TARGET_DIR=/target/cargo
+cargo clippy --release -- -D warnings
+cargo clippy --release --no-default-features -- -D warnings
+cargo clippy --release --features qemu,fail-boot,hang-setup -- -D warnings
+EOS
+}
+
+# The C++ firmware 2.1.7 for the QEMU harness: the release asset of v2.1.7-revamped in
+# tools/rust/esp/qemu/cache (gitignored), used only when its SHA-256 is the pinned one (the
+# digest GitHub publishes for the asset). Nothing is fetched by default: VDM_FETCH_CPP=1 downloads
+# the asset with gh first. Without it the 2.0.0 release of the repository
+# (releases/revamped/2.0.0-revamped) stands in.
+CPP_217_NAME="VdMot-Revamped_2.1.7-revamped_ESP32-WT32-ETH01.bin"
+CPP_217_SHA256="38bb717cd7b14a116a12445efdb35a951ce58d814d33362dc524d1b0c7c18d76"
 cpp_image() {
-  local cache="$ROOT/tools/rust/esp/qemu/cache" name="VdMot-Revamped_2.1.7-revamped_ESP32-WT32-ETH01.bin"
+  local cache="$ROOT/tools/rust/esp/qemu/cache"
   mkdir -p "$cache"
-  if [ ! -f "$cache/$name" ] && command -v gh >/dev/null 2>&1; then
+  if [ ! -f "$cache/$CPP_217_NAME" ] && [ "${VDM_FETCH_CPP:-0}" = 1 ]; then
     gh release download v2.1.7-revamped --repo hubertciebiada/VdMot_Controller \
-      --pattern '*ESP32-WT32-ETH01.bin' --pattern SHA256SUMS --dir "$cache" --clobber >&2 || true
+      --pattern "$CPP_217_NAME" --dir "$cache" --clobber >&2 || true
   fi
-  if [ -f "$cache/$name" ] && (cd "$cache" && grep " $name\$" SHA256SUMS | sha256sum -c - >&2); then
-    echo "/src/tools/rust/esp/qemu/cache/$name"
+  if [ -f "$cache/$CPP_217_NAME" ] \
+    && [ "$(sha256sum "$cache/$CPP_217_NAME" | cut -c1-64)" = "$CPP_217_SHA256" ]; then
+    echo "/src/tools/rust/esp/qemu/cache/$CPP_217_NAME"
   else
-    echo "C++ 2.1.7 release asset not available, using releases/revamped/2.0.0-revamped" >&2
+    echo "C++ 2.1.7 release asset not in tools/rust/esp/qemu/cache with SHA-256 $CPP_217_SHA256" \
+      "(VDM_FETCH_CPP=1 fetches it), using releases/revamped/2.0.0-revamped" >&2
     echo "/src/releases/revamped/2.0.0-revamped/ESP32_revamped_firmware.bin"
   fi
 }
@@ -118,12 +141,15 @@ case "${1:-}" in
     in_container "$(build_script "${2:-}")
 $(size_script)"
     ;;
+  lint)
+    in_container "$(lint_script)"
+    ;;
   qemu)
     shift
     cpp="$(cpp_image)"
     in_container "$(build_script qemu)
 $(build_script qemu,fail-boot)
-$(build_script qemu,short-deadline)
+$(build_script qemu,hang-setup)
 /opt/pytools/bin/python /src/tools/rust/esp/qemu/harness.py --cpp-image $cpp$(quote_args "$@")"
     ;;
   run)
@@ -131,7 +157,7 @@ $(build_script qemu,short-deadline)
     in_container "$*"
     ;;
   *)
-    sed -n '2,22p' "$0" >&2
+    sed -n '2,26p' "$0" >&2
     exit 2
     ;;
 esac

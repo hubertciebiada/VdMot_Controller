@@ -72,6 +72,13 @@ RUN curl -fsSL -o /tmp/mklittlefs.tar.gz \
  && ln -s /opt/mklittlefs/mklittlefs /usr/local/bin/mklittlefs \
  && mklittlefs --version
 
+# Mosquitto (Debian bookworm): the broker of the QEMU harness's MQTT scenario (QEMU's user network
+# reaches it at 10.0.2.2:1883). A layer of its own, so the layers above stay cached.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends mosquitto \
+ && rm -rf /var/lib/apt/lists/* \
+ && mosquitto -h | head -1
+
 ENV PATH=/opt/qemu/bin:$PATH \
     ESP_IDF_TOOLS_INSTALL_DIR=custom:/opt/espressif \
     CARGO_TERM_COLOR=never \
