@@ -1,20 +1,16 @@
 //! `Wire` on I2C1 (PB6 SCL, PB7 SDA, AF4, open drain, external pull-ups) at 100 kHz for the 24LC64
-//! (docs/rust/GLUE-DESIGN-STM.md §1.3, §3.1): a blocking master on the registers, as the STM32
-//! core's `endTransmission` / `requestFrom`: each transfer with its own START and STOP, every wait
-//! bounded by 100 ms (`I2C_TIMEOUT_TICK`).
-//!
-//! Not the embassy-stm32 0.6.0 driver: its v1 `blocking_write` of zero bytes (the address probe
-//! of the EEPROM's ready polling) waits for BTF, which never comes without a data byte, and a NACK
-//! leaves the bus without a STOP. The bus recovery (`i2c_bus::recover`, glue) drives the two
-//! lines as GPIO while the peripheral is off.
+//! (docs/rust/GLUE-DESIGN-STM.md §1.3, §3.1): the registers under the glue's master
+//! (`vdm_stm_glue::i2c_master`, which holds the sequence and its decisions), the set-up of the
+//! peripheral (`Wire.begin()`), and the two lines as GPIO for the bus recovery
+//! (`i2c_bus::recover`, glue) while the peripheral is off.
 #![forbid(unsafe_code)]
 
-use embassy_time::{Duration, Instant};
 use stm32_metapac as pac;
 use stm32_metapac::gpio::regs::Bsrr;
+use stm32_metapac::i2c::regs::Sr1;
 use stm32_metapac::i2c::vals::FS;
-use vdm_stm_glue::hal::{I2cMaster, WireStatus, WIRE_ERROR, WIRE_NACK, WIRE_OK, WIRE_TIMEOUT};
 use vdm_stm_glue::i2c_bus::{self, I2cLine, LineMode, RecoveryPins, Wire};
+use vdm_stm_glue::i2c_master::I2cRegs;
 use vdm_stm_glue::system::I2cBus;
 
 use crate::board::FwBoard;
@@ -25,12 +21,10 @@ const APB1_I2C1: u32 = 1 << 21;
 const SCL: u32 = 6;
 const SDA: u32 = 7;
 const AF_I2C1: u32 = 4;
-/// `I2C_TIMEOUT_TICK`
-const PHASE_TIMEOUT: Duration = Duration::from_millis(100);
 /// 100 kHz, standard mode
 const BUS_HZ: u32 = 100_000;
 
-/// The I2C1 master and its two lines (no state: the registers are the state).
+/// I2C1 and its two lines (no state: the registers are the state).
 #[derive(Clone, Copy)]
 pub struct FwI2c;
 
@@ -83,117 +77,43 @@ fn peripheral_on() {
     r.cr1().modify(|w| w.set_pe(true));
 }
 
-/// Waits for `done` (or an error flag); false after the phase timeout.
-fn wait(done: impl Fn(pac::i2c::regs::Sr1) -> bool) -> Result<(), WireStatus> {
-    let start = Instant::now();
-    loop {
-        let sr1 = pac::I2C1.sr1().read();
-        if sr1.af() {
-            // NACK: clear, STOP
-            pac::I2C1.sr1().modify(|w| w.set_af(false));
-            stop();
-            return Err(WIRE_NACK);
-        }
-        if sr1.arlo() || sr1.berr() {
-            pac::I2C1.sr1().modify(|w| {
-                w.set_arlo(false);
-                w.set_berr(false);
-            });
-            stop();
-            return Err(WIRE_ERROR);
-        }
-        if done(sr1) {
-            return Ok(());
-        }
-        if start.elapsed() > PHASE_TIMEOUT {
-            stop();
-            return Err(WIRE_TIMEOUT);
-        }
-    }
-}
-
-fn stop() {
-    pac::I2C1.cr1().modify(|w| w.set_stop(true));
-}
-
-/// START, the address byte, ADDR (or NACK, timeout); SR2 read clears ADDR unless `keep_addr`.
-fn address(addr: u8, read: bool, keep_addr: bool) -> Result<(), WireStatus> {
-    let r = pac::I2C1;
-    let start = Instant::now();
-    while r.sr2().read().busy() {
-        if start.elapsed() > PHASE_TIMEOUT {
-            return Err(WIRE_ERROR);
-        }
-    }
-    r.cr1().modify(|w| {
-        w.set_ack(read);
-        w.set_start(true);
-    });
-    wait(|s| s.start())?;
-    r.dr()
-        .write(|w| w.set_dr((addr << 1) + u8::from(read)));
-    wait(|s| s.addr())?;
-    if !keep_addr {
-        let _ = r.sr2().read();
-    }
-    Ok(())
-}
-
-impl I2cMaster for FwI2c {
-    fn write(&mut self, addr: u8, bytes: &[u8]) -> WireStatus {
-        let r = pac::I2C1;
-        let sent = (|| {
-            address(addr, false, false)?;
-            for &b in bytes {
-                wait(|s| s.txe())?;
-                r.dr().write(|w| w.set_dr(b));
-            }
-            if !bytes.is_empty() {
-                wait(|s| s.btf())?;
-            }
-            stop();
-            Ok::<(), WireStatus>(())
-        })();
-        match sent {
-            Ok(()) => WIRE_OK,
-            Err(status) => status,
-        }
+impl I2cRegs for FwI2c {
+    fn sr1(&self) -> u16 {
+        pac::I2C1.sr1().read().0 as u16
     }
 
-    fn read(&mut self, addr: u8, buf: &mut [u8]) -> usize {
-        let r = pac::I2C1;
-        let Some((last, head)) = buf.split_last_mut() else {
-            return 0;
-        };
-        let received = (|| {
-            // one byte: NACK before ADDR is cleared, then STOP (RM0368 §18.3.3)
-            address(addr, true, head.is_empty())?;
-            if head.is_empty() {
-                r.cr1().modify(|w| w.set_ack(false));
-                let _ = r.sr2().read();
-            }
-            for b in head.iter_mut() {
-                wait(|s| s.rxne())?;
-                *b = r.dr().read().dr();
-            }
-            // NACK and STOP after the last byte
-            r.cr1().modify(|w| {
-                w.set_ack(false);
-                w.set_stop(true);
-            });
-            wait(|s| s.rxne())?;
-            *last = r.dr().read().dr();
-            Ok::<(), WireStatus>(())
-        })();
-        if received.is_ok() {
-            buf.len()
-        } else {
-            0
-        }
+    fn sr2(&self) -> u16 {
+        pac::I2C1.sr2().read().0 as u16
     }
 
-    fn restart(&mut self) {
-        I2cBus::restart(self);
+    /// rc_w0 flags: 0 clears, 1 keeps; no read-modify-write that could clear a flag set meanwhile
+    fn clear_sr1(&self, flags: u16) {
+        pac::I2C1
+            .sr1()
+            .write_value(Sr1(u32::from(!flags)));
+    }
+
+    fn start(&self, ack: bool) {
+        pac::I2C1.cr1().modify(|w| {
+            w.set_ack(ack);
+            w.set_start(true);
+        });
+    }
+
+    fn stop(&self) {
+        pac::I2C1.cr1().modify(|w| w.set_stop(true));
+    }
+
+    fn set_ack(&self, on: bool) {
+        pac::I2C1.cr1().modify(|w| w.set_ack(on));
+    }
+
+    fn write_dr(&self, byte: u8) {
+        pac::I2C1.dr().write(|w| w.set_dr(byte));
+    }
+
+    fn read_dr(&self) -> u8 {
+        pac::I2C1.dr().read().dr()
     }
 }
 

@@ -17,6 +17,7 @@ use vdm_stm_glue::board::BoardRev;
 use vdm_stm_glue::communication::FirmwareId;
 use vdm_stm_glue::eeprom24::{I2cEeprom, DEVICEADDRESS};
 use vdm_stm_glue::hal::{Out, Pins};
+use vdm_stm_glue::i2c_master::I2cV1;
 use vdm_stm_glue::motor::MotorShared;
 use vdm_stm_glue::ow_devices::LineBus;
 use vdm_stm_glue::serial::PortSerial;
@@ -126,7 +127,7 @@ pub fn run(token: BootToken) -> ! {
         watchdog: FwWatchdog,
         tim1: FwTimer::Tim1(Timer::new(p.TIM1)),
         tim2: FwTimer::Tim2(Timer::new(p.TIM2)),
-        eeprom: I2cEeprom::new(FwI2c, FwBoard, DEVICEADDRESS),
+        eeprom: I2cEeprom::new(I2cV1::new(FwI2c, FwBoard), FwBoard, DEVICEADDRESS),
         i2c: FwI2c,
         one_wire: LineBus::new(FwOneWire, FwBoard),
     };

@@ -18,6 +18,7 @@ use stm32_metapac as pac;
 use stm32_metapac::gpio::regs::Bsrr;
 use stm32_metapac::timer::vals::Urs;
 use vdm_stm_glue::eeprom24::I2cEeprom;
+use vdm_stm_glue::i2c_master::I2cV1;
 use vdm_stm_glue::hal::{
     Clock, ControlTimer, CurrentAdc, In, NoinitStore, Out, Pins, RevIrq, System, Watchdog,
     NOINIT_SIZE,
@@ -250,7 +251,7 @@ impl Platform for Fw {
     type Noinit = FwNoinit;
     type Watchdog = FwWatchdog;
     type Timer = FwTimer;
-    type Eeprom = I2cEeprom<FwI2c, FwBoard>;
+    type Eeprom = I2cEeprom<I2cV1<FwI2c, FwBoard>, FwBoard>;
     type I2c = FwI2c;
     type OneWire = LineBus<FwOneWire, FwBoard>;
     type Motor = IsrCell<MotorShared>;
