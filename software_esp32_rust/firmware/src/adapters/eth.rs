@@ -115,8 +115,12 @@ fn mac_and_phy() -> (*mut sys::esp_eth_mac_t, *mut sys::esp_eth_phy_t) {
         reset_gpio_num: -1,
         ..Default::default()
     };
-    // SAFETY: as above.
+    // SAFETY: plain setter with a static tag; then as above.
     unsafe {
+        // The OpenETH interrupt handler (IRAM) logs a dropped frame with ESP_EARLY_LOGW, whose
+        // strings are in flash: during a flash access (cache off) that is a "Cache error"
+        // panic. Early logs only print from the default level up, so it goes to errors.
+        sys::esp_log_level_set(c"*".as_ptr(), sys::esp_log_level_t_ESP_LOG_ERROR);
         (
             sys::esp_eth_mac_new_openeth(&mac_config()),
             sys::esp_eth_phy_new_dp83848(&phy),
