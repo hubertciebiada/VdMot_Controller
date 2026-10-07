@@ -304,7 +304,7 @@ fn event_defaults_are_the_cpp_member_initialisers() {
     assert_eq!((f.since_seq, f.min_severity, f.valve), (0, Debug, NO_VALVE));
     assert_eq!(EVENT_TEXT_MAX, 23);
     assert_eq!(
-        (0..=7).map(RebootReason::from_raw).collect::<Vec<_>>(),
+        (0..=8).map(RebootReason::from_raw).collect::<Vec<_>>(),
         [
             Some(RebootReason::User),
             Some(RebootReason::Ota),
@@ -313,10 +313,12 @@ fn event_defaults_are_the_cpp_member_initialisers() {
             Some(RebootReason::Rollback),
             Some(RebootReason::NetRevert),
             Some(RebootReason::HeapGuard),
+            Some(RebootReason::SwitchBack),
             None
         ]
     );
     assert_eq!(RebootReason::HeapGuard as u8, 6);
+    assert_eq!(RebootReason::SwitchBack as u8, 7);
     assert_eq!(
         [
             EventMqtt::No as u8,
@@ -556,7 +558,9 @@ fn event_messages_for_every_code() {
         (ev(C::RebootRequested, NO_VALVE, 4, 0, ""), "restart requested (rollback)"),
         (ev(C::RebootRequested, NO_VALVE, 5, 0, ""), "restart requested (network revert)"),
         (ev(C::RebootRequested, NO_VALVE, 6, 0, ""), "restart requested (heap guard)"),
-        (ev(C::RebootRequested, NO_VALVE, 7, 0, ""), "restart requested (unknown)"),
+        // intended deviation (PORT-NOTES): C++ 2.1.7 reads reason 7 as "unknown"
+        (ev(C::RebootRequested, NO_VALVE, 7, 0, ""), "restart requested (switch back)"),
+        (ev(C::RebootRequested, NO_VALVE, 8, 0, ""), "restart requested (unknown)"),
         (ev(C::RebootRequested, NO_VALVE, -1, 0, ""), "restart requested (unknown)"),
         (ev(C::RebootRequested, NO_VALVE, 2, 10, ""), "restart requested (net watchdog, after 10 min)"),
         (ev(C::RebootRequested, NO_VALVE, 2, 1, ""), "restart requested (net watchdog, after 1 min)"),
@@ -1211,4 +1215,59 @@ fn event_message_a_one_character_text_counts_as_text() {
     assert_text(&message(&e), "boot (reset poweron, count 3)");
     let e = make_event(C::ConfigSaved, Info, NO_VALVE, 7, 0, b"y");
     assert_text(&message(&e), "config saved (revision 7, y)");
+}
+
+#[test]
+fn event_line_of_a_valve_index_past_the_valves_has_no_valve_number() {
+    // valve 12 is not a valve: no " v13" (the message has no "valve 13: " either)
+    let mut e = ev(C::NetUp, VALVE_COUNT, 1, 0, "");
+    assert_text(&line_of(&e, 160), "#0 +0s INFO net_up network up (eth)");
+    e.valve = VALVE_COUNT - 1;
+    assert_text(
+        &line_of(&e, 160),
+        "#0 +0s INFO net_up v12 valve 12: network up (eth)",
+    );
+    e.valve = NO_VALVE;
+    assert_text(&line_of(&e, 160), "#0 +0s INFO net_up network up (eth)");
+}
+
+#[test]
+fn switch_back_restart_and_trial_failure_are_the_glue_design_contract() {
+    // Intended deviation (PORT-NOTES, GLUE-DESIGN-ESP §7 item 6): reboot reason 7 is the switch
+    // back, logged with the default severity of reboot_requested (Info); 8 and above stay
+    // "unknown" like every value outside the names.
+    let mut e = make_event(
+        C::RebootRequested,
+        event_default_severity(C::RebootRequested),
+        NO_VALVE,
+        RebootReason::SwitchBack as i32,
+        0,
+        b"",
+    );
+    assert_eq!(e.severity, Info);
+    assert_text(
+        &line_of(&e, 160),
+        "#0 +0s INFO reboot_requested restart requested (switch back)",
+    );
+    // no detail: the arg2 suffixes belong to reasons 2 and 4
+    e.arg2 = 7;
+    assert_text(&message(&e), "restart requested (switch back)");
+    e.arg2 = 0;
+    for v in [8, 9, 255, 256, i32::MAX, -7, i32::MIN] {
+        e.arg1 = v;
+        assert_text(&message(&e), "restart requested (unknown)");
+    }
+    // Event 107 arg1 -4: the previous image failed its trial (arg2 1 boot limit, 2 health); the
+    // generic message, like -3 (no other valid image)
+    for (a1, a2) in [(-4, 1), (-4, 2), (-3, 0)] {
+        let f = ev_sev(C::EspOtaFailed, NO_VALVE, a1, a2, "", Error);
+        let want = std::format!("ESP update failed (error {a1})");
+        assert_text(&message(&f), &want);
+        let mut buf = [0u8; 320];
+        let mut jw = JsonWriter::new(&mut buf);
+        assert!(write_event_json(&mut jw, &f));
+        let tail = std::format!(r#""a1":{a1},"a2":{a2},"text":"","msg":"{want}"}}"#);
+        assert!(jw.as_bytes().ends_with(tail.as_bytes()));
+    }
+    assert_eq!(event_default_severity(C::EspOtaFailed), Error);
 }

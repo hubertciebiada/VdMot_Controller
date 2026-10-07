@@ -91,7 +91,8 @@ pub enum EventCode {
     EspOtaStarted = 105,
     /// arg1 image size; text new version if known
     EspOtaDone = 106,
-    /// arg1 Update error code
+    /// arg1 Update error code; -4 (boot guard of the Rust firmware): the previous image failed
+    /// its trial, arg2 1 boot limit, 2 health
     EspOtaFailed = 107,
     /// OTA image confirmed; arg1 seconds after boot
     AppMarkedValid = 108,
@@ -275,7 +276,7 @@ pub enum EventMqtt {
     Always = 2,
 }
 
-/// RebootRequested arg1 (the numbers are the existing contract).
+/// RebootRequested arg1 (the numbers are the existing contract, only appended).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RebootReason {
@@ -286,6 +287,9 @@ pub enum RebootReason {
     Rollback = 4,
     NetRevert = 5,
     HeapGuard = 6,
+    /// `POST /api/system/ota/switch-back` (Rust firmware, GLUE-DESIGN-ESP §7 item 6; C++ from
+    /// 2.1.8): restart into the fallback image, logged as Info
+    SwitchBack = 7,
 }
 
 impl RebootReason {
@@ -298,6 +302,7 @@ impl RebootReason {
             Self::Rollback,
             Self::NetRevert,
             Self::HeapGuard,
+            Self::SwitchBack,
         ]
         .get(usize::from(v))
         .copied()
@@ -900,7 +905,8 @@ const RESET_REASONS: [&str; 11] = [
     "brownout",
     "sdio",
 ];
-const REBOOT_REASONS: [&str; 7] = [
+/// The names of [`RebootReason`] (C++ 2.1.7 has the first 7: reason 7 reads "unknown" there).
+const REBOOT_REASONS: [&str; 8] = [
     "user",
     "ota",
     "net watchdog",
@@ -908,6 +914,7 @@ const REBOOT_REASONS: [&str; 7] = [
     "rollback",
     "network revert",
     "heap guard",
+    "switch back",
 ];
 const LOG_STEPS: [&str; 4] = ["open", "write", "rotate", "size limit"];
 const IMPORT_FEATURES: [&str; 5] = ["pi", "window", "messenger", "ds18Timeout", "legacyFailsafe"];
