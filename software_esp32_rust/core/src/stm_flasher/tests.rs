@@ -2647,3 +2647,41 @@ fn sync_noise_before_every_ack_of_byte_by_byte_replies() {
     assert_eq!(rig.sim.read_addrs.len(), 4);
     assert!(rig.flash_matches_image());
 }
+
+#[test]
+fn handshake_keeps_five_bytes_of_a_failed_search() {
+    // A boot-window read takes at most the free 272 bytes; a failed search keeps the last five
+    // ("BEEFI" may go on in the next read). Behind 533 noise bytes BEEFIT is complete after the
+    // second read (272 + 267 bytes), behind 534 after the third.
+    for (noise, reads) in [(533usize, 1u32), (534, 2)] {
+        let mut rig = Rig::new(make_image(1024));
+        rig.sim.beefit_prefix = vec![b'z'; noise];
+        assert!(rig.begin());
+        let mut sync_at = None;
+        let phase = rig.run_with(
+            |r| {
+                if sync_at.is_none() && r.f.status().phase == FlashPhase::Sync {
+                    sync_at = Some(r.now);
+                }
+            },
+            60_000,
+            1,
+        );
+        assert_eq!(phase, FlashPhase::Done, "{noise}");
+        assert_eq!(sync_at, Some(rig.sim.beefit_at + reads), "{noise}");
+    }
+}
+
+#[test]
+fn app_reads_stop_once_the_reply_ends_the_run() {
+    // The reads of WaitingApp stop as soon as a line ends the run (C++: the loop and the byte
+    // loop check active()): the bytes behind the reply stay with the transport. The reply line
+    // ends in the first read of 64 bytes; the STM sends 125.
+    let mut rig = Rig::new(make_image(1024));
+    let mut reply = b("gvers 1.4.9_Dev_C1 1 \r\n");
+    reply.extend_from_slice(&[b'x'; 100]);
+    rig.sim.app_reply = reply; // the simulator adds "\r\n"
+    assert_eq!(rig.begin_and_run(), FlashPhase::Done);
+    let mut rest = [0u8; 256];
+    assert_eq!(rig.sim.read(&mut rest), 125 - 64);
+}

@@ -1,0 +1,5 @@
+[
+ {"file": "core/src/stm_flasher.rs", "function": "check_header",
+  "mutation": "replace < with <= in check_header",
+  "reason": "pc < FLASH_BASE is evaluated only for an odd reset vector ((pc & 1) == 0 rejects first), and FLASH_BASE is even, so pc <= FLASH_BASE gives the same answer (C++ the same check order); the other < -> <= mutant of the function (size < 8) is killed and falls under this name"}
+]
