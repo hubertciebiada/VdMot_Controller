@@ -1,0 +1,26 @@
+// STM32F401CC BlackPill for the boot stage tests (docs/rust/GLUE-DESIGN-STM.md §5.7): Renode's
+// STM32F4 with the F401 memory sizes and the clocks of the Rust firmware.
+using "platforms/cpus/stm32f4.repl"
+
+sram:
+    size: 0x10000
+
+flash:
+    size: 0x40000
+
+// SysTick runs from the boot clock in the boot stage: HSE 25 MHz (the HSE test sets 16 MHz)
+nvic:
+    systickFrequency: 25000000
+
+// TIM5, the embassy time driver, on the APB1 timer clock (84 MHz)
+timer5:
+    frequency: 84000000
+
+// SYSCFG has no model: plain memory, so MEMRMP reads back
+syscfg: Memory.MappedMemory @ sysbus 0x40013800
+    size: 0x400
+
+// the platform applies an SVD file from the network at start; not needed here
+sysbus:
+    init:
+        Tag <0xE0042000, 0xE0042003> "DBGMCU_IDCODE" 0x10006423

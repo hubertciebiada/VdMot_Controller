@@ -16,6 +16,8 @@
 #                                                       ESP's C++ validation (tools/rust/stm/image_check.sh)
 #   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
 #
+# The Renode tests of the images run in their own container: tools/rust/renode.sh (README.md).
+#
 # Environment: VDM_MUTATION_JOBS (default 4), VDM_RUST_IMAGE (default
 # vdmot-rust:<hash of the Dockerfile>).
 #
@@ -128,7 +130,7 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
     in_container "$*"
     ;;
   *)
-    sed -n '2,24p' "$0" >&2
+    sed -n '2,26p' "$0" >&2
     exit 2
     ;;
 esac
