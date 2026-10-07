@@ -96,3 +96,10 @@ matters. The rules are in [PORTING.md](PORTING.md).
 | No Rust form | Null pointers (`setConfigValue(c, nullptr, ..)`, a String value with a null pointer, `applyConfigJson(c, nullptr, ..)`, `encodeConfig(.., nullptr, ..)`, `encodeConfigExt(.., nullptr, ..)`, `decodeConfigExt(nullptr, ..)`, `crc32(nullptr, ..)`, `itemSegment(.., nullptr, 8)`). | Named in comments; where null means "empty" in C++ (`validateConfig(c, nullptr, 0)`, `decodeConfig(nullptr, ..)`), the empty slice is tested. |
 | No Rust form | Values a Rust member cannot hold: `net.iface`/`mqtt.mode` 3 set in RAM (validation, sanitize), a bool byte 2 (`net.dhcp`, `persistLog`), text arrays without their NUL (`station`, a valve name and topic: validation, export, sanitize and "an unterminated string is encoded at most cap-1 bytes"), bytes after a text's NUL (`netTrialRequired`, `mqttTopicConfigChanged`), `ItemKind` 3, the names of `SetResult`/`PatchResult` 99. | The enum bytes go through the decoder (above); the full-length texts are tested instead of the unterminated ones; `from_raw(v) == None` for the names. The sanitize fuzz still draws iface `rng() % 4`; a 3 leaves the iface unchanged. |
 | Test order | `decode fuzz` writes `b[8 + rng() % n] = rng()`: C++17 evaluates the right operand first. | The Rust test draws the value before the index, so it walks the C++ inputs. |
+
+## net_trial
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Kept quirk | `decodeNetTrial` copies the stored SSID and password bytes into the char arrays, so a NUL inside a stored text ends it there; the fields CRC of the decoded record then covers the shorter text. | The Rust decoder copies up to the first NUL (`copy_string`). The first port kept the bytes after the NUL; the differential check found it (test `decode_a_nul_inside_a_stored_text_ends_it`). |
+| No Rust form | Null pointers (`encodeNetTrial(r, nullptr, ..)`, `decodeNetTrial(nullptr, ..)`, `formatNetAddress(.., nullptr, ..)`) and the damaged struct of "an ssid or password without its terminator ends at the field size". | The full-length SSID and password (32 + 64 bytes, a 130-byte record) are tested instead. |
