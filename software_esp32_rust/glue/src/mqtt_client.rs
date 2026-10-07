@@ -669,7 +669,10 @@ impl<C: Clock, N: TcpConnector, W: Watchdog> Out<'_, C, N, W> {
     fn valve_target(&mut self, v: &ValveState, seg: &[u8], separate: bool) -> Option<u8> {
         let target = published_target(v, separate)?;
         let sent = self.publish_uint(Topic::ValveTarget, seg, u32::from(target));
-        (sent && !separate).then_some(target)
+        if separate {
+            return None;
+        }
+        sent.then_some(target)
     }
 
     /// requested, sync, failsafe, problem, state and actual of a valve.
@@ -1351,7 +1354,11 @@ where
 
     fn reject_command(&mut self, reason: RejectReason, valve: u8, detail: i32) {
         self.out.shared.count(|s| &mut s.commands_rejected);
-        let key = if valve < VALVE_COUNT { valve + 1 } else { 0 };
+        let key = if (0..VALVE_COUNT).contains(&valve) {
+            valve + 1
+        } else {
+            0
+        };
         if !self.reject_log.should_log(key, reason, self.clock.now_ms()) {
             return;
         }
@@ -1892,7 +1899,10 @@ where
         };
         if crc != d.profile_crc && d.valid && profile.count > 0 {
             let mut jw = JsonWriter::new(json);
-            if write_profile_json(&mut jw, profile) && jw.complete() {
+            // C++ `writeProfileJson(jw, p) && jw.complete()`: the writer's result is its ok(),
+            // which complete() includes
+            write_profile_json(&mut jw, profile);
+            if jw.complete() {
                 let seg = segment(&self.segments, i);
                 self.out
                     .publish(Topic::DiagValveProfile, seg, jw.as_bytes());
@@ -2116,7 +2126,10 @@ where
         }
         let mut json = [0u8; 512];
         let mut jw = JsonWriter::new(&mut json);
-        if write_mqtt_event_json(&mut jw, &pe.event, pe.valve_mask) && jw.complete() {
+        // C++ `writeMqttEventJson(...) && jw.complete()`: the writer's result is its ok(), which
+        // complete() includes
+        write_mqtt_event_json(&mut jw, &pe.event, pe.valve_mask);
+        if jw.complete() {
             self.out.publish(Topic::Events, b"", jw.as_bytes());
         }
     }

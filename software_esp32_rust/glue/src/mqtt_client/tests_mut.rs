@@ -1963,3 +1963,48 @@ fn discovery_without_a_ready_file_system_a_left_over_temporary_list_stays() {
     assert_eq!(rig.events(EventCode::HaDiscoverySent).len(), 1);
     assert_eq!(rig.dev.fs.read(LIST_TMP).unwrap(), b"x\n");
 }
+
+#[test]
+fn discovery_a_run_that_skipped_entities_says_so() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        // an override no topic can carry: the entities of the valve cannot be built
+        copy_string(&mut c.valves[0].topic, b"a//b");
+    });
+    rig.settle(&mut c, 2);
+    rig.shared.request_discovery(DiscoveryAction::Publish);
+    rig.run(&mut c, 500);
+    let sent = rig.events(EventCode::HaDiscoverySent);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(Rig::text(&sent[0]), "skipped entities");
+}
+
+#[test]
+fn ha_status_an_accepted_command_outside_ha_mode_keeps_a_restored_offline() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::MqttHa);
+    rig.cfg(|c| c.mqtt.ha_discovery_on_connect = false);
+    rig.settle(&mut c, 2);
+    rig.deliver("homeassistant/status", "offline");
+    rig.run(&mut c, 1);
+    assert_eq!(rig.shared.status().ha_status, HaStatus::Offline);
+    // MQTT without HA: a command does not bring HA back
+    rig.cfg(|c| c.mqtt.mode = MqttMode::Mqtt);
+    rig.new_revision();
+    rig.run(&mut c, 2);
+    rig.deliver("VdMot/valves/1/target/set", "10");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted().len(), 1);
+    assert_eq!(rig.shared.status().ha_status, HaStatus::Offline);
+    assert_eq!(rig.shared.regulator_state().ha, HaStatus::Offline);
+}
+
+#[test]
+fn shared_is_the_object_main_created() {
+    let rig = Rig::new();
+    let c = rig.client();
+    assert!(core::ptr::eq(c.shared(), &rig.shared));
+}
