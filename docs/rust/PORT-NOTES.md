@@ -103,3 +103,11 @@ matters. The rules are in [PORTING.md](PORTING.md).
 |---|---|---|
 | Kept quirk | `decodeNetTrial` copies the stored SSID and password bytes into the char arrays, so a NUL inside a stored text ends it there; the fields CRC of the decoded record then covers the shorter text. | The Rust decoder copies up to the first NUL (`copy_string`). The first port kept the bytes after the NUL; the differential check found it (test `decode_a_nul_inside_a_stored_text_ends_it`). |
 | No Rust form | Null pointers (`encodeNetTrial(r, nullptr, ..)`, `decodeNetTrial(nullptr, ..)`, `formatNetAddress(.., nullptr, ..)`) and the damaged struct of "an ssid or password without its terminator ends at the field size". | The full-length SSID and password (32 + 64 bytes, a 130-byte record) are tested instead. |
+
+## legacy_import
+
+| Kind | What | Why it matters |
+|---|---|---|
+| Port form | `LegacyNvsReader::readString(ns, key, out, cap, truncated)` becomes `read_string(ns, key, out: &mut TextView) -> Option<bool>` (the text in `out`, at most its capacity = the C++ cap - 1; true when truncated); `readInt`/`readBlob` return `Option<i64>`/`Option<usize>` (the stored length). | The importer reads the strings into a `Text<65>` (the C++ 66-byte buffer) and treats them as C strings, so the same keys are rejected; the NVS reads are the same calls in the same order (the differential check compares the read counts). |
+| No Rust form | `importLegacyConfig(n, c, nullptr, 2 * kLegacyTempsBlob)` (a null scratch with a capacity). | The empty scratch slice: the temps blob is not read, as with a null pointer. |
+| Test order | The fuzz test draws `std::string(rng() % 80, rng() % 256)`, `setValve(.., pool[rng() % 10], rng() % 3)` and `setTemp(..)` with several `rng()` calls in one argument list; GCC 13.3 (the test toolchain, -O0 and -O2) evaluates them right to left. | The Rust test draws in that order, so it walks the C++ inputs. |
