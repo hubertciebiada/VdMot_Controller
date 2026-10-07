@@ -55,9 +55,12 @@ on:
         type: string
         default: ""
 
+# A newer push to a branch (or a pull request) cancels the run it supersedes. Tag pushes, the
+# schedule and manual runs (the release path among them) always finish: the event is part of
+# the group, so a branch push never cancels a scheduled or a manual run of the same branch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')) }}
 
 env:
   PIO_VERSION: "6.1.19"
