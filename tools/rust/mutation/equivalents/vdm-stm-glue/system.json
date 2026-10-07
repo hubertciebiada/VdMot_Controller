@@ -1,0 +1,14 @@
+[
+ {"file": "glue/src/system.rs", "function": "<impl MainLoopEnv for Modules<'_, P>>::terminal_serve",
+  "mutation": "delete - in <impl MainLoopEnv for Modules<'_, P>>::terminal_serve",
+  "reason": "the -1 of the #[cfg(not(feature = \"terminal\"))] branch: the gated build has the default feature terminal and compiles the other branch only, and loop_system() ignores the result of terminal_serve() in every build (as the C++ ignores Terminal_Serve()'s)"},
+ {"file": "glue/src/system.rs", "function": "<impl MainLoopEnv for Modules<'_, P>>::eepromsetup",
+  "mutation": "replace <impl MainLoopEnv for Modules<'_, P>>::eepromsetup -> i16 with 0",
+  "reason": "Eeprom::setup() only sets the mirror status to Init, which the controller's fresh Eeprom::default() holds already when setup_system() calls it, once, before the first read; setup_system() ignores the result (as the C++ ignores eepromsetup()'s)"},
+ {"file": "glue/src/system.rs", "function": "<impl MainLoopEnv for Modules<'_, P>>::eepromsetup",
+  "mutation": "replace <impl MainLoopEnv for Modules<'_, P>>::eepromsetup -> i16 with 1",
+  "reason": "as the mutant with 0: the skipped Eeprom::setup() sets the status the fresh Eeprom::default() holds already, and setup_system() ignores the result"},
+ {"file": "glue/src/system.rs", "function": "<impl MainLoopEnv for Modules<'_, P>>::eepromsetup",
+  "mutation": "replace <impl MainLoopEnv for Modules<'_, P>>::eepromsetup -> i16 with -1",
+  "reason": "as the mutant with 0: the skipped Eeprom::setup() sets the status the fresh Eeprom::default() holds already, and setup_system() ignores the result"}
+]

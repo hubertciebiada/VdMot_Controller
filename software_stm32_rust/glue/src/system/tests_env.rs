@@ -10,6 +10,7 @@ use vdm_stm_boot::fault_record::{FaultRecord, KIND_HARD_FAULT};
 use vdm_stm_core::valve_codes::{ST_IDLE, ST_OPENING, ST_UNKNOWN};
 
 use super::bench::{sim, Bench, Boot, Case, PLAIN};
+use super::golden::Reset;
 use super::{AppCtx, OwCtx};
 use crate::app::AppEnv;
 use crate::communication::FirmwareId;
@@ -222,6 +223,22 @@ fn one_wire_sensors_are_found_matched_to_a_valve_and_read() {
     // the cycle completed within the last seconds
     assert!(b.gstax(21) <= 2);
     assert!(b.terminal("getone\n").contains("\"cnt\":2"));
+    b.finish();
+}
+
+#[test]
+fn the_stored_escalation_reaches_the_motor_at_the_next_start() {
+    let mut c = case();
+    let mut b = c.boot(PLAIN, |_| {});
+    b.run_main(5000);
+    assert_eq!(b.exchange("scalx 1 10 40\n"), "scalx ok\r\n");
+    b.run_main(5000);
+    assert_eq!(b.exchange("eepst\n"), "eepst 1 \r\n");
+    b.reboot(Reset::PowerOn);
+    // app_load_config() of the set-up hands it from the EEPROM to the valve state machine
+    let mut b = c.boot(PLAIN, |_| {});
+    assert_eq!(b.exchange("gcalx\n"), "gcalx 1 10 40\r\n");
+    assert_eq!(b.m().motor_get_escalation().step_pct, 10);
     b.finish();
 }
 
@@ -470,5 +487,124 @@ fn the_hal_methods_of_the_contexts_reach_the_board() {
     assert!(!ow.temp_locked());
     modules.ow.temp_command(TEMP_CMD_NEWSEARCH, &mut ow);
     assert!(!ow.match_sensors && !ow.cycle_done);
+    b.finish();
+}
+
+// Cases of the mutation gate of system.rs: delegations the cases above do not observe.
+
+#[test]
+fn shorts_on_three_valves_suspend_the_limits_and_gstax_reports_it() {
+    let mut c = case();
+    let mut b = c.boot(sim(0x0FF0), |_| {});
+    // shorted motors on valves 0..2 (the short limit: 2000 dmA filtered, for 3 samples)
+    for v in 0..3 {
+        let mut s = b.sim();
+        s.valve[v].shorted = true;
+        s.valve[v].short_current_dma = 2600;
+    }
+    // the presence tests report the shorts: trips of three valves within 600 s
+    b.run_main(40000);
+    // sysFlags bit 0: the short and inrush limits are suspended
+    assert_eq!(b.gstax(23), 1);
+    b.finish();
+}
+
+#[test]
+fn gprof_reports_the_last_move_and_the_terminal_waits_for_the_valve_machine() {
+    let mut c = case();
+    let mut b = c.boot(sim(0x0FF0), |_| {});
+    b.run_main(40000);
+    b.calibrated_idle(4);
+    assert!(b.run_main_until(settled, 60000));
+    assert_eq!(b.exchange("stgtp 0 70\n"), "stgtp\r\n");
+    assert!(b.run_main_until(|b| !b.idle(), 1000));
+    // smux and sdir are refused while the valve machine works (it waits 1 s for the PSU)
+    let mux = b.s.board.out(Out::Mux);
+    assert!(b.terminal("smux 1\n").contains("valve machine busy\r\n"));
+    assert_eq!(b.s.board.out(Out::Mux), mux);
+    assert!(b.run_main_until(|b| b.idle_at(0, 70), 30000));
+    let reply = b.exchange("gprof 0\n");
+    assert!(Boot::field(&reply, 2) > 1, "{reply}");
+    b.finish();
+}
+
+#[test]
+fn sena_is_refused_in_safe_mode() {
+    let mut c = case();
+    for _ in 0..3 {
+        let b = c.boot(PLAIN, |_| {});
+        b.reboot(Reset::Watchdog);
+    }
+    let mut b = c.boot(PLAIN, |_| {});
+    // three watchdog resets within 10 min: safe mode, the valve machine idles
+    assert_eq!(b.gstax(12), 1);
+    assert!(b.terminal("sena 1 1\n").contains("valve machine busy\r\n"));
+    assert!(!b.s.board.out(Out::Ena1));
+    b.finish();
+}
+
+#[test]
+fn the_terminal_searches_the_1_wire_bus_and_assigns_its_sensors() {
+    let mut c = case();
+    let mut b = c.boot(sim(0x0FFF), |_| {});
+    // the presence tests: the valve machine locks the temperature measurement meanwhile
+    b.run_main(40000);
+    b.ctl.modules.hw.one_wire.add_one_wire(0x28, 1, 2880);
+    b.ctl.modules.hw.one_wire.add_one_wire(0x28, 2, 2560);
+    assert!(b.terminal("stons\n").contains("start new 1-wire search"));
+    b.run_main(1000);
+    assert_eq!(b.exchange("gonec\n"), "gonec 2 \r\n");
+    // slot 1 of valve 0 takes sensor 1
+    let out = b.terminal("stsnx 0 1\n");
+    assert!(out.contains("comm: set 1st sensor index\r\n"), "{out}");
+    assert!(!out.contains("invalid valve or sensor index"), "{out}");
+    assert_eq!(b.m().valves[0].sensorindex1, 1);
+    // valve 12 does not exist
+    let out = b.terminal("stvls 12 00-00-00-00-00-00-00-00 00-00-00-00-00-00-00-00\n");
+    assert!(out.contains("invalid valve index\r\n"), "{out}");
+    assert!(!out.contains("Read 1-wire sensor addresses"), "{out}");
+    b.finish();
+}
+
+#[test]
+fn seteep_is_blocked_while_the_eeprom_cannot_be_read() {
+    let mut c = case();
+    let mut b = c.boot(PLAIN, |s| s.eeprom.borrow_mut().fail_reads_from = 1);
+    let out = b.terminal("seteep\n");
+    assert!(
+        out.contains("eeprom not readable, write blocked\r\n"),
+        "{out}"
+    );
+    assert!(!out.contains("set eeprom layout"), "{out}");
+    b.finish();
+}
+
+#[test]
+fn saveep_schedules_an_eeprom_write() {
+    let mut c = case();
+    let mut b = c.boot(PLAIN, |_| {});
+    // the first start's configuration write
+    b.run_main(5000);
+    assert_eq!(b.exchange("eepst\n"), "eepst 1 \r\n");
+    assert!(b.terminal("saveep\n").contains("saved eeprom layout\r\n"));
+    assert_eq!(b.exchange("eepst\n"), "eepst 0 \r\n");
+    b.run_main(5000);
+    assert_eq!(b.exchange("eepst\n"), "eepst 1 \r\n");
+    b.finish();
+}
+
+#[test]
+fn the_10_s_branch_runs_the_learn_time_trigger() {
+    let mut c = case();
+    let mut b = c.boot(PLAIN, |_| {});
+    // learn times of 1..12 s over the valves
+    b.exchange("stlnt 12\n");
+    b.take_dbg();
+    b.run_main(12000);
+    let dbg = b.take_dbg();
+    assert!(
+        dbg.contains("App: Valve 0 will be learned soon\r\n"),
+        "{dbg}"
+    );
     b.finish();
 }
