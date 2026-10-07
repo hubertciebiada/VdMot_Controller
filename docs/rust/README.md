@@ -22,6 +22,7 @@ Installing it on a controller: [INSTALL.md](INSTALL.md).
 | [GLUE-DESIGN-ESP.md](GLUE-DESIGN-ESP.md) | ESP32 glue and firmware: ports, threads, memory, HTTP, tests, the boot guard, decisions |
 | [GLUE-DESIGN-STM.md](GLUE-DESIGN-STM.md) | STM32 glue and firmware: real-time model, persistence, boot and flashing safety, Renode, decisions and risks |
 | [CHANGES.md](CHANGES.md) | what differs from C++ 2.1.7, for users |
+| [PARITY.md](PARITY.md), [PARITY-TESTS.md](PARITY-TESTS.md) | the audit of the port against C++ 2.1.7: every C++ test case and every external feature with its Rust code and tests, the open gaps |
 | [INSTALL.md](INSTALL.md) | first flash and rollout on a controller |
 | [tools/rust/README.md](../../tools/rust/README.md) | the container scripts, their images and options |
 

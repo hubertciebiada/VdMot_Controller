@@ -1,8 +1,8 @@
 # VdMot Revamped in Rust: parity with C++ 2.1.7
 
 Audit of the claim "the firmware fully rewritten in Rust, with tests, full functionality
-preserved" for both firmwares (ESP32 and STM32), at commit `92718f5` of `revamped-rust` plus the
-audit's own commits (section 4.1). Reference: the C++ 2.1.7 sources (`software_esp32_revamped`,
+preserved" for both firmwares (ESP32 and STM32), on `revamped-rust` at `729b403` with the
+audit's commits (section 4.1). Reference: the C++ 2.1.7 sources (`software_esp32_revamped`,
 `software_stm32`) and their contract documents (`docs/revamped/API.md`, `docs/revamped/MQTT.md`,
 `software_esp32_revamped/DESIGN.md`, `software_stm32/PROTOCOL_V2.md`).
 
@@ -17,26 +17,29 @@ audit's own commits (section 4.1). Reference: the C++ 2.1.7 sources (`software_e
   missing before this audit (the C++ smoke test and the harness case of the fake STM); they are
   ported now.
 - **Features:** no externally visible feature of C++ 2.1.7 is missing in the Rust firmwares.
-  Section 3 lists 197 features with the Rust code and the tests that cover them: 156 the same
-  as C++, 37 with a documented deviation, 4 that only hardware proves. One undocumented
+  Section 3 lists 198 features with the Rust code and the tests that cover them: 156 the same
+  as C++, 38 with a documented deviation, 4 that only hardware proves. One undocumented
   deviation with an effect on the device was found and fixed (GET of a legacy alias with a body,
-  `3aea221`); the others found are documented now (section 4.1).
-- **Open:** 13 gaps, none a missing feature: the ESP version string against decision D8,
-  automation (CI jobs, archived emulator runs, the feature-gated dashboard test), the drivers of
-  the differential checks, an end-to-end test of the two Rust firmwares together, narrower
-  emulator scenarios than the design claims, and the C++ contract documents that do not name
-  the Rust-only additions (section 4.2, with estimates).
+  `71771fa`); the others found are documented now (section 4.1).
+- **Open:** 10 gaps, none a missing feature: two checks the CI does not run (this audit's
+  `parity.py --check`, the feature-gated dashboard test), the drivers of the differential checks,
+  an end-to-end test of the two Rust firmwares together, emulator scenarios narrower than the
+  design claims, emulator and mutation results this audit did not see, the C++ contract documents
+  that do not name the Rust-only additions, and four small test or code items (section 4.2,
+  with estimates). The open findings of the safety review stay with
+  [REVIEW-ESP-SAFETY.md](REVIEW-ESP-SAFETY.md).
 
 ## 1. Method and evidence
 
 | Evidence | What it proves | Run in this audit |
 |---|---|---|
 | Host tests: `bash tools/rust/docker.sh test software_esp32_rust` and `software_stm32_rust` | the Rust behaviour per module and per glue suite; clippy `-D warnings` and `cargo fmt --check` with them | yes, on every commit of the audit (section 5) |
-| `cargo test -p vdm-esp-glue --features dashboard` | the shipped dashboard table (gzip, ETag, content types); not part of `docker.sh test` (gap O2) | yes, 3 tests passed |
+| `cargo test -p vdm-esp-glue --features dashboard` | the shipped dashboard table (gzip, ETag, content types); not part of `docker.sh test` nor of the CI (gap O1) | yes, 3 tests passed |
 | C++ goldens of the STM `glue_system` suites (`software_stm32_rust/glue/tests/golden/`, 27 cases) | UART bytes, EEPROM rows and no-init bytes per boot, byte for byte against the C++ glue (GLUE-DESIGN-STM.md 7.4) | yes, as part of the STM host tests |
-| Differential checks quoted in PORT-NOTES.md (stm_codec, stm_session, config, event_log, the MQTT modules, net_trial, legacy_import) | random inputs through the C++ and the Rust module, outputs compared | no: their drivers are not in the repository (gap O4) |
-| Mutation gate (`docker.sh mutate`, 95 % per file) | the tests kill the mutants of the code | no (one global lock, run by `main`); the files changed by the audit are listed in section 5 |
-| QEMU harness (`tools/rust/esp/docker.sh qemu`, tools/rust/README.md) | the ESP image with the devices' bootloader and the C++ 2.1.7 image in the other slot: boot chain, boot guard, OTA from Rust to C++ (the C++ image has no network in QEMU), LittleFS/NVS interchange, HTTP, MQTT against Mosquitto, load | no; results of 2026-10-07 are quoted from GLUE-DESIGN-ESP.md 5.5, not archived (gap O7) |
+| Differential checks quoted in PORT-NOTES.md (stm_codec, stm_session, config, event_log, the MQTT modules, net_trial, legacy_import) | random inputs through the C++ and the Rust module, outputs compared | no: their drivers are not in the repository (gap O3) |
+| Mutation gate (`docker.sh mutate`, 95 % per file) | the tests kill the mutants of the code | no (one global lock); the CI runs it in full every week; the files changed by the audit are listed in section 5 |
+| CI (`.github/workflows/build.yml`, jobs `rust-*`) | on every push the host tests, lint and interop, the STM images, the image check and Renode with E11 per image; QEMU and the full mutation run weekly or on demand | not seen by this audit (gap O5) |
+| QEMU harness (`tools/rust/esp/docker.sh qemu`, tools/rust/README.md) | the ESP image with the devices' bootloader and the C++ 2.1.7 image in the other slot: boot chain, boot guard, OTA from Rust to C++ (the C++ image has no network in QEMU), LittleFS/NVS interchange, HTTP, MQTT against Mosquitto, load | no; the results of 2026-10-07 are quoted from GLUE-DESIGN-ESP.md 5.5 (gap O5) |
 | Renode (`tools/rust/renode.sh`: `boot.robot` E1-E10, `app.robot` A1-A6, `e11.robot` E11) and the image check (C1-C6, D9) | the four STM images: boot window, clocks, faults, watchdog, no-init cells, the glue against the C++ goldens, the Rust ESP flasher against the boot window | no; quoted from GLUE-DESIGN-STM.md 5.7 |
 
 Feature evidence was collected by reading the C++ and the Rust code side by side; the tables of
@@ -76,7 +79,7 @@ Every case with its Rust tests: [PARITY-TESTS.md](PARITY-TESTS.md).
 | stm-glue | 29 | 336 | 330 | 6 | 0 | 0 |
 | all | 157 | 2442 | 2386 | 26 | 30 | 0 |
 
-Ported, by kind: manual 38, hint 12, exact 2098, prefix 16, subcase 11, fuzzy 211. Rust tests: 3185, 733 of them without a C++ case.
+Ported, by kind: manual 38, hint 12, exact 2098, prefix 16, subcase 11, fuzzy 211. Rust tests: 3195, 743 of them without a C++ case.
 
 | C++ file | cases | ported | no Rust form | retired | missing |
 |---|---|---|---|---|---|
@@ -330,12 +333,12 @@ C++ table, and the dashboard calls only the routes below. Handlers are functions
 | 503 "response buffers in use", 409 `busy` "body", 503 `retry` | none (one request at a time) | `esp:glue/src/web_server/tests.rs::requests_one_after_another_each_get_the_response_buffer` | deviation: never sent (GLUE-DESIGN-ESP.md 4.7 rows 1-3) |
 | Error body `{"error","detail"}`, `{"error":"internal"}` above 200 bytes | `send_error` | `esp:glue/src/web_server/tests_mut_a.rs::an_error_answer_longer_than_its_200_byte_buffer_becomes_internal`; `esp:core/src/json_api/tests.rs::api_error_document` | same |
 | Connections: keep-alive, serial handling, 431/414/400 for oversized heads, header trimming, stalled clients | esp_http_server adapter; `read_body`, `receive` | `esp:glue/src/web_server/tests_rust.rs::body_a_client_that_stalls_three_times_in_a_row_gets_no_answer`; `esp:glue/src/web_server/tests_rust.rs::body_reads_that_deliver_nothing_count_as_stalls`; `esp:glue/src/web_server/tests_rust.rs::upload_a_client_that_stalls_three_times_in_a_row_aborts_it`; QEMU `soak` | deviation (GLUE-DESIGN-ESP.md 4.7 rows 4-6, 8, 9) |
-| GET /valves | `legacy_valves`; core `write_legacy_valves_json` | `esp:glue/src/web_server/tests.rs::wg8_get_valves_answers_the_legacy_document`; `esp:core/src/legacy_http/tests.rs::legacy_valves_document`; `esp:glue/src/web_server/tests_mut_a.rs::guard_a_get_alias_ignores_its_body_and_takes_at_most_8192_bytes_for_it`; QEMU `api` | same (the body of a GET alias since `3aea221`) |
+| GET /valves | `legacy_valves`; core `write_legacy_valves_json` | `esp:glue/src/web_server/tests.rs::wg8_get_valves_answers_the_legacy_document`; `esp:core/src/legacy_http/tests.rs::legacy_valves_document`; `esp:glue/src/web_server/tests_mut_a.rs::guard_a_get_alias_ignores_its_body_and_takes_at_most_8192_bytes_for_it`; QEMU `api` | same (the body of a GET alias since `71771fa`) |
 | GET /temps, GET /volts | `legacy_sensors` | `esp:glue/src/web_server/tests.rs::wg8_temps_and_volts_answer_the_legacy_documents`; `esp:core/src/legacy_http/tests.rs::legacy_temps_document`; `esp:core/src/legacy_http/tests.rs::legacy_volts_document` | same (as above) |
 | POST /setvalve (no X-VdMot needed) | `set_valve` | `esp:glue/src/web_server/tests.rs::wg8_post_setvalve_rounds_the_value_and_answers_the_legacy_body`; `esp:glue/src/web_server/tests_mut_a.rs::guard_setvalve_reads_a_body_of_8192_bytes`; `esp:glue/src/web_server/tests.rs::no_request_needs_credentials_an_authorization_header_is_ignored` | same |
 | An alias with another method (405) | `legacy_refused` | `esp:core/src/legacy_http/tests.rs::legacy_routes_aliases_per_method` | same |
 | The 410 table: 27 paths and their replacements (/netinfo, /sysinfo ... /auth), any method, not guarded, body never read | `legacy_refused`; core `legacy_http` | `esp:core/src/legacy_http/tests.rs::legacy_routes_the_410_table`; `esp:glue/src/web_server/tests.rs::wg8_legacy_paths_answer_410_without_reading_others_404_405_never_413`; QEMU `api` | same |
-| Dashboard /, /index.html, /app.js, /app.css: gzip level 9 mtime 0, ETag = CRC32 of the gzip bytes, Cache-Control no-cache, 304 without body and Content-Type, 404 for others | `static_asset`, `send_asset`; `esp:glue/build.rs` (feature `dashboard`, the functions of `gen_web_assets.py`) | `esp:glue/src/web_server/tests.rs::the_dashboard_is_served_gzip_with_its_etag_304_when_unchanged`; `esp:glue/src/web_server/tests_mut_b2.rs::static_every_asset_is_served`; `esp:glue/src/web_server/tests_rust.rs::answers_without_content_carry_no_content_type`; `esp:glue/src/web_server/tests_rust.rs::the_dashboard_is_every_file_of_web_gzipped_with_its_etag` (feature-gated, gap O2); QEMU `dashboard` | same |
+| Dashboard /, /index.html, /app.js, /app.css: gzip level 9 mtime 0, ETag = CRC32 of the gzip bytes, Cache-Control no-cache, 304 without body and Content-Type, 404 for others | `static_asset`, `send_asset`; `esp:glue/build.rs` (feature `dashboard`, the functions of `gen_web_assets.py`) | `esp:glue/src/web_server/tests.rs::the_dashboard_is_served_gzip_with_its_etag_304_when_unchanged`; `esp:glue/src/web_server/tests_mut_b2.rs::static_every_asset_is_served`; `esp:glue/src/web_server/tests_rust.rs::answers_without_content_carry_no_content_type`; `esp:glue/src/web_server/tests_rust.rs::the_dashboard_is_every_file_of_web_gzipped_with_its_etag` (feature-gated, gap O1); QEMU `dashboard` | same |
 
 ### 3.2 MQTT and Home Assistant discovery (ESP)
 
@@ -370,7 +373,7 @@ PubSubClient 2.8 replacement `esp:glue/src/mqtt_conn.rs`.
 | PubSubClient 2.8 packets: CONNECT, CONNACK wait 5 s, 2304 B buffer, QoS 1 PUBACK, one packet per loop, oversized packets dropped | `esp:glue/src/mqtt_conn.rs` | `esp:glue/src/mqtt_conn/tests.rs::connect_sends_the_connect_packet_of_the_library`; `esp:glue/src/mqtt_conn/tests.rs::poll_delivers_one_message_per_call_and_acknowledges_qos_1`; `esp:glue/src/mqtt_conn/tests.rs::an_oversized_packet_is_read_and_dropped`; `esp:glue/tests/mqtt_interop.rs::qos1_inbound_is_delivered_and_acknowledged` | deviation: waits poll every 1 ms; two library bugs not reproduced ([PORT-NOTES.md#glue](PORT-NOTES.md#glue)) |
 | Budgets per pass, inbound queue of 4 (33 B payloads), target latch, rejects counted and logged once per 10 s | `pass`, `drain_inbound`, `reject_command` | `esp:glue/src/mqtt_client/tests_mut.rs::full_publish_common_and_a_valve_one_valve_per_pass_four_other_slots_per_pass`; `esp:glue/src/mqtt_client/tests_mut.rs::inbound_payloads_are_cut_at_33_bytes`; `esp:glue/src/mqtt_client/tests.rs::a_refused_target_is_submitted_again_the_newest_wins`; `esp:glue/src/mqtt_client/tests.rs::rejections_are_counted_and_logged_once_per_10_s` | same |
 | A pending restart: `offline` and DISCONNECT | `pass`, `disconnect_clean` | `esp:glue/src/mqtt_client/tests.rs::a_pending_restart_sends_offline_and_disconnects_cleanly` | same |
-| HA: valve entities (valve, state, calibration texts, legacy diag texts, temp sensors, position, problem, failsafe, sync, calibrate button, newDiag counters) | core `ha_discovery` `describe_*`, `write_entity` | `esp:core/src/ha_discovery/tests.rs::discovery_keep_entities_carry_no_availability_k3_1_k4_1_w3_8`; `esp:core/src/ha_discovery/tests.rs::discovery_new_per_valve_entities_e29_1_w15_1`; `esp:core/src/ha_discovery/tests.rs::discovery_expire_after_is_three_publish_intervals_at_least_60_s` | same (four payloads pinned by topic only, gap O10) |
+| HA: valve entities (valve, state, calibration texts, legacy diag texts, temp sensors, position, problem, failsafe, sync, calibrate button, newDiag counters) | core `ha_discovery` `describe_*`, `write_entity` | `esp:core/src/ha_discovery/tests.rs::discovery_keep_entities_carry_no_availability_k3_1_k4_1_w3_8`; `esp:core/src/ha_discovery/tests.rs::discovery_new_per_valve_entities_e29_1_w15_1`; `esp:core/src/ha_discovery/tests.rs::discovery_expire_after_is_three_publish_intervals_at_least_60_s` | same (four payloads pinned by topic only, gap O8) |
 | HA: device entities, buttons, the event entity, the device block, availability, ids, the 2047 B limit | core `ha_discovery` | `esp:core/src/ha_discovery/tests.rs::discovery_device_entities_k3_2_e29_1_w15_2`; `esp:core/src/ha_discovery/tests.rs::discovery_device_block_with_hw_version_and_variants_w15_4`; `esp:core/src/ha_discovery/tests.rs::discovery_ha_safe_ids_raw_names_root_and_prefix_e20_2_h5`; `esp:core/src/ha_discovery/tests_mut.rs::a_payload_of_2047_bytes_goes_out_and_one_of_2048_does_not` | same |
 | HA: the run (list file `/HADiscovery.cfg`, stale configs deleted, the 2.0.0 migration, the legacy DROP list, the triggers) | core `DiscoveryRun`; `ListPort` | `esp:core/src/ha_discovery/tests.rs::discovery_run_prune_before_publish_rewrite_the_list_w4_2_w4_3`; `esp:glue/src/mqtt_client/tests.rs::discovery_a_renamed_valve_loses_its_old_config_first`; `esp:glue/src/mqtt_client/tests.rs::discovery_the_2_0_0_migration_runs_once_in_ha_mode`; `esp:glue/src/mqtt_client/tests_gate.rs::gate_a_connect_before_the_stm_settled_waits_then_one_run`; QEMU `mqtt` | deviation: list written unbuffered, two heap blocks per run ([PORT-NOTES.md#glue](PORT-NOTES.md#glue)) |
 
@@ -391,7 +394,7 @@ replies are compared as whole lines with CR LF against firmware 2.0.0.
 | gonec, gowvc (1) | `stm:glue/src/communication/tests_v1.rs::v1_gonec_and_goned`; `stm:glue/src/communication/tests_v1.rs::v1_gowvc_and_gowvd`; `stm:glue/src/communication/tests_mut.rs::gonec_255_one_space_before_the_list_254_and_256_are_no_list` | `esp:core/src/stm_codec/tests.rs::gonec_gowvc_count_and_list_forms`; `esp:core/src/stm_codec/tests.rs::list_elements_beyond_the_count_are_rejected` | same |
 | goned, gowvd (1) | `stm:glue/src/communication/tests_mut.rs::goned_and_gowvd_the_first_and_the_last_sensor_index` | `esp:core/src/stm_codec/tests.rs::bus_index_builders`; `esp:core/src/stm_codec/tests.rs::goned_gowvd_data_and_error_forms` | same |
 | gvlon (1) | `stm:glue/src/communication/tests_v1.rs::v1_gvlon_for_one_valve_all_valves_and_an_invalid_index`; `stm:glue/src/communication/tests_mut.rs::gvlon_of_every_valve_lists_both_slots_with_commas` | `esp:core/src/stm_codec/tests.rs::gvlon_single_and_list`; `esp:core/src/stm_codec/tests.rs::v1_gvlon_error_arrives_with_the_goned_prefix` | same |
-| stons, masns (1) | `stm:glue/src/communication/tests_v1.rs::v1_stons_stlnt_stlnm_gtlnm_staop_staln`; `stm:glue/src/communication/tests_v1.rs::v1_ghwin_masns_eepst_gvlst_reset` | `esp:core/src/stm_codec/tests.rs::builders_without_arguments_golden_lines`; `esp:core/src/stm_codec/tests.rs::ack_replies_golden` | same |
+| stons, masns (1) | `stm:glue/src/communication/tests_v1.rs::v1_stons_stlnt_stlnm_gtlnm_staop_staln`; `stm:glue/src/communication/tests_v1.rs::v1_ghwin_masns_eepst_gvlst_reset`; `stm:glue/src/system/tests_env.rs::the_sensor_match_prints_outside_the_motor_lock` | `esp:core/src/stm_codec/tests.rs::builders_without_arguments_golden_lines`; `esp:core/src/stm_codec/tests.rs::ack_replies_golden` | same |
 | stvls (1) | `stm:glue/src/communication/tests_v3.rs::stvls_both_slots_of_the_valve_each_marked_only_when_it_changes` | `esp:core/src/stm_codec/tests.rs::build_set_valve_sensors_cases`; `esp:core/src/stm_codec/tests.rs::stvls_ack_carries_the_valve` | same |
 | staop, staln (1) | `stm:glue/src/communication/tests_mut.rs::staop_staln_stdet_0_and_65535_reach_the_handler` | `esp:core/src/stm_codec/tests.rs::valve_or_all_builders` | same |
 | stdet (1) | `stm:glue/src/communication/tests_v3.rs::stdet_255_tests_every_valve_another_number_is_an_error_no_number_no_reply` | `esp:core/src/stm_codec/tests.rs::builders_without_arguments_golden_lines` | same |
@@ -457,7 +460,7 @@ release image).
 
 Every stored format is the C++ one (layouts compared field by field). The exchange itself is
 proven by the QEMU scenarios `nvs` and `littlefs` (ESP; the C++ side read through its codec and
-tools, gap O6) and by the C++ goldens and Renode A4/E9 (STM).
+tools, gap O4) and by the C++ goldens and Renode A4/E9 (STM).
 
 | Item | Rust | Tests | Status |
 |---|---|---|---|
@@ -492,6 +495,7 @@ entry by entry; restart reasons 0..6 have the C++ names and severities.
 |---|---|---|---|
 | Event registry, messages, JSON, syslog lines | `esp:core/src/event_log.rs` `CODES` | `esp:core/src/event_log/tests.rs::mqtt_event_json_single_and_aggregate`; the message table of `esp:core/src/event_log/tests.rs` | same |
 | Restart reasons 0..6 (user, ota, net watchdog, factory reset, rollback, network revert, heap guard) and their severity | `event_log.rs` `REBOOT_REASONS`; `esp:glue/src/ota.rs` `reboot_event` | `esp:glue/src/ota/tests.rs::request_restart_the_first_request_wins_severity_per_reason` | same |
+| Version of both firmwares `2.2.0-revamped`: STM `gvers` and banner; ESP boot event, /api/status, /api/health, MQTT and HA `sw_version` | `stm:Cargo.toml` (workspace version, the ID block of `stm:firmware/build.rs`); `esp:firmware/.cargo/config.toml` `VDM_VERSION` | `stm:glue/src/system/tests_env.rs::gvers_and_the_banner_report_the_identity_of_the_image`; `esp:core/src/version/tests.rs::build_constants` (the host default); QEMU `littlefs` | deviation: D8 ([CHANGES.md](CHANGES.md)) |
 | Reason 7 (switch back) and event 107 arg1 -4 (the previous image failed its trial) | `event_log.rs`; `boot_guard.rs` | `esp:core/src/event_log/tests.rs::switch_back_restart_and_trial_failure_are_the_glue_design_contract`; `esp:glue/src/boot_guard/tests.rs::constants_and_events` | deviation ([PORT-NOTES.md#event_log](PORT-NOTES.md#event_log)) |
 
 ### 3.7 ESP OTA and the boot guard
@@ -501,8 +505,8 @@ entry by entry; restart reasons 0..6 have the C++ names and severities.
 | Upload checks: busy, STM flash or image upload, partition, size + 16 KiB, MD5 form | `esp:glue/src/ota.rs` `upload_begin`; core `ota_policy` | `esp:glue/src/ota/tests.rs::upload_begin_refused_while_an_stm_flash_or_image_upload_runs_busy_while_an_upload_runs`; `esp:glue/src/ota/tests.rs::upload_begin_one_byte_more_is_refused_before_the_update_starts`; `esp:core/src/ota_policy/tests.rs::normalize_md5_cases` | same |
 | The `Update` contract: error codes and texts, MD5 compare, image selection | `esp:glue/src/ota/update.rs` | `esp:glue/src/ota/update/tests.rs::error_texts_are_the_ones_of_updater_cpp`; `esp:glue/src/ota/update/tests.rs::md5_over_the_written_bytes_is_compared_as_given`; `esp:glue/src/ota/update/tests.rs::a_failed_last_sector_never_selects_what_an_earlier_update_left_in_the_slot`; QEMU `ota` | deviation: a failed update never selects a slot ([PORT-NOTES.md](PORT-NOTES.md#intended-deviations), ota/update) |
 | Restart path: no restart during an STM flash, STM EEPROM gate, targets flushed, event 323, `otaStm`, log flush | `ota.rs` `service_restart`; core `restart_gate` | `esp:glue/src/ota/tests.rs::service_restart_stm_save_target_flush_log_flush_then_esp_restart`; `esp:glue/src/ota/tests.rs::service_restart_never_in_the_middle_of_an_stm_flash`; `esp:glue/src/ota/tests.rs::service_restart_a_silent_stm_task_restarts_at_12000_ms_with_event_323` | same |
-| Validation of a new image (net, HTTP self-check, STM): 120 s confirms, 15 min gives up | `ota.rs` `service`; core `OtaValidator` | `esp:glue/src/ota/tests.rs::service_self_check_200_net_and_link_confirm_120_s_after_the_first_healthy_second`; `esp:glue/src/ota/tests.rs::service_a_503_self_check_switches_back_at_900_s_through_the_restart_path`; QEMU `boot`, `health` | deviation: the rollback is the boot guard's switch; `otaStm` applies for the whole trial ([PORT-NOTES.md#ota](PORT-NOTES.md#ota)) |
-| Boot guard: trial, 3 counted boots, 60 s boot deadline, switch back, no ping-pong, no fallback confirms | `esp:glue/src/boot_guard.rs`; `esp:glue/src/app.rs` `boot_deadline` | `esp:glue/src/boot_guard/tests.rs::a_crash_loop_switches_back_after_three_boots`; `esp:glue/src/boot_guard/tests.rs::the_image_that_failed_the_last_trial_is_never_switched_to_again`; `esp:glue/src/app/tests.rs::boot_deadline_restarts_a_boot_that_never_reached_the_app_thread`; QEMU `boot`, `rollback`, `deadline` | deviation: the devices' bootloader has no rollback (GLUE-DESIGN-ESP.md 6) |
+| Validation of a new image (net, HTTP self-check, STM): 120 s confirms, 15 min gives up; a user restart confirms only with a self-check passed in the last 30 s | `ota.rs` `service`, `service_restart`; core `OtaValidator` | `esp:glue/src/ota/tests.rs::service_self_check_200_net_and_link_confirm_120_s_after_the_first_healthy_second`; `esp:glue/src/ota/tests.rs::service_a_503_self_check_switches_back_at_900_s_through_the_restart_path`; `esp:glue/src/ota/tests.rs::service_restart_a_user_restart_without_a_passing_self_check_counts_as_a_boot`; `esp:glue/src/ota/tests_boots.rs::an_mqtt_restart_of_an_image_whose_web_server_never_answered_does_not_confirm_it`; QEMU `boot`, `health` | deviation: the rollback is the boot guard's switch; `otaStm` applies for the whole trial; the self-check rule of a user restart ([PORT-NOTES.md#ota](PORT-NOTES.md#ota), REVIEW-ESP-SAFETY.md F2) |
+| Boot guard: trial, 3 counted boots, 60 s boot deadline, switch back, no ping-pong, no fallback confirms; a manual switch from a confirmed image and the restart into an upload remove `otaOk`; an all-zero `AppId` is unknown | `esp:glue/src/boot_guard.rs`; `esp:glue/src/app.rs` `boot_deadline` | `esp:glue/src/boot_guard/tests.rs::a_crash_loop_switches_back_after_three_boots`; `esp:glue/src/boot_guard/tests.rs::the_image_that_failed_the_last_trial_is_never_switched_to_again`; `esp:glue/src/boot_guard/tests.rs::a_manual_switch_to_the_image_that_failed_its_trial_gives_it_a_new_trial`; `esp:glue/src/boot_guard/tests.rs::leaving_for_an_upload_removes_the_confirmation_only`; `esp:glue/src/boot_guard/tests.rs::an_all_zero_app_id_is_unknown_to_the_guard`; `esp:glue/src/app/tests.rs::boot_deadline_restarts_a_boot_that_never_reached_the_app_thread`; QEMU `boot`, `rollback`, `deadline` | deviation: the devices' bootloader has no rollback (GLUE-DESIGN-ESP.md 6; REVIEW-ESP-SAFETY.md F1, F3) |
 | An ESP upload while the image is on trial | `ota.rs`, `uploads.rs` | `esp:glue/src/ota/tests.rs::upload_begin_is_refused_while_the_image_is_on_trial`; QEMU `boot` | deviation (decision 7.5) |
 | Failure before `main` (bootloader hand-off, IDF start-up) | none (cannot be caught by the image) | QEMU boot chain with the devices' bootloader | hardware (H1) |
 
@@ -518,7 +522,7 @@ entry by entry; restart reasons 0..6 have the C++ names and severities.
 | Erase and write order: sector 0 last (images above 16 KiB) | `stm_flasher.rs` `pass_blocks`, `pass_base` | `esp:core/src/stm_flasher/tests_d9.rs::sector_0_is_erased_written_and_verified_last`; `esp:core/src/stm_flasher/tests_d9.rs::an_image_of_16_kib_is_flashed_in_one_pass_as_in_cpp`; Renode E11 | deviation: D9 ([PORT-NOTES.md](PORT-NOTES.md#intended-deviations)) |
 | STM boot window: setup order, 3001 calls, fixed 8-byte blocks, BEEFIT, the jump, LED, 8E1 | `stm:boot/src/stage.rs`, `window.rs`; `stm:firmware/src/boot_hw.rs` | `stm:boot/src/stage/tests.rs::the_steps_run_in_the_order_of_the_cpp_setup`; `stm:boot/src/window/tests.rs::without_deadbeef_the_window_ends_at_call_3001_and_call_3002_starts_the_application`; `stm:boot/src/window/tests.rs::deadbeef_answers_beefit_and_jumps_into_the_bootloader`; `stm:boot/src/stage/tests_esp.rs::a_stray_byte_after_the_drop_realigns_on_the_8th_send`; Renode E1-E5, E10 | same |
 | HSE within 5 ms else HSI; application PLL from HSI | `stage.rs` `probe_hse`; `stm:firmware/src/clocks.rs` | `stm:boot/src/stage/tests.rs::a_dead_hse_is_switched_off_after_5_ms_and_the_window_runs_on_hsi`; Renode E6 | deviation: D1, D5 (GLUE-DESIGN-STM.md 5.3) |
-| Faults: outputs off, fault record, IWDG reset | `stm:firmware/src/fault.rs`; `stm:boot/src/fault_record.rs` | `stm:boot/src/fault_record/tests.rs::the_count_continues_a_valid_record_and_starts_at_1_otherwise`; Renode E7, E8 | deviation: D4 (GLUE-DESIGN-STM.md 5.5) |
+| Faults: outputs off, fault record, IWDG reset; the boot stage starts the IWDG at the end of a window without a handshake | `stm:firmware/src/fault.rs`; `stm:boot/src/fault_record.rs`; `stm:boot/src/stage.rs` | `stm:boot/src/fault_record/tests.rs::the_count_continues_a_valid_record_and_starts_at_1_otherwise`; `stm:boot/src/stage/tests.rs::the_watchdog_starts_once_after_a_window_without_handshake`; Renode E7, E8 | deviation: D4 (GLUE-DESIGN-STM.md 5.4, 5.5) |
 | Reset capture, safe mode (3 watchdog resets in 10 min, leave after 30 min or `ssafe 0`) | `capture.rs`; core `reset_guard`; `stm:glue/src/sysstat.rs` | `stm:boot/src/capture/tests.rs::s9_three_watchdog_resets_within_10_min_enter_safe_mode`; `stm:glue/src/sysstat/tests.rs::s9_ssafe_0_leaves_safe_mode_and_clears_the_window_a_power_on_clears_it_too`; Renode E9, A5 | same |
 | Entry into the real ROM bootloader, real erase and program timing, the HSE start-up | `boot_hw.rs` `jump_to_bootloader` | Renode E1/E11 with a model of the ROM | hardware (H3) |
 
@@ -563,33 +567,37 @@ entry by entry; restart reasons 0..6 have the C++ names and severities.
 
 ### 4.1 Closed in this audit
 
+The hashes are those on `revamped-rust` (the audit's commits integrated there, or rebased onto
+`729b403`).
+
 | Commit | Gap | Kind |
 |---|---|---|
-| `e6f8347` | `test_smoke.cpp` (8 cases) had no port and no note | missing tests |
-| `0c478ce` | the harness case of the fake STM had no Rust case | missing test |
-| `3aea221` | GET /valves, /temps, /volts with a body read the whole body into a block of its length (C++: at most 8 KB, then 200): a LAN client could take a block as large as the free heap, and a refused block answered 503 | undocumented deviation, fixed in the glue |
-| `9775d45` | no case of the 127/128-character edge of the STM line buffers (ESP UART and terminal; the C++ suites neither) | missing tests |
-| `9d8d8af` | gstax reads the receive error counters one after the other (C++ with interrupts off); two comments said otherwise | undocumented deviation, documented |
-| `13ede86`, `2557330`, `7560a0e` | no case of the query `MD5` of an ESP upload, of NVS values in the C++ types both ways, of the MQTT options at task level and of a station rename at run time (the C++ suites neither) | missing tests |
-| `bff0191` | PORT-NOTES.md: rows that a blank line cut off from their tables, the testkit section, the RTC layout as an intended deviation, the meaning of `otaStm`; PORT-NOTES-STM.md: the C++ tests without a Rust form; GLUE-DESIGN-ESP.md 4.3, 4.6, 6.1 and GLUE-DESIGN-STM.md 4.2, 6.1 where the implementation differs from the design text | documentation |
+| `c3fe53f` | `test_smoke.cpp` (8 cases) had no port and no note | missing tests |
+| `e8f1f67` | the harness case of the fake STM had no Rust case | missing test |
+| `71771fa` | GET /valves, /temps, /volts with a body read the whole body into a block of its length (C++: at most 8 KB, then 200): a LAN client could take a block as large as the free heap, and a refused block answered 503 | undocumented deviation, fixed in the glue |
+| `de75cb2` | no case of the 127/128-character edge of the STM line buffers (ESP UART and terminal; the C++ suites neither) | missing tests |
+| `3b30a62` | gstax reads the receive error counters one after the other (C++ with interrupts off); two comments said otherwise | undocumented deviation, documented |
+| `d7e438b`, `0e8ada9`, `5641443` | no case of the query `MD5` of an ESP upload, of NVS values in the C++ types both ways, of the MQTT options at task level and of a station rename at run time (the C++ suites neither) | missing tests |
+| `ffe7458`, `b063d32` | PORT-NOTES.md: rows that a blank line cut off from their tables (`ffe7458`), the testkit section, the RTC layout as an intended deviation, the meaning of `otaStm`; PORT-NOTES-STM.md: the C++ tests without a Rust form; GLUE-DESIGN-ESP.md 4.3, 4.6, 6.1 and GLUE-DESIGN-STM.md 4.2, 6.1 where the implementation differs from the design text | documentation |
+
+Closed since `92718f5` (the base of the audit) by other commits: the ESP version against D8 (`e40f2a6`), the CI jobs
+(`78cab95`, `01eb58b`), the user documentation of every difference from 2.1.7 (`43ee950`,
+[CHANGES.md](CHANGES.md)).
 
 ### 4.2 Open
 
 | # | Gap | Evidence | Estimate |
 |---|---|---|---|
-| O1 | The ESP reports `2.1.7-revamped-rust` (`esp:firmware/.cargo/config.toml` `VDM_VERSION`, workspace version `2.1.7-revamped`); decision D8 says `2.2.0-revamped` for the first Rust release of ESP and STM, and the STM follows it. | GLUE-DESIGN-STM.md 8 D8; `software_stm32_rust/Cargo.toml` | 0.25 h (firmware config; operator's decision which string) |
-| O2 | `the_dashboard_is_every_file_of_web_gzipped_with_its_etag` is behind `#[cfg(feature = "dashboard")]` and no script runs it (`docker.sh test` has no features); it passed when run by hand. | `esp:glue/src/web_server/tests_rust.rs` | 0.5 h (one more `cargo test` in `docker.sh test` or CI) |
-| O3 | No Rust job in `.github/workflows/build.yml` at `92718f5` (host tests, `parity.py --check`, interop, QEMU, Renode, image check). | `.github/workflows/build.yml` | 2-4 h (none if a later CI commit covers it) |
-| O4 | The drivers of the differential checks quoted in PORT-NOTES.md (stm_codec 460,206 lines, stm_session 3,804,631 trace lines, config, event_log, the MQTT modules, net_trial, legacy_import, json_body) are not in the repository; the figures cannot be run again. | PORT-NOTES.md | 6-10 h |
-| O5 | No test runs the Rust ESP session against the Rust STM glue; each side is proven against the C++ (goldens, fake STM). | `esp:core/src/test_support/stm_golden.rs`; `stm:glue/tests/golden/` | 6-10 h (a host harness over both workspaces) |
-| O6 | QEMU scenarios narrower than GLUE-DESIGN-ESP.md 7 item 2 and 5.5 state: `nvs` crosses 5 of the 12 C++ keys (`otaStm` only in the optional `health`) and does not check the integer types; `littlefs` has no `cfgx.bak` and its Rust-to-C++ backup check reads the unchanged C++ file; `api` compares document keys only and sends no guard refusal; no SNTP sync, ping reply, static IP, factory pin or RTC record checked; `health` not in the default set. | `tools/rust/esp/qemu/harness.py` | 6-10 h |
-| O7 | The QEMU, Renode and interop results are not archived; the runs of 2026-10-07 are quoted from the design documents. | GLUE-DESIGN-ESP.md 5.5, GLUE-DESIGN-STM.md 5.7 | 2-3 h (run and archive) |
-| O8 | The C++ contract documents do not name the Rust-only additions: the switch-back route, 409 "image on trial", reason 7, event 107 arg1 -4, NVS `otaOk`/`otaTrial` (API.md, DESIGN.md 9 and 13); API.md still lists the 503 causes the Rust never sends. Decision 7.6 leaves the C++ side to the operator. | docs/revamped/API.md; DESIGN.md | 1-3 h after the decision |
-| O9 | A consistent copy of the four gstax receive error counters (documented now). | PORT-NOTES-STM.md | 0.5-1 h |
-| O10 | The HA payloads of `message`, `uptime`, `valves_calibration_repetitions` and `valves_temp2` are pinned by topic and order, not byte for byte (in C++ neither). | `esp:core/src/ha_discovery/tests.rs` | 0.5 h |
-| O11 | Renode checks no STM LED or button; E11 checks the flash and `gvers` only, not the no-init cells of the real C++ images across C++ <-> Rust flashes. | `software_stm32_rust/renode/` | 3-4 h |
-| O12 | The TCP adapter of the MQTT client has no host test (QEMU `mqtt` covers it). | `esp:firmware/src/adapters/tcp.rs` | 1-2 h |
-| O13 | The mutation gate of the files the audit changed (section 5). | — | the gate's run time |
+| O1 | The CI runs neither `python tools/rust/parity/parity.py --check` nor `the_dashboard_is_every_file_of_web_gzipped_with_its_etag`, which is behind `#[cfg(feature = "dashboard")]`: `docker.sh test` has no features, `docker.sh lint` compiles it with all features but does not run it. It passed when run by hand. | `.github/workflows/build.yml` (rust-host); `esp:glue/src/web_server/tests_rust.rs` | 0.5 h |
+| O2 | The drivers of the differential checks quoted in PORT-NOTES.md (stm_codec 460,206 lines, stm_session 3,804,631 trace lines, config, event_log, the MQTT modules, net_trial, legacy_import, json_body) are not in the repository; the figures cannot be run again. | PORT-NOTES.md | 6-10 h |
+| O3 | No test runs the Rust ESP session against the Rust STM glue; each side is proven against the C++ (goldens, fake STM). | `esp:core/src/test_support/stm_golden.rs`; `stm:glue/tests/golden/` | 6-10 h (a host harness over both workspaces) |
+| O4 | QEMU scenarios narrower than GLUE-DESIGN-ESP.md 7 item 2 and 5.5 state: `nvs` crosses 5 of the 12 C++ keys (`otaStm` only in the optional `health`) and does not check the integer types; `littlefs` has no `cfgx.bak` and its Rust-to-C++ backup check reads the unchanged C++ file; `api` compares document keys only and sends no guard refusal; no SNTP sync, ping reply, static IP, factory pin or RTC record checked. | `tools/rust/esp/qemu/harness.py` | 6-10 h |
+| O5 | No QEMU, Renode, E11, interop or mutation result of this tree was seen by the audit: the CI runs them (Renode and interop on every push, QEMU and the full mutation run weekly), the runs of 2026-10-07 are quoted from the design documents. | GLUE-DESIGN-ESP.md 5.5, GLUE-DESIGN-STM.md 5.7 | the CI's run time |
+| O6 | The C++ contract documents do not name the Rust-only additions: the switch-back route, 409 "image on trial", reason 7, event 107 arg1 -4, NVS `otaOk`/`otaTrial` (API.md, DESIGN.md 9 and 13); API.md still lists the 503 causes the Rust never sends. CHANGES.md names all of them for the Rust release; decision 7.6 leaves the C++ side to the operator. | docs/revamped/API.md; DESIGN.md | 1-3 h after the decision |
+| O7 | A consistent copy of the four gstax receive error counters (documented). | PORT-NOTES-STM.md | 0.5-1 h |
+| O8 | The HA payloads of `message`, `uptime`, `valves_calibration_repetitions` and `valves_temp2` are pinned by topic and order, not byte for byte (in C++ neither). | `esp:core/src/ha_discovery/tests.rs` | 0.5 h |
+| O9 | Renode checks no STM LED or button; E11 checks the flash and `gvers` only, not the no-init cells of the real C++ images across C++ <-> Rust flashes. | `software_stm32_rust/renode/` | 3-4 h |
+| O10 | The TCP adapter of the MQTT client has no host test (QEMU `mqtt` covers it). | `esp:firmware/src/adapters/tcp.rs` | 1-2 h |
 
 ### 4.3 Hardware only
 
@@ -607,10 +615,16 @@ entry by entry; restart reasons 0..6 have the C++ names and severities.
 
 ## 5. Verification of the audit's commits
 
-`bash tools/rust/docker.sh test software_esp32_rust` and `software_stm32_rust` with
-`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` after every
-commit, all green: ESP core 1229 passed, glue 971 passed and 1 ignored (+ 6 interop tests that need
-Mosquitto); STM boot 67, core 412, glue 494, image check 4.
+On `revamped-rust` `729b403` with the audit's commits rebased onto it:
+`bash tools/rust/docker.sh test software_esp32_rust` and `software_stm32_rust`, `cargo clippy
+--workspace --all-targets -- -D warnings` and `cargo fmt --all --check`, all green: ESP core 1229
+passed, glue 979 passed and 1 ignored (+ 6 interop tests that need Mosquitto, run by the CI); STM
+boot 68, core 412, glue 495, image check 4. `bash tools/rust/docker.sh lint`: ESP clean; STM
+workspace rustfmt and clippy (default and all features) clean, the rustfmt check of the STM
+firmware crate fails on `729b403` already (`firmware/src/app.rs`, `board.rs`, `boot_hw.rs`,
+`i2c.rs`, `isr.rs`: formatting only, files the audit does not touch).
+`python tools/rust/parity/parity.py --check` passes.
 
 Files for the mutation gate (code that cargo-mutants mutates): `esp:glue/src/web_server.rs`
-(`serve_legacy`). Every other change of the audit is a test file, a comment or a document.
+(`serve_legacy`, `71771fa`). Every other change of the audit is a test file, a comment or a
+document.

@@ -10,7 +10,7 @@ the glue design, the replacement named). Rust paths are relative to `software_es
 `software_stm32_rust`.
 
 C++ cases: 2442: manual 38, hint 12, exact 2098, prefix 16, subcase 11, fuzzy 211, noform 26, retired 30.
-Rust tests: 3185, of them 733 without a C++ case.
+Rust tests: 3195, of them 743 without a C++ case.
 
 ## software_esp32_revamped/test/native/test_calib_schedule.cpp (18)
 
