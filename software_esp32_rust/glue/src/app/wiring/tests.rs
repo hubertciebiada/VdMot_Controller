@@ -7,19 +7,22 @@
 use super::*;
 use crate::app::{RTC_LEASE, RTC_TARGETS};
 use crate::boot_guard::BootGuard;
-use crate::port::{IpInfo, OpenMode};
+use crate::port::{HttpMethod, IpInfo, OpenMode};
 use crate::storage::{KEY_CALIB_SLOT, KEY_LAST_CALIB, KEY_OTA_STM, KEY_TARGETS, NAMESPACE};
 use crate::testkit::board::TestPlatform;
-use crate::testkit::{run, Device, Ended, FakeBoard, FakeHttpServer, FakeStm, Reset};
+use crate::testkit::{run, Device, Ended, FakeBoard, FakeHttpServer, FakeRequest, FakeStm, Reset};
 use vdm_esp_core::common::{copy_string, ALL_VALVES, NO_VALVE};
 use vdm_esp_core::config::{
     encode_config, encode_config_ext, MqttMode, CONFIG_BLOB_MAX, CONFIG_EXT_BLOB_MAX,
 };
-use vdm_esp_core::event_log::{EventFilter, Severity};
+use vdm_esp_core::event_log::Severity;
+use vdm_esp_core::json_api::NetState;
 use vdm_esp_core::lease_client::{encode_lease_record, LEASE_RECORD_SIZE};
+use vdm_esp_core::net_policy::NetEvidence;
 use vdm_esp_core::net_trial::{
     encode_net_trial, net_trial_fields_crc, NetTrialRecord, NetTrialState, NET_TRIAL_BLOB_MAX,
 };
+use vdm_esp_core::stm_flasher::FlashPhase;
 use vdm_esp_core::stm_types::StmCommandType;
 use vdm_esp_core::target_store::{encode_targets, PERSISTED_TARGETS_SIZE};
 use vdm_esp_core::valve_model::TargetSource;
@@ -83,7 +86,7 @@ struct Fw<'a> {
     service: &'a Mutex<FwService<'a, P>>,
     link: FwLink<'a, P>,
     mqtt: FwMqtt<'a, P>,
-    app: FwApp<'a, P, HttpStart<FakeHttpServer>>,
+    app: FwApp<'a, P, WebBegin<FakeHttpServer>>,
 }
 
 /// Builds the firmware on `dev` in the order of `main` (NRST released first, the boot guard,
@@ -131,7 +134,7 @@ fn firmware<R>(dev: &Device, f: impl FnOnce(&mut Fw<'_>) -> R) -> R {
         nt,
         ot,
         report,
-        HttpStart::new(dev.http.clone()),
+        WebBegin::new(dev.http.clone()),
     );
     let ap = app(p, &shared, dev.gpio.input(2), modules);
     let mut fw = Fw {
@@ -1027,9 +1030,9 @@ fn the_mqtt_session_runs_over_the_wiring_and_proves_the_network() {
 }
 
 #[test]
-fn http_start_is_started_by_its_first_successful_start() {
+fn web_begin_is_started_by_its_first_successful_start() {
     let server = FakeHttpServer::default();
-    let mut s = HttpStart::new(server.clone());
+    let mut s = WebBegin::new(server.clone());
     assert!(!s.started());
     server.set_refuse(true);
     s.begin();
@@ -1039,4 +1042,352 @@ fn http_start_is_started_by_its_first_successful_start() {
     assert!(s.started());
     s.begin();
     assert_eq!(server.starts(), 2);
+}
+
+// ---------------------------------------------------------------- the web server
+
+/// The dashboard of these tests: one file.
+const ASSETS: &[Asset] = &[Asset {
+    path: "/index.html",
+    content_type: "text/html; charset=utf-8",
+    data: b"\x1f\x8b\x08\x00index",
+    etag: "\"1a2b3c4d\"",
+}];
+
+/// A request as the dashboard sends it to the device at its host name (the connection's local
+/// address unknown).
+fn dashboard_request(method: HttpMethod, target: &str) -> FakeRequest {
+    let mut r = FakeRequest::new(method, target).with_header("X-VdMot", "1");
+    r.local_ip = 0;
+    r
+}
+
+/// A network trial armed by the previous boot (with the settings in use): it runs once net
+/// begins.
+fn arm_net_trial(dev: &Device) {
+    let cfg = Config::default();
+    let rec = NetTrialRecord {
+        state: NetTrialState::Armed,
+        previous: cfg.net.clone(),
+        trial_crc: net_trial_fields_crc(&cfg.net),
+    };
+    let mut b = [0u8; NET_TRIAL_BLOB_MAX];
+    let n = encode_net_trial(&rec, &mut b);
+    dev.nvs.set_blob(NAMESPACE, "netTrial", &b[..n]);
+}
+
+#[test]
+fn wire_web_host_reaches_the_app_and_the_logger() {
+    let dev = FakeBoard::new().boot();
+    let shared = Shared::new();
+    let p = ports(&dev);
+    let logger = p.logger(&shared);
+    let st = storage(p, &shared);
+    let sk = sinks(p, &logger, &shared, dev.udp.clone());
+    let w = Wire::new(p, &shared, &st);
+    let s = &shared;
+    // app: the queue into the stm thread
+    let c = StmCommand {
+        valve: 5,
+        ..StmCommand::default()
+    };
+    assert!(WebHost::submit(&w, &c));
+    assert_eq!(s.app.receive().map(|c| c.valve), Some(5));
+    for _ in 0..crate::shared::COMMAND_QUEUE_DEPTH {
+        assert!(s.app.submit(&c));
+    }
+    assert!(!WebHost::submit(&w, &c));
+    // the snapshot and the values the stm thread publishes with it
+    assert!(!WebHost::stm_flash_active(&w));
+    assert_eq!(WebHost::stm_support(&w), StmSupport::Unknown);
+    assert_eq!(WebHost::stm_protocol(&w), 0);
+    let mut snap = Box::<StmSnapshot>::default();
+    snap.revision = 3;
+    snap.hw_id = 0x431;
+    snap.proto = 3;
+    snap.support = StmSupport::TooOld;
+    snap.flash.phase = FlashPhase::Erasing;
+    s.app.publish_stm_snapshot(&snap);
+    let mut out = Box::<StmSnapshot>::default();
+    WebHost::read_stm_snapshot(&w, &mut out);
+    assert_eq!((out.revision, out.hw_id), (3, 0x431));
+    assert!(WebHost::stm_flash_active(&w));
+    assert_eq!(WebHost::stm_support(&w), StmSupport::TooOld);
+    assert_eq!(WebHost::stm_protocol(&w), 3);
+    s.app.store_profile(&Profile {
+        valve: 4,
+        count: 6,
+        ..Profile::default()
+    });
+    let mut pr = Profile::default();
+    WebHost::read_profile(&w, 4, &mut pr);
+    assert_eq!((pr.valve, pr.count), (4, 6));
+    let ci = CalibInfo {
+        last_scheduled_epoch: 10,
+        next_slot: 20_261_014,
+        next_epoch: 30,
+    };
+    s.app.set_calib_info(&ci);
+    assert_eq!(WebHost::calib_info(&w), ci);
+    // health: the document of Wire::read_health
+    dev.clock.set_ms(7_000);
+    dev.system.state().stacks.insert("app".to_string(), 2500);
+    let mut h = HealthSnapshot::default();
+    WebHost::read_health(&w, &mut h);
+    assert_eq!(h.uptime_s, 7);
+    assert_eq!(h.task_count, 1);
+    assert_eq!(h.tasks[0].min_free_bytes, 2500);
+    assert_eq!(h.log, s.logger.stats(7_000));
+    // logger: the event goes into the ring, the API reads it back
+    assert_eq!(WebHost::last_event_seq(&w), 0);
+    let e = vdm_esp_core::event_log::make_event(
+        EventCode::ConfigSaved,
+        Severity::Info,
+        NO_VALVE,
+        4,
+        0,
+        b"web",
+    );
+    WebHost::log(&w, &e);
+    assert_eq!(WebHost::last_event_seq(&w), 1);
+    let mut ev = vec![Event::default(); 4];
+    let r = WebHost::read_events(&w, &EventFilter::default(), &mut ev);
+    assert_eq!((r.count, r.first_seq, r.last_seq), (1, 1, 1));
+    assert_eq!((ev[0].code, ev[0].arg1), (EventCode::ConfigSaved, 4));
+    // the flush request: the next pass of the sinks writes what is not due yet
+    let mut formatted = false;
+    assert!(st.begin_fs(&mut formatted));
+    lock(&sk).service(false);
+    assert!(dev.fs.read("/log/events.log").is_none());
+    WebHost::request_log_flush(&w);
+    lock(&sk).service(false);
+    let log = dev.fs.read("/log/events.log").unwrap_or_default();
+    assert!(String::from_utf8_lossy(&log).contains("config_saved"));
+}
+
+#[test]
+fn wire_web_host_reaches_the_network_and_the_trial_of_net() {
+    let dev = FakeBoard::new().boot();
+    arm_net_trial(&dev);
+    let shared = Shared::new();
+    let p = ports(&dev);
+    let st = storage(p, &shared);
+    let w = Wire::new(p, &shared, &st);
+    let s = &shared;
+    // nothing known before net begins: no trial to confirm or revert
+    assert_eq!(WebHost::net_info(&w).state, NetState::Down);
+    assert!(!WebHost::net_trial(&w).active);
+    assert!(!WebHost::request_trial_confirm(&w));
+    assert!(!WebHost::request_trial_revert(&w));
+    let mut nt = net(
+        p,
+        &shared,
+        &st,
+        dev.eth.clone(),
+        dev.wifi.clone(),
+        dev.sntp.clone(),
+        dev.pinger.clone(),
+    );
+    let mut c = Config::default();
+    nt.begin(&mut c);
+    let ip = u32::from_le_bytes([192, 168, 1, 20]);
+    dev.eth.got_ip(IpInfo {
+        ip,
+        mask: u32::from_le_bytes([255, 255, 255, 0]),
+        gateway: u32::from_le_bytes([192, 168, 1, 1]),
+        dns: 0,
+    });
+    nt.service(1000, false);
+    let info = WebHost::net_info(&w);
+    assert_eq!((info.state, info.ip), (NetState::Ethernet, ip));
+    let t = WebHost::net_trial(&w);
+    assert!(t.active && t.remain_s > 0);
+    // the DHCP lease was the evidence; then a request of a client
+    assert_eq!(s.net.health().evidence, NetEvidence::DhcpLease);
+    WebHost::note_inbound_http(&w, u32::from_le_bytes([192, 168, 1, 50]));
+    nt.service(2000, false);
+    assert_eq!(s.net.health().evidence, NetEvidence::InboundHttp);
+    // SNTP: the epoch of the last sync
+    assert_eq!(WebHost::last_sync_epoch(&w), 0);
+    dev.sntp.sync(1_790_000_000);
+    nt.service(3000, false);
+    assert_eq!(WebHost::last_sync_epoch(&w), 1_790_000_000);
+    // the user keeps the trial settings
+    assert!(WebHost::request_trial_confirm(&w));
+    nt.service(4000, false);
+    assert!(!WebHost::net_trial(&w).active);
+    assert_eq!(events(s, EventCode::NetTrialConfirmed).len(), 1);
+    assert!(!WebHost::request_trial_revert(&w));
+    assert!(!s.ota.restart_pending());
+}
+
+#[test]
+fn wire_web_host_reverts_a_network_trial() {
+    let dev = FakeBoard::new().boot();
+    arm_net_trial(&dev);
+    let shared = Shared::new();
+    let p = ports(&dev);
+    let st = storage(p, &shared);
+    let w = Wire::new(p, &shared, &st);
+    let mut nt = net(
+        p,
+        &shared,
+        &st,
+        dev.eth.clone(),
+        dev.wifi.clone(),
+        dev.sntp.clone(),
+        dev.pinger.clone(),
+    );
+    let mut c = Config::default();
+    nt.begin(&mut c);
+    assert!(WebHost::request_trial_revert(&w));
+    nt.service(1000, false);
+    assert_eq!(events(&shared, EventCode::NetTrialReverted).len(), 1);
+    assert!(shared.ota.restart_pending());
+    let r = events(&shared, EventCode::RebootRequested);
+    assert_eq!(r[0].arg1, 5); // a network revert
+}
+
+#[test]
+fn wire_web_host_reads_the_calibration_ends_the_mqtt_thread_saw() {
+    let dev = FakeBoard::new().boot();
+    let shared = Shared::new();
+    let p = ports(&dev);
+    let st = storage(p, &shared);
+    let w = Wire::new(p, &shared, &st);
+    let mut mq = mqtt(p, &shared, &st);
+    mq.begin();
+    Task::start(&mut mq, dev.watchdog.clone());
+    Task::pass(&mut mq);
+    let mut snap = Box::<StmSnapshot>::default();
+    snap.revision = 1;
+    snap.valves[0].calibrating = true;
+    shared.app.publish_stm_snapshot(&snap);
+    Task::pass(&mut mq);
+    assert_eq!(WebHost::calibration_end(&w, 0), None);
+    dev.wall.set(1_790_121_600);
+    snap.revision = 2;
+    snap.valves[0].calibrating = false;
+    shared.app.publish_stm_snapshot(&snap);
+    Task::pass(&mut mq);
+    let t = WebHost::calibration_end(&w, 0).expect("an end");
+    assert_eq!(t.epoch, 1_790_121_600);
+    assert_eq!(WebHost::calibration_end(&w, 1), None);
+}
+
+#[test]
+fn wire_web_host_reaches_the_session_of_mqtt() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    store_config(&dev, |c| {
+        c.mqtt.mode = MqttMode::Mqtt;
+        copy_string(&mut c.mqtt.host, b"broker.lan");
+    });
+    let broker = crate::testkit::FakeBroker::default();
+    broker.attach(&dev.tcp, "broker.lan", 1883);
+    dev.eth.got_ip(IpInfo {
+        ip: u32::from_le_bytes([192, 168, 1, 20]),
+        mask: u32::from_le_bytes([255, 255, 255, 0]),
+        gateway: u32::from_le_bytes([192, 168, 1, 1]),
+        dns: 0,
+    });
+    firmware(&dev, |fw| {
+        fw.setup();
+        fw.start();
+        fw.run_ms(10_000);
+        let w = Wire::new(ports(fw.dev), fw.shared, fw.storage);
+        let status = WebHost::mqtt_status(&w);
+        assert_eq!(status.state, MqttState::Connected);
+        assert_eq!(status, fw.shared.mqtt.status());
+        assert_eq!(broker.state().connects.len(), 1);
+        // a new session on request
+        WebHost::request_mqtt_reconnect(&w);
+        fw.run_ms(3000);
+        assert_eq!(broker.state().connects.len(), 2);
+        assert_eq!(WebHost::mqtt_status(&w).reconnects, 2);
+        // a discovery run on request: delete empties every discovery config
+        let emptied = |b: &crate::testkit::FakeBroker| {
+            b.state()
+                .published
+                .iter()
+                .filter(|p| p.topic.starts_with(b"homeassistant/") && p.payload.is_empty())
+                .count()
+        };
+        let before = emptied(&broker);
+        WebHost::request_discovery(&w, DiscoveryAction::Delete);
+        fw.run_ms(10_000);
+        assert!(emptied(&broker) > before);
+    });
+}
+
+#[test]
+fn web_serves_the_api_the_dashboard_and_the_esp_upload_over_the_wiring() {
+    let dev = FakeBoard::new().boot();
+    let shared = Shared::new();
+    let p = ports(&dev);
+    let logger = p.logger(&shared);
+    let st = storage(p, &shared);
+    let mut formatted = false;
+    assert!(st.begin_fs(&mut formatted));
+    st.shared().set_active_config(&Config::default());
+    let sk = sinks(p, &logger, &shared, dev.udp.clone());
+    let sv = Mutex::new(stm_service(p, &shared, &st));
+    let upload = web_upload(p, &shared, &st, &sk, &sv, dev.md5.clone());
+    let mut web = web(p, &shared, &st, upload, ASSETS);
+    // every request is network evidence of net (the inbound counter of the shared object)
+    let mut r = dashboard_request(HttpMethod::Get, "/api/status");
+    web.handle(&mut r);
+    assert_eq!(r.response.status, 200);
+    let doc = String::from_utf8_lossy(&r.response.body).into_owned();
+    assert!(doc.contains("\"station\":\"VdMot\""), "{doc}");
+    // the dashboard of the constructor, with its ETag
+    let mut r = dashboard_request(HttpMethod::Get, "/index.html");
+    web.handle(&mut r);
+    assert_eq!(r.response.status, 200);
+    assert_eq!(r.response.body, b"\x1f\x8b\x08\x00index");
+    assert_eq!(r.response.header("ETag"), "\"1a2b3c4d\"");
+    let mut r = dashboard_request(HttpMethod::Get, "/index.html")
+        .with_header("If-None-Match", "\"1a2b3c4d\"");
+    web.handle(&mut r);
+    assert_eq!(r.response.status, 304);
+    // a command goes into the queue of the stm thread
+    let mut r = dashboard_request(HttpMethod::Post, "/api/valves/1/calibrate");
+    web.handle(&mut r);
+    assert_eq!(r.response.status, 202);
+    assert_eq!(
+        shared.app.receive().map(|c| (c.kind, c.valve)),
+        Some((StmCommandType::Calibrate, 0))
+    );
+    // the ESP upload: into the update slot through OtaWire, the events in the shared ring, the
+    // restart into the image requested
+    let mut image = vec![0x5Au8; 3000];
+    image[0] = 0xE9;
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"fw.bin\"\r\n\
+          Content-Type: application/octet-stream\r\n\r\n",
+    );
+    body.extend_from_slice(&image);
+    body.extend_from_slice(b"\r\n--XyZ--\r\n");
+    let mut r = dashboard_request(HttpMethod::Post, "/api/ota/esp")
+        .with_header("Content-Type", "multipart/form-data; boundary=XyZ");
+    r.body = body;
+    web.handle(&mut r);
+    assert_eq!(r.response.status, 200);
+    assert_eq!(r.response.body, b"{\"result\":\"ok\",\"restart\":true}");
+    let k = dev.ota.knobs();
+    assert_eq!((k.begins, k.finishes), (1, 1));
+    assert_eq!(k.written, image);
+    drop(k);
+    assert_eq!(events(&shared, EventCode::EspOtaStarted).len(), 1);
+    assert_eq!(events(&shared, EventCode::EspOtaDone)[0].arg1, 3000);
+    assert!(shared.ota.restart_pending());
+    assert_eq!(events(&shared, EventCode::RebootRequested)[0].arg1, 1);
+    // the switch back: the update slot holds the uploaded image now
+    let mut r = dashboard_request(HttpMethod::Post, "/api/system/ota/switch-back")
+        .with_header("Content-Type", "application/json");
+    r.body = b"{\"confirm\":\"switch-back\"}".to_vec();
+    web.handle(&mut r);
+    assert_eq!(r.response.status, 409);
+    assert!(String::from_utf8_lossy(&r.response.body).contains("restarting"));
 }

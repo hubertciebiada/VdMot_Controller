@@ -164,16 +164,9 @@ pub struct Asset {
     pub etag: &'static str,
 }
 
-/// The calibration schedule for /api/status (C++ `app::CalibInfo`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CalibInfo {
-    /// Epoch of the last scheduled calibration, 0 = none.
-    pub last_scheduled_epoch: i64,
-    /// The next slot (yyyymmdd), 0 = none.
-    pub next_slot: u32,
-    /// UTC epoch of the next scheduled calibration, 0 = none.
-    pub next_epoch: i64,
-}
+/// The calibration schedule for /api/status (C++ `app::CalibInfo`): the one type of the shared
+/// objects.
+pub use crate::shared::CalibInfo;
 
 /// What the web server asks of the other glue modules: one method per C++ call into `app`,
 /// `logger`, `net` and `mqtt`. The firmware wiring implements it over their shared objects

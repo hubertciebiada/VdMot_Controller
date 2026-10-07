@@ -1,8 +1,10 @@
-//! Request target, query and multipart parsing (AsyncWebServer_WT32_ETH01 1.6.2 behaviour).
+//! Request target, query and multipart parsing, response framing (AsyncWebServer_WT32_ETH01
+//! 1.6.2 behaviour).
 //!
 //! The esp_http_server adapter hands the glue the raw request target, header values without
 //! leading blanks and the body in chunks of any size ([`crate::port::HttpRequest`]). This module
-//! gives `web_server` what the library (`WebRequest.cpp`) gave the C++ handlers:
+//! gives `web_server` what the library (`WebRequest.cpp`) gave the C++ handlers, and the adapter
+//! the bytes the library (`WebResponses.cpp`) put on the wire:
 //!
 //! | Library | Here |
 //! |---|---|
@@ -10,6 +12,7 @@
 //! | `_addGetParams` + `getParam(name)`, `hasParam(name)` | [`query_param`], [`has_query_param`] |
 //! | `_parseReqHeader`, Content-Type: `contentType()`, `_isMultipart`, `_boundary` | [`media_type`], [`is_multipart`], [`boundary`] |
 //! | `_parseMultipartPostByte`: POST parameters and `handleUpload` calls | [`Multipart`], [`Event`] |
+//! | `_responseCodeToString`, `_assembleHead`, the chunk framing of `AsyncChunkedResponse` | [`reason_phrase`], [`response_head`], [`chunk_size_line`], [`CRLF`], [`LAST_CHUNK`] |
 //!
 //! The Arduino `String` semantics the library relied on are kept: `indexOf` gives -1 for a
 //! missing byte (so `indexOf(c) + 2` is 1), `substring(left, right)` swaps its bounds when `left`
@@ -34,6 +37,10 @@
 //! - A NUL byte in a part header line is a byte like any other; the library's `indexOf`, `==` and
 //!   `equalsIgnoreCase` (`strchr`, `strcmp`) stopped at it.
 
+use core::fmt::Write;
+
+use vdm_esp_core::common::{fmt_fit, TextBuf};
+
 /// Longest boundary accepted (RFC 2046). A longer or an empty one puts [`Multipart`] into its
 /// error state.
 pub const BOUNDARY_MAX: usize = 70;
@@ -48,6 +55,14 @@ pub const FILENAME_MAX: usize = 64;
 
 /// "\r\n--" + boundary + "\r\n".
 const DELIMITER_MAX: usize = BOUNDARY_MAX + 6;
+
+/// Ends a header line and the data of a chunk.
+pub const CRLF: &[u8] = b"\r\n";
+/// The last chunk of a chunked response, without trailers.
+pub const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
+/// Room for the size line of any chunk ([`chunk_size_line`]): 16 hex digits, CR LF, the NUL of
+/// the C++ buffer convention.
+pub const CHUNK_LINE_MAX: usize = 19;
 
 // ---------------------------------------------------------------- target and query
 
@@ -608,5 +623,114 @@ impl Multipart {
     }
 }
 
+// ---------------------------------------------------------------- responses
+
+/// `_responseCodeToString`: the reason phrase of the status line; "" for a code the library does
+/// not name (507 goes out as "HTTP/1.1 507 ").
+pub fn reason_phrase(code: u16) -> &'static str {
+    match code {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        203 => "Non-Authoritative Information",
+        204 => "No Content",
+        205 => "Reset Content",
+        206 => "Partial Content",
+        300 => "Multiple Choices",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        305 => "Use Proxy",
+        307 => "Temporary Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        402 => "Payment Required",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
+        408 => "Request Time-out",
+        409 => "Conflict",
+        410 => "Gone",
+        411 => "Length Required",
+        412 => "Precondition Failed",
+        413 => "Request Entity Too Large",
+        414 => "Request-URI Too Large",
+        415 => "Unsupported Media Type",
+        416 => "Requested range not satisfiable",
+        417 => "Expectation Failed",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Time-out",
+        505 => "HTTP Version not supported",
+        _ => "",
+    }
+}
+
+/// The head of a response as `_assembleHead` wrote it for an HTTP/1.1 request: the status line
+/// `HTTP/1.1 <status> <reason>` ([`reason_phrase`]), `Content-Length` when the response has a
+/// `length` (a chunked one has none), `Content-Type` unless `content_type` is empty (204, 304),
+/// the `headers` in their order, `Accept-Ranges: none`, `Transfer-Encoding: chunked` for a
+/// chunked response, and the empty line. Writes into `out` (at most `out.len() - 1` bytes, the
+/// buffer convention of the core) and returns the length; `None` when the head does not fit.
+pub fn response_head(
+    status: u16,
+    content_type: &str,
+    length: Option<usize>,
+    headers: &[(&str, &str)],
+    out: &mut [u8],
+) -> Option<usize> {
+    let mut w = TextBuf::new(out);
+    status_line(&mut w, status);
+    if let Some(n) = length {
+        length_line(&mut w, n);
+    }
+    if !content_type.is_empty() {
+        header_line(&mut w, "Content-Type", content_type);
+    }
+    for (name, value) in headers {
+        header_line(&mut w, name, value);
+    }
+    header_line(&mut w, "Accept-Ranges", "none");
+    if length.is_none() {
+        header_line(&mut w, "Transfer-Encoding", "chunked");
+    }
+    w.push_bytes(CRLF);
+    w.fit_opt()
+}
+
+/// `HTTP/1.1 <status> <reason>` and CR LF.
+fn status_line(w: &mut TextBuf<'_>, status: u16) {
+    let _ = write!(w, "HTTP/1.1 {} {}\r\n", status, reason_phrase(status));
+}
+
+/// `Content-Length: <n>` and CR LF.
+fn length_line(w: &mut TextBuf<'_>, n: usize) {
+    let _ = write!(w, "Content-Length: {n}\r\n");
+}
+
+/// `<name>: <value>` and CR LF.
+fn header_line(w: &mut TextBuf<'_>, name: &str, value: &str) {
+    w.push_bytes(name.as_bytes());
+    w.push_bytes(b": ");
+    w.push_bytes(value.as_bytes());
+    w.push_bytes(CRLF);
+}
+
+/// The size line of a chunk of `len` bytes: lowercase hex and CR LF ("1a2\r\n"); its data and
+/// [`CRLF`] follow it. The response ends with [`LAST_CHUNK`] (a size line of 0 would end it too:
+/// never send an empty chunk with it). Returns the length of the line in `out`.
+pub fn chunk_size_line(len: usize, out: &mut [u8; CHUNK_LINE_MAX]) -> usize {
+    fmt_fit(out, format_args!("{len:x}\r\n"))
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_response;

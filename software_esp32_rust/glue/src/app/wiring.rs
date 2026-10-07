@@ -5,24 +5,18 @@
 //!
 //! Construction order (each borrows only what exists before it): [`Shared`], [`Ports`], the
 //! logger ([`Ports::logger`]), [`storage`], [`sinks`], [`stm_service`], then the modules of the
-//! threads ([`stm_link`], [`mqtt`], [`net`], [`ota`]) and the app ([`app`] over [`Modules`]).
-//! The app thread's log sinks and stm_service sit behind mutexes because the OTA restart path
-//! (inside [`Modules`]) flushes them; only the app thread locks them.
-//!
-//! TODO when web_server lands: its `WebHost` over the same objects (app: `submit`,
-//! `read_stm_snapshot`, `read_profile`, `stm_flash_active`, `stm_support`, `stm_protocol`,
-//! `calib_info`, `read_health` = [`Wire::read_health`]; logger: `log`, `read_events`,
-//! `last_event_seq`, `request_log_flush`; net: `note_inbound_http`, `net_info`, `net_trial`,
-//! `request_trial_confirm`, `request_trial_revert`, `last_sync_epoch`; mqtt: `mqtt_status`,
-//! `calibration_end`, `request_mqtt_reconnect`, `request_discovery`), its `OtaUpload` with an
-//! [`OtaWire`] as OTA host, and its `WebStart` in place of [`HttpStart`] behind [`AppWeb`].
+//! threads ([`stm_link`], [`mqtt`], [`net`], [`ota`]), the web server of the HTTP thread
+//! ([`web`] with [`Wire`] as its `WebHost`, its ESP upload [`web_upload`]) and the app ([`app`]
+//! over [`Modules`], whose [`AppWeb`] is a [`WebBegin`] of the HTTP server port). The app
+//! thread's log sinks and stm_service sit behind mutexes because the OTA restart path (inside
+//! [`Modules`]) flushes them; only the app thread locks them.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use vdm_esp_core::calib_schedule::CalibFailure;
 use vdm_esp_core::common::LocalTime;
 use vdm_esp_core::config::{CalibScheduleConfig, Config};
-use vdm_esp_core::event_log::{Event, EventCode};
+use vdm_esp_core::event_log::{Event, EventCode, EventFilter};
 use vdm_esp_core::failsafe::RegulatorInput;
 use vdm_esp_core::json_api::{HealthSnapshot, MqttState};
 use vdm_esp_core::lease_client::LeaseClientSnapshot;
@@ -31,21 +25,23 @@ use vdm_esp_core::link_policy::LinkState;
 use vdm_esp_core::stm_codec::Profile;
 use vdm_esp_core::stm_types::{StmCommand, StmSaveState, StmSnapshot};
 use vdm_esp_core::target_store::{PersistedTargets, RestoreSource};
+use vdm_esp_core::version::StmSupport;
 
 use super::{
     read_health, App, AppHost, AppPorts, HealthParts, Task, ThreadBegin, RTC_HA_STATUS,
     RTC_NET_WATCHDOG, RTC_STM_SERVICE,
 };
 use crate::boot_guard::{BootGuard, BootReport};
-use crate::logger::{LogSinks, Logger, LoggerHost};
-use crate::mqtt_client::{MqttClient, MqttHost, MqttPorts};
-use crate::net::{self, Net, NetHost, NetPorts};
-use crate::ota::{OtaHost, OtaPorts, OtaService};
+use crate::logger::{LogRead, LogSinks, Logger, LoggerHost};
+use crate::mqtt_client::{DiscoveryAction, MqttClient, MqttHost, MqttPorts, MqttStatus};
+use crate::net::{self, Net, NetHost, NetInfo, NetPorts, TrialInfo};
+use crate::ota::{OtaHost, OtaPorts, OtaService, OtaUpload};
 use crate::port::{Clock, Fs, HeapGate, HttpServer, Platform, Rtc, System, TcpConnector, Watchdog};
 use crate::shared::{CalibInfo, Shared};
 use crate::stm_link::{StmLink, StmLinkHost, StmLinkPorts};
 use crate::stm_service::{StmService, StmServiceHost, StmServiceLink, StmServicePorts};
 use crate::storage::{LoadDetails, LoadSource, Storage, StorageHost};
+use crate::web_server::{Asset, Web, WebHost, WebPorts, WebStart};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // a panic aborts the firmware, so a poisoned lock exists only in a failing test
@@ -409,6 +405,77 @@ impl<P: Platform> StmLinkHost for Wire<'_, P> {
     }
 }
 
+/// The web server's calls into `app`, `logger`, `net` and `mqtt` (C++ `web_server.cpp`), one
+/// forwarding call each.
+impl<P: Platform> WebHost for Wire<'_, P> {
+    fn submit(&self, cmd: &StmCommand) -> bool {
+        self.shared.app.submit(cmd)
+    }
+    fn read_stm_snapshot(&self, out: &mut StmSnapshot) {
+        self.shared.app.read_stm_snapshot(out);
+    }
+    fn read_profile(&self, valve: u8, out: &mut Profile) {
+        self.shared.app.read_profile(valve, out);
+    }
+    fn stm_flash_active(&self) -> bool {
+        self.shared.app.stm_flash_active()
+    }
+    fn stm_support(&self) -> StmSupport {
+        self.shared.app.stm_support()
+    }
+    fn stm_protocol(&self) -> u8 {
+        self.shared.app.stm_protocol()
+    }
+    fn calib_info(&self) -> CalibInfo {
+        self.shared.app.calib_info()
+    }
+    fn read_health<'s>(&'s self, out: &mut HealthSnapshot<'s>) {
+        Wire::read_health(self, out);
+    }
+    fn log(&self, e: &Event) {
+        self.logger.log_event(e);
+    }
+    fn read_events(&self, f: &EventFilter, out: &mut [Event]) -> LogRead {
+        self.shared.logger.read(f, out)
+    }
+    fn last_event_seq(&self) -> u32 {
+        self.shared.logger.last_seq()
+    }
+    fn request_log_flush(&self) {
+        self.shared.logger.request_flush();
+    }
+    fn note_inbound_http(&self, remote_ip: u32) {
+        self.shared.net.note_inbound_http(remote_ip);
+    }
+    fn net_info(&self) -> NetInfo {
+        self.shared.net.info()
+    }
+    fn net_trial(&self) -> TrialInfo {
+        self.shared.net.trial_info()
+    }
+    fn request_trial_confirm(&self) -> bool {
+        self.shared.net.request_trial_confirm()
+    }
+    fn request_trial_revert(&self) -> bool {
+        self.shared.net.request_trial_revert()
+    }
+    fn last_sync_epoch(&self) -> u32 {
+        self.shared.net.last_sync_epoch()
+    }
+    fn mqtt_status(&self) -> MqttStatus {
+        self.shared.mqtt.status()
+    }
+    fn calibration_end(&self, valve: u8) -> Option<LocalTime> {
+        self.shared.mqtt.calibration_end(valve)
+    }
+    fn request_mqtt_reconnect(&self) {
+        self.shared.mqtt.request_reconnect();
+    }
+    fn request_discovery(&self, a: DiscoveryAction) {
+        self.shared.mqtt.request_discovery(a);
+    }
+}
+
 // ---------------------------------------------------------------- module constructors
 
 /// stm_service of the firmware: the app thread's part behind a mutex (the restart path of OTA
@@ -592,6 +659,60 @@ pub fn ota<'a, P: Platform>(
     OtaService::new(p, &shared.ota, host, guard)
 }
 
+// ---------------------------------------------------------------- the HTTP thread
+
+/// The web server of the firmware: one instance, served by the HTTP thread
+/// ([`Web::handle`] per request).
+pub type FwWeb<'a, P> = Web<
+    'a,
+    P,
+    &'a <P as Platform>::Nvs,
+    &'a <P as Platform>::Fs,
+    &'a <P as Platform>::HeapGate,
+    StorageWire<'a, P>,
+    OtaWire<'a, P>,
+    Wire<'a, P>,
+>;
+
+/// The ESP upload of the web server.
+pub type FwUpload<'a, P> = OtaUpload<'a, P, OtaWire<'a, P>>;
+
+/// The web server over the shared objects and storage, with its ESP upload (the update slot,
+/// `md5` for the image, an [`OtaWire`] as its OTA host) and the dashboard `assets`. Allocates
+/// nothing: the first request takes the working set.
+pub fn web<'a, P: Platform>(
+    ports: Ports<'a, P>,
+    shared: &'a Shared,
+    storage: &'a FwStorage<'a, P>,
+    upload: FwUpload<'a, P>,
+    assets: &'a [Asset],
+) -> FwWeb<'a, P> {
+    let p = WebPorts {
+        clock: ports.clock,
+        wall: ports.wall,
+        fs: ports.fs,
+        ota: ports.ota,
+        system: ports.system,
+        gate: ports.heap,
+    };
+    let host = Wire::new(ports, shared, storage);
+    Web::new(p, storage, &shared.ota, upload, host, assets)
+}
+
+/// The ESP upload into the update slot, `md5` for the image, its OTA host an [`OtaWire`] (its
+/// paths flush neither the log nor stm_service).
+pub fn web_upload<'a, P: Platform>(
+    ports: Ports<'a, P>,
+    shared: &'a Shared,
+    storage: &'a FwStorage<'a, P>,
+    sinks: &'a Mutex<FwSinks<'a, P>>,
+    service: &'a Mutex<FwService<'a, P>>,
+    md5: P::Md5,
+) -> FwUpload<'a, P> {
+    let host = OtaWire::new(Wire::new(ports, shared, storage), sinks, service);
+    OtaUpload::new(ports.clock, ports.ota, md5, ports.heap, &shared.ota, host)
+}
+
 // ---------------------------------------------------------------- the app thread
 
 /// The app thread's calls into the web server (C++ `web::begin`, `web::started`).
@@ -602,31 +723,29 @@ pub trait AppWeb {
     fn begin(&mut self);
 }
 
-/// The start of the HTTP server port, until the web_server module is wired in its place (its
-/// `WebStart` keeps this contract).
-pub struct HttpStart<S> {
+/// The firmware's [`AppWeb`]: the HTTP server port, started through web_server's [`WebStart`]
+/// (C++ `web::begin`, `web::started`).
+pub struct WebBegin<S> {
     server: S,
-    started: bool,
+    start: WebStart,
 }
 
-impl<S: HttpServer> HttpStart<S> {
+impl<S: HttpServer> WebBegin<S> {
     /// Not started.
     pub fn new(server: S) -> Self {
-        HttpStart {
+        WebBegin {
             server,
-            started: false,
+            start: WebStart::default(),
         }
     }
 }
 
-impl<S: HttpServer> AppWeb for HttpStart<S> {
+impl<S: HttpServer> AppWeb for WebBegin<S> {
     fn started(&self) -> bool {
-        self.started
+        self.start.started()
     }
     fn begin(&mut self) {
-        if !self.started {
-            self.started = self.server.start();
-        }
+        self.start.begin(&mut self.server);
     }
 }
 
