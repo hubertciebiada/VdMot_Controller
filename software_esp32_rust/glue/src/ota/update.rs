@@ -6,9 +6,14 @@
 //! Only `U_FLASH` updates exist (the glue never used `U_SPIFFS`). Where Arduino wrote the flash
 //! itself, this writes through the port (`esp_ota_write`, `esp_ota_end`, `esp_ota_set_boot`), so
 //! the image is verified by ESP-IDF; docs/rust/PORT-NOTES.md lists the consequences.
+//!
+//! Intended deviation: an `end()` that fails never selects a slot. Arduino's `end(true)` ignored
+//! a failed last sector and then booted whatever the slot held (an image left complete by an
+//! earlier upload of the boot that failed its MD5 check); here only the image this update wrote
+//! completely can be selected.
 
 use crate::heap::try_bytes;
-use crate::port::{EspErr, HeapGate, Md5, Ota, OtaUpdate, SlotInfo};
+use crate::port::{EspErr, HeapGate, Md5, Ota, OtaUpdate};
 
 /// No error.
 pub const UPDATE_ERROR_OK: u8 = 0;
@@ -89,13 +94,8 @@ pub struct Update<O: Ota, M: Md5, G: HeapGate> {
     progress: u32,
     /// Expected MD5, lowercase hex as given (`_target_md5`); empty = none.
     target_md5: Option<[u8; 32]>,
-    /// The update partition of the last `begin` (`_partition`, kept by a reset).
-    partition: Option<SlotInfo>,
     /// The port's update between `begin` and its end.
     update: Option<O::Update>,
-    /// Arduino's `_skipBuffer`: the first bytes of an image whose first sector passed the magic
-    /// check, kept for the rest of the boot (it was never freed).
-    stash: bool,
 }
 
 impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
@@ -111,9 +111,7 @@ impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
             size: 0,
             progress: 0,
             target_md5: None,
-            partition: None,
             update: None,
-            stash: false,
         }
     }
 
@@ -155,7 +153,6 @@ impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
             self.error = UPDATE_ERROR_NO_PARTITION;
             return false;
         };
-        self.partition = Some(part);
         let size = if size == UPDATE_SIZE_UNKNOWN {
             part.size
         } else if size > part.size {
@@ -201,12 +198,9 @@ impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
             return false;
         };
         let data = buffer.get(..self.buffer_len).unwrap_or(&[]);
-        if first {
-            if data.first() != Some(&IMAGE_MAGIC) {
-                self.abort_with(UPDATE_ERROR_MAGIC_BYTE);
-                return false;
-            }
-            self.stash = true;
+        if first && data.first() != Some(&IMAGE_MAGIC) {
+            self.abort_with(UPDATE_ERROR_MAGIC_BYTE);
+            return false;
         }
         if update.write(data).is_err() {
             self.abort_with(UPDATE_ERROR_WRITE);
@@ -260,12 +254,12 @@ impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
 
     /// Ends the update. False with an error before or when not running; `end(false)` before all
     /// bytes arrived aborts (`UPDATE_ERROR_ABORT`); `end(true)` takes what was written (the
-    /// last partial sector is written, its result ignored, as Arduino did). Then the MD5 of the
-    /// written bytes is compared (`UPDATE_ERROR_MD5`) and the image verified and selected for
-    /// boot (`UPDATE_ERROR_ACTIVATE`). A failed last sector leaves no image to finish: Arduino
-    /// then wrote its stale first bytes back and tried to boot the slot, so this selects the
-    /// slot when it holds a verifying image from an earlier update of this boot, and fails
-    /// with `UPDATE_ERROR_READ` when no image passed the magic check since boot.
+    /// last partial sector is written, as Arduino did). Then the MD5 of the written bytes is
+    /// compared (`UPDATE_ERROR_MD5`) and the image verified and selected for boot
+    /// (`UPDATE_ERROR_ACTIVATE`). An update that leaves no image of its own (nothing written, or
+    /// a last sector that failed and aborted it) ends with `UPDATE_ERROR_READ` ("Flash Read
+    /// Failed", Arduino's code when it had no image to enable) and selects nothing (intended
+    /// deviation: Arduino booted what the slot held then, see the module documentation).
     pub fn end(&mut self, even_if_remaining: bool) -> bool {
         if self.has_error() || self.size == 0 {
             return false;
@@ -288,9 +282,8 @@ impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
         self.verify_end()
     }
 
-    /// `_verifyEnd()`: this update's image is verified and selected; without one (nothing
-    /// written, or the last sector failed) Arduino wrote the stashed first bytes of the last
-    /// image back into the slot and tried to boot whatever the slot holds.
+    /// `_verifyEnd()`: this update's image is verified and selected. Without one (nothing
+    /// written, or the last sector failed) nothing is selected: `UPDATE_ERROR_READ`.
     fn verify_end(&mut self) -> bool {
         let written = self.size > 0;
         let result = match self.update.take() {
@@ -299,13 +292,7 @@ impl<O: Ota, M: Md5, G: HeapGate> Update<O, M, G> {
                 if let Some(u) = unfinished {
                     u.abort();
                 }
-                match (self.stash, self.partition) {
-                    (true, Some(p)) => self
-                        .ota
-                        .set_boot(p.address)
-                        .map_err(|_| UPDATE_ERROR_ACTIVATE),
-                    _ => Err(UPDATE_ERROR_READ),
-                }
+                Err(UPDATE_ERROR_READ)
             }
         };
         match result {

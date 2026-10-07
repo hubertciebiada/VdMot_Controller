@@ -328,10 +328,10 @@ fn a_small_image_with_a_wrong_magic_byte_fails_at_end_true() {
 }
 
 #[test]
-fn a_failed_last_sector_boots_what_an_earlier_update_left_in_the_slot() {
-    // Arduino wrote the stashed first bytes of the last image back and selected the slot: an
-    // image left complete by an update that failed its MD5 becomes the boot image (C++ bug,
-    // kept; docs/rust/PORT-NOTES.md)
+fn a_failed_last_sector_never_selects_what_an_earlier_update_left_in_the_slot() {
+    // Intended deviation (docs/rust/PORT-NOTES.md): Arduino wrote the stashed first bytes of the
+    // last image back and selected the slot, so an image left complete by an update that failed
+    // its MD5 became the boot image after a small wrong file, with end() true
     let (_b, dev) = device();
     let mut u = update(&dev);
     let img = image(10_000);
@@ -344,23 +344,25 @@ fn a_failed_last_sector_boots_what_an_earlier_update_left_in_the_slot() {
     dev.ota.store().slots[1] = SlotImage::glue(APP_B);
     assert!(u.begin(UPDATE_SIZE_UNKNOWN));
     assert_eq!(u.write(b"tiny"), 4);
-    assert!(u.end(true));
-    assert_eq!(u.error(), UPDATE_ERROR_MAGIC_BYTE); // the error of the failed sector stays
-    assert_eq!(dev.ota.knobs().set_boots, vec![0x15_0000]);
-    assert_eq!(dev.ota.store().otadata, 1);
-    // a slot that does not verify: the firmware cannot be activated
-    dev.ota.store().slots[1] = SlotImage::broken(Some(APP_B));
-    dev.ota.store().otadata = 0;
-    assert!(u.begin(UPDATE_SIZE_UNKNOWN));
-    assert_eq!(u.write(b"tiny"), 4);
     assert!(!u.end(true));
-    assert_eq!(u.error(), UPDATE_ERROR_ACTIVATE);
+    assert_eq!((u.error(), u.error_string()), (3, "Flash Read Failed"));
+    assert!(!u.is_running());
+    assert_eq!(dev.ota.knobs().set_boots, Vec::<u32>::new());
+    assert_eq!(dev.ota.knobs().finishes, 0); // neither update reached the port's end
+    assert_eq!(dev.ota.store().otadata, 0);
+    // a last sector whose flash write fails: the same, also after a complete first sector
+    dev.ota.knobs().fail_write_at = Some(4096);
+    assert!(u.begin(UPDATE_SIZE_UNKNOWN));
+    assert_eq!(u.write(&img[..6000]), 6000); // the first sector went out
+    assert!(!u.end(true));
+    assert_eq!(u.error(), UPDATE_ERROR_READ);
+    assert_eq!(dev.ota.knobs().set_boots, Vec::<u32>::new());
     assert_eq!(dev.ota.store().otadata, 0);
     assert_eq!(dev.ota.store().slots[0], SlotImage::glue(APP_A));
 }
 
 #[test]
-fn a_failed_first_flash_write_still_stashes_the_image_start() {
+fn after_a_failed_first_flash_write_a_tiny_update_selects_nothing() {
     let (_b, dev) = device();
     let mut u = update(&dev);
     dev.ota.knobs().fail_write_at = Some(0);
@@ -371,12 +373,14 @@ fn a_failed_first_flash_write_still_stashes_the_image_start() {
     dev.ota.store().slots[1] = SlotImage::glue(APP_B);
     assert!(u.begin(UPDATE_SIZE_UNKNOWN));
     assert_eq!(u.write(b"x"), 1);
-    assert!(u.end(true)); // the stash of the failed update selects the slot
-    assert_eq!(dev.ota.knobs().set_boots, vec![0x15_0000]);
+    assert!(!u.end(true)); // C++: the stash of the failed update selected the slot
+    assert_eq!(u.error(), UPDATE_ERROR_READ);
+    assert_eq!(dev.ota.knobs().set_boots, Vec::<u32>::new());
+    assert_eq!(dev.ota.store().otadata, 0);
 }
 
 #[test]
-fn an_update_that_wrote_nothing_ends_like_arduino() {
+fn an_update_that_wrote_nothing_selects_nothing() {
     let (_b, dev) = device();
     let mut u = update(&dev);
     assert!(u.begin(UPDATE_SIZE_UNKNOWN));
@@ -384,4 +388,15 @@ fn an_update_that_wrote_nothing_ends_like_arduino() {
     assert_eq!(u.error(), UPDATE_ERROR_READ);
     assert_eq!(dev.ota.knobs().aborts, 1);
     assert_eq!(dev.ota.knobs().finishes, 0);
+    // also after an image of this boot passed the magic check and the slot holds one
+    assert!(u.begin(UPDATE_SIZE_UNKNOWN));
+    assert_eq!(u.write(&image(5000)), 5000);
+    assert!(u.end(true));
+    assert_eq!(dev.ota.store().otadata, 1);
+    dev.ota.store().otadata = 0;
+    assert!(u.begin(UPDATE_SIZE_UNKNOWN));
+    assert!(!u.end(true));
+    assert_eq!(u.error(), UPDATE_ERROR_READ);
+    assert_eq!(dev.ota.store().otadata, 0);
+    assert_eq!(dev.ota.knobs().set_boots, Vec::<u32>::new());
 }
