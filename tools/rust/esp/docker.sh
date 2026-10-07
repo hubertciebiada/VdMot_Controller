@@ -8,6 +8,11 @@
 #                                                   (features: comma list, "" = default = wifi;
 #                                                   e.g. "qemu", "qemu,fail-boot", "nowifi")
 #   tools/rust/esp/docker.sh size [features]        build, then the image size against the budget
+#   tools/rust/esp/docker.sh export                 the release images: size of the default build,
+#                                                   the same image without the appended SHA-256
+#                                                   digest, both with the ELF and the map into
+#                                                   software_esp32_rust/firmware/images/ (not in
+#                                                   git; input of tools/release/package.py)
 #   tools/rust/esp/docker.sh lint                   clippy -D warnings of the default, nowifi and
 #                                                   QEMU test builds (the firmware is outside the
 #                                                   clippy run of the host workspace)
@@ -80,9 +85,8 @@ cp \$elf \$out/vdm-esp-fw.elf
 cp \$(ls -t /target/cargo/xtensa-esp32-espidf/release/build/esp-idf-sys*/out/build/libespidf.map /target/cargo/xtensa-esp32-espidf/release/build/esp-idf-sys/*/out/build/libespidf.map 2>/dev/null | head -1) \$out/vdm-esp-fw.map
 # the app image as ESP-IDF 5.5 writes it (esptool_py/project_include.cmake): DIO 80 MHz 4 MB,
 # ELF SHA-256 in the app descriptor, chip revisions v0.0 .. v3.99, SHA-256 appended
-esptool --chip esp32 elf2image --flash-mode dio --flash-freq 80m --flash-size 4MB \
-  --elf-sha256-offset 0xb0 --min-rev-full 0 --max-rev-full 399 \
-  -o \$out/vdm-esp-fw.bin \$elf >/dev/null
+elf2image="--chip esp32 elf2image --flash-mode dio --flash-freq 80m --flash-size 4MB --elf-sha256-offset 0xb0 --min-rev-full 0 --max-rev-full 399"
+esptool \$elf2image -o \$out/vdm-esp-fw.bin \$elf >/dev/null
 echo "variant $variant: \$out/vdm-esp-fw.bin \$(stat -c %s \$out/vdm-esp-fw.bin) B"
 EOS
 }
@@ -90,6 +94,21 @@ EOS
 size_script() {
   cat <<'EOS'
 python3 /src/tools/rust/esp/image_size.py "$out/vdm-esp-fw.bin" "$out/vdm-esp-fw.map"
+EOS
+}
+
+# Container script after build_script and size_script: the release images in the checkout. The
+# digest-less image (the C++ releases ship one too, docs/revamped/INSTALL.md) is the same
+# elf2image call without the SHA-256 appended to the image.
+export_script() {
+  cat <<'EOS'
+esptool $elf2image --dont-append-digest -o "$out/vdm-esp-fw_nodigest.bin" "$elf" >/dev/null
+dest=/src/software_esp32_rust/firmware/images
+mkdir -p "$dest"
+for f in vdm-esp-fw.bin vdm-esp-fw_nodigest.bin vdm-esp-fw.elf vdm-esp-fw.map; do
+  cp "$out/$f" "$dest/$f"
+done
+ls -l "$dest"
 EOS
 }
 
@@ -141,6 +160,11 @@ case "${1:-}" in
     in_container "$(build_script "${2:-}")
 $(size_script)"
     ;;
+  export)
+    in_container "$(build_script "")
+$(size_script)
+$(export_script)"
+    ;;
   lint)
     in_container "$(lint_script)"
     ;;
@@ -157,7 +181,7 @@ $(build_script qemu,hang-setup)
     in_container "$*"
     ;;
   *)
-    sed -n '2,26p' "$0" >&2
+    sed -n '2,31p' "$0" >&2
     exit 2
     ;;
 esac

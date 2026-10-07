@@ -5,6 +5,9 @@
 #   tools/rust/docker.sh image                          build the image (done on first use)
 #   tools/rust/docker.sh test <workspace> [args...]     cargo test --workspace in <workspace>
 #                                                       (software_esp32_rust, software_stm32_rust)
+#   tools/rust/docker.sh lint <workspace>               rustfmt --check of the workspace and of
+#                                                       its firmware crate, clippy -D warnings of
+#                                                       all targets (default and all features)
 #   tools/rust/docker.sh mutate <workspace> <package> [args...]
 #                                                       cargo mutants on one package, then the
 #                                                       per-file gate (tools/rust/mutation_gate.py)
@@ -24,7 +27,8 @@
 # The Renode tests of the images run in their own container: tools/rust/renode.sh (README.md).
 #
 # Environment: VDM_MUTATION_JOBS (default 4), VDM_RUST_IMAGE (default
-# vdmot-rust:<hash of the Dockerfile>).
+# vdmot-rust:<hash of the Dockerfile>), VDM_MUTATION_GATE=0 (mutate: cargo mutants without the
+# gate, for the shards of a CI run (--shard k/n), whose outcomes are gated together).
 #
 # Each checkout (git worktree) has its own target volume, so parallel worktrees never share
 # build directories; `run` builds into /target/run, never into the checkout. The cargo registry
@@ -40,6 +44,7 @@ TARGET_VOLUME="vdmot-rust-target-$(printf '%s' "$HOST_ROOT" | md5sum | cut -c1-1
 CARGO_VOLUME="vdmot-rust-cargo"
 LOCKS_VOLUME="vdmot-locks"
 MUTATION_JOBS="${VDM_MUTATION_JOBS:-4}"
+MUTATION_GATE="${VDM_MUTATION_GATE:-1}"
 export MSYS_NO_PATHCONV=1
 
 quote_args() {
@@ -102,6 +107,25 @@ case "${1:-}" in
       cd $ws
       CARGO_TARGET_DIR=/target/$ws cargo test --workspace$(quote_args "$@")"
     ;;
+  lint)
+    [ $# -ge 2 ] || { echo "usage: $0 lint <workspace>" >&2; exit 2; }
+    ws="$2"
+    check_workspace "$ws"
+    # every check runs; the exit code says whether one failed
+    in_container "exec 8>/target/$ws.lock
+      if ! flock -n 8; then echo 'waiting for another cargo run of $ws in this checkout' >&2; flock 8; fi
+      cd $ws || exit 2
+      failed=''
+      cargo fmt --all --check || failed=\"\$failed rustfmt\"
+      # the firmware crate is no workspace member (own target and toolchain); rustfmt follows
+      # its modules from main.rs
+      rustfmt --check --edition 2021 firmware/src/main.rs firmware/build.rs || failed=\"\$failed rustfmt(firmware)\"
+      export CARGO_TARGET_DIR=/target/$ws
+      cargo clippy --workspace --all-targets -- -D warnings || failed=\"\$failed clippy\"
+      cargo clippy --workspace --all-targets --all-features -- -D warnings || failed=\"\$failed clippy(all-features)\"
+      if [ -n \"\$failed\" ]; then echo \"lint $ws failed:\$failed\" >&2; exit 1; fi
+      echo 'lint $ws: rustfmt and clippy clean'"
+    ;;
   mutate)
     [ $# -ge 3 ] || { echo "usage: $0 mutate <workspace> <package> [cargo mutants args]" >&2; exit 2; }
     ws="$2"; pkg="$3"; shift 3
@@ -117,6 +141,10 @@ rc=\$?
 set -e
 # 0 all caught, 2 missed mutants, 3 timeouts: the gate decides; anything else is an error
 case \$rc in 0|2|3) ;; *) echo \"cargo mutants failed with exit code \$rc\" >&2; exit \$rc ;; esac
+if [ $MUTATION_GATE = 0 ]; then
+  echo \"no gate (VDM_MUTATION_GATE=0): \$out/mutants.out/outcomes.json\"
+  exit 0
+fi
 python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcomes \$out/mutants.out/outcomes.json"
     ;;
   gate)
@@ -157,7 +185,7 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
     in_container "$*"
     ;;
   *)
-    sed -n '2,28p' "$0" >&2
+    sed -n '2,36p' "$0" >&2
     exit 2
     ;;
 esac

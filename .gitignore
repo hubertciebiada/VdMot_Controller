@@ -19,6 +19,9 @@ tools/mutation/*.report.json
 ## Python bytecode of the tools ########
 __pycache__/
 
+## Rust ESP32 release images (tools/rust/esp/docker.sh export) ########
+software_esp32_rust/firmware/images/
+
 # Rust build output (the containers build into volumes; a host build lands here)
 software_esp32_rust/target/
 software_stm32_rust/target/

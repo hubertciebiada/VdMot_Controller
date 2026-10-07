@@ -6,11 +6,29 @@ requirement (Windows, macOS, Linux). Porting rules and the per-crate commands:
 
 | script | image | used for |
 |---|---|---|
-| `docker.sh` | `vdmot-rust:<hash of Dockerfile>`: Rust 1.99.0, clippy, rustfmt, cargo-mutants 27.1.0, the `thumbv7em-none-eabihf` target, `llvm-tools`, g++ 12, Python 3 | host tests, mutation gate, STM32 images, image check |
+| `docker.sh` | `vdmot-rust:<hash of Dockerfile>`: Rust 1.99.0, clippy, rustfmt, cargo-mutants 27.1.0, the `thumbv7em-none-eabihf` target, `llvm-tools`, g++ 12, Python 3 | host tests, rustfmt and clippy, mutation gate, STM32 images, image check |
 | `renode.sh` | `antmicro/renode:1.16.1` (D11) | the STM32 images in Renode: boot stage, application, flash cycle (E11) |
 | `stm/golden/run.sh` | the native image (`tools/native/docker.sh`) | the C++ goldens of the glue_system suites |
 | `esp/docker.sh` | `vdmot-rust-esp:<hash of esp/Dockerfile>`: the Xtensa toolchain `esp` 1.98.1.0 (espup 0.18.0), ldproxy 0.3.5, esptool 5.4.0, littlefs-python 0.19.0, Espressif QEMU 9.2.2 (esp-develop-20260417), mklittlefs 1.203.210628, Mosquitto 2.0.11 (Debian bookworm); ESP-IDF v5.5.5 is fetched by esp-idf-sys into the volume `vdmot-esp-idf` on the first build | ESP32 firmware images, their size, the QEMU harness |
-| `mutation_gate.py` | - | per-file 95 % gate over a cargo-mutants run |
+| `mutation_gate.py` | - | per-file 95 % gate over a cargo-mutants run (or over its shards) |
+
+CI (`.github/workflows/build.yml`, jobs `rust-*`) runs these scripts with the same arguments.
+
+## Host workspaces
+
+```
+bash tools/rust/docker.sh test <workspace>       # cargo test --workspace
+bash tools/rust/docker.sh lint <workspace>       # rustfmt --check (workspace and firmware crate), clippy -D warnings
+bash tools/rust/docker.sh interop <workspace>    # the ignored tests: mosquitto, g++ -m32 (ESP32 glue)
+bash tools/rust/docker.sh mutate <workspace> <package> [cargo mutants args]   # then the gate
+```
+
+Workspaces: `software_esp32_rust`, `software_stm32_rust`. `lint` runs every check and fails
+when one fails; clippy runs over all targets with the default features and with all features.
+A mutation run of a large package can be split: `mutate <workspace> <package> --shard k/n
+--sharding round-robin` with `VDM_MUTATION_GATE=0` runs one shard without the gate, then
+`python3 tools/rust/mutation_gate.py --workspace <workspace> --package <package> --outcomes
+<shard 0>/outcomes.json ... <shard n-1>/outcomes.json` gates them as one run (the CI does so).
 
 ## STM32 images
 
@@ -92,6 +110,8 @@ GNU ld `--wrap`) and writes every golden again; every C++ case must pass.
 ```
 bash tools/rust/esp/docker.sh build [features]   # release build and app image (default: WiFi)
 bash tools/rust/esp/docker.sh size [features]    # the same, then the size; fails above 1,228,800 B
+bash tools/rust/esp/docker.sh export             # size of the default build, its digest-less copy, both
+                                                 # into software_esp32_rust/firmware/images/
 bash tools/rust/esp/docker.sh lint               # clippy -D warnings: default, nowifi, the QEMU test build
 bash tools/rust/esp/docker.sh qemu [scenarios]   # the QEMU variants, then the end-to-end harness
 ```
@@ -99,7 +119,9 @@ bash tools/rust/esp/docker.sh qemu [scenarios]   # the QEMU variants, then the e
 `build` writes `/target/images/<variant>/vdm-esp-fw.bin` (with `.elf` and `.map`) in the target
 volume of the checkout; variants: `default`, `nowifi`, `qemu` (OpenETH of Espressif QEMU instead
 of the LAN8720), and the boot guard test images `qemu-fail-boot` and `qemu-hang-setup`. Nothing
-is flashed: the first flash of a device is the operator's.
+is flashed: the first flash of a device is the operator's. `export` copies the default variant
+(`vdm-esp-fw.bin`, `vdm-esp-fw_nodigest.bin`, `.elf`, `.map`) out of the volume for
+`tools/release/package.py --from-builds .` (docs/rust/README.md).
 
 `qemu` runs `esp/qemu/harness.py` with the devices' bootloader and partition table
 (`software_esp32/`) and the C++ firmware 2.1.7 in the other OTA slot. The C++ image is the

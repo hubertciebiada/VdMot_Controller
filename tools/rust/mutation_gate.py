@@ -19,6 +19,9 @@ files outside a partial run (--file) are not checked by that run.
 
 Writes tools/rust/mutation/<package>.report.json and prints the per-file table and the
 surviving mutants.
+
+--outcomes takes several files: the shards of one package (cargo mutants --shard k/n, the CI
+runs) are gated together, as one run.
 """
 import argparse
 import json
@@ -50,18 +53,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--package", required=True)
-    ap.add_argument("--outcomes", required=True)
+    ap.add_argument("--outcomes", required=True, nargs="+")
     ap.add_argument("--threshold", type=float, default=95.0)
     ap.add_argument("--file-threshold", type=float, default=95.0)
     ap.add_argument("--repo", default=os.path.join(os.path.dirname(__file__), "..", ".."))
     args = ap.parse_args()
 
-    if not os.path.exists(args.outcomes):
-        # cargo mutants writes no outcomes when the filters (--file, --exclude) match no mutant
-        sys.exit("%s not found: no mutants were tested (a --file glob with '/' matches from the "
-                 "workspace root, e.g. core/src/x.rs)" % args.outcomes)
-    with open(args.outcomes, encoding="utf-8") as f:
-        run = json.load(f)
+    run = {"outcomes": []}
+    for path in args.outcomes:
+        if not os.path.exists(path):
+            # cargo mutants writes no outcomes when the filters (--file, --exclude) match no mutant
+            sys.exit("%s not found: no mutants were tested (a --file glob with '/' matches from the "
+                     "workspace root, e.g. core/src/x.rs)" % path)
+        with open(path, encoding="utf-8") as f:
+            part = json.load(f)
+        run["outcomes"] += part["outcomes"]
+        run.setdefault("cargo_mutants_version", part.get("cargo_mutants_version"))
     # one list per package and/or one per module (tools/rust/mutation/equivalents/<package>/*.json),
     # so parallel ports never edit the same file
     eq_root = os.path.join(args.repo, "tools", "rust", "mutation", "equivalents")
