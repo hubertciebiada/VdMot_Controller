@@ -11,6 +11,7 @@ requirement (Windows, macOS, Linux). Porting rules and the per-crate commands:
 | `stm/golden/run.sh` | the native image (`tools/native/docker.sh`) | the C++ goldens of the glue_system suites |
 | `esp/docker.sh` | `vdmot-rust-esp:<hash of esp/Dockerfile>`: the Xtensa toolchain `esp` 1.98.1.0 (espup 0.18.0), ldproxy 0.3.5, esptool 5.4.0, littlefs-python 0.19.0, Espressif QEMU 9.2.2 (esp-develop-20260417), mklittlefs 1.203.210628, Mosquitto 2.0.11 (Debian bookworm); ESP-IDF v5.5.5 is fetched by esp-idf-sys into the volume `vdmot-esp-idf` on the first build | ESP32 firmware images, their size, the QEMU harness |
 | `mutation_gate.py` | - | per-file 95 % gate over a cargo-mutants run (or over its shards) |
+| `parity/parity.py` | - (Python 3 on the host) | every C++ test case paired with its Rust tests or its documented reason, and the names in docs/rust/PARITY.md checked ([PARITY.md](../../docs/rust/PARITY.md) section 2) |
 
 CI (`.github/workflows/build.yml`, jobs `rust-*`) runs these scripts with the same arguments.
 
