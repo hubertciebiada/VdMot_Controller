@@ -231,6 +231,13 @@ the same as `NVIC_PRIORITYGROUP_4`.
   one lock while no valve moves; a request handler holds the lock only for its field copies.
   Budget: every critical section stays below the 1-Wire masking of the C++ (~80 µs); EXTI
   latches an edge in its pending bit, so a shorter section cannot lose a pulse.
+- Debug output inside the lock waits for USART6 when the 1023-byte transmit ring is full, with
+  TIM1 and TIM2 masked meanwhile (the C++ prints with interrupts on). The sensor match (`masns`,
+  the 1-Wire search, an EEPROM re-read: up to 34 sensors, 1-4 KB of lines) therefore prints
+  outside the lock (`App::app_find_sensors`) and applies the indices under it
+  (`App::app_set_sensors`); the set-up still matches inside, before TIM1 and TIM2 run. The
+  short lines printed inside (a decision of `app_loop`, `learning_movements` of a re-read, the
+  learn triggers of `app_10s_loop`, at most 24 lines) wait only when the ring is full already.
 - `MotorShared::new()` is `const`: the static needs no lazy initialisation. The TIM1 context
   (ADC, channels) is set once before its interrupt is enabled.
 

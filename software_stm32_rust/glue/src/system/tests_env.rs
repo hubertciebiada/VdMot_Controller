@@ -226,6 +226,65 @@ fn one_wire_sensors_are_found_matched_to_a_valve_and_read() {
 }
 
 #[test]
+fn the_sensor_match_prints_outside_the_motor_lock() {
+    // design §2.3: the lines of a match (up to 34 sensors, more than the 1023-byte transmit
+    // ring) may wait for USART6; TIM1 and TIM2 must run meanwhile, so the 1-Wire search
+    // (stons), masns and the EEPROM re-read print them outside the motor lock and take only the
+    // sensor indices under it
+    let mut c = case();
+    let mut b = c.boot(PLAIN, |s| s.eeprom.borrow_mut().fail_reads_from = 1);
+    // the set-up matches under the lock before TIM1 and TIM2 run: not counted
+    b.take_dbg();
+    b.s.dbg_locked.borrow_mut().clear();
+    b.ctl.modules.hw.one_wire.add_one_wire(0x28, 1, 2880);
+    b.ctl.modules.hw.one_wire.add_one_wire(0x28, 2, 2560);
+    assert_eq!(b.exchange("stons\n"), "stons\r\n");
+    b.run_main(1000);
+    let list = b.exchange("gonec 255\n");
+    let addresses: Vec<String> = list
+        .trim_end()
+        .split(' ')
+        .nth(2)
+        .unwrap()
+        .split(',')
+        .map(String::from)
+        .collect();
+    assert_eq!(addresses.len(), 2);
+    let set = std::format!("stvls 0 {} {}\n", addresses[1], addresses[0]);
+    assert_eq!(b.exchange(&set), "stvls 0\r\n");
+    assert_eq!(b.exchange("masns\n"), "masns \r\n");
+    // the EEPROM answers again: the re-read 30 s after the failed one matches once more
+    b.eeprom().fail_reads_from = 0;
+    b.run_main(31000);
+    let dbg = b.take_dbg();
+    assert_eq!(
+        dbg.matches("Read 1-wire sensor addresses from eeprom\r\n")
+            .count(),
+        3,
+        "{dbg}"
+    );
+    assert_eq!(
+        dbg.matches(" found as 1st sensor at valve: 0:1\r\n")
+            .count(),
+        2,
+        "{dbg}"
+    );
+    let locked = String::from_utf8_lossy(&b.s.dbg_locked.borrow()).into_owned();
+    assert!(!locked.contains("1-wire"), "{locked}");
+    assert!(!locked.contains("{ 28"), "{locked}");
+    assert!(!locked.contains(" found as "), "{locked}");
+    assert!(!locked.contains(" not found"), "{locked}");
+    // the rest of the re-read still runs under the lock (and the log sees it)
+    assert!(locked.contains("learning_movements: "), "{locked}");
+    // the indices reached valve 0: its temperatures after a temperature cycle
+    b.run_main(3000);
+    let data = b.exchange("gvlvd 0\n");
+    assert_eq!(Boot::field(&data, 5), 200, "{data}");
+    assert_eq!(Boot::field(&data, 6), 225, "{data}");
+    b.finish();
+}
+
+#[test]
 fn the_terminal_reaches_the_modules() {
     let mut c = case();
     let mut b = c.boot(sim(0x0FF0), |_| {});

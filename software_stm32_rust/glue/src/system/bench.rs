@@ -114,6 +114,9 @@ pub struct Statics {
     pub esp_out: RefCell<Vec<u8>>,
     /// USART6 output not yet in the transcript
     pub dbg_out: RefCell<Vec<u8>>,
+    /// every USART6 byte written while the motor lock was held (on the device a full transmit
+    /// ring keeps TIM1 and TIM2 masked while such a byte waits)
+    pub dbg_locked: RefCell<Vec<u8>>,
     pub tim1: RefCell<FakeTimer>,
     pub tim2: RefCell<FakeTimer>,
     pub dog: RefCell<FakeWatchdog>,
@@ -185,12 +188,19 @@ impl System for BenchBoard {
 pub struct BenchUsart {
     port: &'static Port,
     out: &'static RefCell<Vec<u8>>,
+    /// the lock flag of the motor state and the log of the bytes written while it is set
+    under_lock: Option<(&'static Cell<bool>, &'static RefCell<Vec<u8>>)>,
 }
 
 impl UsartTx for BenchUsart {
     fn start(&self) {
         while let Tx::Send(b) = self.port.on_irq(SR_TXE, 0) {
             self.out.borrow_mut().push(b);
+            if let Some((locked, log)) = self.under_lock {
+                if locked.get() {
+                    log.borrow_mut().push(b);
+                }
+            }
         }
     }
 
@@ -423,6 +433,7 @@ impl Case {
             dbg: Port::new(),
             esp_out: RefCell::new(Vec::new()),
             dbg_out: RefCell::new(Vec::new()),
+            dbg_locked: RefCell::new(Vec::new()),
             tim1: RefCell::new(FakeTimer::default()),
             tim2: RefCell::new(FakeTimer::default()),
             dog: RefCell::new(FakeWatchdog::default()),
@@ -461,6 +472,7 @@ impl Case {
                 usart: BenchUsart {
                     port: &s.esp,
                     out: &s.esp_out,
+                    under_lock: None,
                 },
             },
             dbg: PortSerial {
@@ -468,6 +480,7 @@ impl Case {
                 usart: BenchUsart {
                     port: &s.dbg,
                     out: &s.dbg_out,
+                    under_lock: Some((&s.motor.locked, &s.dbg_locked)),
                 },
             },
             noinit: BenchNoinit(&s.noinit),

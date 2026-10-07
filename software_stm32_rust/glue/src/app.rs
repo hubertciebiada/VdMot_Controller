@@ -66,6 +66,9 @@ pub const LEARN_AFTER_TIME_DEFAULT: u32 = LEARN_TIME_DEFAULT_S;
 pub const NO_OF_MIN_COUNTS: u16 = 3000;
 /// marks that no sensor slot is selected
 pub const VALVE_SENSOR_UNKNOWN: u32 = 65535;
+/// The sensors of the two slots of each valve as the match found them: the index in
+/// tempsensors[], VALVE_SENSOR_UNKNOWN without one.
+pub type SensorMatch = [(u32, u32); VALVES];
 /// rejected_target: no target known
 pub const VALVE_NO_TARGET: u8 = NO_REJECTED_TARGET;
 /// app_10s_loop calls (~11 s) a service moved valve is left alone
@@ -502,8 +505,20 @@ impl App {
     /// lease timeout and failsafe positions. A stored value out of range loads its default, and
     /// the mirror of the learn movements and the motor parameters is corrected.
     pub fn app_load_config(&mut self, m: &mut MotorShared, env: &mut impl AppEnv) {
+        let found = self.app_find_sensors(env);
+        self.app_load_config_found(m, env, &found);
+    }
+
+    /// `app_load_config()` with the sensors matched before by [`App::app_find_sensors`]: the
+    /// firmware matches them outside the motor lock and takes the rest under it.
+    pub fn app_load_config_found(
+        &mut self,
+        m: &mut MotorShared,
+        env: &mut impl AppEnv,
+        found: &SensorMatch,
+    ) {
         // match the sensor addresses of the EEPROM with the found sensors
-        self.app_match_sensors(m, env);
+        Self::app_set_sensors(m, found);
 
         // the range of stlnm (0 = off, 50..65534), so a value set at runtime survives a restart
         let movements = sanitize_learn_movements(env.eep_content().layout.number_of_movements);
@@ -967,17 +982,25 @@ impl App {
     /// the sensor (the position in tempsensors[], DS18 sensors only: the index space of
     /// gvlvd/gvlon and the ESP's sensor list) into the valve.
     pub fn app_match_sensors(&self, m: &mut MotorShared, env: &mut impl AppEnv) -> i16 {
+        let found = self.app_find_sensors(env);
+        Self::app_set_sensors(m, &found);
+        0
+    }
+
+    /// The match of `app_match_sensors()` with its debug lines, without the motor state: the
+    /// firmware runs it with TIM1 and TIM2 running (the lines of up to 34 sensors exceed the
+    /// transmit ring and wait for USART6) and applies the result under the motor lock
+    /// ([`App::app_set_sensors`]). A sensor in a slot of several valves, or several sensors in
+    /// one slot: the last match counts, as in C++.
+    pub fn app_find_sensors(&self, env: &mut impl AppEnv) -> SensorMatch {
         let count = env.ds18_count().min(MAXONEWIRECNT);
-        for v in &mut m.valves {
-            v.sensorindex1 = VALVE_SENSOR_UNKNOWN;
-            v.sensorindex2 = VALVE_SENSOR_UNKNOWN;
-        }
+        let mut found_at = [(VALVE_SENSOR_UNKNOWN, VALVE_SENSOR_UNKNOWN); VALVES];
         env.debug(b"Read 1-wire sensor addresses from eeprom\r\n");
         for sensor in 0..count {
             let address = env.ds18_address(sensor);
             let mut found = false;
             env.print_address(&address);
-            for valve in 0..VALVES {
+            for (valve, slots) in found_at.iter_mut().enumerate() {
                 let layout = &env.eep_content().layout;
                 let first = app_sensor_matches(&layout.owsensors1[valve], &address);
                 let second = app_sensor_matches(&layout.owsensors2[valve], &address);
@@ -988,7 +1011,7 @@ impl App {
                         .text(b":")
                         .num(u32::from(sensor))
                         .send(env);
-                    m.valves[valve].sensorindex1 = u32::from(sensor);
+                    slots.0 = u32::from(sensor);
                     found = true;
                 }
                 // second sensor of the valve
@@ -996,7 +1019,7 @@ impl App {
                     DebugLine::new(b" found as 2nd sensor at valve: ")
                         .num(valve as u32)
                         .send(env);
-                    m.valves[valve].sensorindex2 = u32::from(sensor);
+                    slots.1 = u32::from(sensor);
                     found = true;
                 }
             }
@@ -1004,7 +1027,15 @@ impl App {
                 env.debug(b" not found\r\n");
             }
         }
-        0
+        found_at
+    }
+
+    /// The sensor indices of [`App::app_find_sensors`] into the valves.
+    pub fn app_set_sensors(m: &mut MotorShared, found: &SensorMatch) {
+        for (v, &(first, second)) in m.valves.iter_mut().zip(found) {
+            v.sensorindex1 = first;
+            v.sensorindex2 = second;
+        }
     }
 
     /// Sets the soft reset request (reset command).

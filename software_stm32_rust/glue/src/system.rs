@@ -23,7 +23,7 @@ use vdm_stm_core::reset_guard::ResetGuardCell;
 use vdm_stm_core::system_stats::BootReason;
 use vdm_stm_core::uart_errors::UartErrorCounters;
 
-use crate::app::{App, AppEnv, ValveV3Info};
+use crate::app::{App, AppEnv, SensorMatch, ValveV3Info};
 use crate::board::BoardRev;
 #[cfg(feature = "terminal")]
 use crate::communication::{
@@ -433,8 +433,11 @@ impl<P: Platform> CommunicationEnv for Ctx<'_, P> {
     }
 
     fn app_match_sensors(&mut self) -> i16 {
-        self.motor
-            .lock(|m| self.app.app_match_sensors(m, &mut app_ctx!(self)))
+        // the debug lines of the match go out with TIM1 and TIM2 running, the result is applied
+        // under the lock (design §2.3)
+        let found = self.app.app_find_sensors(&mut app_ctx!(self));
+        self.motor.lock(|m| App::app_set_sensors(m, &found));
+        0
     }
 
     fn reset_stm32(&mut self) {
@@ -869,6 +872,22 @@ impl<'a, P: Platform> Modules<'a, P> {
         let app = &mut self.app;
         self.motor.lock(|m| f(app, m, &mut env))
     }
+
+    /// `app.cpp`'s sensor match without the lock: its debug lines (up to 34 sensors, more than
+    /// the transmit ring holds) may wait for USART6 while TIM1 and TIM2 run on (design §2.3).
+    fn find_sensors(&mut self) -> SensorMatch {
+        let manual = self.manual_active();
+        let mut env = AppCtx::<P> {
+            board: self.hw.board,
+            noinit: self.hw.noinit,
+            dbg: self.hw.dbg,
+            eeprom: &mut self.eeprom,
+            sysstat: &self.sysstat,
+            sensors: &self.ow.sensors,
+            manual,
+        };
+        self.app.app_find_sensors(&mut env)
+    }
 }
 
 impl<P: Platform> Pins for Modules<'_, P> {
@@ -1057,7 +1076,8 @@ impl<P: Platform> MainLoopEnv for Modules<'_, P> {
         };
         let r = self.eeprom.loop_(&mut self.hw.eeprom, &mut dbg, &mut env);
         if env.reload {
-            self.with_app(|app, m, env| app.app_load_config(m, env));
+            let found = self.find_sensors();
+            self.with_app(|app, m, env| app.app_load_config_found(m, env, &found));
         }
         r
     }
@@ -1072,7 +1092,8 @@ impl<P: Platform> MainLoopEnv for Modules<'_, P> {
         let mut env = OwCtx::new(self.flags);
         self.ow.loop_(&mut self.hw.one_wire, &board, &mut env);
         if env.match_sensors {
-            self.with_app(|app, m, env| app.app_match_sensors(m, env));
+            let found = self.find_sensors();
+            self.motor.lock(|m| App::app_set_sensors(m, &found));
         }
         if env.cycle_done {
             self.with_app(|app, _, env| app.app_temp_cycle_done(env));
