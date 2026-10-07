@@ -1,7 +1,8 @@
 # VdMot Revamped STM32 in Rust: glue and firmware design
 
 Design of the Rust port of `software_stm32/src` (the glue) and of the firmware around
-`vdm-stm-core`. Nothing here is implemented yet. Binding documents: `docs/rust/PORTING.md`,
+`vdm-stm-core`. The implementation in `software_stm32_rust/` follows it; where it departs from
+the first design, the text says so (*Implementation:*). Binding documents: `docs/rust/PORTING.md`,
 `software_stm32/PROTOCOL_V2.md`, `software_esp32_revamped/DESIGN.md` §15. Values marked
 *measured* come from the four C++ 2.1.7 release envs built with PlatformIO `ststm32@19.7.0`;
 embassy, cortex-m-rt and Renode facts come from the sources of the `embassy-stm32-v0.6.0` tag,
@@ -71,8 +72,10 @@ What stays in `firmware/` (embassy and PAC, no decisions):
 |---|---|
 | `main.rs` | `#[entry]`: `boot::run()`, then `app::run(token)`; nothing else |
 | `boot_hw.rs` | `BootIo` on registers: RCC, GPIOA/C, USART1 polled, SysTick, ID block reads, the jump |
-| `clocks.rs` | HSE probe, `embassy_stm32::Config` (§5.3) |
-| `board.rs` | the HAL trait implementations of §1.3 |
+| `app.rs` | the application stage: IWDG start, HSE probe (`vdm_stm_boot::stage::probe_app_hse`), MPU guard, `embassy_stm32::init`, pin modes, the shared state, the serial ports, then `Controller::run` of the glue |
+| `clocks.rs` | `embassy_stm32::Config` from the probe result (§5.3) |
+| `board.rs` | the HAL trait implementations of §1.3 and the glue's `Platform` (`Fw`) |
+| `i2c.rs`, `one_wire.rs` | the I2C1 master and the 1-Wire line on registers (§1.3) |
 | `isr.rs` | `TIM1_UP_TIM10`, `TIM2`, `EXTI4`, `USART1`, `USART6` handlers, `IsrCell` (§2.3) |
 | `noinit.rs`, `fault.rs` | `NOINIT` access (§3.2); fault handlers, panic handler, MPU guard (§5.5) |
 | `memory/*.x`, `build.rs` | linker scripts per chip (§5.6), ID block and version (§6.2) |
@@ -113,11 +116,11 @@ pub trait System { fn reset(&self) -> !; fn dev_id(&self) -> u16; }
 |---|---|---|
 | `Pins` | `pinMode`/`digitalWrite`/`digitalRead`: ENA0..5 (PA5, PA6, PA7, PB0, PA15, PB3), DIR PA8, MUX PB1, PSU PB9 (open drain, low = on), LED PC13, BUTTON PB2 (pull-up), REVIN PA4 | set-up with `gpio::Output::new(pin, Level::Low, Speed::Low)`, `gpio::OutputOpenDrain::new(p.PB9, Level::High, ..)` (latch high before open drain, as `valve_pins_safe`), `gpio::Input::new(p.PB2, Pull::Up)`; writes through `pac::GPIOx.bsrr()`: atomic, so TIM1, TIM2, EXTI and the main loop may all switch ENA |
 | `CurrentAdc` | two `analogRead` in `TimerHandler0`: PA0 then PA1, 12 bit, 15 cycles, PCLK2/4 | `adc::Adc::new(p.ADC1)`, `blocking_read(&mut pa0, SampleTime::CYCLES15)` then PA1; the prescaler from PCLK2 is /4 (21 MHz F401, 24 MHz F411) like STM32duino; owned by the TIM1 context |
-| `RevIrq` | `attachInterrupt(REVINPIN, isr_count, RISING)`, `detachInterrupt` | `exti::ExtiInput::<Blocking>::new_blocking(p.PA4, p.EXTI4, Pull::None, TriggerEdge::Rising)` (feature `exti`; no `bind_interrupts!`, own handler); attach = `enable_interrupt()` + NVIC EXTI4 enable; detach = `disable_interrupt()` + NVIC disable; neither clears a pending edge (STM32duino does not either); IMR changes in a critical section |
+| `RevIrq` | `attachInterrupt(REVINPIN, isr_count, RISING)`, `detachInterrupt` | `exti::ExtiInput::<Blocking>::new_blocking(p.PA4, p.EXTI4, Pull::None, TriggerEdge::Rising)` (feature `exti`; no `bind_interrupts!`, own handler); attach = `enable_interrupt()` + NVIC EXTI4 enable; detach = `disable_interrupt()` + NVIC disable; neither clears a pending edge (STM32duino does not either); IMR changes in a critical section. *Implementation:* `ExtiInput` only configures PA4 and the rising edge once; attach and detach (`isr::rev_irq`) set EXTI IMR line 4 through the PAC in a critical section and switch the NVIC line, because the board handle is a `Copy` value used from the handlers and cannot own the `ExtiInput` |
 | control timers (fw) | `STM32Timer` on TIM1 (1 ms) and TIM2 (10 ms) | `timer::low_level::Timer::new(p.TIM1 / p.TIM2)`; PSC and ARR from `hw_timer::overflow()` through `regs_core()`; `enable_update_interrupt(true)`, `start()`; the ISR calls `clear_update_interrupt()`. `set_frequency` / `set_period_us` are not used: their `calculate_psc_arr` counts the 32-bit TIM2 without prescaler (10.000 ms) where the C++ runs 9.99994 ms |
-| `Serial` | `HardwareSerial` Serial1 (USART1 PA9/PA10) and Serial6 (USART6 PA11/PA12), rings 1024/1024 | `usart::Uart::new_blocking(peri, rx, tx, Config { baudrate: 115_200, .. })` sets pins, clock, BRR and frame; RXNE/TXE/error interrupts by own `#[interrupt] fn USART1/USART6` on `pac::USARTx` with the `serial.rs` logic. `BufferedUart` is not used: it has no error counters and another overflow rule |
-| `I2cMaster` | `Wire`: I2C1 PB6/PB7, 100 kHz, 100 ms per phase (`I2C_TIMEOUT_TICK`) | `i2c::I2c::new_blocking(p.I2C1, p.PB6, p.PB7, Config { frequency: 100 kHz, timeout: 100 ms, .. })`; `blocking_write` and `blocking_read` as separate transactions with a STOP between (as `endTransmission` + `requestFrom`); `Error::Nack` -> 2, `Timeout` -> 5, others -> 4; `restart()` drops the driver, runs `i2c_bus::recover` on `gpio::Flex` pins and creates the driver again |
-| `OneWireLine` | patched OneWire 2.3.7: open drain on PB10, `noInterrupts()` around each timed window | `gpio::Flex::new(p.PB10)` + `set_as_input_output(Speed::Medium)` (open drain with input); each timed window inside `critical_section::with`; µs waits on the DWT cycle counter like STM32duino `delayMicroseconds`; slot values per risk R5 |
+| `Serial` | `HardwareSerial` Serial1 (USART1 PA9/PA10) and Serial6 (USART6 PA11/PA12), rings 1024/1024 | `usart::Uart::new_blocking(peri, rx, tx, Config { baudrate: 115_200, .. })` sets pins, clock, BRR and frame; RXNE/TXE/error interrupts by own `#[interrupt] fn USART1/USART6` on `pac::USARTx` with the `serial.rs` logic. `BufferedUart` is not used: it has no error counters and another overflow rule. *Implementation:* glue `serial::Port` (the two rings and the counters, lock-free between one interrupt and thread mode) and `PortSerial` over the firmware's `UsartTx` (`FwUsart`: TXEIE on, SR, DR). A write that finds the USART interrupt masked (PRIMASK, or BASEPRI at P1 or above) sends from the ring itself by polling TXE, so output from a critical section cannot wait for an interrupt that cannot come |
+| `I2cMaster` | `Wire`: I2C1 PB6/PB7, 100 kHz, 100 ms per phase (`I2C_TIMEOUT_TICK`) | `i2c::I2c::new_blocking(p.I2C1, p.PB6, p.PB7, Config { frequency: 100 kHz, timeout: 100 ms, .. })`; `blocking_write` and `blocking_read` as separate transactions with a STOP between (as `endTransmission` + `requestFrom`); `Error::Nack` -> 2, `Timeout` -> 5, others -> 4; `restart()` drops the driver, runs `i2c_bus::recover` on `gpio::Flex` pins and creates the driver again. *Implementation:* an own blocking master on `pac::I2C1` (`firmware/src/i2c.rs`): the embassy v1 driver's `blocking_write` of zero bytes (the address probe of the EEPROM's ready polling) waits for BTF, which never comes without a data byte, and a NACK leaves the bus without a STOP. Each transfer has its own START and STOP; every wait is bounded by 100 ms; NACK -> 2 with STOP, timeout -> 5, ARLO/BERR -> 4; a read clears ACK and sets STOP before its last byte (one byte: before ADDR is cleared, RM0368 §18.3.3); `restart()` and the set-up recovery run `i2c_bus::recover` with the peripheral off and the lines as GPIO |
+| `OneWireLine` | patched OneWire 2.3.7: open drain on PB10, `noInterrupts()` around each timed window | `gpio::Flex::new(p.PB10)` + `set_as_input_output(Speed::Medium)` (open drain with input); each timed window inside `critical_section::with`; µs waits on the DWT cycle counter like STM32duino `delayMicroseconds`; slot values per risk R5. *Implementation:* `firmware/src/one_wire.rs`, windows in `cortex_m::interrupt::free` (the single-core critical section), the line through BSRR and IDR |
 | `Watchdog` | `IWatchdog.begin(8000000)`, `reload()` | `pac::IWDG` key sequence: it starts before `embassy_stm32::init` (§5.4). Same registers as `wdg::IndependentWatchdog::new(p.IWDG, 8_000_000)` + `unleash()` / `pet()` (PR /64, RLR 3999), which needs the peripherals only `init` hands out |
 | `Clock` | `millis`, `micros`, `delay`, `delayMicroseconds` | `embassy_time::Instant::now()` (time driver `time-driver-tim5`, 1 MHz tick) plus the boot-window offset (§5.2); `embassy_time::block_for` |
 | `NoinitStore` | `__attribute__((noinit))` cells | volatile word copies of the `NOINIT` linker region (§3.2) |
@@ -204,8 +207,11 @@ the same as `NVIC_PRIORITYGROUP_4`.
   and the order TIM1 before TIM2 and their mutual non-preemption would no longer hold.
 - Blocking ADC in the 1 ms ISR, not DMA: the C++ converts PA0 and PA1 back to back in that
   ISR; a TIM1-triggered DMA scan adds a trigger chain and a second ISR for the same samples.
-  The Rust TIM1 ISR is shorter (< 10 µs; the C++ re-initialises the ADC per `analogRead`,
-  ~20-40 µs), so PA1 follows PA0 by ~2 µs instead of ~20-40 µs: PA1 is the steady reference.
+  The Rust TIM1 ISR is shorter than the C++ one, which re-initialises the ADC per
+  `analogRead` (~20-40 µs per read), and PA1, the steady reference, follows PA0 closely.
+  *Implementation:* embassy 0.6.0 `blocking_read` also powers the ADC off and on per read
+  (`stop`, `enable` with a 3 µs wait on a cycle loop, channel and sequence set-up), so a read
+  takes about 5 µs and PA1 follows PA0 by about 5 µs.
 - No executor in the main loop: the branch order and the `> period` conditions are behaviour;
   every `delay()` stays blocking (`block_for`). `embassy-executor` 0.10.0 is not linked (D6).
 
@@ -214,7 +220,7 @@ the same as `NVIC_PRIORITYGROUP_4`.
 | C++ data | used by | Rust |
 |---|---|---|
 | `isr_counter`, `isr_target`, `isr_turning`, `isr_stop_request` | EXTI <-> TIM1, TIM2 | `motor::Pulse`: `AtomicU32` / `AtomicBool` fields; EXTI preempts, so no lock |
-| `myvalvemots[]`, `myvalves[]`, `command`, `valvenr`, `poschangecmd`, `moveflagscmd`, `svc_*`, `stop_request`, `calib_escalation`, end-stop detector, move state, `valve_records`, `isr_valvenr/go/fin`, `isr_overcurrentevent`, `current_mA`, `analog_current` | TIM1 + TIM2 (same priority) <-> main | `motor::MotorShared` in a firmware `IsrCell<MotorShared>`: `IsrCell::isr` only from the two P14 handlers (debug assertion on the active vector), `IsrCell::lock` from the main loop = `critical_section::with` (PRIMASK), as `__disable_irq` |
+| `myvalvemots[]`, `myvalves[]`, `command`, `valvenr`, `poschangecmd`, `moveflagscmd`, `svc_*`, `stop_request`, `calib_escalation`, end-stop detector, move state, `valve_records`, `isr_valvenr/go/fin`, `isr_overcurrentevent`, `current_mA`, `analog_current` | TIM1 + TIM2 (same priority) <-> main | `motor::MotorShared` in a firmware `IsrCell<MotorShared>`: `IsrCell::isr` only from the two P14 handlers (debug assertion on the active vector), `IsrCell::lock` from the main loop = `critical_section::with` (PRIMASK), as `__disable_irq`. *Implementation:* `IsrCell::with_isr` in the P14 handlers, the glue's `MotorLock::lock` in thread mode raises BASEPRI to P14 (`basepri_max`), so only TIM1 and TIM2 wait while EXTI4 and the USARTs go on; a nested lock or a use before `init` ends in the fault handler (§5.5) |
 | `valve_loop_ticks`, `valve_loop_stalled`, temperature `lock`, `temp_refresh_request`, `temp_gap_timeout`, `protect_suspended`, `protect_enforce` | TIM2 <-> main | atomics in `motor::IsrFlags` |
 | `warm_state` (also written by `app_warm_moving` inside the `appsetaction` hand-over) | main only | `NoinitStore`, main context |
 | ADC | TIM1 only | owned by the TIM1 context |
@@ -428,6 +434,15 @@ The option bytes keep the software watchdog (factory default); the firmware neve
 
 The terminal prints a valid `FaultRecord` at the next start. No protocol reply carries it.
 
+*Implementation:* the record type is `vdm_stm_boot::fault_record` (sector 0 with the handlers,
+D9; no panic path, B3): ten words, magic `VDFR`, kind, pc, lr, xpsr, cfsr, hfsr, bfar, a count
+of consecutive faults, and the inverted XOR of the nine words as check word. The terminal line
+follows the banner: `last fault: <kind> pc 0x.. lr 0x.. xpsr 0x.. cfsr 0x.. hfsr 0x.. bfar 0x..
+count <n>`. Only the HardFault handler gets the exception frame from cortex-m-rt; the
+UsageFault, BusFault and MemManage handlers record pc, lr and xpsr as 0. On the chip they never
+run, because SHCSR leaves those faults disabled and they escalate to HardFault; Renode takes
+their vectors anyway (app.robot A6).
+
 ### 5.6 Memory layout per chip
 
 | item | F401CC (256 KiB / 64 KiB) | F411CE (512 KiB / 128 KiB) |
@@ -463,16 +478,42 @@ triggered!" in the log), `STM32F4_RCC` (HSERDY mirrors HSEON; CSR reset flags no
 `cpu AddHook`; Robot keywords `Write Line To Uart`, `Wait For Line On Uart`, `Wait For Log Entry`.
 
 Set-up (`software_stm32_rust/renode/`, runner `tools/rust/renode.sh` in Docker
-`antmicro/renode:1.16.1`, D11):
-- `stm32f401.repl` / `stm32f411.repl`: `using "platforms/cpus/stm32f4.repl"`, RAM and flash
-  sizes, timer frequencies 84/96 MHz, `nvic systickFrequency` and `usart1 frequency` for the
-  boot clock.
-- `sysbus Tag`s for parts without a model: ADC1 SR = EOC|STRT, DR = 0x800 (current 0);
-  DBGMCU_IDCODE = 0x10006423 / 0x10006431. SYSCFG as plain memory (MEMRMP read back).
+`antmicro/renode:1.16.1`, D11; the suites `boot.robot` and `app.robot` share `vdm.resource`):
+- `stm32f401.repl` / `stm32f411.repl`: `using "platforms/cpus/stm32f4.repl"` and
+  `./vdm_board.repl`, RAM and flash sizes, `nvic systickFrequency` 25 MHz for the boot clock
+  (the HSI test sets 16 MHz), TIM1, TIM2 and TIM5 (the embassy time driver) at the timer clock of
+  the application (84/96 MHz), `Miscellaneous.DWT` at SYSCLK (the 1-Wire waits), SYSCFG as plain
+  memory (MEMRMP read back), DBGMCU_IDCODE = 0x10006423 / 0x10006431 as a tag.
+- `vdm_board.repl`, the board around the chip: USART6 (not in Renode's STM32F4 platform) on
+  NVIC line 71; `VdmValves.cs` at ADC1: the twelve valve motors of the C++ valve sim (same
+  defaults: position 1800 of 3600, 0.2 pulses/ms, 25 mA running, 70 mA stalled; no inrush,
+  coast, short or obstacle), driven by the ENA, DIR, MUX and PSU outputs, revolution pulses on
+  PA4 (EXTI4), the motor current on PA0 as the inverse of `TimerHandler0`'s conversion, the
+  reference 2048 on PA1; `VdmEeprom.cs`: the 24LC64 at 0x50 on I2C1, kept over a machine
+  reset. Renode compiles both before the platform is loaded.
 - Fake ROM at 0x1FFF0000: vector [SP 0x20002FF0, PC 0x1FFF0101] and `b .`; a `cpu AddHook` on
   0x1FFF0100 logs "ROM entered".
-- `cpu VectorTableOffset 0x08000000` (no flash alias at 0); the `.bin` the ESP flashes is
-  loaded at 0x08000000.
+- `cpu VectorTableOffset 0x08000000` (no flash alias at 0), also in the `reset` macro; the
+  `.bin` the ESP flashes is loaded at 0x08000000. Hooks write time stamps into the reserved
+  `RAM_LO`: the first USART1 CR1 write with RE, the first IWDG_KR write, the USART1 bytes sent
+  and the last start of the reset handler.
+- RCC_CSR keeps its reset value in Renode: a read hook gives the flags of the reset kind a test
+  needs (pin, software, watchdog, power-on).
+
+Facts of the Renode models the suites depend on (found while building them):
+- `STM32F4_I2C` hands the bytes of a write transfer to the slave in one `Write` call at its end
+  and never calls `FinishTransmission`; a read transfer calls `Read()` once, with its default
+  count of 1, at the address phase and gives the master just those bytes. `VdmEeprom` takes a
+  `Write` call as one transfer and answers a read with a burst of 32 bytes.
+- embassy reads ADC_DR by halfword (`ldrh`): `VdmValves` serves halfword reads.
+- `STM32_UART` keeps no CR1.M bit (E1 takes the written value from the hook); bytes arrive at
+  once and never with an error.
+- After a wait that timed out, the `TerminalTester` of Renode 1.16.1 drops the first line that
+  completes next and can leave the emulation running (the next `RunFor` is refused): the suites
+  read terminal lines by count, the handshake keyword watches the USART1 byte counter, no wait
+  is for a line that may not come.
+- Renode takes the UsageFault vector for a UDF although SHCSR disables it (the chip escalates
+  to HardFault).
 
 | # | scenario | stimulus | expected |
 |---|---|---|---|
@@ -480,15 +521,42 @@ Set-up (`software_stm32_rust/renode/`, runner `tools/rust/renode.sh` in Docker
 | E2 | stray byte | one byte at 15 ms, then E1's pattern | `BEEFIT` within 8 sends |
 | E3 | legacy ESP 1.x | `DEADBEEF\r\n` at 1500 ms | `BEEFIT` |
 | E4 | last tick | `DEADBEEF` into tick 3001 | `BEEFIT` |
-| E5 | no handshake | nothing for 3.1 s | no TX on USART1 in the window; afterwards 8N1, BRR 0x2D9 / 0x341; `gvers` -> `gvers 2.1.7-revamped_C2 1 ` (C1 images: `_C1`), `gproto` -> `gproto 3`, `ghwin` -> 1059 / 1073 |
+| E5 | no handshake | nothing for 3.1 s | no TX on USART1 in the window; afterwards 8N1, BRR 0x2D9 / 0x341; `gvers` -> `gvers 2.2.0-revamped_C2 1 ` (C1 images: `_C1`), `gproto` -> `gproto 3`, `ghwin` -> 1059 / 1073; no IWDG reset in 10 s |
 | E6 | HSE dead | read hook clears HSERDY (RCC_CR bit 17) | E1 passes on HSI; E5 passes with PLLCFGR source HSI |
 | E7 | fault in the application | PC set to a `UDF` in RAM | outputs off, "Watchdog reset triggered!" within 15 s virtual time; E1 passes afterwards |
 | E8 | fault before the IWDG runs | `cpu AddHook` at the first application function raises the fault | reset within 1 s; E1 passes afterwards |
-| E9 | warm state across a reset | `NOINIT` loaded with a warm image made by the C++ format; reset with a CSR read hook = PINRSTF | positions restored (`gvlvy`), no presence test; the image the Rust writes back is byte-equal to the C++ format |
+| E9 | no-init cells across resets | `NOINIT` loaded with C++ 2.1.7 cells (counter 41, guard); a pin reset (CSR read hook = PINRSTF), then SYSRESETREQ | the Rust capture continues the C++ cells (counter 42, 43, guard window summed and sealed); warm state area and padding byte-equal. The warm restore itself: A4 |
 | E10 | regression fence | reset | USART1 RE set at most 10 ms after reset (+5 ms HSE probe): fails when someone puts code before the window |
-| E11 | end to end (later, D11) | host build of the Rust ESP flasher <-> USART1 socket <-> AN3155 responder (Python peripheral) after the jump | C++ -> Rust -> C++ image cycle in emulated flash, `gvers` after each |
+| E11 | end to end (D11) | host build of the Rust ESP flasher <-> USART1 socket <-> AN3155 responder (Python peripheral) after the jump | C++ -> Rust -> C++ image cycle in emulated flash, `gvers` after each. Open: needs the C++ 2.1.7 release images (download not yet approved) |
 
-Every scenario runs for each of the four images.
+`app.robot` runs the whole application against the C++ goldens of the glue_system suites
+(§7.4): the requests of a golden boot go to USART1 at their times after the reset, every reply
+line must equal the golden's (the C++ identity `2.1.7-revamped_C2` replaced by the image's),
+the terminal on USART6 must print the golden's lines in the same order, and the EEPROM model
+must hold the golden's bytes at the end of a boot.
+
+| # | scenario (golden) | stimulus | expected |
+|---|---|---|---|
+| A1 | a new controller answers (`boot__a_new_controller...`) | erased EEPROM, every valve connected; gvers, gproto, gtgtp, gvlvd during the presence test, gstat, stgtp, gtgtp at the golden's times; then `gvers` on USART6 | the 7 replies and all terminal lines as the golden; the terminal answers `Version: 2.2.0-revamped` |
+| A2 | the presence test (`boot__the_presence_test...`) | valve 5 open; gvlst after 43.5 s | `gvlst 12 8,8,8,8,8,6,8,8,8,8,8,8 `; the twelve presence tests in the golden's order and times (terminal); every valve enabled once, pulses from every connected one; never two L293 enables at once |
+| A3 | configuration across a reset and a power cycle (K1-6/S3-2) | slcfg, sfspo, stlnt; the `reset` command (a real SYSRESETREQ through the boot stage); glcfg, gtlnt, new values; a power cycle (no-init region 0xA5, power-on flags); glcfg, gtlnt, gstax | the replies and terminal lines of all three boots as the golden; the EEPROM bytes after every boot as the golden's |
+| A4 | warm start from C++ 2.1.7 state (K1-8/W2) | the no-init region and the EEPROM as C++ left them at its reset command; a software reset into the Rust image | lease state 2 and timeout 5 (gstax), `gvlst 12 8,8,8,8,8,8,8,8,6,6,6,6 `, no valve enabled in 10 s (no presence test), EEPROM unchanged |
+| A5 | stalled valve loop, three times (S9-2) | 2 s into the application TIM2 stops (CR1.CEN = 0); watchdog flags by the CSR hook | each time an IWDG reset 8 s after the last reload; every start prints the golden's lines up to its EEPROM load ("reset by watchdog", then "safe mode"); the fourth answers gstax as the golden but uptime, eepState, lease remaining and cfgFlags (the C++ case resets before the first-start EEPROM write, the real IWDG after it); no valve moves; `ssafe 1` -> err, `ssafe 0` -> ok, then valves 0-3 present |
+| A6 | fault record at the next start | UDF in the application, IWDG reset | the next start prints `last fault: ... count 1` right after the banner, then "reset by watchdog" |
+
+Every scenario runs for each of the four images (`tools/rust/renode.sh`: about 12 minutes per
+image).
+
+What Renode does not prove, so the bench (§5.9) does:
+- electrical and timing behaviour: the I2C bus is a transaction model (no waveform, clock
+  stretching or stuck line, so the 9-clock recovery only runs its GPIO steps), PB10 has no
+  1-Wire device (every reset finds no presence pulse: no temperature path beyond the search),
+  the ADC returns the model's value at once, the LSI of the IWDG is exactly 32 kHz (the chip:
+  5.4-15 s), interrupt latencies and the length of critical sections are not cycle-accurate;
+- the HSE crystal start-up (E6 forces HSERDY off; a slow crystal between 5 and 100 ms is not
+  modelled), USART framing, parity and noise errors (host tests of `serial` and `uart_errors`);
+- the ROM bootloader after the jump (a `b .` stand-in) and a real flash cycle (E11 open);
+- the RCC_CSR flags of a real reset (read hook), and the fault escalation to HardFault.
 
 ### 5.8 Byte-level image check
 
@@ -497,7 +565,7 @@ Every scenario runs for each of the four images.
 | # | check | expected |
 |---|---|---|
 | C1 | ESP `validate_image(img, pid, require_handshake = true)` | `None` for F401 images with PID 0x423, 0x433, 0x431 and F411 images with 0x431; `ImageChipMismatch` for an F411 image with 0x423 (as C++ 2.1.7) |
-| C2 | `ImageInfo` | version = workspace version (`2.1.7-revamped` today), `hwTag` `C1`/`C2`, `hwConflict` false, `hasHandshake` true |
+| C2 | `ImageInfo` | version = workspace version (`2.2.0-revamped`, D8), `hwTag` `C1`/`C2`, `hwConflict` false, `hasHandshake` true |
 | C3 | ESP `check_board(tag, board)` | `Ok` for the image's own tag, `Mismatch` for the other |
 | C4 | ELF layout | SP0 and reset vector as §5.6; `.vdm_id` at 0x08000200 holds the first version-like run of the image; exactly one `VDM-HW:` marker; `NOINIT` symbols at 0x20003234 / 0x200032E8 / 0x200032FC; no section in `NOINIT` |
 | C5 | size | ≤ 128 KiB, so `sectorsForImage` gives 5 sectors like the C++ images |
@@ -546,12 +614,12 @@ mode during `init`), `embassy-time 0.5.1`, `cortex-m` (`critical-section-single-
 
 ### 6.2 Markers and version
 
-`firmware/build.rs` writes the ID block from the workspace version (`2.1.7-revamped`, PORTING.md):
+`firmware/build.rs` writes the ID block from the workspace version (`2.2.0-revamped`, D8):
 
 ```rust
 #[used]
 #[link_section = ".vdm_id"]
-static VDM_ID: [u8; 42] = *b"\x002.1.7-revamped\x00VDM-HW:C2\x00DEADBEEF\x00BEEFIT\x00";
+static VDM_ID: [u8; 42] = *b"\x002.2.0-revamped\x00VDM-HW:C2\x00DEADBEEF\x00BEEFIT\x00";
 ```
 
 - Rust string literals carry no NUL and the linker packs them together, so the ESP's scan
@@ -560,7 +628,7 @@ static VDM_ID: [u8; 42] = *b"\x002.1.7-revamped\x00VDM-HW:C2\x00DEADBEEF\x00BEEF
 - The boot stage reads its pattern and its reply from this block with volatile reads: the
   bytes the ESP checks are the bytes the code uses. `gvers` and the banner read version and
   tag from it too.
-- The version comes from the workspace (`2.1.7-revamped` today, D8). `tools/release/package.py`
+- The version comes from the workspace (`2.2.0-revamped`, D8). `tools/release/package.py`
   names the assets from the git tag only (`VdMot-Revamped_<version>_STM32F401_C2.bin`), so
   image check C2 compares the embedded version with the workspace version.
 
@@ -629,6 +697,15 @@ the final 8 KiB EEPROM image and the `NOINIT` bytes to `glue/tests/golden/*.json
 system tests replay the inputs and compare byte for byte. This proves C++ <-> Rust
 interchangeability of the EEPROM and the warm state on top of the ported assertions.
 
+*Implementation:* the recorder (`tools/rust/stm/golden/`: `recorder.cpp` linked into the C++
+glue_system suites with GNU ld `--wrap`, a doctest listener, the fork-per-case testkit) writes
+one text file per case, `glue/tests/golden/<slug>.txt`: per boot the reset kind, the time-stamped
+`rx`/`tx`/`dbg` bytes of both UARTs, how the boot ended, the EEPROM rows that are not erased and
+the `NOINIT` bytes (format in `glue/src/system/golden.rs`). Text, not JSON: the diffs are
+readable and the glue tests need no JSON parser. The Rust bench (`glue/src/system/bench.rs`)
+reproduces all 27 cases byte for byte; `app.robot` replays some of them against the images
+(§5.7).
+
 ### 7.5 Mutation gate
 
 - Packages `vdm-stm-boot` and `vdm-stm-glue` (core by its own agent):
@@ -647,8 +724,8 @@ interchangeability of the EEPROM and the warm state on top of the ported asserti
 ### 7.6 CI order
 
 host tests (core, boot, glue) -> mutation gate -> firmware build (4 images, size budget, boot
-probe link) -> image check C1-C6 -> Renode E1-E10 -> release packaging. A failure anywhere
-stops the release of every STM image.
+probe link) -> image check C1-C6 -> Renode E1-E10 and A1-A6 -> release packaging. A failure
+anywhere stops the release of every STM image.
 
 ## 8. Open decisions and risks
 
@@ -685,7 +762,7 @@ the operator; D11 recommendation; D12 128 KiB.
 | R1 | embassy-stm32 0.6.0 waits for HSERDY without a bound; a later version may move or change that code | own HSE probe before `init`; E6 runs on every dependency bump |
 | R2 | the ROM bootloader starts from another state than after the C++ jump (VTOR 0 instead of 0x08000000, peripherals) | replicate the C++ sequence; only hardware proves it (§5.9) |
 | R3 | warm state across a flash relies on the ROM bootloader using only 0x20000000-0x20002FFF | the stm32flash device table starts user RAM at 0x20003000 for these PIDs (AN2606 not re-read here); bench check (§5.9) |
-| R4 | Renode fidelity: no ADC, SYSCFG, DBGMCU models, instant bytes, timers independent of RCC, no CSR flags | tags and hooks (§5.7); Renode proves control flow and register values, not analog or electrical timing |
+| R4 | Renode fidelity: no ADC, SYSCFG, DBGMCU models, instant bytes, timers independent of RCC, no CSR flags | board models (valves behind ADC1, the EEPROM), tags and hooks (§5.7); Renode proves control flow, register values and the protocol against the C++ goldens, not analog or electrical timing |
 | R5 | 1-Wire slot timing: the C++ switches the pin through HAL calls (µs) inside the slots, Rust through BSRR; the sample point moves from ~16 µs to ~13 µs after the falling edge, with less rise time on long cables | measure the C++ slots on the bench and use the effective values |
 | R6 | library semantics: C integer promotion (DallasTemperature `<< 11` on int16, wrap on narrowing), DS2438 float (f64 x 0.01 -> f32, x 100 -> truncation), a C++ division by a value that can be 0 yields 0 on the Cortex-M4 (no trap) | explicit tests (§7.3); every such division mirrors the C++ result |
 | R7 | safe Rust needs critical sections where the C++ shares without masking | sections below the C++ 1-Wire masking (~80 µs); EXTI latches edges |

@@ -54,6 +54,7 @@ module, what, why it matters. The Rust tests assert the C++ behaviour.
 | what | why it matters |
 |---|---|
 | `settar` returns `CMD_CLOSE` (the code of `close`); `stdet x` with x != 255 prints " - error" and then "stdet " anyway; `stons` prints without CR LF. Kept; the C++ suite asserts the first two. | Debug port only; nobody reads the return code. |
+| `help` prints "Help:" and a line of stars, no command list; `gmotc` prints the high factor on a line of its own (`println(" high: ")`, then `println(high)`). Kept; seen on USART6 in Renode. | Debug port only. |
 
 ## Glue: motor
 

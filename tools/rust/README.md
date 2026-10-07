@@ -7,7 +7,8 @@ requirement (Windows, macOS, Linux). Porting rules and the per-crate commands:
 | script | image | used for |
 |---|---|---|
 | `docker.sh` | `vdmot-rust:<hash of Dockerfile>`: Rust 1.99.0, clippy, rustfmt, cargo-mutants 27.1.0, the `thumbv7em-none-eabihf` target, `llvm-tools`, g++ 12, Python 3 | host tests, mutation gate, STM32 images, image check |
-| `renode.sh` | `antmicro/renode:1.16.1` (D11) | boot stage tests of the STM32 images |
+| `renode.sh` | `antmicro/renode:1.16.1` (D11) | the STM32 images in Renode: boot stage and application |
+| `stm/golden/run.sh` | the native image (`tools/native/docker.sh`) | the C++ goldens of the glue_system suites |
 | `mutation_gate.py` | - | per-file 95 % gate over a cargo-mutants run |
 
 ## STM32 images
@@ -36,11 +37,20 @@ bash tools/rust/renode.sh               # 3. run them in Renode
      one board marker, the no-init cells at the C++ 2.1.7 addresses, the 128 KiB budget, and the
      sector-0 proof (every function and flash datum the boot stage and the fault handlers reach
      lies in `.vdm_boot`). It ends with a size table.
-3. **renode.sh** runs `software_stm32_rust/renode/boot.robot` (scenarios E1-E10 of §5.7) once
-   per image and prints one `EVIDENCE` line per scenario. Arguments: image names
-   (`tools/rust/renode.sh STM32F401_C2`), and after `--` options of `renode-test`, e.g.
-   `-- --include E7` for one scenario (tags E1 ... E10). Results in
-   `software_stm32_rust/renode/results/<image>/` (not in git). About 4 minutes per image.
+3. **renode.sh** runs `software_stm32_rust/renode/boot.robot` (the boot stage, E1-E10 of §5.7)
+   and `app.robot` (the application against the C++ goldens, A1-A6) once per image and prints
+   one `EVIDENCE` line per scenario. Arguments: image names (`tools/rust/renode.sh
+   STM32F401_C2`), and after `--` options of `renode-test`, e.g. `-- --include A3` for one
+   scenario (tags E1 ... E10, A1 ... A6). Results in `software_stm32_rust/renode/results/<image>/`
+   (not in git). About 12 minutes per image.
+
+   The machine (`vdm.resource`): Renode's STM32F4 platform with the chip sizes and clocks
+   (`stm32f401.repl`, `stm32f411.repl`) and the board around it (`vdm_board.repl`): USART6 for
+   the debug terminal, `VdmValves.cs` (ADC1 with the twelve valve motors of the C++ valve sim,
+   revolution pulses on PA4) and `VdmEeprom.cs` (the 24LC64 on I2C1). Renode compiles the two
+   C# models at the start of every test; a change of them while a run is going breaks the tests
+   that follow in that run ("assembly already loaded"). `vdm_renode.py` reads the C++ goldens
+   for app.robot and checks the no-init cells.
 
 Host tests and the mutation gate of the boot crate:
 
@@ -48,3 +58,18 @@ Host tests and the mutation gate of the boot crate:
 bash tools/rust/docker.sh test software_stm32_rust
 bash tools/rust/docker.sh mutate software_stm32_rust vdm-stm-boot
 ```
+
+## C++ goldens of the glue_system suites
+
+`software_stm32_rust/glue/tests/golden/<slug>.txt`, one per C++ glue_system case (§7.4): the
+UART bytes of every boot with their times, how each boot ended, the EEPROM rows and the
+no-init bytes. The Rust system tests (`glue/src/system/tests_*.rs`) reproduce them byte for
+byte and app.robot replays some of them against the images. After a change of the C++ glue
+or its suites:
+
+```
+bash tools/native/docker.sh run "bash tools/rust/stm/golden/run.sh"
+```
+
+It builds `tools/rust/stm/golden/` (the C++ glue_system suites with a recorder linked in by
+GNU ld `--wrap`) and writes every golden again; every C++ case must pass.
