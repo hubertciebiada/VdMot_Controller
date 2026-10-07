@@ -205,11 +205,45 @@ fn end_false_before_the_end_aborts() {
     assert_eq!(u.write(&image(100)), 100);
     assert!(!u.end(false));
     assert_eq!((u.error(), u.error_string()), (12, "Aborted"));
+    assert!(u.has_error());
     assert_eq!(dev.ota.knobs().aborts, 1);
     assert!(!u.end(true)); // an error is set
     u.clear_error();
     assert!(!u.has_error());
     assert!(!u.end(true)); // not running
+}
+
+#[test]
+fn a_write_without_an_update_takes_nothing_and_sets_no_error() {
+    let (_b, dev) = device();
+    let mut u = update(&dev);
+    assert_eq!(u.write(b"x"), 0);
+    assert_eq!(u.error(), UPDATE_ERROR_OK);
+    assert_eq!(dev.ota.knobs().writes, 0);
+}
+
+#[test]
+fn a_write_of_exactly_the_remaining_bytes_fits() {
+    let (_b, dev) = device();
+    let mut u = update(&dev);
+    assert!(u.begin(100));
+    assert_eq!(u.write(&image(100)), 100);
+    assert!(u.is_finished());
+    assert!(u.end(false));
+}
+
+#[test]
+fn end_true_with_an_empty_buffer_writes_nothing_more() {
+    let (_b, dev) = device();
+    let mut u = update(&dev);
+    let img = image(5000);
+    assert!(u.begin(5000));
+    assert_eq!(u.write(&img), 5000);
+    assert_eq!(dev.ota.knobs().writes, 2);
+    dev.ota.knobs().fail_write_at = Some(0); // a further write would fail
+    assert!(u.end(true));
+    assert_eq!(dev.ota.knobs().writes, 2);
+    assert_eq!(u.error(), UPDATE_ERROR_OK);
 }
 
 #[test]

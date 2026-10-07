@@ -165,7 +165,8 @@ fn encode_trial(t: &TrialRecord) -> [u8; TRIAL_LEN] {
     r[4] = TRIAL_VERSION;
     r[5] = t.state;
     r[6] = t.boots;
-    r[7] = if t.stm_required { FLAG_STM } else { 0 } | if t.away.is_some() { FLAG_AWAY } else { 0 };
+    // two distinct bits: the sum is their OR
+    r[7] = if t.stm_required { FLAG_STM } else { 0 } + if t.away.is_some() { FLAG_AWAY } else { 0 };
     r[8..16].copy_from_slice(&t.app.0);
     r[16..24].copy_from_slice(&t.away.unwrap_or(AppId([0; 8])).0);
     r[24..28].copy_from_slice(&t.fallback.to_le_bytes());

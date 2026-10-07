@@ -53,11 +53,14 @@ const RX_CHUNK: usize = 512;
 const CONNECT: u8 = 0x10;
 const PUBLISH: u8 = 0x30;
 const PUBACK: u8 = 0x40;
-const SUBSCRIBE: u8 = 0x80;
+/// SUBSCRIBE with the QoS 1 bits its fixed header needs (`MQTTSUBSCRIBE | MQTTQOS1`).
+const SUBSCRIBE_QOS1: u8 = 0x82;
 const PINGREQ: u8 = 0xC0;
 const PINGRESP: u8 = 0xD0;
 const DISCONNECT: u8 = 0xE0;
 const QOS1: u8 = 1 << 1;
+/// CONNECT flag: a will follows.
+const WILL_FLAG: u8 = 0x04;
 
 /// The last will of a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,8 +293,9 @@ impl<N: TcpConnector, C: Clock> MqttConn<N, C> {
             let Some(digit) = self.read_byte() else {
                 return (0, llen);
             };
-            if len < self.buffer.len() {
-                self.put(len, digit);
+            // the bytes beyond the buffer are read and not stored
+            if let Some(slot) = self.buffer.get_mut(len) {
+                *slot = digit;
                 len += 1;
             }
             idx += 1;
@@ -387,8 +391,10 @@ impl<N: TcpConnector, C: Clock> MqttConn<N, C> {
         if let Some(dst) = self.buffer.get_mut(MAX_HEADER_SIZE..MAX_HEADER_SIZE + 7) {
             dst.copy_from_slice(&PREAMBLE);
         }
+        // the library's `0x04 | (willQos << 3) | (willRetain << 5)`: the shifted fields never
+        // set bit 2, so adding the will flag is the same OR
         let mut flags = match a.will {
-            Some(w) => 0x04 | (w.qos << 3) | (u8::from(w.retain) << 5),
+            Some(w) => WILL_FLAG + ((w.qos << 3) | (u8::from(w.retain) << 5)),
             None => 0,
         };
         if a.clean_session {
@@ -476,7 +482,8 @@ impl<N: TcpConnector, C: Clock> MqttConn<N, C> {
             self.put(len, b);
             len += 1;
         }
-        self.write_packet(PUBLISH | u8::from(retained), len - MAX_HEADER_SIZE)
+        // `MQTTPUBLISH | 1` for a retained message: bit 0 of 0x30 is clear, so the sum is the OR
+        self.write_packet(PUBLISH + u8::from(retained), len - MAX_HEADER_SIZE)
     }
 
     /// Subscribes to `filter` (a C string) with `qos` 0 or 1, without waiting for the SUBACK;
@@ -496,7 +503,7 @@ impl<N: TcpConnector, C: Clock> MqttConn<N, C> {
         self.put(MAX_HEADER_SIZE + 1, lo);
         let len = self.write_string(filter, MAX_HEADER_SIZE + 2);
         self.put(len, qos);
-        self.write_packet(SUBSCRIBE | QOS1, len + 1 - MAX_HEADER_SIZE)
+        self.write_packet(SUBSCRIBE_QOS1, len + 1 - MAX_HEADER_SIZE)
     }
 
     /// `PubSubClient::loop()`: keepalive (a PINGREQ after `keep_alive` seconds without traffic in
@@ -553,7 +560,7 @@ impl<N: TcpConnector, C: Clock> MqttConn<N, C> {
         t: u32,
         on_message: &mut impl FnMut(&[u8], &[u8]),
     ) {
-        let tl = usize::from(self.at(llen + 1)) << 8 | usize::from(self.at(llen + 2));
+        let tl = usize::from(u16::from_be_bytes([self.at(llen + 1), self.at(llen + 2)]));
         let topic_start = llen + 3;
         let topic_end = topic_start + tl;
         let qos1 = self.at(0) & 0x06 == QOS1;
@@ -561,7 +568,7 @@ impl<N: TcpConnector, C: Clock> MqttConn<N, C> {
         if payload_start > len {
             return; // the topic length runs past the packet
         }
-        let msg_id = u16::from(self.at(topic_end)) << 8 | u16::from(self.at(topic_end + 1));
+        let msg_id = u16::from_be_bytes([self.at(topic_end), self.at(topic_end + 1)]);
         let (Some(topic), Some(payload)) = (
             self.buffer.get(topic_start..topic_end),
             self.buffer.get(payload_start..len),

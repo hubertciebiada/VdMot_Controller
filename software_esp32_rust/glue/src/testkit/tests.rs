@@ -982,7 +982,7 @@ fn http_server_start_can_be_refused() {
 // ---------------------------------------------------------------- ports through references
 
 fn clock_via<C: Clock>(c: C) -> (u32, u32) {
-    c.sleep_ms(1500);
+    c.sleep_ms(2500);
     (c.now_ms(), c.uptime_s())
 }
 
@@ -990,11 +990,13 @@ fn clock_via<C: Clock>(c: C) -> (u32, u32) {
 fn ports_reach_the_fakes_through_shared_references() {
     let board = FakeBoard::with_slots([SlotImage::glue(APP_A), SlotImage::glue(APP_B)], 0);
     let dev = board.boot();
-    assert_eq!(clock_via(&dev.clock), (1500, 1));
+    assert_eq!(clock_via(&dev.clock), (2500, 2));
     let wall: &dyn WallClock = &dev.wall;
     let w = &wall;
     w.set_time_zone("CET-1");
-    assert_eq!(w.epoch(), 1);
+    assert_eq!(w.epoch(), 2);
+    dev.wall.set(1_767_225_600);
+    assert_eq!(w.epoch(), 1_767_225_600);
     assert_eq!(w.local_time(0).map(|t| t.hour), Some(1));
     let console = &&dev.console;
     console.line(b"x");
@@ -1065,8 +1067,28 @@ fn ports_reach_the_fakes_through_shared_references() {
     Md5::update(&mut m, b"abc");
     let d = Md5::digest(&mut m);
     assert_eq!(d[0], 0x90);
+    Md5::update(&mut m, b"x");
     Md5::reset(&mut m);
     assert_eq!(md5.added, 0);
+}
+
+#[test]
+fn esp_err_numbers_are_esp_idf_ones() {
+    let codes = [
+        EspErr::FAIL,
+        EspErr::NO_MEM,
+        EspErr::INVALID_ARG,
+        EspErr::INVALID_STATE,
+        EspErr::INVALID_SIZE,
+        EspErr::NOT_FOUND,
+        EspErr::OTA_PARTITION_CONFLICT,
+        EspErr::OTA_VALIDATE_FAILED,
+        EspErr::FLASH_OP_FAIL,
+    ];
+    assert_eq!(
+        codes.map(|e| e.0),
+        [-1, 0x101, 0x102, 0x103, 0x104, 0x105, 0x1501, 0x1503, 0x6001]
+    );
 }
 
 #[test]

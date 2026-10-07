@@ -791,3 +791,79 @@ fn a_read_that_copies_nothing_is_no_data() {
     rig.clock.advance_ms(1);
     assert_eq!(drain(&mut c), vec![(b"b".to_vec(), b"2".to_vec())]);
 }
+
+#[test]
+fn long_inbound_packets_and_topics_arrive_whole() {
+    let rig = setup();
+    let mut c = conn(&rig);
+    assert!(c.connect(HOST, PORT, &args()));
+    // a two-byte remaining length (200 + 2 + 3 = 205 bytes) and a topic of 300 bytes
+    let payload: Vec<u8> = (0..200).map(|i| i as u8).collect();
+    rig.broker.send_publish(b"t/a", &payload, 0, false, 0);
+    let topic = [b'x'; 300];
+    rig.broker.send_publish(&topic, b"v", 1, false, 0x0101);
+    rig.clock.advance_ms(1);
+    let got = drain(&mut c);
+    assert_eq!(
+        got,
+        vec![(b"t/a".to_vec(), payload), (topic.to_vec(), b"v".to_vec())]
+    );
+    assert_eq!(rig.broker.state().pubacks, vec![0x0101]);
+}
+
+#[test]
+fn a_publish_shorter_than_its_topic_length_swallows_the_next_bytes() {
+    // the library reads the two topic-length bytes whatever the remaining length says
+    let rig = setup();
+    let mut c = conn(&rig);
+    assert!(c.connect(HOST, PORT, &args()));
+    rig.broker.send_raw(&[0x30, 0x00]);
+    rig.broker.send_publish(b"t", b"1", 0, false, 0);
+    rig.clock.advance_ms(1);
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        c.poll(|t, p| got.push((t.to_vec(), p.to_vec())));
+    }
+    assert!(got.is_empty(), "{got:?}");
+}
+
+#[test]
+fn a_publish_refused_for_its_size_is_no_outbound_traffic() {
+    let rig = setup();
+    let a = ConnectArgs {
+        id: b"i",
+        user: None,
+        password: None,
+        will: None,
+        clean_session: true,
+    };
+    let mut c = MqttConn::new(&rig.tcp, &rig.clock, 20);
+    c.set_keep_alive(10);
+    assert!(c.connect(HOST, PORT, &a)); // CONNECT out at 0, CONNACK in at 1
+    rig.clock.advance_ms(5000);
+    assert!(!c.publish(b"topic", b"0123456789", false)); // 5 + 2 + 5 + 10 = 22 > 20
+    rig.clock.advance_ms(4999); // 10 000 ms after the CONNECT: not yet
+    assert!(c.poll(|_, _| {}));
+    assert_eq!(rig.broker.state().pingreqs, 0);
+    rig.clock.advance_ms(1);
+    assert!(c.poll(|_, _| {}));
+    assert_eq!(rig.broker.state().pingreqs, 1);
+}
+
+#[test]
+fn a_filter_only_the_check_lets_through_takes_the_next_message_id() {
+    let rig = setup();
+    let a = ConnectArgs {
+        id: b"i",
+        user: None,
+        password: None,
+        will: None,
+        clean_session: true,
+    };
+    let mut small = MqttConn::new(&rig.tcp, &rig.clock, 20);
+    assert!(small.connect(HOST, PORT, &a));
+    assert!(!small.subscribe(&[b'f'; 11], 0)); // 9 + 11 = 20: past the check, id 2, not sent
+    assert!(small.subscribe(b"g", 0));
+    let ids: Vec<u16> = rig.broker.state().subscribed.iter().map(|s| s.0).collect();
+    assert_eq!(ids, vec![3]);
+}
