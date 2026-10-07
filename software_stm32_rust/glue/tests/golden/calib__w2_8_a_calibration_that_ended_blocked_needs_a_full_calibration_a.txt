@@ -1,0 +1,71 @@
+case system W2-8: a calibration that ended blocked needs a full calibration after a power cycle
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8802 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 11816 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 14830 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 17833 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 20847 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 23861 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 26864 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 29878 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 32892 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 35906 dbg "App: valve 11 unknown, try to find out...\r\n"
+t 43511 rx "smotc 17 17 30 60000 0\n"
+t 43518 tx "smotc\r\n"
+t 43518 dbg "got set motor characteristics request - valid\r\n"
+t 43561 rx "staln 0\n"
+t 43562 tx "staln\r\n"
+t 43562 dbg "start learning for valve 0\r\n"
+t 43573 dbg "App: learning started for valve 0\r\n"
+t 45553 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 49842 rx "smotc 17 17 30 100 0\n"
+t 49843 tx "smotc\r\n"
+t 49843 dbg "got set motor characteristics request - valid\r\n"
+t 52560 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 59892 rx "eepst\n"
+t 59897 tx "eepst 1 \r\n"
+t 59897 dbg "got get eeprom status request \r\n"
+end reboot power-on
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1e640000030b0019
+e 0140 32803a09003c005da5aeffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01163232323232323232323232321111d0071e6400003c001fffffffffffffff
+e 0180 010900000000140002000011ffffffffffffffffffffffffffffffffffffffff
+noinit 53574456010c0000281e090100010000070e00001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000003b0000003b00000000003c0032323232323232323232323214f100004752445600000000000000003b0000000480a5a54d52445600000000ffffffff
+boot 1 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 0\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8802 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 11816 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 14830 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 17833 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 20847 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 23861 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 26864 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 29878 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 32892 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 35906 dbg "App: valve 11 unknown, try to find out...\r\n"
+t 43511 rx "gvlvx 0\n"
+t 43518 tx "gvlvx 0 8 30 30 20 0 0 0 0 0 1 0 0 0 0 0 0 0 0\r\n"
+t 43561 rx "gvlvy 0\n"
+t 43562 tx "gvlvy 0 8 30 30 20 0 0 0 0 0 1 0 0 0 0 0 0 0 0 20 0 50 30 0 0\r\n"
+t 43611 rx "stgtp 0 60\n"
+t 43617 tx "stgtp\r\n"
+t 43617 dbg "set target pos\r\n"
+t 43628 dbg "App: learning started for valve 0\r\n"
+t 52122 rx "gvlvx 0\n"
+t 52131 tx "gvlvx 0 1 60 60 20 3600 3600 0 0 0 0 0 0 0 2160 2161 1 200 1100\r\n"
+t 52172 rx "gvlvx 0\n"
+t 52175 tx "gvlvx 0 1 60 60 20 3600 3600 0 0 0 0 0 0 0 2160 2161 1 200 1100\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1e640000030b0019
+e 0140 32803a09003c005da5aeffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01163232323232323232323232321111d0071e6400003c001fffffffffffffff
+e 0180 010900000000140002000011ffffffffffffffffffffffffffffffffffffffff
+noinit 53574456010c00003c3c010100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e06010000000000000000000000003300000000003c003232323232323232323232323b2e000047524456000000000000000034000000ea54a5a54d52445600000000ffffffff

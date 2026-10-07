@@ -1,0 +1,39 @@
+case system K1-8/W2: a warm reset keeps the expired lease and the valve states, no presence test
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8054 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 10320 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 12575 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 15589 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 18592 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 20858 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 23113 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 25379 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 27634 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 30648 dbg "App: valve 11 unknown, try to find out...\r\n"
+t 43511 rx "sfspo 255 255\n"
+t 43518 tx "sfspo 255 ok\r\n"
+t 43561 rx "slcfg 5\n"
+t 43562 tx "slcfg ok\r\n"
+t 345613 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 345711 rx "reset\n"
+t 345712 tx "reset \r\n"
+t 345712 dbg "got software reset request\r\nprepare for soft reset\r\n"
+t 345913 dbg "soft reset now\r\n"
+end reboot software
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a0900050010492dffffffffffffffffffffffffffffffffffffffffffff
+e 0160 0116ffffffffffffffffffffffff1111d0071eb80b02050066ffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e06010000000000000000590100002e01000001000500ffffffffffffffffffffffffe7c70000475244560000000000000000590100008e03a5a54d52445600000000ffffffff
+boot 1 software
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 0\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a0900050010492dffffffffffffffffffffffffffffffffffffffffffff
+e 0160 0116ffffffffffffffffffffffff1111d0071eb80b02050066ffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e06010000000000000000650100003a01000001000500ffffffffffffffffffffffffb8ce00004752445600000000590100000d00000078a1a5a54d52445601000000feffffff

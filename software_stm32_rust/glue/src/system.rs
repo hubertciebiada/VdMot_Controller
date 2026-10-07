@@ -1106,4 +1106,16 @@ mod bench;
 #[cfg(all(test, feature = "terminal"))]
 mod golden;
 #[cfg(all(test, feature = "terminal"))]
+mod tests_boot;
+#[cfg(all(test, feature = "terminal"))]
+mod tests_calib;
+#[cfg(all(test, feature = "terminal"))]
+mod tests_config;
+#[cfg(all(test, feature = "terminal"))]
 mod tests_env;
+#[cfg(all(test, feature = "terminal"))]
+mod tests_io;
+#[cfg(all(test, feature = "terminal"))]
+mod tests_motion;
+#[cfg(all(test, feature = "terminal"))]
+mod tests_proto3;

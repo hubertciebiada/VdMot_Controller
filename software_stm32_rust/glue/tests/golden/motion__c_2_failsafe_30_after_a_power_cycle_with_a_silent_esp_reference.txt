@@ -1,0 +1,63 @@
+case system C-2: failsafe 30 after a power cycle with a silent ESP, reference or calibration
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8054 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 11068 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 14082 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 17096 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 20110 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 22365 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 24631 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 27634 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 30648 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 33662 dbg "App: valve 11 unknown, try to find out...\r\n"
+t 43511 rx "smotc 17 17 30\n"
+t 43518 tx "smotc\r\n"
+t 43518 dbg "got set motor characteristics request - valid\r\n"
+t 43561 rx "sfspo 255 30\n"
+t 43562 tx "sfspo 255 ok\r\n"
+t 43611 rx "slcfg 5\n"
+t 43617 tx "slcfg ok\r\n"
+t 43661 rx "staln 0\n"
+t 43661 tx "staln\r\n"
+t 43661 dbg "start learning for valve 0\r\n"
+t 43672 dbg "App: learning started for valve 0\r\n"
+t 46554 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 54562 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+end reboot power-on
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a0900050010492dffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01161e1e1e1e1e1e1e1e1e1e1e1e1111d0071eb80b020500afffffffffffffff
+e 0180 0109100e100e14000100001effffffffffffffffffffffffffffffffffffffff
+noinit 53574456010c00001e1e010100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000003d00000012000000010005001e1e1e1e1e1e1e1e1e1e1e1e90dd00004752445600000000000000003d0000009da7a5a54d52445600000000ffffffff
+boot 1 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 0\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8054 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 11068 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 14082 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 17096 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 20110 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 22365 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 24631 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 27634 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 30648 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 33662 dbg "App: valve 11 unknown, try to find out...\r\n"
+t 308681 dbg "App: learning started for valve 1\r\n"
+t 316634 dbg "App: learning started for valve 2\r\n"
+t 319626 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 324598 dbg "App: learning started for valve 3\r\n"
+t 326633 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a0900050010492dffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01161e1e1e1e1e1e1e1e1e1e1e1e1111d0071eb80b020500afffffffffffffff
+e 0180 0109100e100e14000100001effffffff0109100e100e1400010100daffffffff
+e 01a0 0109100e100e14000102008fffffffffffffffffffffffffffffffffffffffff
+noinit 53574456010c00001e1e010100000000000000001e1e010100000000000000001e1e01010000000000000000001e020000000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000004b0100004b010000000005001e1e1e1e1e1e1e1e1e1e1e1e09bf00004752445600000000000000004c0100006ca4a5a54d52445600000000ffffffff

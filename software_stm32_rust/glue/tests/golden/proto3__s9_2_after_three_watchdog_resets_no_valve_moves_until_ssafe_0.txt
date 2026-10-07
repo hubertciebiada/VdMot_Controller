@@ -1,0 +1,45 @@
+case system S9-2: after three watchdog resets no valve moves until ssafe 0
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+end reboot watchdog
+noinit 53574456010c00001e1e050000000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e05010000000000000000040000000400000000003c00323232323232323232323232b387000047524456000000000000000005000000b70ea5a54d52445600000000ffffffff
+boot 1 watchdog
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nreset by watchdog\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+end reboot watchdog
+noinit 53574456010c00001e1e050000000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e05010000000000000000080000000800000000003c00323232323232323232323232f398000047524456010000000000000005000000c20da5a54d52445601000000feffffff
+boot 2 watchdog
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nreset by watchdog\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+end reboot watchdog
+noinit 53574456010c00001e1e050000000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000000c0000000c00000000003c003232323232323232323232323392000047524456020000000500000005000000e340a5a54d52445602000000fdffffff
+boot 3 watchdog
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nreset by watchdog\r\nsafe mode\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3511 rx "gstax\n"
+t 3511 tx "gstax 3 3 4 0 0 1 1 3585 0 60 0 1 3 0 0 0 0 64 0 0 3 0 0\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 43561 rx "ssafe 1\n"
+t 43562 tx "ssafe err\r\n"
+t 43611 rx "ssafe 0\n"
+t 43617 tx "ssafe ok\r\n"
+t 43628 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 43661 rx "gstax\n"
+t 43661 tx "gstax 43 3 4 0 0 0 1 3545 0 60 0 0 0 0 0 0 0 64 0 1 0 40 0\r\n"
+t 45883 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 48149 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 51152 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 54166 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 57180 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 60183 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 62449 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 64704 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 67718 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 70732 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 73746 dbg "App: valve 11 unknown, try to find out...\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a09003c001049f6ffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01163232323232323232323232321111d0071eb80b023c00bbffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000005f0000005f00000000003c003232323232323232323232325360000047524456000000000000000053000000155ca5a54d52445603000000fcffffff

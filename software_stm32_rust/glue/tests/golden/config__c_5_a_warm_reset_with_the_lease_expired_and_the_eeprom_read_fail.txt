@@ -1,0 +1,45 @@
+case system C-5: a warm reset with the lease expired and the EEPROM read failing: lease 2 at once
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8054 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 8511 rx "sfspo 255 255\n"
+t 8516 tx "sfspo 255 ok\r\n"
+t 8561 rx "sfspo 4 30\n"
+t 8571 tx "sfspo 4 ok\r\n"
+t 8611 rx "slcfg 5\n"
+t 8615 tx "slcfg ok\r\n"
+t 10320 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 11519 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 12575 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 314761 rx "gstax\n"
+t 314761 tx "gstax 314 0 1 0 0 0 2 0 0 5 16 0 0 0 0 0 0 64 0 2 310 311 0\r\n"
+t 314811 rx "reset\n"
+t 314816 tx "reset \r\n"
+t 314816 dbg "got software reset request\r\nprepare for soft reset\r\n"
+t 315017 dbg "soft reset now\r\n"
+end reboot software
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a0900050010492dffffffffffffffffffffffffffffffffffffffffffff
+e 0160 0116ffffffff1effffffffffffff1111d0071eb80b020500b2ffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e050100000000000000001e1e080100000000000000001e1e050100000000000000001e1e080100000000000000001e1e050100000000000000001e1e080100000000000000001e1e050100000000000000001e1e050000000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000003a0100003201000001000500ffffffff1efffffffffffffff9a200004752445600000000000000003b01000034b7a5a54d52445600000000ffffffff
+boot 1 software
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...read error, using defaults\r\nfinished, cfgFlags 80\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3511 rx "gstax\n"
+t 3511 tx "gstax 3 1 3 0 0 3 2 0 0 5 16 0 0 0 0 0 0 128 0 0 3 0 0\r\n"
+t 3533 dbg "App: learning started for valve 4\r\n"
+t 3561 rx "gstax\n"
+t 3566 tx "gstax 3 1 3 0 0 3 2 0 0 5 16 0 0 0 0 0 0 128 0 0 3 0 0\r\n"
+t 3611 rx "gstax\n"
+t 3621 tx "gstax 3 1 3 0 0 3 2 0 0 5 16 0 0 0 0 0 0 128 0 0 3 0 0\r\n"
+t 3661 rx "glcfg\n"
+t 3665 tx "glcfg 5 255 255 255 255 30 255 255 255 255 255 255 255\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a0900050010492dffffffffffffffffffffffffffffffffffffffffffff
+e 0160 0116ffffffff1effffffffffffff1111d0071eb80b020500b2ffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e050100000000000000001e1e080100000000000000001e1e050100000000000000001e1e030000000000000000001e1e050100000000000000001e1e080100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000003d0100000000000001000500ffffffff1effffffffffffffba12000047524456000000003b010000030000003c01a5a54d52445601000000feffffff

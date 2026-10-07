@@ -1,0 +1,29 @@
+case system C-1: a valve jammed at 25 % makes one calibration series and one failsafe move per retry
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 6547 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 9561 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 12564 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 15578 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 18592 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 21606 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 24620 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 27623 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 29889 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 32892 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 35906 dbg "App: valve 11 unknown, try to find out...\r\n"
+t 43511 rx "stgtp 5 30\n"
+t 43518 tx "stgtp\r\n"
+t 43518 dbg "set target pos\r\n"
+t 43529 dbg "App: learning started for valve 5\r\n"
+t 54562 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 3654401 dbg "App: learning started for valve 5\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a09003c001049f6ffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01163232323232323232323232321111d0071eb80b023c00bbffffffffffffff
+e 01c0 ffffffffffffffffffffffffffffffff0109000000001400020500eeffffffff
+noinit 53574456010c00001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000000a1e090101010000255400001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000001e1e060100000000000000008a0e00008a0e000000003c00323232323232323232323232398700004752445600000000000000008a0e0000601ca5a54d52445600000000ffffffff

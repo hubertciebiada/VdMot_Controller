@@ -1,0 +1,24 @@
+case system: a new controller answers gvers, gproto, gtgtp, gvlvd, gstat and stgtp like 2.0.0
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3511 rx "gvers\n"
+t 3511 tx "gvers 2.1.7-revamped_C2 1 \r\n"
+t 3511 dbg "got version request\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 3561 rx "gproto\n"
+t 3566 tx "gproto 3\r\n"
+t 3611 rx "gtgtp 0\n"
+t 3621 tx "gtgtp 0 30 \r\n"
+t 3621 dbg "get target pos\r\n"
+t 3661 rx "gvlvd 0\n"
+t 3665 tx "gvlvd 0 30 20 5 -500 -500 0 0 0 0 0 \r\n"
+t 3711 rx "gstat\n"
+t 3720 tx "gstat 3 0 1 0 0 1\r\n"
+t 3761 rx "stgtp 0 50\n"
+t 3764 tx "stgtp\r\n"
+t 3764 dbg "set target pos\r\n"
+t 3811 rx "gtgtp 0\n"
+t 3819 tx "gtgtp 0 50 \r\n"
+t 3819 dbg "get target pos\r\n"
+end case
+noinit 53574456010c00001e32050000000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e050100000000000000001e1e05010000000000000000000000000300000000003c00323232323232323232323232a4450000475244560000000000000000030000002e29a5a54d52445600000000ffffffff

@@ -1,0 +1,31 @@
+case system C-8: a reset right after a command hand-over tests that valve again
+boot 0 power-on
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 40\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3533 dbg "App: valve 0 unknown, try to find out...\r\n"
+t 5513 dbg "write eeprom layout to eeprom...\r\nfinished\r\n"
+t 5799 dbg "App: valve 2 unknown, try to find out...\r\n"
+t 8054 dbg "App: valve 4 unknown, try to find out...\r\n"
+t 10320 dbg "App: valve 6 unknown, try to find out...\r\n"
+t 12575 dbg "App: valve 8 unknown, try to find out...\r\n"
+t 14841 dbg "App: valve 10 unknown, try to find out...\r\n"
+t 17096 dbg "App: valve 1 unknown, try to find out...\r\n"
+t 19362 dbg "App: valve 3 unknown, try to find out...\r\n"
+t 21628 dbg "App: valve 5 unknown, try to find out...\r\n"
+t 23883 dbg "App: valve 7 unknown, try to find out...\r\n"
+t 26149 dbg "App: valve 9 unknown, try to find out...\r\n"
+t 28404 dbg "App: valve 11 unknown, try to find out...\r\n"
+end reboot pin
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a09003c001049f6ffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01163232323232323232323232321111d0071eb80b023c00bbffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080000000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000002b0000002b00000000003c00323232323232323232323232d9aa00004752445600000000000000002b000000a39ba5a54d52445600000000ffffffff
+boot 1 pin
+t 3011 dbg "VdMot Controller 2.1.7-revamped_C2\r\nSERIAL_BUFFER_SIZE TX=1024 RX=1024\r\nRead eeprom layout from eeprom...finished, cfgFlags 0\r\nRead 1-wire sensor addresses from eeprom\r\nlearning_movements: 2000\r\n"
+t 3555 dbg "App: valve 4 unknown, try to find out...\r\n"
+end case
+e 0020 ffffffff1111d007ffffffffffffffffffffffffffffffffffffffffffffffff
+e 0120 ffffffffffffffffffffffffffffffffffffffffffffffff1eb80b02030b0019
+e 0140 32803a09003c001049f6ffffffffffffffffffffffffffffffffffffffffffff
+e 0160 01163232323232323232323232321111d0071eb80b023c00bbffffffffffffff
+noinit 53574456010c00001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e080100000000000000001e1e08010000000000000000370000003700000000003c00323232323232323232323232e4f3000047524456000000002b0000000d000000b326a5a54d52445601000000feffffff
