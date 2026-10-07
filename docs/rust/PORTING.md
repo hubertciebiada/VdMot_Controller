@@ -20,7 +20,7 @@ software_stm32_rust/
   (same shape: core = software_stm32/lib/core, glue = software_stm32/src/*.cpp,
    firmware on embassy-stm32, target thumbv7em-none-eabihf)
 tools/rust/      Dockerfile, docker.sh (tests, mutation), mutation_gate.py, mutation/
-tools/rust/esp/  Dockerfile, docker.sh (ESP32 firmware: build, size, QEMU), image_size.py,
+tools/rust/esp/  Dockerfile, docker.sh (ESP32 firmware: build, size, lint, QEMU), image_size.py,
                  qemu/harness.py (end-to-end checks with the devices' bootloader)
 ```
 
@@ -37,9 +37,18 @@ ESP32 firmware (repo root, Docker needed; the first build fetches ESP-IDF into t
 
 ```
 bash tools/rust/esp/docker.sh build                 app image of the default build (WiFi)
-bash tools/rust/esp/docker.sh size nowifi           size against the 1,228,800 B budget
-bash tools/rust/esp/docker.sh qemu                  boot guard, OTA and LittleFS checks in QEMU
+bash tools/rust/esp/docker.sh size                  size against the 1,228,800 B budget (fails above)
+bash tools/rust/esp/docker.sh lint                  clippy -D warnings of every feature set
+bash tools/rust/esp/docker.sh qemu                  end-to-end scenarios in QEMU (tools/rust/README.md)
 ```
+
+The firmware crate is outside the host workspace and outside the mutation gate: it builds only
+for `xtensa-esp32-espidf`, and its adapters are calls into ESP-IDF that no host can run. That is
+why it holds no decisions: one adapter per port, each method an ESP-IDF call or a fixed sequence
+of them with error mapping, and `main` in the order of GLUE-DESIGN-ESP.md 6.4. Anything with
+logic (a choice, a format, a state machine) belongs in the glue behind a port method, where the
+host tests and the 95 % gate cover it. The firmware is checked by clippy (`docker.sh lint`) and
+the QEMU harness instead.
 
 ## ESP32 firmware: what an OTA update from the C++ firmware depends on
 
@@ -51,13 +60,20 @@ ESP-IDF 4.4 era, no app rollback) and the partition table stay. Binding for the 
 - `BOOTLOADER_WDT_DISABLE_IN_USER_CODE` stays unset (the app disables the 9 s RTC watchdog of the
   bootloader) and `ESP_SYSTEM_ESP32_SRAM1_REGION_AS_IRAM` stays off (an older bootloader cannot
   boot such an app).
-- The boot guard (`firmware/src/boot_guard.rs`) runs first in `main`; it is the only rollback
-  the devices have. An image that fails before `main` (ESP-IDF startup) cannot be rolled back.
-- NVS is never erased, whatever its init error (`EspDefaultNvsPartition::take()` would erase it:
-  use `take_with(false)`); the C++ settings live there. ESP-IDF 4.4 and 5.5 use the same NVS page
-  version (0xfe).
+- The boot guard (`glue/src/boot_guard.rs`) decides in `main` right after the STM release and the
+  NVS init, before any other subsystem; it is the only rollback the devices have. An image that
+  fails before `main` (ESP-IDF startup) cannot be rolled back.
+- NVS is erased only for the two init errors Arduino-ESP32 erased on (`NO_FREE_PAGES`,
+  `NEW_VERSION_FOUND`): a partition the firmware cannot initialise would leave the device on its
+  defaults with no way to save settings, a serial reflash in the cabinet. Any other init error
+  leaves it alone. ESP-IDF 4.4 and 5.5 use the same NVS page version (0xfe), so the C++ settings
+  never meet those errors.
 - LittleFS keeps on-disk version 2.0 (`LITTLEFS_MULTIVERSION`, `LITTLEFS_DISK_VERSION_2_0`), so the
-  C++ firmware can still mount it after a switch back; a failed mount never formats.
+  C++ firmware can still mount it after a switch back. The adapter's mount never formats
+  (`format_if_mount_failed` 0); the glue formats only after a failed mount, as the C++
+  `beginFs` did (`LittleFS.begin(false)`, then `format()`).
+- The image stays below 1,228,800 B: std is built without its default features (no backtrace
+  symbolizer) and the release profile uses `opt-level = "z"` (GLUE-DESIGN-ESP.md 7, item 7).
 
 ## Contract parity
 
