@@ -1022,9 +1022,15 @@ class Harness:
             for rel, data in content.items():
                 if rel != "log/events.log" and rel != "sys/cfg.bak":
                     check(files.get("/" + rel) == len(data), f"/{rel}: listed {files.get('/' + rel)}")
-            a = request(self.port, "GET", "/api/log", timeout=60)
-            text = a.text()
-            log(f"  GET /api/log -> {a.status}, {len(a.body)} B, transfer-encoding "
+            # a download asks the logger for a flush and streams the files as they are (as the
+            # C++ did): the lines of this boot are in the file once that flush ran
+            for n in range(1, 7):
+                a = request(self.port, "GET", "/api/log", timeout=60)
+                text = a.text()
+                if "fw 2.1.7-revamped-rust" in text[len(cpp_log):] or a.status != 200:
+                    break
+                time.sleep(5)
+            log(f"  GET /api/log (download {n}) -> {a.status}, {len(a.body)} B, transfer-encoding "
                 f"{a.headers.get('transfer-encoding')}; last line {text.strip().splitlines()[-1]!r}")
             check(a.status == 200 and a.headers.get("transfer-encoding") == "chunked", "log download")
             check(text.startswith(cpp_log.decode()), "the C++ lines are not the start of the log")
