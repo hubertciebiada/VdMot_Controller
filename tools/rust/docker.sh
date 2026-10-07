@@ -14,6 +14,8 @@
 #                                                       (tools/rust/stm/build_images.sh)
 #   tools/rust/docker.sh image-check                    C1-C5 and D9 on those images, with the
 #                                                       ESP's C++ validation (tools/rust/stm/image_check.sh)
+#   tools/rust/docker.sh interop <workspace>            the ignored tests that need the image's
+#                                                       external programs (mosquitto, g++ -m32)
 #   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
 #
 # The Renode tests of the images run in their own container: tools/rust/renode.sh (README.md).
@@ -125,12 +127,22 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
   image-check)
     in_container "bash tools/rust/stm/image_check.sh"
     ;;
+  interop)
+    [ $# -ge 2 ] || { echo "usage: $0 interop <workspace>" >&2; exit 2; }
+    ws="$2"
+    check_workspace "$ws"
+    in_container "set -e
+      exec 8>/target/$ws.lock
+      if ! flock -n 8; then echo 'waiting for another cargo run of $ws in this checkout' >&2; flock 8; fi
+      cd $ws
+      CARGO_TARGET_DIR=/target/$ws cargo test --workspace --lib --tests -- --ignored"
+    ;;
   run)
     shift
     in_container "$*"
     ;;
   *)
-    sed -n '2,26p' "$0" >&2
+    sed -n '2,28p' "$0" >&2
     exit 2
     ;;
 esac

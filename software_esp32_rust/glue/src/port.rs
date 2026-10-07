@@ -5,8 +5,8 @@
 //! IPv4 addresses are `u32` with the first octet in the low byte (lwIP order, as in core). Byte
 //! strings from outside (names, values, bodies, packets) are `&[u8]` and never assumed UTF-8.
 
-pub use crate::stand_in::HttpMethod;
 pub use vdm_esp_core::common::LocalTime;
+pub use vdm_esp_core::json_api::HttpMethod;
 
 // ---------------------------------------------------------------- time, watchdog, console
 

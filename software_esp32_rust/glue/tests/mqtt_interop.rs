@@ -4,7 +4,7 @@
 //! `mosquitto` binary of the tools/rust image); run it with
 //!
 //! ```text
-//! bash tools/rust/docker.sh run "cd software_esp32_rust && cargo test -p vdm-esp-glue --test mqtt_interop -- --ignored"
+//! bash tools/rust/docker.sh interop software_esp32_rust
 //! ```
 // host test code: the stack rule of the glue (design 2.4) is for the device
 #![allow(clippy::large_stack_frames)]

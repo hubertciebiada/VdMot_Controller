@@ -12,7 +12,6 @@ pub mod json_body;
 pub mod mqtt_conn;
 pub mod ota;
 pub mod port;
-pub mod stand_in;
 
 #[cfg(test)]
 pub(crate) mod testkit;
