@@ -7,20 +7,26 @@ requirement (Windows, macOS, Linux). Porting rules and the per-crate commands:
 | script | image | used for |
 |---|---|---|
 | `docker.sh` | `vdmot-rust:<hash of Dockerfile>`: Rust 1.99.0, clippy, rustfmt, cargo-mutants 27.1.0, the `thumbv7em-none-eabihf` target, `llvm-tools`, g++ 12, Python 3 | host tests, mutation gate, STM32 images, image check |
-| `renode.sh` | `antmicro/renode:1.16.1` (D11) | the STM32 images in Renode: boot stage and application |
+| `renode.sh` | `antmicro/renode:1.16.1` (D11) | the STM32 images in Renode: boot stage, application, flash cycle (E11) |
 | `stm/golden/run.sh` | the native image (`tools/native/docker.sh`) | the C++ goldens of the glue_system suites |
 | `esp/docker.sh` | `vdmot-rust-esp:<hash of esp/Dockerfile>`: the Xtensa toolchain `esp` 1.98.1.0 (espup 0.18.0), ldproxy 0.3.5, esptool 5.4.0, littlefs-python 0.19.0, Espressif QEMU 9.2.2 (esp-develop-20260417), mklittlefs 1.203.210628, Mosquitto 2.0.11 (Debian bookworm); ESP-IDF v5.5.5 is fetched by esp-idf-sys into the volume `vdmot-esp-idf` on the first build | ESP32 firmware images, their size, the QEMU harness |
 | `mutation_gate.py` | - | per-file 95 % gate over a cargo-mutants run |
 
 ## STM32 images
 
-Three steps from the repository root; each one needs the one before.
+Four steps from the repository root; each one needs the one before.
 
 ```
 bash tools/rust/docker.sh fw            # 1. build
 bash tools/rust/docker.sh image-check   # 2. check the files
 bash tools/rust/renode.sh               # 3. run them in Renode
+bash tools/rust/renode.sh --e11         # 4. flash them with the Rust ESP flasher in Renode
 ```
+
+With the four C++ 2.1.7 release images in a directory (`*STM32F401_C1.bin` ..., from the
+release v2.1.7-revamped; their SHA-256 are pinned in `tools/rust/stm/cpp217.sha256` and checked
+before use), steps 2 and 4 take them as the reference: `tools/rust/docker.sh image-check <dir>`
+(C6) and `tools/rust/renode.sh --e11 --cpp <dir>` (C++ -> Rust -> C++).
 
 1. **fw** builds the four images of `software_stm32_rust/firmware` (features `f401|f411` x
    `c1|c2`, release profile) into `software_stm32_rust/firmware/images/`
@@ -52,6 +58,12 @@ bash tools/rust/renode.sh               # 3. run them in Renode
    C# models at the start of every test; a change of them while a run is going breaks the tests
    that follow in that run ("assembly already loaded"). `vdm_renode.py` reads the C++ goldens
    for app.robot and checks the no-init cells.
+4. **renode.sh --e11** builds `tools/rust/stm/e11` (`vdm-e11`, the Rust ESP flasher of
+   `software_esp32_rust/core` as a static host program, into `software_stm32_rust/renode/e11/`,
+   not in git) and runs `e11.robot` once per image: `VdmEsp.cs` drives the program in lock-step
+   with the emulation as the ESP on USART1 and NRST, `VdmRom.cs` stands in for the ROM
+   bootloader. Results in `software_stm32_rust/renode/results/e11-<image>/`. About 8 minutes per
+   image with `--cpp` (the CPU runs at the core clock there).
 
 Host tests and the mutation gate of the boot crate:
 

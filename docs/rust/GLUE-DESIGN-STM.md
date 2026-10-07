@@ -528,7 +528,7 @@ Facts of the Renode models the suites depend on (found while building them):
 | E8 | fault before the IWDG runs | `cpu AddHook` at the first application function raises the fault | reset within 1 s; E1 passes afterwards |
 | E9 | no-init cells across resets | `NOINIT` loaded with C++ 2.1.7 cells (counter 41, guard); a pin reset (CSR read hook = PINRSTF), then SYSRESETREQ | the Rust capture continues the C++ cells (counter 42, 43, guard window summed and sealed); warm state area and padding byte-equal. The warm restore itself: A4 |
 | E10 | regression fence | reset | USART1 RE set at most 10 ms after reset (+5 ms HSE probe): fails when someone puts code before the window |
-| E11 | end to end (D11) | host build of the Rust ESP flasher <-> USART1 socket <-> AN3155 responder (Python peripheral) after the jump | C++ -> Rust -> C++ image cycle in emulated flash, `gvers` after each. Open: needs the C++ 2.1.7 release images (download not yet approved) |
+| E11 | end to end (D11) | host build of the Rust ESP flasher <-> USART1 socket <-> AN3155 responder (Python peripheral) after the jump | C++ -> Rust -> C++ image cycle in emulated flash, `gvers` after each. *Implementation:* `e11.robot`, `tools/rust/renode.sh --e11 [--cpp <dir>]`. The flasher (`vdm_esp_core::stm_flasher`) runs in a host program (`tools/rust/stm/e11`, `vdm-e11`, static) that `VdmEsp.cs` drives in lock-step, once per millisecond of virtual time: `VdmEsp` is the ESP's end of USART1 (an IUART on a UART hub with `usart1`) and of NRST (its release resets the machine). `VdmRom.cs` does the work of the ROM bootloader while the CPU is in the stand-in: USART1 to 8E1, then sync, GET, GET ID, Extended Erase with a sector list, Write and Read Memory on the registers of USART1 and the emulated flash, every command logged. With the C++ 2.1.7 release images in `<dir>` (SHA-256 pinned in `tools/rust/stm/cpp217.sha256`): C++ -> Rust -> C++; without: Rust -> Rust with another version string in the ID block -> Rust. Each flash ends when the new image answers `gvers` with the expected version and tag; the ROM log shows D9: sectors 1..n erased, written and verified, then sector 0 erased, written from its second block on, the vector table last. SysTick and the CPU run at the core clock (84 / 96 MHz, 84 / 96 MIPS): the C++ counts its milliseconds there, and its 1 ms interrupt (two `analogRead` with the whole HAL ADC set-up) takes more than 1 ms at 4 MIPS, so TIM2 at the same priority never runs and the IWDG resets the chip; the Rust boot window, counted for the 25 MHz boot clock, is shorter then (E1-E10 check its timing) |
 
 `app.robot` runs the whole application against the C++ goldens of the glue_system suites
 (§7.4): the requests of a golden boot go to USART1 at their times after the reset, every reply
@@ -556,7 +556,9 @@ What Renode does not prove, so the bench (§5.9) does:
   5.4-15 s), interrupt latencies and the length of critical sections are not cycle-accurate;
 - the HSE crystal start-up (E6 forces HSERDY off; a slow crystal between 5 and 100 ms is not
   modelled), USART framing, parity and noise errors (host tests of `serial` and `uart_errors`);
-- the ROM bootloader after the jump (a `b .` stand-in) and a real flash cycle (E11 open);
+- the ROM bootloader itself (`VdmRom.cs` does its work; R2), the flash interface of the chip
+  and its timing (erase and program are instant in E11), the NRST pulse (the STM runs on while
+  it is held, its release is one reset);
 - the RCC_CSR flags of a real reset (read hook), and the fault escalation to HardFault.
 
 ### 5.8 Byte-level image check
@@ -570,11 +572,12 @@ What Renode does not prove, so the bench (§5.9) does:
 | C3 | ESP `check_board(tag, board)` | `Ok` for the image's own tag, `Mismatch` for the other |
 | C4 | ELF layout | SP0 and reset vector as §5.6; `.vdm_id` at 0x08000200 holds the first version-like run of the image; exactly one `VDM-HW:` marker; `NOINIT` symbols at 0x20003234 / 0x200032E8 / 0x200032FC; no section in `NOINIT` |
 | C5 | size | ≤ 128 KiB, so `sectorsForImage` gives 5 sectors like the C++ images |
-| C6 | reference | the same tool on the C++ 2.1.7 images gives version `2.1.7-revamped`, tags `C1`/`C2`, handshake present, SP 0x20010000 / 0x20020000 (*measured* with a port of `scanBytes`) |
+| C6 | reference | the same tool on the C++ 2.1.7 images gives version `2.1.7-revamped`, tags `C1`/`C2`, handshake present, SP 0x20010000 / 0x20020000 (*measured* with a port of `scanBytes`). *Implementation:* `tools/rust/docker.sh image-check <dir>` with the four release images in `<dir>` (`*STM32F401_C1.bin` ...), each checked against its SHA-256 pinned in `tools/rust/stm/cpp217.sha256` first |
 
 The ESP side is `vdm_esp_core::stm_flasher::{validate_image, check_board}`, the Rust port of
-`stm_flasher.cpp` (`software_esp32_rust/core/src/stm_flasher.rs`, still empty). Until it lands,
-C1-C3 run through a small native harness that links the C++ `stm_flasher.cpp`.
+`stm_flasher.cpp` (`software_esp32_rust/core/src/stm_flasher.rs`). C1-C3 and C6 run through a
+small native harness that links the C++ `stm_flasher.cpp`, the code of the ESPs in the field
+(ESP 2.1.7); E11 flashes with the Rust port.
 
 ### 5.9 Proof on hardware
 
@@ -725,8 +728,8 @@ reproduces all 27 cases byte for byte; `app.robot` replays some of them against 
 ### 7.6 CI order
 
 host tests (core, boot, glue) -> mutation gate -> firmware build (4 images, size budget, boot
-probe link) -> image check C1-C6 -> Renode E1-E10 and A1-A6 -> release packaging. A failure
-anywhere stops the release of every STM image.
+probe link) -> image check C1-C6 -> Renode E1-E10, A1-A6 and E11 -> release packaging. A
+failure anywhere stops the release of every STM image.
 
 ## 8. Open decisions and risks
 

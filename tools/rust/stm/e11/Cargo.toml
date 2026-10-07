@@ -1,0 +1,16 @@
+[package]
+name = "vdm-e11"
+description = "Renode E11: the Rust ESP flasher (vdm-esp-core stm_flasher) on the host, in lock-step with the emulated STM32"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+# own workspace: a tool beside the two firmware workspaces
+[workspace]
+
+[dependencies]
+vdm-esp-core = { path = "../../../../software_esp32_rust/core" }
+
+[profile.release]
+opt-level = 1

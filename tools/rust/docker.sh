@@ -12,8 +12,11 @@
 #   tools/rust/docker.sh fw                             the four STM32 images and the boot probes
 #                                                       -> software_stm32_rust/firmware/images/
 #                                                       (tools/rust/stm/build_images.sh)
-#   tools/rust/docker.sh image-check                    C1-C5 and D9 on those images, with the
-#                                                       ESP's C++ validation (tools/rust/stm/image_check.sh)
+#   tools/rust/docker.sh image-check [<dir>]            C1-C5 and D9 on those images, with the
+#                                                       ESP's C++ validation (tools/rust/stm/image_check.sh);
+#                                                       with <dir>: C6 on the four C++ 2.1.7 release images
+#                                                       in it (*STM32F401_C1.bin ..., SHA-256 pinned in
+#                                                       tools/rust/stm/cpp217.sha256)
 #   tools/rust/docker.sh interop <workspace>            the ignored tests that need the image's
 #                                                       external programs (mosquitto, g++ -m32)
 #   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
@@ -47,9 +50,13 @@ build_image() {
   docker build -q -t "$IMAGE" -f "$ROOT/tools/rust/Dockerfile" "$ROOT/tools/rust" >/dev/null
 }
 
+# more `docker run` arguments of one command (an extra mount)
+extra_args=()
+
 in_container() {
   docker image inspect "$IMAGE" >/dev/null 2>&1 || build_image
   docker run --rm --init -v "$HOST_ROOT:/src" -v "$TARGET_VOLUME:/target" \
+    ${extra_args[@]+"${extra_args[@]}"} \
     -v "$CARGO_VOLUME:/cargo-cache" -v "$LOCKS_VOLUME:/locks" -w /src \
     -e CARGO_HOME_CACHE=/cargo-cache -e PYTHONDONTWRITEBYTECODE=1 -e CARGO_TERM_COLOR=never \
     -e CARGO_TARGET_DIR=/target/run \
@@ -125,7 +132,15 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
       bash tools/rust/stm/build_images.sh"
     ;;
   image-check)
-    in_container "bash tools/rust/stm/image_check.sh"
+    if [ $# -ge 2 ]; then
+      # C6: the C++ release images, mounted read-only
+      cpp="$(cd "$2" && pwd)"
+      if command -v cygpath >/dev/null 2>&1; then cpp="$(cygpath -m "$cpp")"; fi
+      extra_args=(-v "$cpp:/cpp-images:ro")
+      in_container "bash tools/rust/stm/image_check.sh /cpp-images"
+    else
+      in_container "bash tools/rust/stm/image_check.sh"
+    fi
     ;;
   interop)
     [ $# -ge 2 ] || { echo "usage: $0 interop <workspace>" >&2; exit 2; }

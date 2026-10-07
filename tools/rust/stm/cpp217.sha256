@@ -1,0 +1,7 @@
+# SHA-256 of the C++ 2.1.7-revamped STM32 release images (release v2.1.7-revamped of the fork,
+# its SHA256SUMS), by image name: the reference of image check C6 and of Renode E11, which check
+# the files they are given against these values before they use them.
+33d01df5cafee842c6fd4dc3464f9900e0b5f0791eab1fd037559e32aebcbf22  STM32F401_C1
+1862d33f2233524bdd428d50c6080218a90fcf9c4303609154706684ff9ce7a4  STM32F401_C2
+884486f0c650d17d43f4f0d2f4b2c62e7b8805cd12a3e17a8fb640ef5acd915c  STM32F411_C1
+4260155fbcaa30eaed27577f6c4a92de906beaffa064a1aba9a03ba816a15902  STM32F411_C2
