@@ -177,9 +177,12 @@ $(export_script)"
   qemu)
     shift
     cpp="$(cpp_image)"
+    # the build lock guards the shared ESP-IDF build only: released before the harness, which
+    # builds nothing and runs for about an hour
     in_container "$(build_script qemu)
 $(build_script qemu,fail-boot)
 $(build_script qemu,hang-setup)
+exec 9>&-
 /opt/pytools/bin/python /src/tools/rust/esp/qemu/harness.py --cpp-image $cpp$(quote_args "$@")"
     ;;
   run)
