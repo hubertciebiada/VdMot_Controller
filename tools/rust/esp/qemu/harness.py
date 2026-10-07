@@ -682,7 +682,7 @@ class Harness:
         line of the C++ image, with no Rust banner after them. What its setup does next in this
         QEMU varies from run to run (GPIO2 reads LOW: a factory reset; its flash reads are
         garbage): its LittleFS mount (told from the Rust one by the component path) and its boot
-        event ("fw <version>" without "-rust") came within seconds in most runs, after minutes or
+        event (the version of the C++ image) came within seconds in most runs, after minutes or
         not at all in others, so they are logged when they come within 60 s."""
         i, _ = q.wait_for(r"^entry 0x", 30, start)
         self.evidence(q, i, "bootloader starts the next app")
@@ -696,7 +696,7 @@ class Harness:
                 log(f"  {tag}: {what}: not within 60 s (this QEMU, see above)")
                 break
             if what == "its boot event":
-                check(not m.group(3).endswith("-rust"), f"the Rust app started instead ({m.group(3)})")
+                check(m.group(3) == self.cpp_version, f"not the C++ firmware ({m.group(3)})")
             self.evidence(q, n, f"{tag}: {what}")
             k = n
         check(q.count(RUST_BANNER, i) == 0 or q.wait_for(RUST_BANNER, 0, i)[0] > k,
@@ -1027,14 +1027,14 @@ class Harness:
             for n in range(1, 7):
                 a = request(self.port, "GET", "/api/log", timeout=60)
                 text = a.text()
-                if "fw 2.1.7-revamped-rust" in text[len(cpp_log):] or a.status != 200:
+                if "fw 2.2.0-revamped" in text[len(cpp_log):] or a.status != 200:
                     break
                 time.sleep(5)
             log(f"  GET /api/log (download {n}) -> {a.status}, {len(a.body)} B, transfer-encoding "
                 f"{a.headers.get('transfer-encoding')}; last line {text.strip().splitlines()[-1]!r}")
             check(a.status == 200 and a.headers.get("transfer-encoding") == "chunked", "log download")
             check(text.startswith(cpp_log.decode()), "the C++ lines are not the start of the log")
-            check("fw 2.1.7-revamped-rust" in text[len(cpp_log):], "no Rust boot event in the log")
+            check("fw 2.2.0-revamped" in text[len(cpp_log):], "no Rust boot event in the log")
         finally:
             q.quit()
         part = fl.read()[SPIFFS_OFFSET:SPIFFS_OFFSET + SPIFFS_SIZE]

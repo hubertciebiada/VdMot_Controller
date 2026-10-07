@@ -26,5 +26,5 @@ ESP_IDF_GLOB_PARTITIONS_CSV = "partitions.csv"
 # The C++ build flags of the firmware version (core/src/version.rs reads them at compile time):
 # VDM_VERSION is the version of this crate (Cargo.toml), VDM_MIN_STM_VERSION the one of
 # software_esp32_revamped/platformio.ini.
-VDM_VERSION = "2.1.7-revamped-rust"
+VDM_VERSION = "2.2.0-revamped"
 VDM_MIN_STM_VERSION = "1.4.0"

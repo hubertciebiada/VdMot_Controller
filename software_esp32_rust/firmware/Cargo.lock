@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "vdm-esp-fw"
-version = "2.1.7-revamped-rust"
+version = "2.2.0-revamped"
 dependencies = [
  "embuild",
  "esp-idf-hal",
