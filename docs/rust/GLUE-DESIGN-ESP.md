@@ -689,6 +689,11 @@ an OTA between them loses the RTC records (each fails its check and counts as po
 desired targets come from NVS, which the restart path writes before every restart.
 
 `AppId` = the first 8 bytes of `esp_app_desc_t.app_elf_sha256` of a slot (`Ota::running`/`other`).
+`esptool elf2image --elf-sha256-offset 0xb0` writes it; an image built without it has all zero
+bytes there (every legacy 1.4.x image does) and names no build: the guard treats a running image
+with it as unknown and stays out (`UNKNOWN_APP`, as without a readable description), and
+`tools/rust/esp/docker.sh size` and `export` fail on such an image (`tools/rust/esp/app_id.py`).
+A fallback is identified by its slot, so a legacy image stays a valid fallback.
 
 ### 6.2 Decision at boot
 

@@ -45,6 +45,13 @@ pub const BOOT_LIMIT: u8 = 3;
 /// `setup` must reach the first app-task pass within this time after `main` starts, or the
 /// firmware's one-shot timer restarts (a counted boot).
 pub const BOOT_DEADLINE_MS: u32 = 60_000;
+/// The `AppId` of an image built without the ELF SHA-256 in its app descriptor (`esptool
+/// elf2image` without `--elf-sha256-offset`, as every legacy 1.4.x image): it names no build,
+/// every such image would look like every other, so the guard treats a running image with it as
+/// unknown and stays out (as without a readable description). The firmware build fails on it
+/// (tools/rust/esp/app_id.py). A fallback is identified by its slot, so such an image (the legacy
+/// firmware) stays a valid fallback.
+pub const UNKNOWN_APP: AppId = AppId([0; 8]);
 /// Place of the guard mirror in the RTC block.
 pub const MIRROR_OFFSET: usize = 0;
 /// Size of the guard mirror.
@@ -399,10 +406,11 @@ impl BootGuard {
         let mut ns = nvs.open(NVS_NAMESPACE, true);
         let stm_flag = take_stm_flag(ns.as_mut());
         let mut guard = BootGuard {
-            app: ota.running().app,
+            app: ota.running().app.filter(|a| *a != UNKNOWN_APP),
             trial: None,
         };
-        // no readable description of the running image: the guard stays out
+        // no readable description of the running image, or one that names no build: the guard
+        // stays out
         if let Some(app) = guard.app {
             guard.decide(ns, ota, rtc, system, app, stm_flag, &mut report);
         }

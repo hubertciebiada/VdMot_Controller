@@ -8,6 +8,8 @@
 #                                                   (features: comma list, "" = default = wifi;
 #                                                   e.g. "qemu", "qemu,fail-boot", "nowifi")
 #   tools/rust/esp/docker.sh size [features]        build, then the image size against the budget
+#                                                   and the boot guard's AppId (app_id.py: the
+#                                                   ELF SHA-256 in the app descriptor is set)
 #   tools/rust/esp/docker.sh export                 the release images: size of the default build,
 #                                                   the same image without the appended SHA-256
 #                                                   digest, both with the ELF and the map into
@@ -91,9 +93,12 @@ echo "variant $variant: \$out/vdm-esp-fw.bin \$(stat -c %s \$out/vdm-esp-fw.bin)
 EOS
 }
 
+# The size against the budget, and the boot guard's AppId (the ELF SHA-256 elf2image writes into
+# the app descriptor): an image without it fails, the guard could not tell it from another build.
 size_script() {
   cat <<'EOS'
 python3 /src/tools/rust/esp/image_size.py "$out/vdm-esp-fw.bin" "$out/vdm-esp-fw.map"
+python3 /src/tools/rust/esp/app_id.py "$out/vdm-esp-fw.bin"
 EOS
 }
 
@@ -103,6 +108,7 @@ EOS
 export_script() {
   cat <<'EOS'
 esptool $elf2image --dont-append-digest -o "$out/vdm-esp-fw_nodigest.bin" "$elf" >/dev/null
+python3 /src/tools/rust/esp/app_id.py "$out/vdm-esp-fw_nodigest.bin"
 dest=/src/software_esp32_rust/firmware/images
 mkdir -p "$dest"
 for f in vdm-esp-fw.bin vdm-esp-fw_nodigest.bin vdm-esp-fw.elf vdm-esp-fw.map; do

@@ -759,6 +759,36 @@ fn an_unreadable_running_image_is_left_alone() {
 }
 
 #[test]
+fn an_all_zero_app_id_is_unknown_to_the_guard() {
+    // an image without the ELF SHA-256 in its app descriptor names no build: it runs as it is
+    // (no trial, no record), also when otaOk holds the same zeros
+    for stored in [None, Some(UNKNOWN_APP)] {
+        let board =
+            FakeBoard::with_slots([SlotImage::glue(UNKNOWN_APP), SlotImage::glue(APP_B)], 0);
+        if let Some(app) = stored {
+            board.nvs().set_blob(NVS_NAMESPACE, KEY_OK, &encode_ok(app));
+        }
+        board.nvs().set_u8(NVS_NAMESPACE, KEY_STM, 1);
+        let (dev, r) = boot(&board);
+        let (g, report) = r.returned();
+        assert_eq!(report.verdict, BootVerdict::Confirmed);
+        assert_eq!(events(&report), vec![]);
+        assert!(!g.on_trial());
+        assert_eq!(trial_record(&dev.nvs), None);
+        assert_eq!(ok_record(&dev.nvs), stored);
+        assert!(!dev.nvs.has(NVS_NAMESPACE, KEY_STM)); // read once and erased, as always
+        assert_eq!(dev.ota.knobs().mark_valids, 0);
+        assert_eq!(dev.ota.knobs().verifies, Vec::<u32>::new());
+        assert_eq!(dev.rtc.snapshot()[..4], [0xA5; 4]); // no mirror written
+    }
+    // a known image still finds the zero image a valid fallback (the legacy firmware)
+    let board = FakeBoard::with_slots([SlotImage::glue(UNKNOWN_APP), SlotImage::glue(APP_B)], 1);
+    let (dev, r) = boot(&board);
+    assert_eq!(r.returned().1.verdict, trial(1, false));
+    assert_eq!(trial_record(&dev.nvs).unwrap().fallback, SLOT_ADDR[0]);
+}
+
+#[test]
 fn damaged_records_start_a_trial() {
     let board = uploaded_b();
     board.ota().store().otadata = 0;

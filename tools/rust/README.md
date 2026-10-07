@@ -109,7 +109,8 @@ GNU ld `--wrap`) and writes every golden again; every C++ case must pass.
 
 ```
 bash tools/rust/esp/docker.sh build [features]   # release build and app image (default: WiFi)
-bash tools/rust/esp/docker.sh size [features]    # the same, then the size; fails above 1,228,800 B
+bash tools/rust/esp/docker.sh size [features]    # the same, then the size; fails above 1,228,800 B and
+                                                 # on an all-zero ELF SHA-256 (the boot guard's AppId)
 bash tools/rust/esp/docker.sh export             # size of the default build, its digest-less copy, both
                                                  # into software_esp32_rust/firmware/images/
 bash tools/rust/esp/docker.sh lint               # clippy -D warnings: default, nowifi, the QEMU test build
