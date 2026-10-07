@@ -208,9 +208,11 @@ fn end_false_before_the_end_aborts() {
     assert!(u.has_error());
     assert_eq!(dev.ota.knobs().aborts, 1);
     assert!(!u.end(true)); // an error is set
+    assert_eq!(u.error(), UPDATE_ERROR_ABORT); // and stays
     u.clear_error();
     assert!(!u.has_error());
-    assert!(!u.end(true)); // not running
+    assert!(!u.end(true)); // not running: no error either
+    assert_eq!(u.error(), UPDATE_ERROR_OK);
 }
 
 #[test]
