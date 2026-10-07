@@ -15,6 +15,7 @@ module, what, why it matters. The Rust tests assert the C++ behaviour.
 |---|---|
 | The debug lines of `gtlnm` and of a valid `gvlon` end without CR LF (`commdbg_print`), so the next debug line continues them. Kept. | Debug port only; the ESP replies are not affected. |
 | `printSensorAddress` prints "00-00-00-00-00-00-00-00" when the address does not fit its buffer; the 24-byte buffer always holds the 23 characters, so the fallback is dead code. Kept 1:1. | None. |
+| gstax reads the four receive error counters of USART1 (overrun, framing, noise, dropped; fields 14..17) one after the other from `serial::Port`, where the C++ copied `commUartErrors` with interrupts off. An interrupt between two reads can count one flag of a byte in this reply and its other flag only in the next. A consistent copy needs the interrupt masked around the four reads (the firmware's critical section) or a sequence count in `serial::Port`. | Diagnostics only: each counter is exact, the next gstax shows both counts, the ESP compares totals (event 322). |
 
 ## Glue: eeprom (`src/eeprom.cpp`)
 

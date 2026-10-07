@@ -463,7 +463,7 @@ fn gstax_every_field_from_its_source() {
 #[test]
 fn the_usart1_rx_path_counts_errors_and_still_stores_the_bytes() {
     // C++ also checks that communication_setup() installs its RX callback with interrupts off:
-    // the Rust firmware calls comm_rx_irq from its USART1 interrupt
+    // the Rust firmware counts in serial::Port::on_irq from its USART1 interrupt
     let mut r = Rig::new();
     r.setup();
     r.dbg.take_tx();

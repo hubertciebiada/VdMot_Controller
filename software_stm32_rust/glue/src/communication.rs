@@ -238,12 +238,16 @@ pub trait CommunicationEnv {
     /// motor.cpp `currentbound_low_fac`, `currentbound_high_fac`, `startOnPower`,
     /// `noOfMinCounts`, `maxCalibRetries`
     fn motor_globals(&self) -> MotorParams;
-    /// the counters of the USART1 RX interrupt ([`comm_rx_irq`]), copied with interrupts off
+    /// the counters of the USART1 RX interrupt; the firmware reads the four counters of
+    /// `serial::Port` one after the other (C++ copied them with interrupts off,
+    /// docs/rust/PORT-NOTES-STM.md)
     fn uart_errors(&mut self) -> UartErrorCounters;
 }
 
 /// RX interrupt of the ESP UART (C++ `comm_rx_irq`): the HAL error code of a byte and whether
-/// it finds the receive ring full are counted; the serial port stores the byte.
+/// it finds the receive ring full are counted; the serial port stores the byte. The firmware's
+/// USART1 interrupt counts in `serial::Port::on_irq` with the same core function; this form
+/// serves the suites.
 pub fn comm_rx_irq(counters: &mut UartErrorCounters, hal_error_code: u32, ring_full: bool) {
     count_uart_errors(counters, hal_error_code, ring_full);
 }
@@ -436,7 +440,7 @@ impl Communication {
 
     /// `communication_setup`: the bytes received with the wrong framing during the 8E1 boot
     /// window are dropped. (The firmware sets USART1 to 115200 8N1 and counts the receive
-    /// errors in its RX interrupt with [`comm_rx_irq`].)
+    /// errors in its RX interrupt, `serial::Port::on_irq`.)
     pub fn setup(&mut self, esp: &mut impl Serial, dbg: &mut impl Print) {
         while esp.available() > 0 {
             esp.read();
