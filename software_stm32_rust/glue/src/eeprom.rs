@@ -160,10 +160,10 @@ fn eeprom_write_blocks(
 
     if blocks & BLOCK_SAFETY != 0 {
         let l: &LegacyLayout = &lay.layout;
+        // (C++ also sets leaseValid, which only the decoder writes: encode_safety ignores it)
         let mut safety = SafetyBlock {
             failsafe_pct: lay.failsafe_pct,
             lease_timeout_min: lay.lease_timeout_min,
-            lease_valid: true,
             ..SafetyBlock::default()
         };
         safety.shadow.low_fac = l.currentbound_low_fac;

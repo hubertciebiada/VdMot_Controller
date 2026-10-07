@@ -248,7 +248,8 @@ impl DallasTemperature {
     /// and are narrowed to int16_t (wrap); a DS18S20 with COUNT_PER_C != 0 gets the extended
     /// resolution (TEMP_READ - 0.25 + (COUNT_PER_C - COUNT_REMAIN) / COUNT_PER_C).
     pub fn calculate_temperature(address: &DeviceAddress, scratch_pad: &ScratchPad) -> i16 {
-        let fp = (i32::from(scratch_pad[TEMP_MSB]) << 11) | (i32::from(scratch_pad[TEMP_LSB]) << 3);
+        // bits 11.. and 3..10 do not overlap: + is the C++ |
+        let fp = (i32::from(scratch_pad[TEMP_MSB]) << 11) + (i32::from(scratch_pad[TEMP_LSB]) << 3);
         let mut fp_temperature = fp as i16;
         let count_per_c = i32::from(scratch_pad[COUNT_PER_C]);
         if address[0] == DS18S20MODEL && count_per_c != 0 {

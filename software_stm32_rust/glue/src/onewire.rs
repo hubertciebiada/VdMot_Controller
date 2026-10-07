@@ -69,7 +69,8 @@ impl<L: OneWireLine> OneWire<L> {
         let mut r = 0u8;
         for bit in 0..8 {
             if self.line.read_bit() {
-                r |= 1 << bit;
+                // distinct bits: + is the C++ |=
+                r += 1 << bit;
             }
         }
         r

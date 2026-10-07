@@ -458,7 +458,8 @@ pub struct Communication {
     profile: ProfileRecorder,
 }
 
-// gvlvy and gstax fit the reply buffer
+// gvlvd, gvlvy and gstax fit the reply buffer
+const _: () = assert!(VALVE_DATA_REPLY_MAX_LEN <= PROFILE_REPLY_MAX_LEN);
 const _: () = assert!(VALVE_EXT_V3_REPLY_MAX_LEN <= PROFILE_REPLY_MAX_LEN);
 const _: () = assert!(STAT_V3_REPLY_MAX_LEN <= PROFILE_REPLY_MAX_LEN);
 
@@ -623,15 +624,12 @@ impl Communication {
                 (true, Some(x)) => {
                     let g = env.valve_globals(x);
                     let sensors = env.ow_sensors();
-                    let mut status = g.status;
-                    if g.calibration {
-                        status |= 0x80;
-                    }
                     let data = ValveDataReply {
                         index: u32::from(x),
                         actual_position: i32::from(g.actual_position),
                         mean_current: g.meancurrent as i32,
-                        status: i32::from(status),
+                        // status | 0x80 while the calibration flag is set
+                        status: i32::from(encode_valve_status(g.status, g.calibration)),
                         temperature1: valve_temperature(sensors, g.sensorindex1),
                         temperature2: valve_temperature(sensors, g.sensorindex2),
                         movements: g.movements as i32,
@@ -640,11 +638,10 @@ impl Communication {
                         deadzone_count: g.deadzone_count,
                         calib_retries: i32::from(g.calib_retries),
                     };
-                    let mut sendbuffer: StaticBufWriter<{ VALVE_DATA_REPLY_MAX_LEN + 1 }> =
-                        BufWriter::default();
-                    if format_valve_data(&mut sendbuffer, APP_PRE_GETVLVDATA, &data) {
-                        io.esp.println_text(sendbuffer.as_bytes());
-                    }
+                    // C++ formats into a buffer of VALVE_DATA_REPLY_MAX_LEN + 1: the reply buffer
+                    // is larger, the reply always fits both
+                    let ok = format_valve_data(&mut self.reply_line, APP_PRE_GETVLVDATA, &data);
+                    self.send_reply(io.esp, ok);
                 }
                 _ => io.dbg.println_text(b"gvlvd: invalid arguments"),
             }
@@ -775,11 +772,10 @@ impl Communication {
                 b"comm: set 2nd sensor index"
             });
             let slot = if first { 1 } else { 2 };
-            match (
-                req.argc() == 2,
-                valve(0),
-                req.arg_u16(1, 0, MAXONEWIRECNT as u16 - 1),
-            ) {
+            // C++ parses the sensor as 0..MAXONEWIRECNT - 1 here; comm_set_valve_sensor_index
+            // refuses the same indexes before it touches anything, so any 16-bit number is
+            // parsed and the answer is the same
+            match (req.argc() == 2, valve(0), req.arg_u16(1, 0, u16::MAX)) {
                 (true, Some(x), Some(y)) if comm_set_valve_sensor_index(env, x, slot, y) == 0 => {
                     io.esp.println_text(if first {
                         APP_PRE_SET1STSENSORINDEX

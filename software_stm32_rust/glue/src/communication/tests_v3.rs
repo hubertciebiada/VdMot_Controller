@@ -440,9 +440,11 @@ fn gstax_every_field_from_its_source() {
     r.run();
     // the ring holds 1023
     r.esp.inject(&[b'\n'; SERIAL_RX_BUFFER_SIZE as usize + 1]);
-    while r.esp.available() > 0 {
+    // empty lines: 512 bytes per call (bounded, so a loop that stops reading fails here)
+    for _ in 0..2 {
         r.run();
     }
+    assert_eq!(r.esp.available(), 0);
     let reply = r.request("gstax\n");
     assert_eq!(
         reply,

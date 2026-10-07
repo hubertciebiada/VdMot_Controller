@@ -129,6 +129,8 @@ fn print_f32_rounds_in_float_like_the_core_template() {
         (0.3, 6, "0.300000"),
         (3.4, 10, "3.4000000953"),
         (25.0625, 4, "25.0625"),
+        (0.0, 2, "0.00"),
+        (-0.0, 2, "0.00"),
         (f32::NAN, 2, "nan"),
         (f32::INFINITY, 2, "inf"),
         (f32::NEG_INFINITY, 1, "inf"),

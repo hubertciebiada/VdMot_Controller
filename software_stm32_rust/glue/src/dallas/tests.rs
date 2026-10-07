@@ -167,6 +167,10 @@ fn get_resolution_of_a_device() {
     let rom = d.rom;
     let mut ow = bus(vec![d]);
     assert_eq!(DallasTemperature::get_resolution_of(&mut ow, &rom), 10);
+    for (config, res) in [(TEMP_9_BIT, 9), (TEMP_11_BIT, 11), (TEMP_12_BIT, 12)] {
+        ow.line().devices[0].scratch[CONFIGURATION] = config;
+        assert_eq!(DallasTemperature::get_resolution_of(&mut ow, &rom), res);
+    }
     ow.line().devices[0].scratch[CONFIGURATION] = 0x20;
     assert_eq!(DallasTemperature::get_resolution_of(&mut ow, &rom), 0);
     ow.line().devices[0].scratch[CONFIGURATION] = TEMP_12_BIT;
@@ -228,6 +232,8 @@ fn request_temperatures_waiting_polls_until_the_conversion_is_done() {
     d.busy_reads = 5;
     let mut ow = bus(vec![d]);
     let clock = FakeBoard::new();
+    // time passes while it polls (a poll that never ends fails instead of hanging)
+    clock.0.borrow_mut().auto_advance_us = 1000;
     let mut dallas = DallasTemperature::default();
     dallas.request_temperatures(&mut ow, &clock);
     // 5 slots read 0, the sixth 1

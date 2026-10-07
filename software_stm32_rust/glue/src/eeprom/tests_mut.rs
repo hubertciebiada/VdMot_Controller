@@ -5,7 +5,9 @@
 use super::tests::{valid_slot, Rig};
 use super::*;
 use vdm_stm_core::config_blocks::CALIB_VALID;
-use vdm_stm_core::config_store::{CFG_READ_FAILED, CHANGED_LEARN_TIME};
+use vdm_stm_core::config_store::{
+    CFG_READ_FAILED, CHANGED_FAILSAFE, CHANGED_LEARN_TIME, CHANGED_MOTOR,
+};
 use vdm_stm_core::replies_v2::EEP_STATE_OK;
 
 /// the consistent configuration of the C++ file: fewer fields than the one of test_eeprom.cpp
@@ -202,4 +204,86 @@ fn a_re_read_that_finds_damaged_blocks_writes_their_repair() {
     r.dev.ops.clear();
     assert_eq!(r.runs_until_write(10), 3);
     assert!(r.dev.ops.iter().any(|o| o.address == EXTENSION_ADDRESS));
+}
+
+#[test]
+fn a_write_step_without_the_calibration_field_writes_no_record() {
+    let mut r = Rig::new();
+    let lay = EepromLayout::default();
+    let mut image = [0u8; LEGACY_IMAGE_SIZE];
+    // records of valves 0 and 5 marked, but only the learn time (block A) is written
+    assert_eq!(
+        eeprom_write_blocks(
+            &mut r.dev,
+            &mut r.dbg,
+            &lay.cfg,
+            CHANGED_LEARN_TIME,
+            0b10_0001,
+            &mut image
+        ),
+        0
+    );
+    assert_eq!(r.dev.ops.len(), 1);
+    assert_eq!(r.dev.ops[0].address, EXTENSION_ADDRESS);
+    // with the field: the two records first
+    r.dev.ops.clear();
+    assert_eq!(
+        eeprom_write_blocks(
+            &mut r.dev,
+            &mut r.dbg,
+            &lay.cfg,
+            CHANGED_CALIB,
+            0b10_0001,
+            &mut image
+        ),
+        0
+    );
+    let addresses: Vec<u16> = r.dev.ops.iter().map(|o| o.address).collect();
+    assert_eq!(
+        addresses,
+        vec![CALIB_BLOCK_ADDRESS, CALIB_BLOCK_ADDRESS + 5 * 16]
+    );
+}
+
+#[test]
+fn a_change_of_other_fields_takes_no_sensor_slot_from_ram_at_the_re_read() {
+    let mut r = Rig::new();
+    store_consistent(&mut r);
+    r.dev.fail_reads_from = 1;
+    r.boot();
+    // RAM holds the 0xFF fallbacks of the failed read
+    assert_eq!(r.ee.eep_content.cfg.layout.owsensors1[3].familycode, 0xFF);
+    r.ee.changed(CHANGED_LEARN_TIME);
+    r.ee.changed(CHANGED_MOTOR | CHANGED_FAILSAFE);
+    r.dev.fail_reads_from = 0;
+    for _ in 0..30 {
+        r.loop_();
+    }
+    let layout = r.ee.eep_content.cfg.layout;
+    assert_eq!(layout.owsensors1[3].romcode[0], 3);
+    assert_eq!(layout.owsensors2[11].romcode[0], 111);
+}
+
+#[test]
+fn a_slot_or_record_changed_twice_stays_marked_for_the_re_read() {
+    let mut r = Rig::new();
+    store_consistent(&mut r);
+    r.dev.fail_reads_from = 1;
+    r.boot();
+    valid_slot(&mut r.ee.eep_content.cfg.layout.owsensors1[2], 77);
+    r.ee.changed_slot(2);
+    valid_slot(&mut r.ee.eep_content.cfg.layout.owsensors1[2], 78);
+    r.ee.changed_slot(2);
+    let rec = |oc| CalibRecord {
+        opening_count: oc,
+        ..CalibRecord::default()
+    };
+    r.ee.store_calib(4, &rec(1));
+    r.ee.store_calib(4, &rec(2));
+    r.dev.fail_reads_from = 0;
+    for _ in 0..30 {
+        r.loop_();
+    }
+    assert_eq!(r.ee.eep_content.cfg.layout.owsensors1[2].romcode[0], 78);
+    assert_eq!(r.ee.eep_content.cfg.calib[4].opening_count, 2);
 }

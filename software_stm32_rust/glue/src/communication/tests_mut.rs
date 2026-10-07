@@ -590,3 +590,30 @@ fn the_rx_interrupt_counts_every_error_kind() {
     assert_eq!(c.dropped, 1);
     assert_eq!(c.overrun, 1);
 }
+
+#[test]
+fn the_reply_buffer_holds_the_longest_gprof() {
+    // C++ replyLine: kProfileReplyMaxLen + 1 bytes, the NUL included
+    let r = Rig::begin();
+    assert_eq!(r.comm.reply_line.capacity(), PROFILE_REPLY_MAX_LEN + 1);
+    assert_eq!(PROFILE_REPLY_MAX_LEN, 396);
+}
+
+#[test]
+fn stsnx_and_stsny_refuse_every_index_past_the_table_without_a_call() {
+    let mut r = Rig::begin();
+    r.stubs.sensors.no_of_ds18_devices = 40;
+    for line in [
+        "stsnx 0 34\n",
+        "stsny 0 35\n",
+        "stsnx 0 65535\n",
+        "stsnx 0 65536\n",
+    ] {
+        let e = r.exchange(line);
+        assert!(e.reply.is_empty(), "{line}");
+        assert!(e.calls.is_empty(), "{line}");
+    }
+    assert_eq!(r.stubs.valves[0], ValveGlobals::default());
+    assert_eq!(r.request("stsny 0 33\n"), "stsny\r\n");
+    assert_eq!(r.stubs.valves[0].sensorindex2, 33);
+}

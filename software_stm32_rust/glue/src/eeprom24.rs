@@ -14,6 +14,8 @@ pub const I2C_DEVICESIZE_24LC64: u32 = 8192;
 const PAGE_SIZE: u16 = 32;
 /// `I2C_BUFFERSIZE` of AVR and STM: the Wire buffer of 32 bytes less the two address bytes
 pub const I2C_BUFFERSIZE: u16 = 30;
+/// the Wire transmit buffer (STM32duino `BUFFER_LENGTH`): two address bytes and a chunk
+const WIRE_BUFFER_LENGTH: usize = 32;
 /// `I2C_WRITEDELAY`: the write cycle of the chip (us); the device is polled within it
 pub const I2C_WRITEDELAY: u32 = 5000;
 
@@ -79,7 +81,7 @@ impl<I: I2cMaster, C: Clock> I2cEeprom<I, C> {
     /// once the device answers again (or its write cycle is over).
     fn write_chunk(&mut self, memory_address: u16, chunk: &[u8]) -> WireStatus {
         self.wait_ee_ready();
-        let mut frame = [0u8; 2 + I2C_BUFFERSIZE as usize];
+        let mut frame = [0u8; WIRE_BUFFER_LENGTH];
         let [hi, lo] = memory_address.to_be_bytes();
         frame[0] = hi;
         frame[1] = lo;

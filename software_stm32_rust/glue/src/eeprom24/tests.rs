@@ -150,6 +150,8 @@ impl I2cMaster for Chip {
 fn setup() -> (FakeBoard, I2cEeprom<Chip, FakeBoard>) {
     let board = FakeBoard::new();
     board.set_now_us(1_000_000);
+    // 1 us per micros(): a poll without transfers still ends
+    board.0.borrow_mut().auto_advance_us = 1;
     let chip = Chip::new(&board);
     let ee = I2cEeprom::new(chip, board.clone(), DEVICEADDRESS);
     (board, ee)
@@ -278,6 +280,7 @@ fn a_failed_write_also_starts_the_ready_wait() {
 #[test]
 fn the_first_transfer_after_the_start_probes_within_5_ms_of_micros_0() {
     let board = FakeBoard::new();
+    board.0.borrow_mut().auto_advance_us = 1;
     let chip = Chip::new(&board);
     let mut ee = I2cEeprom::new(chip, board.clone(), DEVICEADDRESS);
     let mut b = [0u8; 2];
@@ -361,4 +364,23 @@ fn reads_and_writes_go_to_the_device_address_with_two_address_bytes() {
     assert_eq!(DEVICEADDRESS, 0x50);
     assert_eq!(I2C_BUFFERSIZE, 30);
     assert_eq!(I2C_DEVICESIZE_24LC64, 8192);
+}
+
+#[test]
+fn the_ready_wait_ends_exactly_5_ms_after_the_last_write() {
+    let (board, mut ee) = setup();
+    assert_eq!(ee.write_block(0x0000, &[1]), 0);
+    let mut b = [0u8; 1];
+    // 5000 us after the write: still polled
+    board.set_now_us(u64::from(ee.last_write) + 5000);
+    ee.i2c().log.clear();
+    assert_eq!(ee.read_block(0x0000, &mut b), 1);
+    assert!(matches!(ee.i2c().log[0], Xfer::Probe(_)));
+    // 5001 us: no poll
+    assert_eq!(ee.write_block(0x0000, &[2]), 0);
+    board.set_now_us(u64::from(ee.last_write) + 5001);
+    ee.i2c().log.clear();
+    assert_eq!(ee.read_block(0x0000, &mut b), 1);
+    assert!(matches!(ee.i2c().log[0], Xfer::Write(0, 0, WIRE_OK)));
+    assert_eq!(b[0], 2);
 }
