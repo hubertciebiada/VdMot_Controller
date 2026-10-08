@@ -78,6 +78,6 @@ E11 The ESP Flasher Replaces The Image Through The Boot Window
     Log    ${report}
     Log    ${ops}
     Should Be Equal    ${result}    ok    ${results}
-    ${sessions}=    Check D9 Order    ${ops}
+    ${sessions}=    Check Flash Order    ${ops}    ${jobs}
     Should Be Equal As Integers    ${sessions}    2
     Evidence    E11 ${cycle}: ${results}; ROM log ${ops.strip()}

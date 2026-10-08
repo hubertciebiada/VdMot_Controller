@@ -11,17 +11,21 @@
 //!
 //! One intended deviation from the C++ flasher (decision D9, docs/rust/GLUE-DESIGN-STM.md
 //! section 8): an image larger than sector 0 (16 KiB) is flashed in two passes of Erasing,
-//! Writing and Verifying, first sectors 1..n (blocks from 0x08004000 upwards), then sector 0
-//! (blocks 1..63, block 0 last). Sector 0 keeps the old vector table and boot stage until the
-//! rest of the new image is written and verified, so an interrupted flash leaves the STM without
-//! a bootable vector table for the sector-0 pass only (about 2 s) instead of the whole run. Each
-//! pass compares the CRC32 of the image bytes it verified with the one the Validating phase
-//! found for them; a session retry repeats the current pass, and each pass has the
-//! `session_retries` of its own. An erase failure reports the first address of the erased
-//! range. An image of at most 16 KiB is flashed exactly as in C++. Percent and the byte counters
-//! run over both passes: `bytes_done` counts the bytes written (Writing) or verified (Verifying)
-//! of the whole image, and the percent stays where the first verify left it until the second
-//! verify passes it.
+//! Writing and Verifying, one of sectors 1..n (blocks from 0x08004000 upwards) and one of sector
+//! 0 (blocks 1..63, block 0 last). Sector 0 is written last, so the old vector table and boot
+//! stage stay until the rest of the new image is written and verified, unless the new image
+//! carries a valid app-integrity record (STM F9, GLUE-DESIGN-STM §5.11): its boot stage starts
+//! no app whose CRC differs from the record, so its sector 0 is written first and every later
+//! interruption leaves an STM that waits in that boot stage for the next flash. Either way an
+//! interrupted flash leaves the STM without a bootable vector table for the sector-0 pass only
+//! (about 2 s) instead of the whole run. Each pass compares the CRC32 of the image bytes it
+//! verified with the one the Validating phase found for them; a session retry repeats the
+//! current pass, and each pass has the `session_retries` of its own. An erase failure reports
+//! the first address of the erased range. An image of at most 16 KiB is flashed exactly as in
+//! C++. Percent and the byte counters run over both passes: `bytes_done` counts the bytes
+//! written (Writing) or verified (Verifying) of the whole image, and the percent weighs the
+//! bytes written (60 points) and verified (20) of both passes, which for one pass is the C++
+//! 15..75 of Writing and 75..95 of Verifying.
 //!
 //! The sector-0 pass of D9 is made as hard to fail as the protocol allows, because the boards do
 //! not wire BOOT0 and an STM32F4 whose sector 0 is erased never reaches its ROM bootloader again:
@@ -406,6 +410,12 @@ const SECTOR_SIZE: [u32; 8] = [
 /// Sector 0, which the D9 order erases and writes last.
 const SECTOR0_BYTES: u32 = 16 * 1024;
 const SECTOR0_BLOCKS: u32 = SECTOR0_BYTES / BLOCK_SIZE;
+/// STM F9: image offset of the app-integrity record of a Rust STM image (address 0x08000240,
+/// GLUE-DESIGN-STM §5.11): four little-endian words, the magic "VDAC", the app start
+/// 0x08004000, the app length L = image size - 16 KiB and the CRC-32 (zlib) of those L bytes.
+const APP_RECORD_OFFSET: u32 = 0x240;
+const APP_RECORD_MAGIC: u32 = 0x4341_4456;
+const APP_START: u32 = FLASH_BASE + SECTOR0_BYTES;
 
 const ERASE_CMD: [u8; 2] = [CMD_EXT_ERASE, !CMD_EXT_ERASE];
 const WRITE_CMD: [u8; 2] = [CMD_WRITE, !CMD_WRITE];
@@ -559,6 +569,18 @@ fn end_run(sc: &mut ImageScan, info: &mut ImageInfo) {
             info.hw_conflict = true;
         }
     }
+}
+
+/// STM F9: the app-integrity record `rec` (image offset 0x240) is valid for an image of `size`
+/// bytes whose bytes above sector 0 have the CRC-32 `app_crc`: the magic, the start 0x08004000,
+/// the length size - 16 KiB and the CRC (GLUE-DESIGN-STM §5.11; the STM's boot stage also needs
+/// the length within its limit, which is the image's concern, not the order's).
+fn app_record_valid(rec: &[u8; 16], size: u32, app_crc: u32) -> bool {
+    let word = |i: usize| u32::from_le_bytes([rec[i], rec[i + 1], rec[i + 2], rec[i + 3]]);
+    word(0) == APP_RECORD_MAGIC
+        && word(4) == APP_START
+        && size.checked_sub(SECTOR0_BYTES) == Some(word(8))
+        && word(12) == app_crc
 }
 
 fn finish_scan(sc: &ImageScan, info: &mut ImageInfo) {
@@ -852,6 +874,12 @@ pub struct StmFlasher {
     abort_requested: bool,
     /// D9: the pass of sectors 1..n runs (else the one of sector 0)
     upper: bool,
+    /// D9: the other pass follows the current one
+    pass2_due: bool,
+    /// STM F9: the image carries a valid app-integrity record: sector 0 first
+    s0_first: bool,
+    /// STM F9: the 16 bytes at image offset 0x240, from the Validating phase
+    record: [u8; 16],
     /// D9: CRC32 state of the image bytes in sector 0, from the Validating phase
     crc_low: u32,
     /// D9: CRC32 state of the image bytes above sector 0, from the Validating phase
@@ -885,6 +913,9 @@ impl Default for StmFlasher {
             line_drop: false,
             abort_requested: false,
             upper: false,
+            pass2_due: false,
+            s0_first: false,
+            record: [0; 16],
             crc_low: 0,
             crc_high: 0,
             tx: [0; 260],
@@ -956,6 +987,9 @@ impl StmFlasher {
         self.line_drop = false;
         self.abort_requested = false;
         self.upper = false;
+        self.pass2_due = false;
+        self.s0_first = false;
+        self.record = [0; 16];
         self.crc_low = 0xFFFF_FFFF;
         self.crc_high = 0xFFFF_FFFF;
         self.rx_len = 0;
@@ -1198,13 +1232,35 @@ impl StmFlasher {
         }
     }
 
-    /// D9: bytes of the image flashed by the passes before the current one.
+    /// D9: bytes of the current pass.
+    fn pass_len(&self) -> u32 {
+        let (first, end) = self.pass_blocks();
+        (end * BLOCK_SIZE).min(self.st.image.padded_size) - first * BLOCK_SIZE
+    }
+
+    /// D9: bytes of the image flashed by the pass before the current one: none in the first pass
+    /// (sectors 1..n, or sector 0 when it goes first) and in the only one.
     fn pass_base(&self) -> u32 {
-        if self.upper {
-            0
+        if self.upper == self.s0_first {
+            self.st.image.padded_size - self.pass_len()
         } else {
-            self.st.image.padded_size.saturating_sub(SECTOR0_BYTES)
+            0
         }
+    }
+
+    /// Percent of Writing (`verifying` false) and Verifying: the bytes written weigh 60 points,
+    /// the bytes verified 20, over the whole image and both passes of D9 (one pass: the C++
+    /// 15..75 of Writing and 75..95 of Verifying).
+    fn work_percent(&self, verifying: bool) -> u32 {
+        let base = self.pass_base();
+        let (written, verified) = if verifying {
+            (base + self.pass_len(), self.st.bytes_done)
+        } else {
+            (self.st.bytes_done, base)
+        };
+        15 + (60 * written + 20 * verified)
+            .checked_div(self.st.bytes_total)
+            .unwrap_or(0)
     }
 
     /// D9: the sector-0 pass of an image of two passes runs (or waits in Sector0Pending): its
@@ -1284,6 +1340,13 @@ impl StmFlasher {
             }
             let chunk = self.tx.get(..n).unwrap_or_default();
             scan_bytes(&mut self.scan, chunk, &mut self.st.image);
+            // STM F9: the app-integrity record lies in the chunk of its 256 bytes
+            if start == APP_RECORD_OFFSET - APP_RECORD_OFFSET % BLOCK_SIZE {
+                let at = (APP_RECORD_OFFSET % BLOCK_SIZE) as usize;
+                if let Some(rec) = chunk.get(at..at + 16) {
+                    self.record.copy_from_slice(rec);
+                }
+            }
             // D9: the CRC32 of each pass, for its verify (chunks never straddle 16 KiB)
             if start < SECTOR0_BYTES {
                 self.crc_low = self.scan.crc;
@@ -1296,6 +1359,8 @@ impl StmFlasher {
             return;
         }
         finish_scan(&self.scan, &mut self.st.image);
+        // STM F9: an image whose record covers its application writes sector 0 first
+        self.s0_first = app_record_valid(&self.record, size, !self.crc_high);
         if !self.opt.force && !self.st.image.has_handshake {
             self.fail(FlashError::ImageNoHandshake, 0, now);
             return;
@@ -1497,7 +1562,11 @@ impl StmFlasher {
             self.fail(e, 0, now);
             return;
         }
-        self.upper = self.st.image.padded_size > SECTOR0_BYTES;
+        // D9: an image above sector 0 takes two passes, the one of sector 0 last, or first when
+        // the image carries a valid app-integrity record (STM F9)
+        let two = self.st.image.padded_size > SECTOR0_BYTES;
+        self.upper = two && !self.s0_first;
+        self.pass2_due = two;
         self.enter(FlashPhase::Erasing, now);
     }
 
@@ -1546,8 +1615,8 @@ impl StmFlasher {
             self.sub = 2;
             return;
         }
-        self.set_percent(15);
         self.st.bytes_done = self.pass_base();
+        self.set_percent(self.work_percent(false));
         self.block = 0;
         self.enter(FlashPhase::Writing, now);
     }
@@ -1602,11 +1671,7 @@ impl StmFlasher {
             return;
         }
         self.st.bytes_done += len;
-        self.set_percent(
-            15 + (60 * self.st.bytes_done)
-                .checked_div(self.st.bytes_total)
-                .unwrap_or(0),
-        );
+        self.set_percent(self.work_percent(false));
         self.block += 1;
         self.retries = 0;
         self.sub = 0;
@@ -1615,7 +1680,7 @@ impl StmFlasher {
             self.block = 0;
             self.verify_crc = 0xFFFF_FFFF;
             self.enter(FlashPhase::Verifying, now);
-            self.set_percent(75);
+            self.set_percent(self.work_percent(true));
         }
     }
 
@@ -1673,11 +1738,7 @@ impl StmFlasher {
         let data = self.tx.get(1..1 + image_bytes).unwrap_or_default();
         self.verify_crc = crc32_update(self.verify_crc, data);
         self.st.bytes_done += len;
-        self.set_percent(
-            75 + (20 * self.st.bytes_done)
-                .checked_div(self.st.bytes_total)
-                .unwrap_or(0),
-        );
+        self.set_percent(self.work_percent(true));
         self.block += 1;
         self.retries = 0;
         self.sub = 0;
@@ -1693,20 +1754,22 @@ impl StmFlasher {
             self.fail(FlashError::ImageRead, 0, now); // the file changed during the run
             return;
         }
-        if self.upper {
-            // D9: sectors 1..n are written and verified; sector 0 now, with session retries of
-            // its own
-            self.upper = false;
-            self.st.attempt = 0;
-            self.enter(FlashPhase::Erasing, now);
-            return;
-        }
-        // Sector 0 verified (D9): a reset starts the new image, and the failure of an earlier round
-        // of its pass (Sector0Pending) is history. (Every other failure ended the run.)
+        // Sector 0 verified (D9): a reset starts the new image, or (STM F9) its boot stage, which
+        // waits for a flash while the application differs from its record; the failure of an
+        // earlier round of the pass (Sector0Pending) is history. After the pass of sectors 1..n
+        // none of it is set (every other failure ended the run).
         self.st.sector0_at_risk = false;
         self.st.error = FlashError::None;
         self.st.error_phase = FlashPhase::Idle;
         self.st.error_address = 0;
+        if self.pass2_due {
+            // D9: the other pass now, with session retries of its own
+            self.pass2_due = false;
+            self.upper = !self.upper;
+            self.st.attempt = 0;
+            self.enter(FlashPhase::Erasing, now);
+            return;
+        }
         if self.opt.blank {
             // BOOT0 is still set: a reset would start the ROM bootloader again. The user
             // removes the jumper and resets the STM.

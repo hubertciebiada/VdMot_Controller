@@ -1,6 +1,8 @@
 //! Decision D9 (docs/rust/GLUE-DESIGN-STM.md section 8), no C++ counterpart: an image above
 //! 16 KiB is erased, written and verified in two passes, sectors 1..n first and sector 0 last,
-//! so the old vector table and boot stage survive until the rest of the new image is verified.
+//! so the old vector table and boot stage survive until the rest of the new image is verified;
+//! an image with a valid app-integrity record (STM F9, GLUE-DESIGN-STM §5.11) writes sector 0
+//! first, its boot stage waits for a flash while the rest does not match.
 
 use super::rig::*;
 use super::*;
@@ -33,6 +35,31 @@ fn two_pass_events(count: u32, upper_sectors: &[u16]) -> Vec<SimEvent> {
     e.extend(program((1..64).chain([0])));
     e.extend(read(0..64));
     e
+}
+
+/// The events of a successful run of an image of `count` blocks (more than 64) that writes sector
+/// 0 first (STM F9): sector 0 erased, blocks 1..63 and block 0 written, blocks 0..63 read back,
+/// then sectors 1..n erased, written and read back upwards.
+fn sector0_first_events(count: u32, upper_sectors: &[u16]) -> Vec<SimEvent> {
+    let mut e = vec![SimEvent::Erase(vec![0])];
+    e.extend(program((1..64).chain([0])));
+    e.extend(read(0..64));
+    e.push(SimEvent::Erase(upper_sectors.to_vec()));
+    e.extend(program(64..count));
+    e.extend(read(64..count));
+    e
+}
+
+/// `v` with the app-integrity record of a Rust STM image at offset 0x240 (STM F9): "VDAC",
+/// 0x08004000, the length above sector 0 and its CRC-32.
+fn with_record(mut v: Vec<u8>) -> Vec<u8> {
+    let len = v.len() - S0;
+    let crc = ref_crc32(&v[S0..]);
+    put32(&mut v, 0x240, 0x4341_4456);
+    put32(&mut v, 0x244, BASE + 0x4000);
+    put32(&mut v, 0x248, len as u32);
+    put32(&mut v, 0x24C, crc);
+    v
 }
 
 /// Distinct phases in order (the rig records a phase once per change).
@@ -538,52 +565,63 @@ fn an_abort_is_taken_up_to_the_erase_of_sector_0_and_ignored_after_it() {
 
 #[test]
 fn percent_and_byte_counters_run_over_both_passes() {
-    // 53760 bytes: 37376 above sector 0, 16384 in it.
-    let mut rig = Rig::new(make_image(53760));
-    assert!(rig.begin());
-    // per pass (0 upper, 1 sector 0) and phase: lowest/highest percent and bytes_done
-    let mut pct = [[(255u8, 0u8); 3]; 2];
-    let mut bytes = [[(u32::MAX, 0u32); 3]; 2];
-    let mut pass = 0;
-    let mut prev = FlashPhase::Idle;
-    rig.run_hook(|r| {
-        let st = r.f.status();
-        if st.phase == FlashPhase::Erasing && prev == FlashPhase::Verifying {
-            pass = 1;
-        }
-        prev = st.phase;
-        let k = match st.phase {
-            FlashPhase::Erasing => 0,
-            FlashPhase::Writing => 1,
-            FlashPhase::Verifying => 2,
-            _ => return,
+    // 53760 bytes: 37376 above sector 0, 16384 in it; the bytes written weigh 60 points, the
+    // bytes verified 20 (one pass: the C++ 15..75 and 75..95)
+    let work = |written: u32, verified: u32| (15 + (60 * written + 20 * verified) / 53760) as u8;
+    for first in [false, true] {
+        let img = make_image(53760);
+        let mut rig = Rig::new(if first { with_record(img) } else { img });
+        assert!(rig.begin());
+        // per pass (0 the first one) and phase: lowest/highest percent and bytes_done
+        let mut pct = [[(255u8, 0u8); 3]; 2];
+        let mut bytes = [[(u32::MAX, 0u32); 3]; 2];
+        let mut pass = 0;
+        let mut prev = FlashPhase::Idle;
+        rig.run_hook(|r| {
+            let st = r.f.status();
+            if st.phase == FlashPhase::Erasing && prev == FlashPhase::Verifying {
+                pass = 1;
+            }
+            prev = st.phase;
+            let k = match st.phase {
+                FlashPhase::Erasing => 0,
+                FlashPhase::Writing => 1,
+                FlashPhase::Verifying => 2,
+                _ => return,
+            };
+            let p = &mut pct[pass][k];
+            *p = (p.0.min(st.percent), p.1.max(st.percent));
+            let b = &mut bytes[pass][k];
+            *b = (b.0.min(st.bytes_done), b.1.max(st.bytes_done));
+        });
+        assert_eq!(rig.f.status().phase, FlashPhase::Done, "{first}");
+        assert!(rig.percent_monotonic(), "{first}");
+        assert_eq!(rig.f.status().bytes_done, 53760);
+        // the bytes of each pass, in its order: the pass ends in the step that leaves it, so
+        // its last block shows in the next phase
+        let (a, b) = if first {
+            (16384, 37376)
+        } else {
+            (37376, 16384)
         };
-        let p = &mut pct[pass][k];
-        *p = (p.0.min(st.percent), p.1.max(st.percent));
-        let b = &mut bytes[pass][k];
-        *b = (b.0.min(st.bytes_done), b.1.max(st.bytes_done));
-    });
-    assert_eq!(rig.f.status().phase, FlashPhase::Done);
-    assert!(rig.percent_monotonic());
-    // Writing 15 + 60 * bytes / 53760, Verifying 75 + 20 * bytes / 53760 over both passes
-    let at = |base: u32, span: u32, bytes: u32| (base + span * bytes / 53760) as u8;
-    assert_eq!(pct[0][0], (5, 5));
-    assert_eq!(pct[0][1], (15, at(15, 60, 37120)));
-    assert_eq!(at(15, 60, 37120), 56);
-    assert_eq!(bytes[0][1], (0, 37120));
-    assert_eq!(pct[0][2], (75, at(75, 20, 37120)));
-    assert_eq!(at(75, 20, 37376), 88);
-    assert_eq!(bytes[0][2], (0, 37120));
-    // sector 0: the percent waits where the first verify left it (88) until its verify
-    // passes it; the byte counters go on from the 37376 bytes of the first pass
-    assert_eq!(pct[1][0], (88, 88));
-    assert_eq!(bytes[1][0], (37376, 37376));
-    assert_eq!(pct[1][1], (88, 88));
-    assert_eq!(bytes[1][1], (37376, 53760 - 256));
-    assert_eq!(pct[1][2], (88, at(75, 20, 53760 - 256)));
-    assert_eq!(at(75, 20, 53760 - 256), 94);
-    assert_eq!(bytes[1][2], (37376, 53760 - 256));
-    assert_eq!(rig.f.status().bytes_done, 53760);
+        assert_eq!(pct[0][0], (5, 5), "{first}");
+        assert_eq!(pct[0][1], (15, work(a - 256, 0)), "{first}");
+        assert_eq!(bytes[0][1], (0, a - 256), "{first}");
+        assert_eq!(pct[0][2], (work(a, 0), work(a, a - 256)), "{first}");
+        assert_eq!(bytes[0][2], (0, a - 256), "{first}");
+        // the second pass goes on from the first one's bytes, without a jump or a stop
+        assert_eq!(pct[1][0], (work(a, a), work(a, a)), "{first}");
+        assert_eq!(bytes[1][0], (a, a), "{first}");
+        assert_eq!(pct[1][1], (work(a, a), work(53760 - 256, a)), "{first}");
+        assert_eq!(bytes[1][1], (a, 53760 - 256), "{first}");
+        assert_eq!(
+            pct[1][2],
+            (work(53760, a), work(53760, 53760 - 256)),
+            "{first}"
+        );
+        assert_eq!(bytes[1][2], (a, 53760 - 256), "{first}");
+        assert_eq!(b, 53760 - a);
+    }
 }
 
 #[test]
@@ -744,6 +782,264 @@ fn fault_fuzz_never_touches_sector_0_before_the_rest_is_verified() {
             failed += 1;
             assert_ne!(st.error, FlashError::None, "{why}");
             assert_eq!(s0, events.len(), "{why}");
+        }
+    }
+    assert!(done > 0);
+    assert!(failed > 0);
+    assert!(pending > 0);
+}
+
+// ---------------------------------------------------------------- sector 0 first (STM F9)
+
+#[test]
+fn an_image_with_a_valid_record_writes_sector_0_first() {
+    let mut rig = Rig::new(with_record(make_image(53760)));
+    assert_eq!(rig.begin_and_run(), FlashPhase::Done);
+    assert_eq!(rig.sim.events, sector0_first_events(210, &[1, 2, 3]));
+    assert_eq!(
+        rig.sim.erase_frames,
+        [
+            vec![0x00, 0x00, 0x00, 0x00, 0x00],
+            vec![0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x02]
+        ]
+    );
+    use FlashPhase::*;
+    assert_eq!(
+        phase_order(&rig),
+        [
+            Validating, Resetting, Handshake, Sync, GetId, Erasing, Writing, Verifying, Erasing,
+            Writing, Verifying, Starting, WaitingApp, Done
+        ]
+    );
+    assert!(rig.flash_matches_image());
+    assert_eq!(rig.f.status().attempt, 0);
+    assert_eq!(rig.sim.resets.len(), 4);
+    // the largest image and the smallest two-pass image too
+    for (size, sectors) in [
+        (512 * KIB as usize, vec![1, 2, 3, 4, 5, 6, 7]),
+        (S0 + 4, vec![1]),
+    ] {
+        let mut rig = Rig::new(with_record(make_image(size)));
+        assert_eq!(rig.begin_and_run(), FlashPhase::Done, "{size}");
+        let count = (size as u32).div_ceil(256);
+        assert_eq!(
+            rig.sim.events,
+            sector0_first_events(count, &sectors),
+            "{size}"
+        );
+        assert!(rig.flash_matches_image());
+    }
+}
+
+#[test]
+fn a_record_that_does_not_cover_the_image_keeps_sector_0_last() {
+    // each word of the record wrong once, the unpatched placeholder, and a record in an image
+    // of at most 16 KiB (one pass as in C++)
+    let good = with_record(make_image(53760));
+    for (at, value) in [
+        (0x240, 0x4341_4457u32),
+        (0x244, BASE + 0x4004),
+        (0x248, 53760 - 16384 - 4),
+        (0x248, 53760 - 16384 + 4),
+        (0x24C, ref_crc32(&good[S0..]) ^ 1),
+    ] {
+        let mut img = good.clone();
+        put32(&mut img, at, value);
+        let mut rig = Rig::new(img);
+        assert_eq!(rig.begin_and_run(), FlashPhase::Done, "{at:#x}");
+        assert_eq!(rig.sim.events, two_pass_events(210, &[1, 2, 3]), "{at:#x}");
+    }
+    let mut img = good.clone();
+    img[0x240..0x250].fill(0xFF);
+    let mut rig = Rig::new(img);
+    assert_eq!(rig.begin_and_run(), FlashPhase::Done);
+    assert_eq!(rig.sim.events, two_pass_events(210, &[1, 2, 3]));
+    // the application bytes change on disk during the validation, after the record was read:
+    // the record no longer covers them, the order stays D9
+    let mut rig = Rig::new(good.clone());
+    assert!(rig.begin());
+    let mut changed = false;
+    rig.run_hook(|r| {
+        if !changed && r.f.status().phase == FlashPhase::Validating && r.img.bytes_read > 0x300 {
+            r.img.data[30000] ^= 0x10;
+            changed = true;
+        }
+    });
+    assert!(changed);
+    assert_eq!(rig.f.status().phase, FlashPhase::Done);
+    assert_eq!(rig.sim.events, two_pass_events(210, &[1, 2, 3]));
+}
+
+#[test]
+fn after_sector_0_first_a_failure_above_it_leaves_the_new_sector_0() {
+    // a flash bit above sector 0 that never programs: the pass of sectors 1..n fails, the
+    // reset starts the new boot stage, which waits for a flash (its record does not match)
+    let img = with_record(make_image(53760));
+    let mut rig = Rig::new(img.clone());
+    rig.sim.stuck.insert(BASE + 0x5000);
+    assert_eq!(rig.begin_and_run(), FlashPhase::Failed);
+    let st = rig.f.status();
+    assert_eq!(st.error, FlashError::VerifyMismatch);
+    assert_eq!(st.error_phase, FlashPhase::Verifying);
+    assert_eq!(st.error_address, BASE + 0x5000);
+    assert_eq!(st.attempt, 2);
+    assert!(!st.sector0_at_risk);
+    assert!(rig.sim.flash[..S0] == img[..S0]);
+    // one pass of sector 0, three of sectors 1..3
+    let upper = vec![0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x02];
+    assert_eq!(
+        rig.sim.erase_frames,
+        [vec![0, 0, 0, 0, 0], upper.clone(), upper.clone(), upper]
+    );
+    assert!(rig.left_clean());
+    // an abort in that pass resets the same way
+    let mut rig = Rig::new(img.clone());
+    assert!(rig.begin());
+    let mut aborted = false;
+    rig.run_hook(|r| {
+        let upper = r.sim.events.contains(&SimEvent::Erase(vec![1, 2, 3]));
+        if !aborted && upper && r.f.status().phase == FlashPhase::Writing {
+            assert!(!r.f.sector0_at_risk());
+            r.f.abort();
+            aborted = true;
+        }
+    });
+    let st = rig.f.status();
+    assert_eq!(
+        (st.phase, st.error),
+        (FlashPhase::Failed, FlashError::Aborted)
+    );
+    assert!(rig.sim.flash[..S0] == img[..S0]);
+    assert!(rig.left_clean());
+}
+
+#[test]
+fn a_pending_sector_0_written_first_goes_on_with_the_pass_above_it() {
+    let mut rig = Rig::new(with_record(make_image(53760)));
+    assert!(rig.begin());
+    let mut armed = false;
+    let end = rig.run_to(FlashPhase::Sector0Pending, |r| {
+        if !armed && r.f.status().phase == FlashPhase::Erasing {
+            r.sim.nack_write_data = 1000; // every write of the sector-0 pass is refused
+            armed = true;
+        }
+    });
+    assert_eq!(end, FlashPhase::Sector0Pending);
+    // only the pulse into the bootloader, nothing above sector 0 touched yet
+    assert_eq!(rig.sim.resets.len(), 2);
+    assert!(rig.sim.events.iter().all(|e| match e {
+        SimEvent::Erase(l) => l == &[0],
+        SimEvent::Program(a) | SimEvent::Read(a) => *a < BASE + 0x4000,
+    }));
+    rig.sim.nack_write_data = 0;
+    assert!(rig.f.retry_sector0(rig.now));
+    assert_eq!(rig.run(), FlashPhase::Done);
+    let erases: Vec<&SimEvent> = rig
+        .sim
+        .events
+        .iter()
+        .filter(|e| matches!(e, SimEvent::Erase(_)))
+        .collect();
+    let s0 = SimEvent::Erase(vec![0]);
+    let upper = SimEvent::Erase(vec![1, 2, 3]);
+    assert_eq!(erases, [&s0, &s0, &s0, &s0, &upper]);
+    assert!(rig.flash_matches_image());
+    assert!(rig.left_clean());
+}
+
+#[test]
+fn fault_fuzz_with_sector_0_first_never_touches_the_rest_before_it_verified() {
+    let mut r = SimLcg::new(0xF9);
+    let (mut done, mut failed, mut pending) = (0, 0, 0);
+    for iter in 0..40u32 {
+        let size = S0 + 4 + 4 * r.below(6000) as usize;
+        let img = with_record(make_image_seeded(
+            size,
+            0x2002_0000,
+            BASE + 1,
+            true,
+            "1.4.9_Dev",
+            iter + 1,
+        ));
+        let mut rig = Rig::new(img.clone());
+        rig.opt.ack_timeout_ms = 200;
+        rig.opt.erase_timeout_ms = 2000;
+        rig.sim.nack_erase = r.below(3) as i32;
+        rig.sim.drop_erase_ack = r.below(2) as i32;
+        rig.sim.nack_write_data = r.below(14) as i32;
+        rig.sim.drop_write_ack = r.below(3) as i32;
+        rig.sim.corrupt_reads = r.below(3) as i32;
+        rig.sim.corrupt_offset = 0;
+        rig.sim.noise_replies = r.below(20) as i32;
+        rig.sim.erase_delay_ms = 50 + r.below(500);
+        if r.below(4) == 0 {
+            rig.sim.stuck.insert(BASE + r.below(size as u32));
+        }
+        assert!(rig.begin());
+        let mut end = rig.run_to(FlashPhase::Sector0Pending, |_| {});
+        if end == FlashPhase::Sector0Pending {
+            pending += 1;
+            assert_eq!(rig.sim.resets.len(), 2, "{iter}");
+            rig.sim.nack_write_data = 0;
+            rig.sim.drop_write_ack = 0;
+            rig.sim.corrupt_reads = 0;
+            rig.sim.noise_replies = 0;
+            rig.sim.drop_erase_ack = 0;
+            rig.sim.nack_erase = 0;
+            rig.sim.stuck.retain(|&a| a >= BASE + 0x4000);
+            assert!(rig.f.retry_sector0(rig.now), "{iter}");
+            end = rig.run();
+        }
+        let st = rig.f.status();
+        let why = format!(
+            "{iter}: {} in {}",
+            flash_error_name(st.error),
+            flash_phase_name(st.error_phase)
+        );
+        assert!(rig.left_clean(), "{why}");
+        assert!(rig.percent_monotonic(), "{why}");
+        let events = &rig.sim.events;
+        let up = events
+            .iter()
+            .position(|e| matches!(e, SimEvent::Erase(l) if l != &[0]))
+            .unwrap_or(events.len());
+        // before the erase above sector 0 only sector 0, and its last pass read back whole
+        let before = &events[..up];
+        assert!(
+            before.iter().all(|e| match e {
+                SimEvent::Erase(l) => l == &[0],
+                SimEvent::Program(a) | SimEvent::Read(a) => *a < BASE + 0x4000,
+            }),
+            "{why}"
+        );
+        if up < events.len() {
+            let last = before
+                .iter()
+                .rposition(|e| *e == SimEvent::Erase(vec![0]))
+                .expect("sector 0 erased");
+            let reads: Vec<&SimEvent> = before[last..]
+                .iter()
+                .filter(|e| matches!(e, SimEvent::Read(_)))
+                .collect();
+            assert!(read(0..64).all(|b| reads.contains(&&b)), "{why}");
+            // from here on sector 0 holds the new image
+            assert!(rig.sim.flash[..S0] == img[..S0], "{why}");
+            for e in &events[up..] {
+                match e {
+                    SimEvent::Erase(l) => assert!(!l.contains(&0), "{why}"),
+                    SimEvent::Program(a) | SimEvent::Read(a) => {
+                        assert!(*a >= BASE + 0x4000, "{why}")
+                    }
+                }
+            }
+        }
+        if end == FlashPhase::Done {
+            done += 1;
+            assert!(rig.flash_matches_image(), "{why}");
+        } else {
+            failed += 1;
+            assert_eq!(end, FlashPhase::Failed, "{why}");
+            assert!(!st.sector0_at_risk, "{why}");
         }
     }
     assert!(done > 0);

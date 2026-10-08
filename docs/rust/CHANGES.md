@@ -140,15 +140,19 @@ decisions of [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator):
 
 ### STM32 flashing by the Rust ESP32 (D9)
 
-- An STM image above 16 KiB is flashed in two passes: sectors 1 and up are erased, written and
-  verified first, then sector 0. The phases erasing, writing and verifying appear twice, the
-  byte count runs over both passes, and the percentage holds at the value of the first
-  verification while sector 0 is erased and written. An erase failure of the first pass reports
-  the address 0x08004000 ([PORT-NOTES.md](PORT-NOTES.md#intended-deviations), stm_flasher).
+- An STM image above 16 KiB is flashed in two passes, one of sector 0 and one of sectors 1 and
+  up: sector 0 first when the image carries a valid record of its application part (the Rust
+  images, [GLUE-DESIGN-STM.md §5.11](GLUE-DESIGN-STM.md#511-the-record-of-the-application-part-b8)),
+  last otherwise (the C++ images). The phases erasing, writing and verifying appear twice, the
+  byte count runs over both passes, and the percentage counts the bytes written (60 points) and
+  verified (20) of both passes, so it never stops for a pass. An erase failure of the pass above
+  sector 0 reports the address 0x08004000
+  ([PORT-NOTES.md](PORT-NOTES.md#intended-deviations), stm_flasher).
 - An interrupted flash leaves the STM without a bootable vector table only during the sector-0
-  pass (about 2 s) instead of the whole flash; an STM that runs a Rust image still answers the
-  next flash after an interruption in the first pass
-  ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover), [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator) D9).
+  pass (about 2 s) instead of the whole flash: after an interruption of the other pass the STM
+  waits in a Rust boot stage (the new one of a Rust image, or the running one when the C++ image
+  replaces a Rust one) and answers the next flash; a flash from C++ to C++ keeps the C++ risk
+  ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover-and-the-half-flashed-image), [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator) D9).
 - The bytes of sector 0 are read and checked before its erase, and the sector-0 pass has retries
   of its own. When the pass fails after its erase, the ESP does not reset the STM (it would not
   start again): the flash shows the new phase `sector0_pending` (legacy status 8, event

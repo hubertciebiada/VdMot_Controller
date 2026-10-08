@@ -220,8 +220,8 @@ After each flash (steps 1 to 4) check:
 After the power cycle (step 5) every calibrated valve makes one reference move to its first
 target, as with 2.1.7 ([docs/revamped/INSTALL.md §3.1](../revamped/INSTALL.md#31-restarts-and-stored-targets)).
 
-The progress of a Rust ESP flash runs through erasing, writing and verifying twice: sectors 1 and
-up first, then sector 0; the percentage holds while sector 0 is erased and written
+The progress of a Rust ESP flash runs through erasing, writing and verifying twice, once for
+sector 0 and once for sectors 1 and up: sector 0 first for a Rust image, last for the C++ image
 ([CHANGES.md](CHANGES.md)).
 
 ### 4.2 The controller
@@ -239,13 +239,14 @@ up first, then sector 0; the percentage holds while sector 0 is erased and writt
   hangs before its boot window, so the ESP cannot flash it and it does not run either until the
   crystal starts. Every Rust image opens its boot window without the crystal as well (decision D1),
   so only the first flash from C++ depends on it.
-- **Sector 0 last (D9).** The Rust ESP flasher writes and verifies sectors 1 and up first, then
-  sector 0 (about 2 s). The running image keeps its vector table until then. A Rust image keeps
-  everything its boot window needs in sector 0 (image check D9): after an interruption in the
-  first pass it still answers the ESP, which can flash again. The C++ 2.1.7 image has most of its
-  code in the sectors the first pass erases, so treat any interruption of the first flash (C++ ->
-  Rust) as a BOOT0 recovery. An interruption during the sector-0 pass needs BOOT0 with every image
-  ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover)).
+- **Sector 0 in a pass of its own (D9, F9).** The Rust ESP flasher writes and verifies sector 0
+  (about 2 s) and sectors 1 and up in two passes. A Rust image carries a record of its
+  application part in sector 0, so its sector 0 goes first: after that pass the new boot stage
+  waits in its window until the application matches the record, and an interruption of the rest
+  leaves an STM the ESP can flash again. The C++ 2.1.7 image has no record and goes sector 0
+  last: the running Rust boot stage keeps waiting in its window. An interruption during the
+  sector-0 pass needs BOOT0 with every image, and so does any interruption of a flash from C++ to
+  C++ ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover-and-the-half-flashed-image)).
 - **Sector 0 pending.** When the sector-0 pass itself fails (a UART fault, not a power loss), the
   ESP does not reset the STM, which would not start again: the STM waits in its ROM bootloader,
   the flash shows the phase `sector0_pending` (event `stm_sector0_pending`), and the ESP repeats
@@ -261,8 +262,8 @@ up first, then sector 0; the percentage holds while sector 0 is erased and writt
 |---|---|
 | the flash is refused before it starts (`board_mismatch`, `image_chip_mismatch`) | wrong image for the board or the chip (section 1) |
 | first flash: `handshake_timeout`, and the STM does not answer afterwards | the HSE did not start (R12). Power-cycle the controller; when the STM answers again (Maintenance → STM32), flash once more. Otherwise BOOT0, mode blank ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)) |
-| the flash of a Rust image was interrupted (ESP restart, power) | flash again, mode normal: the STM still answers the handshake unless the sector-0 pass was running |
-| an interrupted first flash, or an interruption in the sector-0 pass | BOOT0, mode blank (as above) |
+| a flash was interrupted (ESP restart, power) | flash again, mode normal: the STM still answers the handshake unless the sector-0 pass was running (or the flash went from C++ to C++) |
+| an interruption in the sector-0 pass | BOOT0, mode blank (as above) |
 | the flash shows `sector0_pending` (event `stm_sector0_pending`); restarts answer `409 stm_sector0_pending` | **keep the power on.** The ESP repeats the sector-0 pass every 30 s; start the flash again (any image, mode normal) to repeat it at once. It ends `done` when sector 0 verifies. If it keeps failing, report the event log before anything else: the last way out is BOOT0, mode blank (as above) |
 | `app_not_responding` or `app_version_mismatch` after the flash | Maintenance → Restart and reset → Reset STM, then check Maintenance → STM32 and the event log |
 | bench: the warm restore fails (the valves recalibrate after a flash) | stop: no controller gets the Rust STM image (risk R3); report |

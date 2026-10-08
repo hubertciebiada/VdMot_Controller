@@ -1,7 +1,8 @@
 //! Renode scenario E11 (docs/rust/GLUE-DESIGN-STM.md §5.7): the Rust ESP flasher
-//! (`vdm_esp_core::stm_flasher`, D9: sector 0 last) on the host, in lock-step with the emulated
-//! STM32. The Renode model `VdmEsp.cs` starts this program and drives it once per millisecond
-//! of virtual time; the flasher's transport is that model's end of USART1 and NRST.
+//! (`vdm_esp_core::stm_flasher`, D9 and F9: sector 0 in a pass of its own, first for an image
+//! with a valid record of its application part, last otherwise) on the host, in lock-step with
+//! the emulated STM32. The Renode model `VdmEsp.cs` starts this program and drives it once per
+//! millisecond of virtual time; the flasher's transport is that model's end of USART1 and NRST.
 //!
 //!   vdm-e11 <board tag> <job>...        job: <image.bin> or <image.bin>@<version>
 //!
