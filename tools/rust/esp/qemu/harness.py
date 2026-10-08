@@ -1252,6 +1252,23 @@ class Harness:
 
     # ------------------------------------------------------------ MQTT
 
+    def broker(self, conf: str) -> subprocess.Popen:
+        """Mosquitto with `conf`, once it listens on 127.0.0.1:1883 (a fixed second of waiting was
+        too short once on a busy host); its output goes to mosquitto.log in the workdir."""
+        with open(os.path.join(self.args.workdir, "mosquitto.log"), "a") as out:
+            p = subprocess.Popen(["mosquitto", "-c", conf], stdout=out, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                socket.create_connection(("127.0.0.1", 1883), timeout=2).close()
+                return p
+            except OSError:
+                if p.poll() is not None or time.monotonic() > deadline:
+                    p.terminate()
+                    raise AssertionError(f"mosquitto does not listen (exit code {p.poll()}, "
+                                         "mosquitto.log in the workdir)")
+                time.sleep(0.2)
+
     def scenario_mqtt(self) -> None:
         if shutil.which("mosquitto") is None:
             raise AssertionError("mosquitto is not installed in the container")
@@ -1262,12 +1279,10 @@ class Harness:
         conf = os.path.join(self.args.workdir, "mosquitto.conf")
         with open(conf, "w") as f:
             f.write("listener 1883 127.0.0.1\nallow_anonymous true\npersistence false\n")
-        broker = subprocess.Popen(["mosquitto", "-c", conf], stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL)
+        broker = self.broker(conf)
         q = self.qemu(fl, "mqtt")
         sub = None
         try:
-            time.sleep(1)
             sub = MqttSub()
             self.rust_up(q)
             cfg = {"mqtt": {"mode": 2, "host": "10.0.2.2", "port": 1883, "separate": True,
@@ -1308,9 +1323,7 @@ class Harness:
             broker.wait(10)
             i, _ = q.wait_for(r"mqtt_disconnected|mqtt_connect_failed", 60, mark)
             self.evidence(q, i, "broker gone")
-            broker = subprocess.Popen(["mosquitto", "-c", conf], stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL)
-            time.sleep(1)
+            broker = self.broker(conf)
             sub.close()
             sub = MqttSub()
             i, _ = q.wait_for(r"mqtt_connected", 120, mark)
