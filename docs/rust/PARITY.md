@@ -79,7 +79,7 @@ Every case with its Rust tests: [PARITY-TESTS.md](PARITY-TESTS.md).
 | stm-glue | 29 | 336 | 330 | 6 | 0 | 0 |
 | all | 157 | 2442 | 2386 | 26 | 30 | 0 |
 
-Ported, by kind: manual 38, hint 12, exact 2098, prefix 16, subcase 11, fuzzy 211. Rust tests: 3240, 788 of them without a C++ case.
+Ported, by kind: manual 38, hint 12, exact 2098, prefix 16, subcase 11, fuzzy 211. Rust tests: 3314, 862 of them without a C++ case.
 
 | C++ file | cases | ported | no Rust form | retired | missing |
 |---|---|---|---|---|---|
