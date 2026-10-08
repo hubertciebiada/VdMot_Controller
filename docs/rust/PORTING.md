@@ -228,7 +228,11 @@ Tests and mutation:
   `tools/rust/mutation_gate.py`: at least 95 % killed overall and for every file, unviable
   mutants not counted (the C++ "stillborn").
 - A surviving mutant is killed with a test, or, when it cannot change behaviour, listed in
-  `tools/rust/mutation/equivalents/<package>.json` with a reason. Code that cannot run gets
+  `tools/rust/mutation/equivalents/<package>.json` or, one file per module, in
+  `tools/rust/mutation/equivalents/<package>/<module>.json` with a reason. An entry matches by
+  file, function and mutation name, without the line, so it also takes a new survivor of the
+  same name: a change of a file with entries needs its entries checked by hand
+  ([mutation-stm32.md](mutation-stm32.md#name-matching)). Code that cannot run gets
   `#[cfg_attr(test, mutants::skip)]` with a comment that says why (`mutants` is a
   dev-dependency, the attribute exists only in test builds).
 - Reports: `tools/rust/mutation/<package>.report.json` (not committed, like the C++ reports).
