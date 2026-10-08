@@ -307,6 +307,17 @@ fn get_temp_rejects_an_all_zero_scratchpad_and_a_bad_crc() {
     );
 }
 
+#[test]
+fn get_temp_of_a_device_that_does_not_answer_is_minus_7040() {
+    // DallasTemperature.h: #define DEVICE_DISCONNECTED_RAW -7040 (-55 degC in 1/128 degC); the
+    // cases above compare with the constant, so they would hold for any value of it
+    let mut d = SimDevice::ds18b20(1, 25 * 16);
+    d.present = false;
+    let rom = d.rom;
+    let mut ow = bus(vec![d]);
+    assert_eq!(DallasTemperature::get_temp(&mut ow, &rom), -7040);
+}
+
 /// A line answering two resets as given and the 9 scratchpad bytes.
 struct ScriptLine {
     resets: VecDeque<bool>,
