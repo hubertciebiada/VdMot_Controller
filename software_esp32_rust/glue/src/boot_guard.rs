@@ -447,7 +447,8 @@ fn switch_and_restart<NS: NvsNamespace>(
 /// F5, step 1 after [`CRASH_LIMIT`] abnormal ends in a row: the other slot when its image verifies
 /// and is not `away` (the image that failed the last trial), with the breadcrumb (reason 3) and
 /// no confirmed image: a glue image there boots on trial with this image as its fallback.
-/// Returns only when there is no such image or its selection is refused.
+/// Returns only when there is no such image or its selection is refused; the boot needs the NVS
+/// handle no more either way.
 fn leave_crash_loop<NS: NvsNamespace>(
     ns: Option<NS>,
     ota: &impl Ota,
@@ -455,12 +456,12 @@ fn leave_crash_loop<NS: NvsNamespace>(
     system: &impl System,
     app: AppId,
     away: Option<AppId>,
-) -> Option<NS> {
+) {
     let target = ota
         .other()
         .filter(|o| o.app.is_some() && o.app != away && ota.verify(o.address));
     let Some(target) = target else {
-        return ns;
+        return;
     };
     store_mirror(
         rtc,
@@ -473,7 +474,7 @@ fn leave_crash_loop<NS: NvsNamespace>(
             away: app,
         },
     );
-    switch_and_restart(ns, ota, system, target.address, None)
+    let _refused = switch_and_restart(ns, ota, system, target.address, None);
 }
 
 impl BootGuard {
@@ -535,7 +536,7 @@ impl BootGuard {
             }
             let streak = crash_streak(mirror, app, system.reset_reason());
             if streak == CRASH_LIMIT {
-                ns = leave_crash_loop(ns, ota, rtc, system, app, away);
+                leave_crash_loop(ns, ota, rtc, system, app, away);
                 report.push(GuardEvent::CrashLoopStays);
             }
             store_mirror(
@@ -646,16 +647,14 @@ impl BootGuard {
         let Some(app) = self.app else {
             return;
         };
-        let mut m = load_mirror(rtc)
-            .filter(|m| m.app == app)
-            .unwrap_or(Mirror {
-                app,
-                boots: 0,
-                reason: 0,
-                streak: 0,
-                flags: 0,
-                away: UNKNOWN_APP,
-            });
+        let mut m = load_mirror(rtc).filter(|m| m.app == app).unwrap_or(Mirror {
+            app,
+            boots: 0,
+            reason: 0,
+            streak: 0,
+            flags: 0,
+            away: UNKNOWN_APP,
+        });
         m.streak = 0;
         m.flags = FLAG_STABLE;
         store_mirror(rtc, &m);

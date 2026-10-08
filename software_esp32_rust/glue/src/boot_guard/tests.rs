@@ -1361,16 +1361,27 @@ fn a_crash_loop_stays_without_another_image_that_verifies() {
 
 #[test]
 fn a_crash_loop_does_not_go_back_to_the_image_that_failed_its_trial() {
-    // B failed its trial at the boot limit: the guard went back to A, confirmed
-    let board = uploaded_b();
-    let _ = crash_loop(&board, 3, Reset::Panic);
-    let (_dev, r) = boot(&board);
-    assert_eq!(r, Ended::Reset(Reset::Software));
+    // B failed its trial at the boot limit and the guard went back to A, confirmed: the trial
+    // record of that switch names B, A's first confirmed boot keeps it in the mirror (the RTC
+    // block of the switch is lost here: a power cycle before that boot)
+    let board = confirmed_a(SlotImage::glue(APP_B));
+    let failed = TrialRecord {
+        state: STATE_SWITCHED_BACK,
+        boots: 4,
+        stm_required: false,
+        app: APP_B,
+        away: Some(APP_B),
+        fallback: SLOT_ADDR[0],
+    };
+    board
+        .nvs()
+        .set_blob(NVS_NAMESPACE, KEY_TRIAL, &encode_trial(&failed));
     confirmed_boots(&board, 4, Reset::Panic);
     let (dev, r) = boot(&board);
     let (g, report) = r.returned();
     assert_eq!(events(&report), vec![GuardEvent::CrashLoopStays]);
     assert!(dev.ota.knobs().set_boots.is_empty());
+    assert_eq!(trial_record(&dev.nvs), None);
     assert_eq!(mirror(&dev).unwrap().away, APP_B);
     // a boot of 10 min ends the streak and keeps the image that failed
     g.note_stable(&dev.rtc);
@@ -1378,7 +1389,28 @@ fn a_crash_loop_does_not_go_back_to_the_image_that_failed_its_trial() {
         mirror(&dev).map(|m| (m.app, m.streak, m.away)),
         Some((APP_A, 0, APP_B))
     );
-    // a power cycle forgets it: the next crash loop gives B a new trial
+}
+
+#[test]
+fn a_power_cycle_forgets_the_image_that_failed_its_trial() {
+    // only the mirror knows B failed (the trial record went at A's first confirmed boot); a
+    // power cycle loses it, so the next crash loop gives B a new trial
+    let board = confirmed_a(SlotImage::glue(APP_B));
+    board.rtc().store(
+        0,
+        &encode_mirror(&Mirror {
+            app: APP_A,
+            boots: 0,
+            reason: 0,
+            streak: 0,
+            flags: 0,
+            away: APP_B,
+        }),
+    );
+    board.reset(Reset::Software); // a warm boot: the RTC block stays
+    let (dev, r) = boot(&board);
+    assert_eq!(r.returned().1.verdict, BootVerdict::Confirmed);
+    assert_eq!(mirror(&dev).unwrap().away, APP_B);
     board.reset(Reset::PowerOn);
     drop(dev);
     confirmed_boots(&board, 4, Reset::Panic);
