@@ -1,0 +1,5 @@
+# cargo-mutants (tools/rust/docker.sh mutate) for the crates of the workspace.
+# glue/src/system/ holds the system suites and their bench: test code, declared
+# #[cfg(all(test, feature = "terminal"))], which cargo-mutants' cfg(test) check does not
+# recognise, so a run without --file would mutate them as source.
+exclude_globs = ["glue/src/system/bench.rs", "glue/src/system/golden.rs", "glue/src/system/tests_*.rs"]
