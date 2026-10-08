@@ -92,6 +92,18 @@ Scenarios (default: all but health):
              and the largest block before, during and after, the 503 counts; no restart, the
              free heap back after the load. QEMU figures (OpenETH, no STM, WiFi off) are
              indicative only
+  uploads    uploads in the HTTP thread (GLUE-DESIGN-ESP.md 7 item 3) as the dashboard sends
+             them, while 3 clients poll on keep-alive connections: the uploading dashboard's
+             GET /api/status every 5 s and /api/stm/flash every 1 s (app.js: aborted after 6 and
+             10 s, then its back-off) and a script's GET /api/valves every 3 s that waits for
+             every answer. Uploads: an STM image (a C++ release image, 60 KB), the C++ ESP image
+             with a wrong MD5 (the whole image written, refused at its end), then with its MD5
+             (selected, the restart it asks for). The latency of the waiting client, the
+             dashboard's aborted polls and its first answer after each upload; every poll before
+             the last upload's answer 200, 503 busy or aborted by the dashboard; no restart before
+             that one (the uptime in /api/status); the free heap back after the first two; app0
+             byte-identical and selected after the last. A poll waits for the rest of the upload,
+             so on the device the wait follows the device's upload time (QEMU is indicative)
   health     (not in the default set, ~17 min) a trial that needs the STM (NVS otaStm 1, as
              the uploading firmware writes it when its link was up; QEMU has no STM) with the
              network up: 15 min without 120 s of health, restart reason 4 (rollback, missing stm)
@@ -165,6 +177,22 @@ MOCK = "/src/software_esp32_revamped/tools/mock_api.py"
 LOADTEST = "/src/software_esp32_revamped/tools/loadtest.py"
 # the config POST of the soak scenario, every this many seconds during each load phase
 SOAK_POST_S = 15
+# the STM image of the uploads scenario: a C++ release image of the repository (60 KB, the size of
+# a real upload)
+STM_IMAGE = "/src/releases/revamped/2.0.0-revamped/STM32_C1_revamped_firmware.bin"
+# the clients of the uploads scenario: path, period and timeout in s (None: waits for every
+# answer). The uploading dashboard on its maintenance view polls the status (every 5 s, aborted
+# after 6 s) and the STM flash state (every 1 s, aborted after 10 s), as
+# software_esp32_revamped/web/app.js does; a script polls the valves every 3 s and waits.
+UPLOAD_POLLERS = (("/api/status", 5, 6), ("/api/stm/flash", 1, 10), ("/api/valves", 3, None))
+# after an upload the scenario waits this long before it reports: the dashboard's back-off after
+# its failed polls (up to 5 periods, app.js runPoller), its next poll's timeout and the queued
+# connections the server works off after the upload (the first answer came 43 s after an upload
+# in QEMU on a busy host)
+UPLOAD_RECOVERY_S = 90
+# how long the uploads scenario waits for an upload's answer, and its waiting client for any
+# answer: QEMU on a busy host took 85 s for the STM image and 450 s for the ESP image
+UPLOAD_TIMEOUT_S = 900
 
 
 def log(msg: str) -> None:
@@ -432,6 +460,107 @@ def multipart(name: str, filename: str, data: bytes, fields=()) -> tuple[bytes, 
     return out, f"multipart/form-data; boundary={b}"
 
 
+class Poller:
+    """A poller as the dashboard runs one (app.js `poller`, `runPoller`, `api`): GET `path` on
+    its own keep-alive connection (a browser's), the next request `period` x min(1 + failures in
+    a row, 5) s after the end of one. With `timeout` (the dashboard's: 6 s for the status, 10 s
+    for the rest) a request is aborted after it, as the browser does (the connection is closed;
+    the next request opens a new one); without, the poller waits for every answer, so a request
+    held back by an upload shows its whole latency. A reused connection that the device closed
+    while idle is retried once on a new one, as browsers do."""
+
+    def __init__(self, port: int, path: str, period: float, timeout: float | None):
+        self.port, self.path, self.period, self.timeout = port, path, period, timeout
+        # start (monotonic), latency, HTTP status or the client error, JSON document
+        self.samples: list[tuple[float, float, object, object]] = []
+        self.retries = 0
+        self.stopped = threading.Event()
+        self.conn: http.client.HTTPConnection | None = None
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def kind(self) -> str:
+        return (f"dashboard, every {self.period} s, aborted after {self.timeout} s" if self.timeout
+                else f"waits for every answer, every {self.period} s")
+
+    def start(self) -> "Poller":
+        self.thread.start()
+        return self
+
+    def stop(self) -> None:
+        """Stops after the current poll; one still waiting (a device that restarted) is cut
+        (its answer "stopped")."""
+        self.stopped.set()
+        self.thread.join(5)
+        sock = getattr(self.conn, "sock", None)
+        if self.thread.is_alive() and sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.thread.join(30)
+
+    def _get(self) -> tuple[object, object]:
+        """One request: (HTTP status, JSON document) or (client error, None)."""
+        for attempt in (1, 2):
+            reused = self.conn is not None
+            try:
+                if self.conn is None:
+                    self.conn = http.client.HTTPConnection("127.0.0.1", self.port,
+                                                           timeout=self.timeout or UPLOAD_TIMEOUT_S)
+                self.conn.request("GET", self.path, headers={"Host": GUEST_IP})
+                r = self.conn.getresponse()
+                body = r.read()
+                if r.will_close:
+                    self.conn.close()
+                    self.conn = None
+                try:
+                    return r.status, json.loads(body)
+                except ValueError:
+                    return r.status, None
+            except TimeoutError:
+                self.conn.close()
+                self.conn = None
+                return ("stopped" if self.stopped.is_set() else "timeout"), None
+            except (OSError, http.client.HTTPException) as e:
+                if self.conn is not None:
+                    self.conn.close()
+                self.conn = None
+                if self.stopped.is_set():
+                    return "stopped", None
+                if not (reused and attempt == 1 and isinstance(
+                        e, (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError))):
+                    return type(e).__name__, None
+                self.retries += 1
+        return "unreachable", None
+
+    def _run(self) -> None:
+        fails = 0
+        while not self.stopped.is_set():
+            t0 = time.monotonic()
+            status, doc = self._get()
+            self.samples.append((t0, time.monotonic() - t0, status, doc))
+            fails = 0 if status == 200 else fails + 1
+            self.stopped.wait(self.period * min(1 + fails, 5))
+        if self.conn is not None:
+            self.conn.close()
+
+    def within(self, t0: float, t1: float) -> list[tuple[float, float, object, object]]:
+        """The polls that were open at some time in [t0, t1]."""
+        return [s for s in list(self.samples) if s[0] <= t1 and s[0] + s[1] >= t0]
+
+    def first_answer_after(self, t: float) -> float | None:
+        """The end of the first poll answered 200 after `t`, relative to `t`."""
+        ends = [s[0] + s[1] for s in list(self.samples) if s[2] == 200 and s[0] + s[1] > t]
+        return min(ends) - t if ends else None
+
+
+def stop_pollers(pollers: list[Poller]) -> None:
+    for p in pollers:
+        p.stopped.set()
+    for p in pollers:
+        p.stop()
+
+
 # ---------------------------------------------------------------- NVS, C++ codec, MQTT
 
 
@@ -630,6 +759,8 @@ class Harness:
         self.results: list[tuple[str, bool]] = []
         self.stacks: dict[str, int] = {}
         self._codec: CppCodec | None = None
+        # uploads: when the network of the image under test came up (poll times are relative)
+        self.t_up = 0.0
 
     @property
     def port(self) -> int:
@@ -1439,6 +1570,161 @@ class Harness:
         finally:
             q.quit()
 
+    # ------------------------------------------------------------ uploads while the dashboard polls
+
+    def poll_phase(self, pollers: list[Poller], tag: str, t0: float, t1: float,
+                   detail: bool = True, answered: bool = False) -> None:
+        """What the pollers saw in [t0, t1]: their answers, the latency, for the dashboard's
+        pollers when they had their first answer after t1; `detail`: every poll in the window
+        (its start relative to t0, latency, answer); `answered`: every poller had an answer
+        after t1 (the request the waiting client sent during the upload among them)."""
+        log(f"  pollers, {tag} ({t1 - t0:.1f} s):")
+        for p in pollers:
+            polls = p.within(t0, t1)
+            lat = sorted(s[1] for s in polls)
+            codes: dict = {}
+            for s in polls:
+                codes[s[2]] = codes.get(s[2], 0) + 1
+            first = p.first_answer_after(t1)
+            line = (f"    GET {p.path} ({p.kind()}): {len(polls)} polls {codes}, latency "
+                    + (f"median {lat[len(lat) // 2]:.2f} s, max {lat[-1]:.2f} s" if lat else "-"))
+            if p.timeout and detail:
+                line += (", the first answer after the end "
+                         + (f"{first:.1f} s after it" if first is not None else "none"))
+            if detail and polls:
+                line += ": " + ", ".join(f"{s[0] - t0:+.1f}s {s[1]:.2f}s {s[2]}" for s in polls)
+            log(line)
+            if answered:
+                check(first is not None, f"GET {p.path}: no answer after the end of the upload")
+                check(p.timeout is not None or all(s[2] == 200 for s in polls),
+                      f"GET {p.path}: a request held back by the upload got no answer")
+
+    def poll_check(self, pollers: list[Poller], until: float) -> None:
+        """Every poll that ended before `until`: 200, 503 busy (the documented refusal) or, for
+        the dashboard's pollers, aborted after its timeout; the status documents show no restart
+        (the uptime grows, the boot count stays)."""
+        bad, busy, aborted, ups = [], 0, 0, []
+        for p in pollers:
+            for t, lat, status, doc in list(p.samples):
+                if t + lat > until or status == "stopped":
+                    continue
+                if status == 503 and isinstance(doc, dict) and doc.get("error") == "busy":
+                    busy += 1
+                elif status == "timeout" and p.timeout:
+                    aborted += 1
+                elif status != 200:
+                    bad.append(f"{p.path} at +{t - self.t_up:.0f} s: {status}")
+                esp = doc.get("esp") if p.path == "/api/status" and isinstance(doc, dict) else None
+                if isinstance(esp, dict):
+                    ups.append((esp.get("uptime"), esp.get("boots")))
+        log(f"    answers other than 200: {bad or 'none'}; 503 busy {busy}; aborted by the dashboard's "
+            f"timeout {aborted}; idle connections retried {sum(p.retries for p in pollers)}; status "
+            f"documents {len(ups)}, uptime {ups[0][0] if ups else '-'}..{ups[-1][0] if ups else '-'} s, "
+            f"boots {sorted({b for _, b in ups})}")
+        check(not bad, "a poll failed: " + "; ".join(bad[:5]))
+        check(all(isinstance(u, int) for u, _ in ups) and
+              all(b[0] >= a[0] for a, b in zip(ups, ups[1:])) and len({b for _, b in ups}) <= 1,
+              "the device restarted (uptime fell or the boot count moved)")
+
+    def scenario_uploads(self) -> None:
+        rust = self.image(self.args.rust_image)
+        stm = open(STM_IMAGE, "rb").read()
+        # app0 erased: no fallback, so the image is confirmed and ESP uploads are accepted
+        fl = self.flash("uploads").app(1, rust)
+        fl.put(OTADATA_OFFSET, AFTER_CPP_OTA)
+        fl.write()
+        q = self.qemu(fl, "uploads")
+        pollers: list[Poller] = []
+        try:
+            i, _ = q.wait_for(r"boot guard: confirmed", 60)
+            self.evidence(q, i, "boot guard (no image in the other slot: confirmed)")
+            self.rust_up(q, 0)
+            self.t_up = time.monotonic()
+            # every polled route once: the web working set and the response buffer are allocated
+            # at their first use and kept (2.4)
+            for path, _, _ in UPLOAD_POLLERS:
+                request(self.port, "GET", path)
+            time.sleep(5)
+            before = self.heap("before (idle, every polled route answered once)")
+            pollers = [Poller(self.port, *p).start() for p in UPLOAD_POLLERS]
+            log(f"  {len(pollers)} clients, one keep-alive connection each: "
+                + "; ".join(f"GET {p.path} ({p.kind()})" for p in pollers))
+            time.sleep(20)
+            t_base = time.monotonic()
+            self.poll_phase(pollers, "no upload", t_base - 20, t_base, detail=False)
+
+            # the dashboard's STM image upload (field "image", app.js imageName)
+            body, ctype = multipart("image", os.path.basename(STM_IMAGE), stm)
+            t0 = time.monotonic()
+            a = request(self.port, "POST", "/api/stm/images", body, {"Content-Type": ctype},
+                        timeout=UPLOAD_TIMEOUT_S)
+            t1 = time.monotonic()
+            log(f"  POST /api/stm/images ({len(stm)} B, {os.path.basename(STM_IMAGE)}) -> {a} in "
+                f"{t1 - t0:.1f} s")
+            check(a.status == 201 and a.json().get("size") == len(stm)
+                  and a.json().get("crc32") == "0x%08x" % (binascii.crc32(stm) & 0xFFFFFFFF),
+                  "STM image upload refused or stored with another size or CRC")
+            time.sleep(UPLOAD_RECOVERY_S)
+            self.poll_phase(pollers, "STM image upload", t0, t1, answered=True)
+
+            # the dashboard's ESP upload (field "firmware", MD5 in the query and X-Update-MD5)
+            # with a wrong MD5: the whole image is written, the MD5 check at its end refuses it,
+            # nothing restarts
+            wrong = "0" * 32
+            body, ctype = multipart("firmware", "VdMot-Revamped_2.1.7.bin", self.cpp)
+            t0 = time.monotonic()
+            a = request(self.port, "POST", f"/api/ota/esp?md5={wrong}", body,
+                        {"Content-Type": ctype, "X-Update-MD5": wrong}, timeout=UPLOAD_TIMEOUT_S)
+            t1 = time.monotonic()
+            log(f"  POST /api/ota/esp ({len(self.cpp)} B, wrong MD5) -> {a} in {t1 - t0:.1f} s")
+            check(a.status == 500 and a.json() == {"error": "upload_failed", "detail": "MD5 Check Failed"},
+                  "the upload with a wrong MD5 was not refused at its end")
+            time.sleep(UPLOAD_RECOVERY_S)
+            self.poll_phase(pollers, "ESP image upload (wrong MD5)", t0, t1, answered=True)
+            stop_pollers(pollers)
+            self.poll_check(pollers, time.monotonic())
+            t0, series = time.monotonic(), []
+            while True:
+                h = self.heap("after the uploads")
+                series.append(f"+{time.monotonic() - t0:.0f}s {h.get('free')}")
+                back = h.get("free", 0) >= before.get("free", 0) - 4096
+                if back or time.monotonic() - t0 > 180:
+                    break
+                time.sleep(10)
+            log(f"    free heap after the uploads: {', '.join(series)} (before {before.get('free')})")
+            check(back, "the free heap did not come back within 3 min of the uploads (leak)")
+
+            # the dashboard's ESP upload with the right MD5: written, selected, restart in 1 s
+            pollers = [Poller(self.port, *p).start() for p in UPLOAD_POLLERS]
+            time.sleep(10)
+            md5 = hashlib.md5(self.cpp).hexdigest()
+            body, ctype = multipart("firmware", "VdMot-Revamped_2.1.7.bin", self.cpp)
+            mark = q.mark()
+            t0 = time.monotonic()
+            a = request(self.port, "POST", f"/api/ota/esp?md5={md5}", body,
+                        {"Content-Type": ctype, "X-Update-MD5": md5}, timeout=UPLOAD_TIMEOUT_S)
+            t1 = time.monotonic()
+            log(f"  POST /api/ota/esp ({len(self.cpp)} B, MD5 {md5}) -> {a} in {t1 - t0:.1f} s")
+            check(a.status == 200 and a.json() == {"result": "ok", "restart": True}, "upload refused")
+            i, _ = q.wait_for(r"reboot_requested restart requested \(ota\)", 10, mark)
+            self.evidence(q, i, "restart path")
+            # the restart path flushes the log into LittleFS: 51 s once in QEMU on a busy host
+            i, _ = q.wait_for(r"^rst:", 180, i)
+            self.evidence(q, i, "software restart")
+            stop_pollers(pollers)
+            self.poll_phase(pollers, "ESP image upload", t0, t1)
+            # the polls that ended up to the upload's answer; the restart ends the ones after it
+            self.poll_check(pollers, t1)
+        finally:
+            stop_pollers(pollers)
+            q.quit()
+        after = fl.read()
+        log("  otadata after: " + "; ".join(read_otadata(after)))
+        written = after[APP0_OFFSET:APP0_OFFSET + len(self.cpp)]
+        log(f"  app0 == uploaded image: {written == self.cpp}")
+        check(written == self.cpp and boot_slot(after) == "app0",
+              "the image uploaded under polling is not the one selected in app0")
+
     # ------------------------------------------------------------ network watchdog
 
     def nvs_with(self, name: str, patch: dict, extra: list[tuple[str, str, str, str]]) -> bytes:
@@ -1512,7 +1798,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("scenarios", nargs="*",
                    default=["boot", "rollback", "deadline", "badfs", "ota", "netwatch", "littlefs", "nvs",
-                            "dashboard", "api", "mqtt", "soak"])
+                            "dashboard", "api", "mqtt", "soak", "uploads"])
     p.add_argument("--bootloader", default="/src/software_esp32/bootloader_dio_40m.bin")
     p.add_argument("--partitions", default="/src/software_esp32/partitions.bin")
     p.add_argument("--cpp-image", required=True)

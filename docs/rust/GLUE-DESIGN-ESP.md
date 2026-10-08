@@ -518,7 +518,7 @@ received chunk so the idle task of core 0 runs during long flash writes (TWDT id
 | 1 | Both response slots busy | 503 `busy` "response buffers in use" | never: one buffer, serial handlers | accept; API.md drops that 503 cause |
 | 2 | A second JSON body while one is received | 409 `busy` "body" | never | accept |
 | 3 | Refusal changed between guard and handler | 503 `retry` "state changed" | never (one call decides) | accept; API.md drops `retry` |
-| 4 | Concurrency | requests interleaved by AsyncTCP; an upload or a log download did not hold others back | one request at a time: an upload (up to the OTA image size), a log download (≤ 144 KB) or a slow client (≤ 5 s per socket wait) delays the others, who wait in the backlog; nothing is refused | accept for logs; uploads: decision 7.3 |
+| 4 | Concurrency | requests interleaved by AsyncTCP; an upload or a log download did not hold others back | one request at a time: an upload (up to the OTA image size), a log download (≤ 144 KB) or a slow client (≤ 5 s per socket wait) delays the others, who wait in the backlog; nothing is refused, but once the backlog is full a new connection gets no answer until the request ends (measured with uploads: §7 item 3) | accept for logs; uploads: decision 7.3 |
 | 5 | Connections | closed after every response; a fifth client's SYN was dropped (backlog 4) | HTTP/1.1 keep-alive; a fifth client purges the least recently used session | accept |
 | 6 | Oversized request head | no limit | header block > 1024 B → 431, URI > 512 B → 414, unknown method string → 400, each with the server's text/html body | accept; 1024 B covers browsers (the device sets no cookies) |
 | 7 | Malformed multipart (no closing boundary, epilogue, bytes after the body) | the library never handled the request: no answer until the client gave up | 400 `upload_failed` "incomplete file" / "no file in request" | accept |
@@ -644,6 +644,10 @@ Proven there (2026-10-07):
   run (the broker holds every config the device reports), a reconnect after a broker restart.
 - Load: `tools/loadtest.py` with 3 and 10 workers and config saves, no restart, no 503, the heap
   back after the load; the heap and stack figures of §2.3 and §2.1 come from these runs.
+- Uploads in the HTTP thread (decision 7.3; scenario uploads, run on 2026-10-08): an STM image
+  and the ESP image, sent as the dashboard sends them while the dashboard and a script poll; the
+  requests that come during an upload are answered after it, nothing is refused, no restart but
+  the one an ESP upload asks for, the heap back after the uploads (the figures in §7 item 3).
 
 Not provable in QEMU, and where it is covered instead:
 
@@ -810,6 +814,35 @@ image for the interop run.
    other requests wait for the upload; (b) `httpd_req_async_handler_begin` and a worker thread
    spawned for the upload (~6 KB stack while it runs), so the dashboard keeps polling. Recommendation
    (a), measured with the dashboard during an OTA; (b) only if the dashboard misbehaves.
+
+   Measured in QEMU on 2026-10-08 with the firmware 2.2.0-revamped (f0342a6; scenario `uploads` of
+   §5.5; indicative only: the emulated CPU, flash and network on a host shared with other jobs set
+   the times; on 2026-10-07, on a busier host, the same three uploads took 85 s, 198 s and 450 s).
+   Clients: the uploading dashboard on its maintenance view polls `/api/status` every 5 s and
+   `/api/stm/flash` every 1 s and aborts a poll after 6 and 10 s (`app.js`; after a failed poll it
+   waits up to 5 periods); a script polls `/api/valves` every 3 s on its own connection and waits
+   for every answer.
+
+   | Upload | Took | The script's request sent during it | The dashboard's polls during it (status + flash) | The dashboard's first answer after it (status, flash) |
+   |---|---|---|---|---|
+   | none (20 s) | — | answered in 0.02 s (median) | all answered (median 0.71 s and 0.01 s) | — |
+   | STM image, 60,228 B | 14.9 s | sent 0.7 s after the start, answered after 16.3 s | 1 + 3: 1 + 1 aborted, 1 sent with the upload and answered first (0.25 s), 1 sent during it and answered after it | 7.5 s, 2.7 s |
+   | ESP image, 1,154,960 B, wrong MD5: all written, then `500 upload_failed "MD5 Check Failed"` | 69.8 s | sent 1.5 s after the start, answered after 72.2 s | 4 + 6: 4 + 5 aborted, 1 sent during it and answered after it | 27.9 s, 6.5 s |
+   | ESP image with its MD5: written, verified, selected | 34.4 s | sent 2.1 s after the start, answered with the upload's answer | 2 + 3: 2 + 2 aborted, 1 sent during it and answered after it | —, 0.5 s (the restart 1 s after the answer) |
+
+   - A request that comes during an upload waits for the rest of it and is answered after it: no
+     answer other than 200, no restart but the one the ESP upload asks for, the free heap back
+     after the uploads (129,512 B before, 130,172 B after, 96,784 B at the lowest).
+   - The dashboard shows "The device is not reachable. Retrying…" while an upload runs longer than
+     its 6 s status timeout, and until its back-off lets the next poll through (its first status
+     answer came 7.5 s and 27.9 s after the upload, 43 s on the busier host); it needs no reload.
+     After an ESP upload it waits for the restart instead.
+   - Every poll the dashboard aborts leaves its connection in the listen backlog (5, §4.1) until
+     the upload ends, and the next poll opens a new one: after about 5 aborted polls the backlog is
+     full and a new connection gets no answer to its SYN until the upload ends (on 2026-10-07
+     QEMU's network reset such a connection after 91 s). After the upload the server takes the
+     waiting connections one by one.
+   - On the device the wait is the device's upload time.
 4. **Decision: retired glue tests.** The AsyncWebServer and Arduino specific cases of §5.2 (slot
    pool, marks, `retry`, concurrent bodies, library multipart quirks, Arduino hooks, `xTaskGetHandle`)
    are retired and replaced; every other glue case is ported with all assertions. Approve the list.
