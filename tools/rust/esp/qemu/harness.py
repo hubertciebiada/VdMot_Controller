@@ -1147,9 +1147,10 @@ class Harness:
                 f"calib {a.json().get('calib')}")
             check(a.json().get("station") == "LfsCpp" and a.json()["calib"]["hour"] == 4,
                   "the config of the C++ backup is not the one served")
+            t0 = time.monotonic()
             a = request(self.port, "GET", "/api/files")
             files = {f["path"]: f["size"] for f in a.json()["files"]}
-            log(f"  GET /api/files -> {a.status} {files}")
+            log(f"  GET /api/files -> {a.status} {files} in {time.monotonic() - t0:.1f} s")
             for rel, data in content.items():
                 if rel != "log/events.log" and rel != "sys/cfg.bak":
                     check(files.get("/" + rel) == len(data), f"/{rel}: listed {files.get('/' + rel)}")
