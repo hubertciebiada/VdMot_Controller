@@ -829,7 +829,7 @@ reproduces all 27 cases byte for byte; `app.robot` replays some of them against 
   then `tools/rust/mutation_gate.py`: at least 95 % overall and per file, unviable mutants not
   counted, timeouts killed. C++ baseline: 97.92 % (2,639 of 2,695), lowest file
   `src/sysstat.cpp` 95.65 % (`docs/revamped/mutation-stm32-glue.md`).
-- Equivalent mutants in `tools/rust/mutation/equivalents/vdm-stm-glue.json` with a reason;
+- Equivalent mutants in `tools/rust/mutation/equivalents/vdm-stm-glue/` with a reason, one file per source file that has entries;
   code that cannot run on the host gets `#[cfg_attr(test, mutants::skip)]` with a comment.
   Hardware code is in the firmware crate, so the glue should need none.
 - The firmware crate is not mutated: it holds no decisions (§1.1) and Renode and the image

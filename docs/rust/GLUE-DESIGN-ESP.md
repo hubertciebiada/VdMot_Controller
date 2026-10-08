@@ -598,7 +598,7 @@ cases against the Rust mechanism (list approved by the operator, decision 7.4).
 - `bash tools/rust/docker.sh mutate software_esp32_rust vdm-esp-glue`, then
   `tools/rust/mutation_gate.py`: 95 % overall and per file, unviable mutants not counted, reports in
   `tools/rust/mutation/vdm-esp-glue.report.json`, equivalents with reasons in
-  `tools/rust/mutation/equivalents/vdm-esp-glue.json`.
+  `tools/rust/mutation/equivalents/vdm-esp-glue/`, one file per source file that has entries.
 - Mutated: every file of `glue/src` except `#[cfg(test)]` modules (`testkit`, `tests*.rs`).
   `#[cfg_attr(test, mutants::skip)]` only for code the host cannot reach, with the reason; none is
   expected, because every hardware effect is behind a port.
