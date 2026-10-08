@@ -662,6 +662,31 @@ Not provable in QEMU, and where it is covered instead:
 | The STM link, an STM flash, the factory pin | no STM; GPIO2 reads LOW (the harness sets `frLatch`) | glue host tests with the fake STM (§5.1), Renode for the STM images |
 | Stack and heap figures of the device | OpenETH buffers instead of the EMAC DMA, WiFi off, no STM traffic | the measuring campaign of §2.1 |
 
+LittleFS timing (measured on 2026-10-08 with a build that counted and timed every `esp_flash_read`):
+a call costs 25 to 45 ms on average in this QEMU (233 ms at most), and `GET /api/files` is about 620
+calls (120 KB) with the layout of the littlefs scenario, 16 to 32 s, and 1887 calls (370 KB) with a
+full layout (four STM images, both logs at 64 KB, three files in /sys), 94 s. The handler spends
+that time inside `esp_flash_read`: 85 % in its own calls with the littlefs layout, 63 % in its own
+and 25 % in other threads' calls with the full layout (a call stops the other core too). A list
+needs that many reads because esp_littlefs's `stat` walks the path twice (`lfs_stat`, then
+`lfs_getattr` for the mtime), each walk fetches every metadata block on the way and finds its tags
+by scanning the block backwards in 128 B reads (the read size of the Arduino settings), and total
+and used each run `lfs_fs_size` over every file (128 to 354 reads). The C++ 2.1.7 list reads more
+(Arduino's `openNextFile` stats and opens every entry; the same two `esp_littlefs_info`). On the
+device a call of 128 to 512 B takes an estimated 20 to 60 µs (the transfer at 80 MHz DIO, plus both
+caches off and the other core stopped for the call): the full layout lists in about 0.1 s, 0.4 s if
+every call took 200 µs. Locks: the list holds no glue mutex but the web server's own, which only the
+HTTP thread takes (`Storage::list_files` takes neither the image index nor the config lock);
+esp_littlefs takes its partition lock for one VFS call at a time, the longest of a list being
+`lfs_fs_size` (up to about 20 ms on the device). The HTTP thread (core 0, priority 5) is not
+subscribed to the task watchdog; a thread that is (stm, app, mqtt, core 1) waits for that lock at
+most for the rest of the request (a released FreeRTOS mutex goes to the first thread that takes it),
+about 0.1 s on the device, and a request keeps the watched idle task of core 0 out only while it
+computes or reads. The longer waits go the other way: an `opendir` of the list waited 17 s in QEMU
+while other threads' LittleFS calls ran (1105 reads). The harness turns the timer groups' watchdogs
+off (the task watchdog runs on timer group 0), so no watchdog fires in QEMU; it gives the file list
+300 s and each boot wait before it 120 s.
+
 ---
 
 ## 6. Boot guard

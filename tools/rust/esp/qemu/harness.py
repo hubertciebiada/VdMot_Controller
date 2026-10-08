@@ -46,6 +46,18 @@ netwatch, health, and rollback/deadline at their switch) ends the QEMU process a
 checks the flash, and powers on a new process: the bootloader reads the same otadata then. The
 early restarts of rollback and deadline (boots 1 to 4 of the Rust image) run through.
 
+Flash reads are slow in this QEMU: an esp_flash_read call takes 25 to 45 ms on average (233 ms
+at most; measured on 2026-10-08 with a build that counted every call), where the device needs
+tens of microseconds. A LittleFS file list is hundreds of calls (per entry a stat, which walks
+the path twice, the second time for the mtime attribute; lfs_fs_size twice, for total and
+used): GET /api/files took about 620 reads and 16 to 32 s with the layout of the littlefs
+scenario (over 60 s in the full runs of 2026-10-07 on a busier host), 1887 reads and 94 s with a
+full layout (four STM images, both logs at 64 KB, three files in /sys), whose boot reached
+config_restored after 20 to 23 s and the network about 16 s later. So the file list of littlefs
+and api waits FILE_LIST_TIMEOUT_S (about three times the full layout's list) and each boot wait
+before it FS_BOOT_TIMEOUT_S (about five times the full layout's boot); the device lists the full
+layout in about 0.1 s by estimate (docs/rust/GLUE-DESIGN-ESP.md 5.5).
+
 Scenarios (default: all but health):
   boot       the devices' bootloader boots the Rust app on trial (boot 1 of 3); GET /api/health;
              an ESP upload during the trial is refused (409 upload_failed "image on trial"); the
@@ -193,6 +205,10 @@ UPLOAD_RECOVERY_S = 90
 # how long the uploads scenario waits for an upload's answer, and its waiting client for any
 # answer: QEMU on a busy host took 85 s for the STM image and 450 s for the ESP image
 UPLOAD_TIMEOUT_S = 900
+# GET /api/files of the littlefs and api scenarios, and each wait of the littlefs and api boots
+# before it (config_restored, the network): LittleFS in this QEMU, see the docstring
+FILE_LIST_TIMEOUT_S = 300
+FS_BOOT_TIMEOUT_S = 120
 
 
 def log(msg: str) -> None:
@@ -420,7 +436,7 @@ def request(port: int, method: str, path: str, body: bytes | None = None,
             headers: dict[str, str] | None = None, timeout: float = 60,
             host: str = GUEST_IP) -> Answer:
     """One request as the dashboard sends it: Host of the device, X-VdMot on writes. The
-    timeout is generous: a LittleFS listing took over 30 s once in QEMU on a busy host."""
+    default timeout covers every request but the file list (FILE_LIST_TIMEOUT_S)."""
     h = {"Host": host}
     if method != "GET":
         h["X-VdMot"] = "1"
@@ -1139,16 +1155,16 @@ class Harness:
         fl.write()
         q = self.qemu(fl, "littlefs")
         try:
-            i, _ = q.wait_for(r"config_restored", 60)
+            i, _ = q.wait_for(r"config_restored", FS_BOOT_TIMEOUT_S)
             self.evidence(q, i, "Rust app restores the config from the C++ backup file")
-            self.rust_up(q, 0)
+            self.rust_up(q, 0, FS_BOOT_TIMEOUT_S)
             a = request(self.port, "GET", "/api/config")
             log(f"  GET /api/config -> {a.status}, station {a.json().get('station')!r}, "
                 f"calib {a.json().get('calib')}")
             check(a.json().get("station") == "LfsCpp" and a.json()["calib"]["hour"] == 4,
                   "the config of the C++ backup is not the one served")
             t0 = time.monotonic()
-            a = request(self.port, "GET", "/api/files")
+            a = request(self.port, "GET", "/api/files", timeout=FILE_LIST_TIMEOUT_S)
             files = {f["path"]: f["size"] for f in a.json()["files"]}
             log(f"  GET /api/files -> {a.status} {files} in {time.monotonic() - t0:.1f} s")
             for rel, data in content.items():
@@ -1295,7 +1311,7 @@ class Harness:
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         q = self.qemu(fl, "api")
         try:
-            self.rust_up(q)
+            self.rust_up(q, 0, FS_BOOT_TIMEOUT_S)
             get_retry(mock_port, "/api/health", 20)
             # the httpd stack after each kind of request (its peak is monotonic)
             web = ("httpd",)
@@ -1304,7 +1320,8 @@ class Harness:
             for path in ("/api/status", "/api/valves", "/api/sensors", "/api/events", "/api/config",
                          "/api/config/export", "/api/stm/motor", "/api/stm/images", "/api/stm/flash",
                          "/api/files", "/api/health"):
-                a = request(self.port, "GET", path)
+                a = request(self.port, "GET", path,
+                            timeout=FILE_LIST_TIMEOUT_S if path == "/api/files" else 60)
                 m = request(mock_port, "GET", path, host=f"127.0.0.1:{mock_port}")
                 if path == "/api/health":
                     self.health_stacks(a)
