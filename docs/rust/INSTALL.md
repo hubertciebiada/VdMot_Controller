@@ -98,6 +98,7 @@ with the C++ 2.1.7 image that uploaded it as the fallback.
 | a restart from the dashboard (or a network settings change) while the network, the HTTP self-check of the last 30 s and, when required, the STM link are up | confirms first, then restarts; otherwise the restart counts as a boot (also a restart over MQTT, `cmd/restart`, which proves no web server) |
 | an ESP firmware upload | refuses it: `409 upload_failed` "image on trial" (it would overwrite the fallback) |
 | `POST /api/system/ota/switch-back` | restarts into the C++ image (also after the confirmation) |
+| after the confirmation: 4 boots in a row end with a crash, a watchdog reset or a start-up hang, each within 10 min | switches to the C++ image, which runs as usual; the Rust image stays in the other slot. Report the event log of the Rust image and upload it again once the cause is known |
 
 Watch the trial with `GET /api/health`: `ota` is an object while the image is on trial (the
 checks `net`, `http`, `stm`, `healthyForS`, `remainS`) and `null` once it is confirmed:

@@ -666,7 +666,8 @@ The devices' bootloader (serial-flashed with the legacy firmware) has no rollbac
 never reaches PENDING_VERIFY, so D§16's validation never runs on them. The boot guard does the
 rollback in the application. It keeps D§16's health criteria (`OtaValidator`: net, http self-check,
 stm when NVS `otaStm` said the link was up at the upload; 120 s healthy confirms, 15 min gives up)
-and adds a boot limit, a boot deadline and a manual switch back.
+and adds a boot limit, a boot deadline, a crash-loop limit for confirmed images (F5) and a manual
+switch back.
 
 State of the running image (each image runs the same machine when it boots):
 
@@ -678,6 +679,7 @@ State of the running image (each image runs the same machine when it boots):
 | Trial | 120 s healthy, or a user restart while net, a fresh passing self-check (and stm when required) are up | Confirmed |
 | Trial | 15 min without 120 s of health | SwitchedBack, restart into the fallback |
 | Trial | no valid fallback, or the fallback is the image last switched away from | Confirmed (event 107 arg1 -3) |
+| Confirmed | 4 boots in a row ended by a panic, a watchdog reset or the boot deadline, each within 10 min of its start (F5) | the other image when it verifies and is not the image last switched away from, without a confirmed image: a Rust image there runs a trial with this one as its fallback (breadcrumb reason 3), the C++ firmware just runs; otherwise Confirmed (event 107 arg1 -3 arg2 3) |
 | any | `POST /api/system/ota/switch-back` | restart into the fallback (SwitchedBack when on trial); from a confirmed image no image stays confirmed, so the target runs a trial with this image as its fallback |
 
 ### 6.1 Records
@@ -686,7 +688,7 @@ State of the running image (each image runs the same machine when it boots):
 |---|---|---|
 | `otaOk` | NVS `vdmrev`, blob 16 B | "VDOK", the `AppId` of the confirmed image, CRC32; removed when that image is left by an upload or by a manual switch, so it runs a trial when it comes back (also after the C++ firmware ran in between) |
 | `otaTrial` | NVS `vdmrev`, blob 32 B | "VDOT", version 1, state (`Trial`, `SwitchedBack`), boots, flags (bit0 stm required, bit1 an image switched away from is recorded), `AppId` of the image on trial, `AppId` of the last image the guard switched away from, fallback slot address, CRC32 |
-| Guard mirror | RTC block, first record, 28 B | "VBGD", `AppId` on trial, boots, breadcrumb of the last switch (`AppId` switched away from, reason 1 boot limit / 2 health), CRC32 |
+| Guard mirror | RTC block, first record, 28 B | "VBGD", `AppId` on trial (for a confirmed image: that image), boots, breadcrumb of the last switch (`AppId` switched away from, reason 1 boot limit / 2 health / 3 crash loop), the crash streak of a confirmed image (byte 14) and its flags (byte 15: bit0 the boot deadline restarted the boot, bit1 the boot ran 10 min), CRC32. Images before F5 wrote bytes 14 and 15 as zero and ignore them |
 | Other RTC records | RTC block after the mirror | net watchdog count ("VNWD"), desired targets (46 B), ESP lease emulation, HA status: the C++ formats, each with its own check |
 
 The C++ firmware ignores both NVS keys. The RTC layout of a C++ image and of a Rust image differ, so
@@ -707,7 +709,7 @@ threads.
 
 | Step | Condition | Action |
 |---|---|---|
-| 1 | running `AppId` = `otaOk` | confirmed: drop a stale `otaTrial`; no trial. A breadcrumb in the RTC mirror (a switch away from another image) becomes event 107 arg1 -4, arg2 = its reason, once the logger runs |
+| 1 | running `AppId` = `otaOk` | confirmed: drop a stale `otaTrial`; no trial. A breadcrumb in the RTC mirror (a switch away from another image) becomes event 107 arg1 -4, arg2 = its reason, once the logger runs. F5: the crash streak counts the boots of this image in a row that ended with a panic, an interrupt, task or other watchdog reset (`esp_reset_reason` 4..7) or the boot deadline (mirror flag), unless that boot had run 10 min; any other end (power-on, brownout, pin, a software restart: user, upload, switch) sets it to 0. The mirror keeps the streak and the image last switched away from. At the 4th abnormal end in a row the guard selects the other slot when its image verifies and is not that image, with the crash breadcrumb (reason 3) and no confirmed image, and restarts: the other image runs a trial with this one as its fallback. Otherwise (or when `set_boot` refuses) event 107 arg1 -3 arg2 3 once, and the image keeps running |
 | 2 | no `otaTrial` for this `AppId`, or one in state `SwitchedBack` (the failed image was uploaded again) | new trial: boots = 1, fallback = `Ota::other()`, stm required = NVS `otaStm`; the "switched away from" `AppId` carries over from the old record; `otaStm` is erased at every boot |
 | 3 | `otaTrial` in state `Trial` for this `AppId` | boots = 1 + max(NVS boots, RTC mirror boots when its check and `AppId` match) |
 | 4 | the fallback slot has no valid app (`other().app` is `None`), or it holds the image the guard last switched away from | no switch possible: confirm the running image (`otaOk` := running, `otaTrial` removed), event 107 arg1 -3 once the logger runs, as C++ "keep running this one" |
@@ -727,7 +729,8 @@ across software, panic and watchdog resets; a power cycle then restarts the coun
 | `POST /api/system/ota/switch-back` `{"confirm":"switch-back"}` | refused with 400 `confirm_required`, 409 `busy` (upload or flash), 409 `restarting`, 409 `no_fallback` (`other().app` is `None`); else restart reason 7 (new, Info) → at the end of the restart path `set_boot(fallback)` and restart; on trial `SwitchedBack` and the fallback becomes `otaOk`, from a confirmed image `otaOk` is removed (the target may be the image that failed its last trial or one that never ran: it runs a trial with this image as its fallback). Works in any state: it is the remedy for a confirmed image that misbehaves |
 | ESP upload during a trial | refused: `409 upload_failed "image on trial"`; the upload would overwrite the fallback |
 | Heap guard, network watchdog, TWDT or panic reset during a trial | counts as a boot |
-| Boot deadline: `setup` has not finished (first app-task pass) 60 s after the start of `main` | `esp_timer` one-shot → `System::restart()`; counts as a boot |
+| Boot deadline: `setup` has not finished (first app-task pass) 60 s after the start of `main` | `esp_timer` one-shot → the mirror flag "deadline" (F5), `System::restart()`; counts as a boot (on trial) or as an abnormal end (confirmed) |
+| 10 min of uptime (F5) | `BootGuard::note_stable` from `OtaService::service`: the crash streak ends, the end of this boot does not count |
 
 Trace: the 15 min case logs `reboot_requested` reason 4 with the missing checks and flushes the log
 before the switch, as D§16 does. The boot-limit case switches before the logger runs; a Rust
@@ -761,7 +764,7 @@ event (reset reason `sw`).
 | User restarts | §6.3; the restart path is unchanged otherwise |
 | Network trial (D§16) | a network change during an OTA trial restarts with reason 0 → confirms the image when healthy; a network revert restarts with reason 5 → counts as a boot |
 | Factory reset (HTTP or GPIO2) | keeps `frLatch`, `otaOk` and `otaTrial` (Rust only; a C++ factory reset erases them, and the next Rust boot validates itself again) |
-| STM flash | a switch at run time waits like every restart (no restart during a flash; while the STM's sector 0 is not written the restart routes refuse, §4.7 row 12); the boot-time switch happens before the STM link starts |
+| STM flash | a switch at run time waits like every restart (no restart during a flash; while the STM's sector 0 is not written the restart routes refuse, §4.7 row 12); the boot-time switches (boot limit, crash loop) happen before the STM link starts, when no flash can run: the ESP restart before them already reset the STM |
 | Ping-pong | an automatic switch never goes back to the image that failed the last trial (§6.2 step 4); a manual switch is always allowed, and from a confirmed image its target runs a trial |
 
 ### 6.6 Coverage
@@ -774,6 +777,7 @@ event (reset reason `sw`).
 | A hung HTTP server on a confirmed image | no (as C++: the self-check runs during a trial only) |
 | Crash before `main`: bootloader handoff, flash mode or size, ESP-IDF startup, chip revision check, a component init function | **no**: the image loops in its early boot until a serial reflash. Covered only by the QEMU boot-chain test with the devices' bootloader and partition table before any device gets the image (risk 7.1) |
 | A defect that shows after the 120 s confirmation (leak after days, a rare route) | no; heap guard and TWDT restart the image, the manual switch back is the remedy while HTTP works |
+| A confirmed image that panics, hits a watchdog or hangs in its boot within 10 min of every start (a defect that the 120 s did not show, or one that a setting or the network triggers) | yes (F5): after 4 such boots in a row the other image runs on trial; not when the other image is the one that failed its last trial (while the RTC remembers it: a power cycle forgets it) |
 | A healthy-looking image that drives the valves wrong | no; manual switch back |
 | Fallback image that does not verify | no switch (§6.2 step 4). The ESP-IDF bootloader tries the other slot when the selected image does not load; the QEMU test of risk 7.1 confirms it for the devices' bootloader |
 | A genuine network outage during the 15 min | switches to the previous image although the new one was fine (as D§16 rolls back); the new image can be uploaded again |
@@ -816,7 +820,8 @@ image for the interop run.
 6. **Decision: new API surface.** `POST /api/system/ota/switch-back` (`{"confirm":"switch-back"}`;
    202 `{"result":"restarting"}`, 400 `confirm_required`, 409 `busy` / `restarting` /
    `no_fallback`), event 109 reason 7 (switch back, Info), event 107 arg1 -4 (the previous image
-   failed its trial; arg2 1 boot limit, 2 health), `409 upload_failed "image on trial"`. Event numbers
+   failed its trial; arg2 1 boot limit, 2 health, 3 crash loop after its confirmation, F5),
+   `409 upload_failed "image on trial"`. Event numbers
    and arguments are only appended (D§13). Recommendation: add the route and the event values to the
    C++ firmware too (2.1.8), so API.md and DESIGN.md stay one contract and a C++ image can switch
    back to a Rust one.

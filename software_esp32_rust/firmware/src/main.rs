@@ -117,7 +117,7 @@ fn main() {
     let app_shared = &shared.app;
     if !adapters::arm_boot_deadline(
         BOOT_DEADLINE_MS,
-        Box::new(move || app::boot_deadline(app_shared, system)),
+        Box::new(move || app::boot_deadline(app_shared, system, rtc)),
     ) {
         println!("boot deadline not armed");
     }

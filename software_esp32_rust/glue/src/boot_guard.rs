@@ -15,14 +15,22 @@
 //! fallback; every confirmation also marks the image valid in otadata (for a bootloader with
 //! rollback support); NVS is never erased, only the guard's keys are removed.
 //!
+//! A confirmed image that ends [`CRASH_LIMIT`] boots in a row with a panic, a watchdog reset or
+//! the boot deadline, each within [`STABLE_S`] of its start, is left for the other slot (F5 of
+//! docs/rust/REVIEW-ESP-SAFETY.md): only when that image verifies and did not fail the last
+//! trial the RTC mirror remembers; it boots on trial with the crashing image as its fallback.
+//! Power-on, brownout, pin and software restarts (user, upload, switch) end such a streak.
+//!
 //! Records (little endian, each with a CRC-32 over the bytes before it):
 //! - `otaOk` (NVS `vdmrev`, blob 16 B): "VDOK", the `AppId` of the last confirmed image.
 //! - `otaTrial` (NVS `vdmrev`, blob 32 B): "VDOT", version 1, state (1 trial, 2 switched back),
 //!   boots, flags (bit0 STM link required, bit1 a switched-away image is recorded), the `AppId`
 //!   on trial, the `AppId` the guard last switched away from, the fallback slot address.
-//! - guard mirror (RTC block offset 0, 28 B): "VBGD", the `AppId` on trial, boots, the
-//!   breadcrumb of the last switch (reason 1 boot limit, 2 health; 0 none), two zero bytes, the
-//!   `AppId` switched away from.
+//! - guard mirror (RTC block offset 0, 28 B): "VBGD", the `AppId` on trial (of a confirmed
+//!   image: that image), boots, the breadcrumb of the last switch (reason 1 boot limit, 2
+//!   health, 3 crash loop; 0 none), the crash streak of a confirmed image, flags (bit0 the boot
+//!   deadline restarted this boot, bit1 this boot ran [`STABLE_S`]), the `AppId` switched away
+//!   from. Images before F5 wrote the streak and flag bytes as zero and ignore them.
 //!
 //! The C++ firmware ignores all three; an OTA between C++ and Rust loses the RTC mirror (its CRC
 //! fails), which only restarts a boot count.
@@ -52,6 +60,12 @@ pub const BOOT_DEADLINE_MS: u32 = 60_000;
 /// (tools/rust/esp/app_id.py). A fallback is identified by its slot, so such an image (the legacy
 /// firmware) stays a valid fallback.
 pub const UNKNOWN_APP: AppId = AppId([0; 8]);
+/// Boots of a confirmed image in a row that end abnormally (panic, watchdog, boot deadline)
+/// before the guard leaves it for the other slot (F5).
+pub const CRASH_LIMIT: u8 = 4;
+/// A boot that has run this long ends the crash streak: its own end does not count
+/// ([`BootGuard::note_stable`]).
+pub const STABLE_S: u32 = 600;
 /// Place of the guard mirror in the RTC block.
 pub const MIRROR_OFFSET: usize = 0;
 /// Size of the guard mirror.
@@ -64,6 +78,9 @@ const STATE_TRIAL: u8 = 1;
 const STATE_SWITCHED_BACK: u8 = 2;
 const FLAG_STM: u8 = 1;
 const FLAG_AWAY: u8 = 2;
+/// Mirror flags: the boot deadline restarted the boot; the boot ran [`STABLE_S`].
+const FLAG_DEADLINE: u8 = 1;
+const FLAG_STABLE: u8 = 2;
 
 /// Why the guard left an image (the breadcrumb, event 107 arg2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +90,8 @@ pub enum SwitchReason {
     BootLimit = 1,
     /// 15 min without 120 s of health (D§16).
     Health = 2,
+    /// [`CRASH_LIMIT`] boots of the confirmed image in a row ended abnormally (F5).
+    CrashLoop = 3,
 }
 
 /// Who asks for the switch at run time.
@@ -92,6 +111,9 @@ pub enum GuardEvent {
     /// No switch possible (no valid fallback, or the fallback failed the last trial): arg1 -3,
     /// the image keeps running as confirmed.
     NoFallback,
+    /// A confirmed image in a crash loop that cannot be left (the other image does not verify
+    /// or failed the last trial): arg1 -3, arg2 3 (F5).
+    CrashLoopStays,
 }
 
 impl GuardEvent {
@@ -104,6 +126,7 @@ impl GuardEvent {
         match self {
             GuardEvent::PreviousImageFailed(r) => (-4, r as i32),
             GuardEvent::NoFallback => (-3, 0),
+            GuardEvent::CrashLoopStays => (-3, SwitchReason::CrashLoop as i32),
         }
     }
 }
@@ -137,6 +160,10 @@ struct Mirror {
     app: AppId,
     boots: u8,
     reason: u8,
+    /// F5: the crash streak of a confirmed image
+    streak: u8,
+    /// F5: FLAG_DEADLINE, FLAG_STABLE
+    flags: u8,
     away: AppId,
 }
 
@@ -205,6 +232,8 @@ fn encode_mirror(m: &Mirror) -> [u8; MIRROR_LEN] {
     r[4..12].copy_from_slice(&m.app.0);
     r[12] = m.boots;
     r[13] = m.reason;
+    r[14] = m.streak;
+    r[15] = m.flags;
     r[16..24].copy_from_slice(&m.away.0);
     put_crc(&mut r);
     r
@@ -215,6 +244,8 @@ fn decode_mirror(r: &[u8; MIRROR_LEN]) -> Option<Mirror> {
         app: app_at(r, 4),
         boots: r[12],
         reason: r[13],
+        streak: r[14],
+        flags: r[15],
         away: app_at(r, 16),
     })
 }
@@ -331,10 +362,14 @@ fn plan(i: &Inputs) -> Plan {
 /// The breadcrumb of a switch away from another image, for the log.
 fn breadcrumb(mirror: Option<Mirror>, app: AppId) -> Option<GuardEvent> {
     let m = mirror.filter(|m| m.away != app)?;
-    [SwitchReason::BootLimit, SwitchReason::Health]
-        .into_iter()
-        .find(|r| *r as u8 == m.reason)
-        .map(GuardEvent::PreviousImageFailed)
+    [
+        SwitchReason::BootLimit,
+        SwitchReason::Health,
+        SwitchReason::CrashLoop,
+    ]
+    .into_iter()
+    .find(|r| *r as u8 == m.reason)
+    .map(GuardEvent::PreviousImageFailed)
 }
 
 /// `otaStm`, read once and erased (a later boot of the same image does not see it).
@@ -358,9 +393,30 @@ fn write_trial(ns: Option<&mut impl NvsNamespace>, rtc: &impl Rtc, t: &TrialReco
             app: t.app,
             boots: t.boots,
             reason,
+            streak: 0,
+            flags: 0,
             away: if reason == 0 { AppId([0; 8]) } else { t.app },
         },
     );
+}
+
+/// `esp_reset_reason_t` of a boot that ended abnormally: panic (4), interrupt watchdog (5), task
+/// watchdog (6), other watchdogs (7).
+fn abnormal(reset_reason: u8) -> bool {
+    (4..=7).contains(&reset_reason)
+}
+
+/// F5: the crash streak of the confirmed image `app` at this boot: the abnormal ends of its boots
+/// in a row up to the one before this (a panic or watchdog reset, or a software restart by the
+/// boot deadline, each before [`STABLE_S`]); 0 after any other end.
+fn crash_streak(mirror: Option<Mirror>, app: AppId, reset_reason: u8) -> u8 {
+    let prev = mirror.filter(|m| m.app == app);
+    let flags = prev.map_or(0, |m| m.flags);
+    let ended_badly = abnormal(reset_reason) || flags & FLAG_DEADLINE != 0;
+    if !ended_badly || flags & FLAG_STABLE != 0 {
+        return 0;
+    }
+    prev.map_or(0, |m| m.streak).saturating_add(1)
 }
 
 /// Selects the slot at `address` and restarts. `confirm`: the image there becomes the confirmed
@@ -386,6 +442,38 @@ fn switch_and_restart<NS: NvsNamespace>(
     }
     drop(ns);
     system.restart()
+}
+
+/// F5, step 1 after [`CRASH_LIMIT`] abnormal ends in a row: the other slot when its image verifies
+/// and is not `away` (the image that failed the last trial), with the breadcrumb (reason 3) and
+/// no confirmed image: a glue image there boots on trial with this image as its fallback.
+/// Returns only when there is no such image or its selection is refused.
+fn leave_crash_loop<NS: NvsNamespace>(
+    ns: Option<NS>,
+    ota: &impl Ota,
+    rtc: &impl Rtc,
+    system: &impl System,
+    app: AppId,
+    away: Option<AppId>,
+) -> Option<NS> {
+    let target = ota
+        .other()
+        .filter(|o| o.app.is_some() && o.app != away && ota.verify(o.address));
+    let Some(target) = target else {
+        return ns;
+    };
+    store_mirror(
+        rtc,
+        &Mirror {
+            app,
+            boots: 0,
+            reason: SwitchReason::CrashLoop as u8,
+            streak: 0,
+            flags: 0,
+            away: app,
+        },
+    );
+    switch_and_restart(ns, ota, system, target.address, None)
 }
 
 impl BootGuard {
@@ -436,10 +524,31 @@ impl BootGuard {
         let old = ns.as_ref().and_then(read_trial);
         // step 1: the confirmed image
         if ns.as_ref().and_then(read_ok) == Some(app) {
+            // the image the guard last switched away from (it failed its trial): the mirror
+            // keeps it while the RTC holds, the trial record until this first confirmed boot
+            let away = mirror
+                .map(|m| m.away)
+                .filter(|a| *a != UNKNOWN_APP)
+                .or(old.and_then(|t| t.away));
             if let (Some(n), Some(_)) = (ns.as_mut(), old) {
                 n.remove(KEY_TRIAL);
             }
-            clear_mirror(rtc);
+            let streak = crash_streak(mirror, app, system.reset_reason());
+            if streak == CRASH_LIMIT {
+                ns = leave_crash_loop(ns, ota, rtc, system, app, away);
+                report.push(GuardEvent::CrashLoopStays);
+            }
+            store_mirror(
+                rtc,
+                &Mirror {
+                    app,
+                    boots: 0,
+                    reason: 0,
+                    streak,
+                    flags: 0,
+                    away: away.unwrap_or(UNKNOWN_APP),
+                },
+            );
             ota.mark_valid();
             return;
         }
@@ -531,6 +640,27 @@ impl BootGuard {
         self.confirm(ns.as_mut(), ota, rtc, app);
     }
 
+    /// F5, from the app thread once the image has run [`STABLE_S`]: the crash streak ends, and
+    /// the end of this boot, whatever it is, does not count.
+    pub fn note_stable<R: Rtc>(&self, rtc: &R) {
+        let Some(app) = self.app else {
+            return;
+        };
+        let mut m = load_mirror(rtc)
+            .filter(|m| m.app == app)
+            .unwrap_or(Mirror {
+                app,
+                boots: 0,
+                reason: 0,
+                streak: 0,
+                flags: 0,
+                away: UNKNOWN_APP,
+            });
+        m.streak = 0;
+        m.flags = FLAG_STABLE;
+        store_mirror(rtc, &m);
+    }
+
     /// The restart into an uploaded image (restart reason 1): no image stays confirmed. The
     /// uploaded image runs on trial by its own `AppId` anyway; this image, should another
     /// firmware (the C++ one) run in between and install it again, proves itself on trial
@@ -593,6 +723,16 @@ impl BootGuard {
             self.confirm(ns.as_mut(), ota, rtc, app);
         }
         GuardEvent::NoFallback
+    }
+}
+
+/// F5, from the boot deadline just before its restart: the mirror marks this boot as ended by
+/// the deadline, which the crash streak of a confirmed image counts (the restart itself is a
+/// software reset). Without a mirror (the guard stayed out) nothing counts.
+pub fn note_deadline_restart<R: Rtc>(rtc: &R) {
+    if let Some(mut m) = load_mirror(rtc) {
+        m.flags |= FLAG_DEADLINE;
+        store_mirror(rtc, &m);
     }
 }
 

@@ -115,6 +115,8 @@ fn records_round_trip_and_damaged_ones_count_as_absent() {
         app: APP_B,
         boots: 2,
         reason: 1,
+        streak: 0,
+        flags: 0,
         away: APP_B,
     };
     let r = encode_mirror(&m);
@@ -187,6 +189,8 @@ fn plan_steps_2_to_6() {
         app: APP_B,
         boots: 1,
         reason: 0,
+        streak: 0,
+        flags: 0,
         away: AppId([0; 8]),
     };
     let next = Inputs {
@@ -304,7 +308,18 @@ fn a_confirmed_image_runs_without_trial_and_drops_a_stale_record() {
     assert_eq!(trial_record(&dev.nvs), None);
     assert!(!dev.nvs.has(NVS_NAMESPACE, KEY_STM)); // erased at every boot
     assert_eq!(ok_record(&dev.nvs), Some(APP_A));
-    assert_eq!(mirror(&dev), None);
+    // F5: the mirror holds the crash streak of the confirmed image
+    assert_eq!(
+        mirror(&dev),
+        Some(Mirror {
+            app: APP_A,
+            boots: 0,
+            reason: 0,
+            streak: 0,
+            flags: 0,
+            away: UNKNOWN_APP,
+        })
+    );
     assert_eq!(
         dev.journal.entries(),
         vec![
@@ -348,6 +363,8 @@ fn a_new_image_starts_its_trial_with_the_uploading_image_as_fallback() {
             app: APP_B,
             boots: 1,
             reason: 0,
+            streak: 0,
+            flags: 0,
             away: AppId([0; 8]),
         })
     );
@@ -386,6 +403,8 @@ fn a_crash_loop_switches_back_after_three_boots() {
             app: APP_B,
             boots: 4,
             reason: 1,
+            streak: 0,
+            flags: 0,
             away: APP_B,
         })
     );
@@ -400,7 +419,18 @@ fn a_crash_loop_switches_back_after_three_boots() {
         vec![GuardEvent::PreviousImageFailed(SwitchReason::BootLimit)]
     );
     assert_eq!(trial_record(&dev.nvs), None);
-    assert_eq!(mirror(&dev), None);
+    // the breadcrumb is used up; the mirror keeps B as the image that failed (F5)
+    assert_eq!(
+        mirror(&dev),
+        Some(Mirror {
+            app: APP_A,
+            boots: 0,
+            reason: 0,
+            streak: 0,
+            flags: 0,
+            away: APP_B,
+        })
+    );
     board.reset(Reset::Software);
     drop(dev);
     let (_dev, r) = boot(&board);
@@ -677,6 +707,8 @@ fn a_new_image_carries_the_switched_away_id_of_another_record() {
             app: APP_B,
             boots: 4,
             reason: 1,
+            streak: 0,
+            flags: 0,
             away: APP_B,
         }),
     );
@@ -712,6 +744,8 @@ fn a_breadcrumb_of_the_running_image_itself_is_not_logged() {
             app: APP_B,
             boots: 4,
             reason: 2,
+            streak: 0,
+            flags: 0,
             away: APP_B,
         }),
     );
@@ -731,6 +765,8 @@ fn a_mirror_with_an_unknown_reason_is_not_logged() {
             app: APP_B,
             boots: 4,
             reason: 9,
+            streak: 0,
+            flags: 0,
             away: APP_B,
         }),
     );
@@ -870,6 +906,8 @@ fn a_health_rollback_switches_back_with_its_breadcrumb() {
             app: APP_B,
             boots: 1,
             reason: 2,
+            streak: 0,
+            flags: 0,
             away: APP_B,
         })
     );
@@ -1148,4 +1186,239 @@ fn the_first_rust_boot_after_the_cpp_firmware_has_it_as_fallback() {
     assert_eq!(ok_record(&dev.nvs), Some(APP_CPP));
     drop(dev);
     assert!(matches!(board.boot_any(), Booted::Foreign(a) if a == APP_CPP));
+}
+
+// ---------------------------------------------------------------- F5: confirmed crash loop
+
+/// A confirmed in slot 0 and selected, `other` in slot 1.
+fn confirmed_a(other: SlotImage) -> FakeBoard {
+    let board = FakeBoard::with_slots([SlotImage::glue(APP_A), other], 0);
+    board
+        .nvs()
+        .set_blob(NVS_NAMESPACE, KEY_OK, &encode_ok(APP_A));
+    board
+}
+
+/// `n` boots of the image in slot 0, each confirmed and ended with `end`.
+fn confirmed_boots(board: &FakeBoard, n: usize, end: Reset) {
+    for _ in 0..n {
+        let (dev, r) = boot(board);
+        assert_eq!(r.returned().1.verdict, BootVerdict::Confirmed);
+        assert_eq!(dev.ota.running().app, Some(APP_A));
+        board.reset(end);
+    }
+}
+
+#[test]
+fn abnormal_ends_are_the_panic_and_the_watchdog_resets() {
+    // unknown, power-on, pin, software, panic, interrupt watchdog, task watchdog, other
+    // watchdogs, deep sleep, brownout, SDIO
+    let want = [
+        false, false, false, false, true, true, true, true, false, false, false,
+    ];
+    for (r, w) in (0u8..).zip(want) {
+        assert_eq!(abnormal(r), w, "{r}");
+    }
+}
+
+#[test]
+fn a_confirmed_image_that_crashes_four_boots_in_a_row_runs_the_other_on_trial() {
+    let board = confirmed_a(SlotImage::glue(APP_B));
+    for (n, end) in [Reset::Panic, Reset::TaskWdt, Reset::Panic, Reset::Panic]
+        .into_iter()
+        .enumerate()
+    {
+        let (dev, r) = boot(&board);
+        let (g, report) = r.returned();
+        assert_eq!(report.verdict, BootVerdict::Confirmed);
+        assert_eq!(events(&report), vec![]);
+        assert!(!g.on_trial());
+        assert_eq!(
+            mirror(&dev),
+            Some(Mirror {
+                app: APP_A,
+                boots: 0,
+                reason: 0,
+                streak: n as u8,
+                flags: 0,
+                away: UNKNOWN_APP,
+            })
+        );
+        assert!(dev.ota.knobs().verifies.is_empty());
+        board.reset(end);
+    }
+    // the fourth abnormal end in a row: B verifies, the switch to it confirms nothing
+    let (dev, r) = boot(&board);
+    assert_eq!(r, Ended::Reset(Reset::Software));
+    assert_eq!(dev.ota.knobs().verifies, vec![SLOT_ADDR[1]]);
+    assert_eq!(dev.ota.knobs().set_boots, vec![SLOT_ADDR[1]]);
+    assert_eq!(ok_record(&dev.nvs), None);
+    assert_eq!(
+        mirror(&dev),
+        Some(Mirror {
+            app: APP_A,
+            boots: 0,
+            reason: 3,
+            streak: 0,
+            flags: 0,
+            away: APP_A,
+        })
+    );
+    drop(dev);
+    // B runs on trial with A as its fallback and tells why
+    let (dev, r) = boot(&board);
+    assert_eq!(dev.ota.running().app, Some(APP_B));
+    let (g, report) = r.returned();
+    assert_eq!(report.verdict, trial(1, false));
+    assert!(g.on_trial());
+    assert_eq!(
+        events(&report),
+        vec![GuardEvent::PreviousImageFailed(SwitchReason::CrashLoop)]
+    );
+    assert_eq!(
+        GuardEvent::PreviousImageFailed(SwitchReason::CrashLoop).args(),
+        (-4, 3)
+    );
+    let t = trial_record(&dev.nvs).unwrap();
+    assert_eq!((t.app, t.boots, t.fallback), (APP_B, 1, SLOT_ADDR[0]));
+}
+
+#[test]
+fn the_crash_streak_ends_with_any_other_end_of_a_boot() {
+    for other in [Reset::Software, Reset::Pin, Reset::PowerOn] {
+        let board = confirmed_a(SlotImage::glue(APP_B));
+        confirmed_boots(&board, 3, Reset::Panic);
+        confirmed_boots(&board, 1, other);
+        confirmed_boots(&board, 3, Reset::Panic);
+        let (dev, r) = boot(&board);
+        assert_eq!(r.returned().1.verdict, BootVerdict::Confirmed, "{other:?}");
+        assert_eq!(mirror(&dev).unwrap().streak, 3, "{other:?}");
+        assert!(dev.ota.knobs().set_boots.is_empty(), "{other:?}");
+    }
+}
+
+#[test]
+fn the_boot_deadline_counts_and_a_boot_of_ten_minutes_does_not() {
+    let board = confirmed_a(SlotImage::glue(APP_B));
+    // three boots end by the boot deadline: a software restart the mirror marks
+    for n in 0..3u8 {
+        let (dev, r) = boot(&board);
+        let _ = r.returned();
+        assert_eq!(mirror(&dev).unwrap().streak, n);
+        note_deadline_restart(&dev.rtc);
+        note_deadline_restart(&dev.rtc); // a mark, not a toggle
+        assert_eq!(mirror(&dev).unwrap().flags, FLAG_DEADLINE);
+        board.reset(Reset::Software);
+    }
+    // the fourth boot runs ten minutes, then panics: its end does not count
+    let (dev, r) = boot(&board);
+    let (g, _) = r.returned();
+    assert_eq!(mirror(&dev).unwrap().streak, 3);
+    g.note_stable(&dev.rtc);
+    assert_eq!(
+        mirror(&dev).map(|m| (m.app, m.streak, m.flags)),
+        Some((APP_A, 0, FLAG_STABLE))
+    );
+    board.reset(Reset::Panic);
+    drop(dev);
+    let (dev, r) = boot(&board);
+    let _ = r.returned();
+    assert_eq!(mirror(&dev).unwrap().streak, 0);
+    assert!(dev.ota.knobs().set_boots.is_empty());
+}
+
+#[test]
+fn a_crash_loop_stays_without_another_image_that_verifies() {
+    for other in [SlotImage::broken(Some(APP_B)), SlotImage::EMPTY] {
+        let board = confirmed_a(other);
+        confirmed_boots(&board, 4, Reset::Panic);
+        let (dev, r) = boot(&board);
+        let (_, report) = r.returned();
+        assert_eq!(report.verdict, BootVerdict::Confirmed);
+        assert_eq!(events(&report), vec![GuardEvent::CrashLoopStays]);
+        assert!(dev.ota.knobs().set_boots.is_empty());
+        assert_eq!(ok_record(&dev.nvs), Some(APP_A));
+        assert_eq!(mirror(&dev).map(|m| (m.streak, m.reason)), Some((4, 0)));
+        // the next crash says nothing more
+        board.reset(Reset::Panic);
+        drop(dev);
+        let (dev, r) = boot(&board);
+        assert_eq!(events(&r.returned().1), vec![]);
+        assert_eq!(mirror(&dev).unwrap().streak, 5);
+    }
+    assert_eq!(GuardEvent::CrashLoopStays.args(), (-3, 3));
+    // a selection the bootloader data refuses: the image keeps running, confirmed
+    let board = confirmed_a(SlotImage::glue(APP_B));
+    confirmed_boots(&board, 4, Reset::Panic);
+    let dev = board.boot();
+    dev.ota.knobs().set_boot_err = Some(EspErr::OTA_VALIDATE_FAILED);
+    let r = decide(&dev);
+    assert_eq!(events(&r.returned().1), vec![GuardEvent::CrashLoopStays]);
+    assert_eq!(dev.ota.knobs().set_boots, vec![SLOT_ADDR[1]]);
+    assert_eq!(ok_record(&dev.nvs), Some(APP_A));
+    assert_eq!(mirror(&dev).map(|m| (m.streak, m.reason)), Some((4, 0)));
+}
+
+#[test]
+fn a_crash_loop_does_not_go_back_to_the_image_that_failed_its_trial() {
+    // B failed its trial at the boot limit: the guard went back to A, confirmed
+    let board = uploaded_b();
+    let _ = crash_loop(&board, 3, Reset::Panic);
+    let (_dev, r) = boot(&board);
+    assert_eq!(r, Ended::Reset(Reset::Software));
+    confirmed_boots(&board, 4, Reset::Panic);
+    let (dev, r) = boot(&board);
+    let (g, report) = r.returned();
+    assert_eq!(events(&report), vec![GuardEvent::CrashLoopStays]);
+    assert!(dev.ota.knobs().set_boots.is_empty());
+    assert_eq!(mirror(&dev).unwrap().away, APP_B);
+    // a boot of 10 min ends the streak and keeps the image that failed
+    g.note_stable(&dev.rtc);
+    assert_eq!(
+        mirror(&dev).map(|m| (m.app, m.streak, m.away)),
+        Some((APP_A, 0, APP_B))
+    );
+    // a power cycle forgets it: the next crash loop gives B a new trial
+    board.reset(Reset::PowerOn);
+    drop(dev);
+    confirmed_boots(&board, 4, Reset::Panic);
+    let (dev, r) = boot(&board);
+    assert_eq!(r, Ended::Reset(Reset::Software));
+    assert_eq!(dev.ota.knobs().set_boots, vec![SLOT_ADDR[1]]);
+}
+
+#[test]
+fn a_ten_minute_boot_and_the_boot_deadline_need_the_guard() {
+    // the image of this boot ran its trial and was confirmed: the mark makes the mirror anew
+    let board = uploaded_b();
+    let (dev, r) = boot(&board);
+    let (mut g, _) = r.returned();
+    g.mark_valid(&dev.nvs, &dev.ota, &dev.rtc);
+    assert_eq!(mirror(&dev), None);
+    g.note_stable(&dev.rtc);
+    assert_eq!(
+        mirror(&dev),
+        Some(Mirror {
+            app: APP_B,
+            boots: 0,
+            reason: 0,
+            streak: 0,
+            flags: FLAG_STABLE,
+            away: UNKNOWN_APP,
+        })
+    );
+    // an image the guard does not know: nothing is marked
+    let unknown = SlotImage {
+        app: None,
+        valid: true,
+        foreign: false,
+    };
+    let board = FakeBoard::with_slots([unknown, SlotImage::glue(APP_B)], 0);
+    board.reset(Reset::Software);
+    let (dev, r) = boot(&board);
+    let (g, _) = r.returned();
+    let before = dev.rtc.snapshot();
+    g.note_stable(&dev.rtc);
+    note_deadline_restart(&dev.rtc);
+    assert_eq!(dev.rtc.snapshot(), before);
 }

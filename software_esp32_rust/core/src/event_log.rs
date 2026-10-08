@@ -92,7 +92,8 @@ pub enum EventCode {
     /// arg1 image size; text new version if known
     EspOtaDone = 106,
     /// arg1 Update error code; -4 (boot guard of the Rust firmware): the previous image failed
-    /// its trial, arg2 1 boot limit, 2 health
+    /// its trial, arg2 1 boot limit, 2 health, 3 crash loop after its confirmation; -3: no
+    /// switch possible (arg2 3: out of such a crash loop)
     EspOtaFailed = 107,
     /// OTA image confirmed; arg1 seconds after boot
     AppMarkedValid = 108,

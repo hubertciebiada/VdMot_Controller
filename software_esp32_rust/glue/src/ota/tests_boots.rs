@@ -1,13 +1,14 @@
 //! Multi-boot scenarios of ota with the boot guard (new): an upload that boots on trial and is
 //! confirmed by its health, a trial that fails its health and switches back (the breadcrumb in
 //! RTC memory reaches the log of the fallback image), crashes of an image on trial, restarts
-//! during a trial, and the manual switch back (restart reason 7).
+//! during a trial, the manual switch back (restart reason 7) and the crash loop of a confirmed
+//! image (F5).
 #![allow(clippy::large_stack_frames)]
 
 use super::support::*;
 use super::*;
-use crate::boot_guard::{BootVerdict, GuardEvent, SwitchReason};
-use crate::port::EspErr;
+use crate::boot_guard::{BootVerdict, GuardEvent, SwitchReason, MIRROR_LEN, MIRROR_OFFSET};
+use crate::port::{EspErr, Rtc};
 use crate::testkit::board::{Booted, APP_A, APP_B, APP_CPP};
 use crate::testkit::ota::SLOT_ADDR;
 use crate::testkit::{run, Ended, FakeBoard, FakeMd5, Reset, SlotImage};
@@ -305,4 +306,52 @@ fn a_manual_switch_back_during_a_trial_that_cannot_select_the_fallback_ends_the_
     rig.service_seconds(&mut svc, 32_000, 1_000_000, false, false);
     assert!(!rig.shared.restart_pending());
     assert!(rig.upload().upload_begin(10, b"")); // uploads are allowed again
+}
+
+#[test]
+fn a_boot_of_ten_minutes_ends_the_crash_streak_and_four_early_crashes_leave_the_image() {
+    // F5 (Rust only): boots of the confirmed A that end with a panic within 10 min of their start
+    // count; once a boot has run 10 min, the app thread's service tells the boot guard, which
+    // ends the streak. The fourth early end in a row switches to B in main: B runs a trial with
+    // A as its fallback and logs why.
+    let board = FakeBoard::new();
+    let rig = Rig::boot(&board); // A confirms itself (no other image)
+    board.ota().store().slots[1] = SlotImage::glue(APP_B);
+    board.reset(Reset::Panic);
+    drop(rig);
+    // this boot runs 10 min, then panics: its end does not count
+    let rig = Rig::boot(&board);
+    let mut svc = rig.begun();
+    rig.service_seconds(&mut svc, 0, 599_000, false, false);
+    assert_eq!(rig.dev.rtc.snapshot()[14..16], [1, 0]); // the streak, the flags
+    rig.service_seconds(&mut svc, 600_000, 600_000, false, false);
+    assert_eq!(rig.dev.rtc.snapshot()[14..16], [0, 2]);
+    // once per boot: a later pass leaves the mirror alone
+    let marked = rig.dev.rtc.snapshot();
+    rig.dev.rtc.store(MIRROR_OFFSET, &[0; MIRROR_LEN]);
+    rig.service_seconds(&mut svc, 601_000, 601_000, false, false);
+    assert_eq!(rig.dev.rtc.snapshot()[..MIRROR_LEN], [0; MIRROR_LEN]);
+    rig.dev.rtc.store(MIRROR_OFFSET, &marked[..MIRROR_LEN]);
+    board.reset(Reset::Panic);
+    drop(svc);
+    drop(rig);
+    // four boots that end with a panic after a minute
+    for _ in 0..4 {
+        let rig = Rig::boot(&board);
+        assert_eq!(rig.guard.verdict(), BootVerdict::Confirmed);
+        let mut svc = rig.begun();
+        rig.service_seconds(&mut svc, 0, 60_000, false, false);
+        board.reset(Reset::Panic);
+    }
+    let dev = board.boot();
+    let r = run(|| BootGuard::boot(&dev.nvs, &dev.ota, &dev.rtc, &dev.system));
+    assert_eq!(r, Ended::Reset(Reset::Software)); // the guard switched in main
+    assert_eq!(dev.ota.knobs().set_boots, vec![SLOT_ADDR[1]]);
+    drop(dev);
+    let rig = Rig::boot(&board);
+    assert_eq!(rig.dev.ota.running().app, Some(APP_B));
+    assert_eq!(rig.guard.verdict(), trial(1, false)); // with A as its fallback
+    let _svc = rig.begun();
+    let e = rig.host.first(EventCode::EspOtaFailed);
+    assert_eq!((e.arg1, e.arg2), (-4, 3)); // A crashed after its confirmation
 }

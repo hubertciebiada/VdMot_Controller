@@ -8,8 +8,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::rig::{FakeThreads, Rig};
+use super::rig::{FakeHost, FakeThreads, Rig};
 use super::*;
+use crate::boot_guard::BootGuard;
 use crate::port::HeapStats;
 use crate::testkit::{lock as tlock, run, Ended, FakeBoard, FakeClock, FakeWatchdog, Reset};
 use vdm_esp_core::common::copy_string;
@@ -718,16 +719,38 @@ fn task_the_heap_guard_ignores_a_heap_at_the_threshold() {
 
 #[test]
 fn boot_deadline_restarts_a_boot_that_never_reached_the_app_thread() {
-    // Rust addition (GLUE-DESIGN-ESP.md 6.3): setup returned, the app thread did not run
-    let rig = Rig::new();
+    // Rust addition (GLUE-DESIGN-ESP.md 6.3): setup returned, the app thread did not run. The
+    // second boot of the image is a confirmed one: the boot guard wrote its mirror (F5).
+    let board = FakeBoard::new();
+    let first = board.boot();
+    let _ = run(|| BootGuard::boot(&first.nvs, &first.ota, &first.rtc, &first.system));
+    drop(first);
+    board.reset(Reset::Software);
+    let dev = board.boot();
+    let _ = run(|| BootGuard::boot(&dev.nvs, &dev.ota, &dev.rtc, &dev.system));
+    let rig = Rig {
+        host: FakeHost::new(dev.journal.clone()),
+        dev,
+        shared: AppShared::new(),
+    };
     let mut app = rig.app();
     rig.setup(&mut app);
     assert!(!rig.shared.app_running());
+    let mut before = [0u8; crate::boot_guard::MIRROR_LEN];
+    rig.dev.rtc.load(RTC_BOOT_GUARD, &mut before);
+    assert_eq!(&before[..4], b"VBGD");
+    assert_eq!(before[15], 0);
     assert_eq!(
-        run(|| boot_deadline(&rig.shared, &rig.dev.system)),
+        run(|| boot_deadline(&rig.shared, &rig.dev.system, &rig.dev.rtc)),
         Ended::Reset(Reset::Software)
     );
     assert_eq!(rig.dev.journal.of("esp_restart").len(), 1);
+    // F5: the mirror says the deadline ended this boot, the rest of it stays
+    let mut after = [0u8; crate::boot_guard::MIRROR_LEN];
+    rig.dev.rtc.load(RTC_BOOT_GUARD, &mut after);
+    assert_eq!(after[15], 1);
+    assert_eq!(after[..14], before[..14]);
+    assert_eq!(after[16..24], before[16..24]);
 }
 
 #[test]
@@ -737,11 +760,13 @@ fn boot_deadline_is_disarmed_by_the_first_pass_of_the_app_thread() {
     rig.setup(&mut app);
     rig.run_app(&mut app, 1);
     assert!(rig.shared.app_running());
+    let before = rig.dev.rtc.snapshot();
     assert_eq!(
-        run(|| boot_deadline(&rig.shared, &rig.dev.system)),
+        run(|| boot_deadline(&rig.shared, &rig.dev.system, &rig.dev.rtc)),
         Ended::Returned(())
     );
     assert!(rig.dev.journal.of("esp_restart").is_empty());
+    assert_eq!(rig.dev.rtc.snapshot(), before);
 }
 
 #[test]

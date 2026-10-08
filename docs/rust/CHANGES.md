@@ -30,6 +30,12 @@ The first Rust release, ESP32 and STM32. How to install it and how to go back:
   60 s is restarted and counts as a boot) and after 15 min without 120 s of health (restart
   reason 4). `/api/health` shows `ota` during the trial
   ([GLUE-DESIGN-ESP.md §6](GLUE-DESIGN-ESP.md#6-boot-guard)).
+- A confirmed image whose boots end four times in a row with a crash, a watchdog reset or a
+  start-up hang, each within 10 min of its start, is left for the image of the other slot when
+  that image verifies and is not the one that failed the last trial: a Rust image there runs on
+  trial with the crashing image as its fallback, the C++ firmware just runs
+  ([REVIEW-ESP-SAFETY.md](REVIEW-ESP-SAFETY.md) F5,
+  [GLUE-DESIGN-ESP.md §6.2](GLUE-DESIGN-ESP.md#62-decision-at-boot)).
 - An ESP upload during the trial is refused with `409 upload_failed` "image on trial"
   ([GLUE-DESIGN-ESP.md §4.7](GLUE-DESIGN-ESP.md#47-behaviour-that-changes), row 10).
 - New route `POST /api/system/ota/switch-back` with `{"confirm":"switch-back"}`: `202
@@ -39,8 +45,9 @@ The first Rust release, ESP32 and STM32. How to install it and how to go back:
   ([GLUE-DESIGN-ESP.md §6.3](GLUE-DESIGN-ESP.md#63-at-run-time), [§7](GLUE-DESIGN-ESP.md#7-open-risks-and-decisions) item 6).
 - Events: restart reason 7 "switch back" (`reboot_requested` arg1 7, Info; C++ 2.1.7 names it
   "unknown"); `esp_ota_failed` arg1 -4 when the image before failed its trial (arg2 1 boot
-  limit, 2 health). `esp_ota_failed` arg1 -3 (no switch possible, the image runs on as
-  confirmed) also comes when the other slot holds the image that failed the last trial
+  limit, 2 health, 3 crash loop after its confirmation). `esp_ota_failed` arg1 -3 (no switch
+  possible, the image runs on as confirmed; arg2 3 out of a crash loop) also comes when the
+  other slot holds the image that failed the last trial
   ([PORT-NOTES.md](PORT-NOTES.md#event_log), event_log;
   [GLUE-DESIGN-ESP.md §6.2](GLUE-DESIGN-ESP.md#62-decision-at-boot)).
 - A factory reset keeps the boot guard's records (`otaOk`, `otaTrial`) besides the factory latch

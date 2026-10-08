@@ -31,7 +31,7 @@ use vdm_esp_core::restart_gate::{RestartGate, RestartGateStep};
 use vdm_esp_core::stm_types::StmSaveState;
 use vdm_esp_core::sys_health::http_status_ok;
 
-use crate::boot_guard::{BootGuard, BootReport, BootVerdict, SwitchCause};
+use crate::boot_guard::{BootGuard, BootReport, BootVerdict, SwitchCause, STABLE_S};
 use crate::port::{Clock, Ota, Platform, System, TcpConnector, TcpRead, TcpStream};
 use update::{Update, UPDATE_SIZE_UNKNOWN};
 
@@ -425,6 +425,8 @@ pub struct OtaService<'a, P: Platform, H: OtaHost> {
     gate: RestartGate,
     /// D9: the due restart logged that it waits for the STM's sector 0
     deferral_logged: bool,
+    /// F5: the boot has run [`STABLE_S`] and told the boot guard
+    stable_noted: bool,
 }
 
 impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
@@ -438,6 +440,7 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
             validator: OtaValidator::default(),
             gate: RestartGate::default(),
             deferral_logged: false,
+            stable_noted: false,
         }
     }
 
@@ -530,8 +533,12 @@ impl<'a, P: Platform, H: OtaHost> OtaService<'a, P, H> {
     /// server runs, every 10 s), the validator: MarkValid confirms the image (event 108),
     /// Rollback requests restart reason 4 with the missing checks through the restart path.
     /// `net_ok`: the network check of `NetShared::ota_net_ok`; `web_started`: the HTTP server
-    /// runs.
+    /// runs. F5: once the boot has run [`STABLE_S`], the boot guard's crash streak ends.
     pub fn service(&mut self, now_ms: u32, net_ok: bool, link_up: bool, web_started: bool) {
+        if !self.stable_noted && self.ports.clock.uptime_s() >= STABLE_S {
+            self.stable_noted = true;
+            self.guard.note_stable(self.ports.rtc);
+        }
         if self.validator.self_check_due(web_started, now_ms) && self.host.net_is_up() {
             let ok = self.self_check();
             self.validator.on_self_check(ok, now_ms);

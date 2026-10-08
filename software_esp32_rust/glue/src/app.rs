@@ -35,7 +35,7 @@ use vdm_esp_core::version::firmware_version;
 
 use crate::board::{FACTORY_PIN_SETTLE_MS, FACTORY_RESET_HOLD_MS, FACTORY_RESET_SAMPLE_MS};
 use crate::heap::{boot_block, try_block, Block};
-use crate::port::{Clock, InputPin, Platform, System, Watchdog};
+use crate::port::{Clock, InputPin, Platform, Rtc, System, Watchdog};
 use crate::shared::{AppShared, MONITORED_TASKS};
 use crate::storage::LoadDetails;
 
@@ -295,9 +295,11 @@ pub fn spawn_tasks<'a, W, C, S, A, M>(
 /// The boot deadline (GLUE-DESIGN-ESP.md 6.3, 6.4): `main` arms a one-shot timer of
 /// [`crate::boot_guard::BOOT_DEADLINE_MS`] at its start and calls this when it fires. An image
 /// that hangs in its boot (`setup` never reached the first pass of the app thread) restarts, a
-/// boot the boot guard counts; once the app thread runs, nothing happens.
-pub fn boot_deadline(shared: &AppShared, system: &impl System) {
+/// boot the boot guard counts (on trial) or an abnormal end of a confirmed image's boot (F5: the
+/// mirror in `rtc` says so); once the app thread runs, nothing happens.
+pub fn boot_deadline(shared: &AppShared, system: &impl System, rtc: &impl Rtc) {
     if !shared.app_running() {
+        crate::boot_guard::note_deadline_restart(rtc);
         system.restart();
     }
 }
