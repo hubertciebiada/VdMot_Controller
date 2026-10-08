@@ -74,6 +74,18 @@ impl IdLayout {
             len,
         }
     }
+
+    /// `len` bytes of the block from `offset` on, as their flash address and length (the
+    /// version and the tag the application reads from flash); an empty span at the block when
+    /// they do not lie inside it.
+    pub const fn flash_span(&self, offset: usize, len: usize) -> (u32, usize) {
+        if offset.saturating_add(len) > self.len {
+            (ID_BLOCK_ADDR, 0)
+        } else {
+            // usize is 32 bits on the device, and an offset inside a block is far below 4 GiB
+            (ID_BLOCK_ADDR.wrapping_add(offset as u32), len)
+        }
+    }
 }
 
 // the longest version and tag fit, so a valid block never exceeds its room

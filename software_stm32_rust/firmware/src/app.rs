@@ -13,7 +13,7 @@ use embassy_stm32::usart::{Config as UartConfig, Uart};
 use stm32_metapac as pac;
 use vdm_stm_boot::capture::read_guard;
 use vdm_stm_boot::stage::probe_app_hse;
-use vdm_stm_boot::BootToken;
+use vdm_stm_boot::{watchdog, BootToken};
 use vdm_stm_glue::board::BoardRev;
 use vdm_stm_glue::communication::FirmwareId;
 use vdm_stm_glue::eeprom24::{I2cEeprom, DEVICEADDRESS};
@@ -27,7 +27,7 @@ use vdm_stm_glue::sysstat::Sysstat;
 use vdm_stm_glue::system::{Controller, Hardware, Shared};
 
 use crate::board::{self, Fw, FwAdc, FwBoard, FwNoinit, FwTimer, FwUsart, FwWatchdog};
-use crate::boot_hw::{id_field, watchdog_start, Regs};
+use crate::boot_hw::{id_field, Regs};
 use crate::i2c::FwI2c;
 use crate::isr;
 use crate::one_wire::FwOneWire;
@@ -42,7 +42,7 @@ const BOARD: BoardRev = BoardRev::C2;
 #[inline(never)]
 pub fn run(token: BootToken) -> ! {
     // `IWatchdog.begin(8000000)` of setup_system(), before the clock set-up it now covers
-    watchdog_start();
+    watchdog::start(&mut Regs);
     let hse = probe_app_hse(&mut Regs, token.hse());
     fault::stack_guard();
     let p = embassy_stm32::init(clocks::config(hse));

@@ -23,10 +23,9 @@ use vdm_stm_boot::fault_record::{
     FaultRecord, KIND_BUS_FAULT, KIND_HARD_FAULT, KIND_MEM_MANAGE, KIND_NMI, KIND_PANIC,
     KIND_UNEXPECTED, KIND_USAGE_FAULT, RECORD_WORDS,
 };
+use vdm_stm_boot::watchdog::KEY_START;
 
 use crate::boot_hw::{iwdg_key, ENA_PORT_A_MASK, ENA_PORT_B_MASK, PSU_PB_MASK};
-
-const IWDG_START: u16 = 0xCCCC;
 
 /// Rust-only record (no C++ counterpart), in cortex-m-rt's `.uninit` outside the C++ cells.
 #[link_section = ".uninit.vdm_fault"]
@@ -79,7 +78,7 @@ fn stop(kind: u32, pc: u32, lr: u32, xpsr: u32) -> ! {
     cortex_m::interrupt::disable();
     outputs_off();
     record(kind, pc, lr, xpsr);
-    iwdg_key(IWDG_START);
+    iwdg_key(KEY_START);
     halt()
 }
 

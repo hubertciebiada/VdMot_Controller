@@ -17,6 +17,7 @@ use embassy_time::{block_for, Duration, Instant};
 use stm32_metapac as pac;
 use stm32_metapac::gpio::regs::Bsrr;
 use stm32_metapac::timer::vals::Urs;
+use vdm_stm_boot::watchdog::KEY_RELOAD;
 use vdm_stm_glue::eeprom24::I2cEeprom;
 use vdm_stm_glue::hal::{
     Clock, ControlTimer, CurrentAdc, In, NoinitStore, Out, Pins, RevIrq, System, Watchdog,
@@ -163,7 +164,7 @@ pub struct FwWatchdog;
 
 impl Watchdog for FwWatchdog {
     fn reload(&mut self) {
-        iwdg_key(0xAAAA);
+        iwdg_key(KEY_RELOAD);
     }
 }
 

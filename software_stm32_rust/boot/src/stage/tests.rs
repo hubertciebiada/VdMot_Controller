@@ -11,7 +11,7 @@
 use super::*;
 use crate::app_check::{record, APP_MAX_LEN};
 use crate::capture::{read_counter, CSR_IWDGRSTF, CSR_PINRSTF, CSR_PORRSTF};
-use crate::test_support::{Ev, Fake};
+use crate::test_support::{expect_jump, Ev, Fake, Iwdg};
 use vdm_stm_core::system_stats::{BootReason, RESET_COUNTER_MAGIC};
 
 fn token(end: BootEnd) -> BootToken {
@@ -154,6 +154,66 @@ fn the_watchdog_starts_once_after_a_window_without_handshake() {
     // the window ran its 3001 calls before
     let begin = fake.times_of(&Ev::UartBegin(BRR_HSE))[0];
     assert!(starts[0] - begin > 3_010_000, "{}", starts[0] - begin);
+}
+
+#[test]
+fn the_watchdog_gets_the_values_of_iwatchdog_begin() {
+    let mut fake = Fake::new();
+    let _ = token(run(&mut fake));
+    assert_eq!(
+        fake.iwdg,
+        [
+            Iwdg::Key(0xCCCC),
+            Iwdg::Key(0x5555),
+            Iwdg::Pr(4),
+            Iwdg::Rlr(3999),
+            Iwdg::Key(0xAAAA)
+        ]
+    );
+}
+
+#[test]
+fn boot_hands_the_token_of_a_window_without_handshake_to_the_application() {
+    let mut booted = Fake::new();
+    booted.csr = CSR_PINRSTF;
+    let mut ran = Fake::new();
+    ran.csr = CSR_PINRSTF;
+    let t = boot(&mut booted);
+    assert_eq!(t.reset().reason, BootReason::Pin);
+    assert_eq!(t, token(run(&mut ran)));
+    // the same steps as run(), no jump
+    assert_eq!(booted.events(), ran.events());
+    assert_eq!(booted.count(|e| *e == Ev::HsiOn || *e == Ev::Bootload), 0);
+}
+
+#[test]
+fn boot_jumps_into_the_rom_bootloader_after_beefit() {
+    let mut fake = Fake::new();
+    fake.send(30_000, b"DEADBEEF\n");
+    assert!(expect_jump(|| {
+        let _ = boot(&mut fake);
+    }));
+    assert_eq!(fake.tx_bytes, b"BEEFIT\r\n");
+    let ev = fake.events();
+    assert_eq!(
+        ev[index_of(&fake, &Ev::HsiOn)..],
+        [
+            Ev::HsiOn,
+            Ev::CfgrReset,
+            Ev::OscillatorsOff,
+            Ev::TickStop,
+            Ev::IrqDisable,
+            Ev::SyscfgOn,
+            Ev::SystemMemoryAt0,
+            Ev::Bootload
+        ]
+    );
+    // the reply is out (TC) and its 200 ms have passed before the clocks change
+    let after_reply = fake.times_of(&Ev::HsiOn)[0] - fake.times_of(&Ev::TcPoll)[0];
+    assert!(after_reply > 199_000, "{after_reply}");
+    // B6: no IWDG for the ROM bootloader session; USART1 stays as the reply left it
+    assert_eq!(fake.count(|e| *e == Ev::WatchdogStart), 0);
+    assert_eq!(fake.count(|e| *e == Ev::UartEnd), 0);
 }
 
 #[test]

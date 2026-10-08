@@ -42,7 +42,8 @@ Rules:
   read from the hardware or on state, a poll, a retry, a bounded wait and a misuse check are
   glue (application stage) or boot crate (boot stage: it stays in sector 0, D9), each behind a
   trait whose calls are single register accesses (`I2cRegs`, `UsartRegs`, `OneWirePin`,
-  `CellCore`). The exceptions are listed below the table of `firmware/` in §1.2.
+  `CellCore`; `ClockIo`, `BootIo`, `IwdgIo`, `JumpIo`). The exceptions are listed below the
+  table of `firmware/` in §1.2.
 - `unsafe` only in `firmware/src/{main.rs, boot_hw.rs, isr.rs, noinit.rs, fault.rs}`, each
   block with a `SAFETY:` comment.
 
@@ -64,8 +65,9 @@ Rules:
 | `DS2438.cpp` (467) | `ds2438.rs` | glue | `setAddress`, `readVAD` |
 | `terminal.cpp` / `.h` (517 / 58) | `terminal.rs` | glue | §4.2 |
 | `sysstat.cpp` (78) | `capture.rs`; `sysstat.rs` | boot; glue | capture before the window; uptime and safe mode in the loop |
-| `otasupport.cpp` (97) | `window.rs`; `boot_hw.rs` | boot; fw | logic; registers |
-| `boot_jump.cpp` (118) | `boot_hw.rs` | fw | |
+| `otasupport.cpp` (97) | `window.rs`, `uart.rs`; `boot_hw.rs` | boot; fw | logic; registers |
+| `boot_jump.cpp` (118) | `jump.rs`; `boot_hw.rs` | boot; fw | the sequence and its bounded waits; registers |
+| IWatchdog (STM32duino library) | `watchdog.rs`; `boot_hw.rs` | boot; fw | `begin(8000000)`; registers |
 | `hardware.h`, `compile_time.h` | `board.rs`; `build.rs` | glue; fw | pin map, `BoardRev` (C1/C2 MUX level); ID block, version |
 | Arduino `Print`, `HardwareSerial` | `print.rs`, `serial.rs` | glue | number formatting; rings, HAL UART error codes, the USART interrupt over `UsartRegs` |
 | STM32 core interrupt priorities (`UART_IRQ_PRIO`, `EXTI_IRQ_PRIO`, `TIM_IRQ_PRIO`), `__disable_irq` sections | `irq.rs` | glue | priorities, which context blocks an interrupt, the access protocol of the shared motor state (§2.3) |
@@ -78,7 +80,7 @@ What stays in `firmware/` (embassy and PAC, no decisions):
 | file | content |
 |---|---|
 | `main.rs` | `#[entry]`: `boot::run()`, then `app::run(token)`; nothing else |
-| `boot_hw.rs` | `BootIo` on registers: RCC, GPIOA/C, USART1 polled, SysTick, ID block reads, the jump |
+| `boot_hw.rs` | the register traits of the boot crate (`ClockIo`, `BootIo`, `IwdgIo`, `JumpIo`, `FlashRead`, `BootHw`) on RCC, GPIOA/B/C, USART1, SysTick, IWDG, SYSCFG and the ID block; `run` = `vdm_stm_boot::boot` |
 | `app.rs` | the application stage: IWDG set-up again (§5.4), HSE probe (`vdm_stm_boot::stage::probe_app_hse`), MPU guard, `embassy_stm32::init`, pin modes, the shared state, the serial ports, then `Controller::run` of the glue |
 | `clocks.rs` | `embassy_stm32::Config` from the probe result (§5.3) |
 | `board.rs` | the HAL trait implementations of §1.3 and the glue's `Platform` (`Fw`) |
@@ -94,8 +96,14 @@ Branches and loops that stay in `firmware/`:
 | `app.rs` | the second arm of the driver set-up results (`Uart::new_blocking`, `cortex_m::Peripherals::take`) | an embassy or cortex-m call with a fixed configuration, run once; its other arm is the fault handler (B5), and the glue does not link those drivers |
 | `isr.rs` `rev_irq`, `board.rs`, `i2c.rs`, `clocks.rs`, `boot_hw.rs` `set_led`, `outputs` | `if`/`match` on the function's argument | mapping (§1.1): a pin, port, level, timer or clock source to its register, bit or constant |
 | `fault.rs` `halt` | the endless loop at the end of a fault | the state the IWDG ends; nothing to decide |
-| `noinit.rs` `read`/`write`, `boot_hw.rs` `flash_bytes` | word and byte copies of a fixed region | access, no decision |
-| `boot_hw.rs` (with `watchdog_start`, which `app.rs` calls again) | the bounded polls of the boot stage and of the IWDG start (SWS, TXE, TC, HSIRDY, IWDG_SR), the RXNE check of the polled USART1, the pin-field loop, the jump sequence | still in the firmware; they belong to `vdm-stm-boot` (sector 0, D9) |
+| `noinit.rs` `read`/`write`, `boot_hw.rs` `flash_bytes`, `flash_read` | word and byte copies of a fixed region or of the range the boot crate asks for | access, no decision |
+
+The decisions of the boot stage are in `vdm-stm-boot`, whose code the linker script keeps in
+sector 0 with the boot stage (D9): the bounded polls (`poll::spin_until`: the SYSCLK switch to
+HSE and back to HSI, HSIRDY, TXE, TC, IWDG_SR), when USART1's data register is read and written
+(`uart`), the 2-bit pin fields (`gpio::fields2`), the jump into the ROM bootloader (`jump`), the
+IWDG start (`watchdog`, also called by the application stage) and the range check of the ID
+block fields the application reads (`IdLayout::flash_span`).
 
 ### 1.3 HAL traits and their implementation
 
@@ -161,6 +169,14 @@ pub trait BootIo {                                 // PAC-only implementation in
 pub fn capture_reset(csr: u32, cells: &mut [u8; 212]) -> ResetInfo;   // core classify/count/guard
 pub fn window(io: &mut impl BootIo, id: &ImageId) -> WindowEnd;        // Update | Timeout
 ```
+
+*Implementation:* the traits of `boot/src/io.rs` are register level, each call one access (a
+flag read, a write) or a fixed set-up sequence: `ClockIo` (SysTick, HSE, the SYSCLK switch to
+HSE and its SWS flag), `BootIo` (LED, USART1 set-up, RXNE, DR read, TXE, TC, DR write, reset),
+`IwdgIo` (KR, PR, RLR, SR), `JumpIo` (HSI, CFGR reset, SWS = HSI, oscillators off, PRIMASK,
+SYSCFG clock, MEMRMP, the jump), `FlashRead` and `BootHw` (reset flags, no-init cells, safe
+outputs, ID block, the record of the application part). `boot(hw)` runs the stage and, after a
+handshake, `jump`; `window` reads and writes USART1 through `uart::{rx, tx, flush}`.
 
 ## 2. Real-time model
 
@@ -397,7 +413,7 @@ Proposal: keep the existing terminal, minimal and 1:1 (D7).
 | 3 | boot clock: HSEON, wait for HSERDY at most 5 ms (SysTick on HSI); ready -> SYSCLK = HSE 25 MHz without PLL (0 wait states); else HSE off, stay on HSI 16 MHz (D1) | (PLL from step 0) | ≤ 5 ms |
 | 4 | USART1 115200 8E1 polled (BRR 0xD9 at 25 MHz, 0x8B at 16 MHz), PA9/PA10 AF7; LED PC13 low (on); 10 ms, then drop what arrived | `BootSetup` | 10 ms |
 | 5 | window: 3001 ticks of 1 ms; RX drained continuously into a 1024-byte FIFO; per tick at most one 8-byte block when 8 bytes wait, compared with `DEADBEEF` read from the ID block; LED toggles every 102 ticks. Meanwhile, one 8-byte step per pass of the polling loop, the CRC-32 of the application part (B8): ~30 µs per step on HSI, 112 KiB in ~0.5 s | `BootLoop` state 0 | 3.001 s |
-| 6a | match: LED low; next tick: LED high, 10 ms, `BEEFIT\r\n` from the ID block, wait for TC, 200 ms; clocks back to reset (HSI, HSE off, CFGR 0), SysTick off, `cpsid i`, SYSCFG clock on, MEMRMP = 01, `cortex_m::asm::bootload(0x1FFF0000)` | state 1, `JumpToBootloader` (`HAL_RCC_DeInit`, SysTick off, `__disable_irq`, MEMRMP, MSP, jump) | 0.21 s |
+| 6a | match: LED low; next tick: LED high, 10 ms, `BEEFIT\r\n` from the ID block, wait for TC, 200 ms; clocks back to reset (HSI on and ready, CFGR 0 and SWS = HSI, HSE, CSS and PLLs off; each wait bounded), SysTick off, `cpsid i`, SYSCFG clock on, MEMRMP = 01, `cortex_m::asm::bootload(0x1FFF0000)` (`vdm_stm_boot::jump`) | state 1, `JumpToBootloader` (`HAL_RCC_DeInit`, SysTick off, `__disable_irq`, MEMRMP, MSP, jump) | 0.21 s |
 | 6b | timeout, application part matches its record (B8): USART1 back to its reset state (RCC reset pulse), SysTick off, IWDG started (8 s, §5.4); return `BootToken { reset, boot_ms, hse }`. No match: the next window (step 4), for ever, without IWDG | state 2, `bootstate = 1`; `IWatchdog.begin` at the head of `setup_system` | — |
 
 - The 8-byte blocks, the 10 ms drop, the 3001 ticks, the LED period, `BEEFIT\r\n` and the
@@ -438,7 +454,7 @@ fields used: `hse`, `pll_src`, `pll` (`PllPreDiv`, `PllMul`, `PllPDiv`, `PllQDiv
 |---|---|---|
 | boot stage, window (≤ 3.02 s) | off | nothing needed: B2, B3; else the ESP's NRST |
 | ROM bootloader (after the jump) | off, never started before the jump | the ESP flasher's NRST |
-| end of the boot stage (window without handshake) | started (`boot_hw::watchdog_start`, sector 0): `pac::IWDG` KR 0xCCCC, KR 0x5555, PR 4 (/64), RLR 3999, KR 0xAAAA = 8 s nominal, 5.4-15 s with the LSI spread (as `IWatchdog.begin(8000000)`) | IWDG |
+| end of the boot stage (window without handshake) | started (`vdm_stm_boot::watchdog::start` on the firmware's `IwdgIo`, sector 0): KR 0xCCCC, KR 0x5555, PR 4 (/64), RLR 3999, the bounded wait for SR = 0, KR 0xAAAA = 8 s nominal, 5.4-15 s with the LSI spread (as `IWatchdog.begin(8000000)`, which waits for SR without a bound) | IWDG |
 | application start | the same set-up again before `embassy_stm32::init`: same values, the start key leaves the running IWDG running, the reload restarts the 8 s | IWDG |
 | set-up | reloaded between the long steps (EEPROM read, 1-Wire enumeration) as in `setup_system` | IWDG |
 | main loop | reloaded in the 10 ms branch only if `valve_loop_ticks` advanced and the stall detector is clear | IWDG |
@@ -787,7 +803,7 @@ catches (`catch_unwind`), as the C++ fakes throw `SystemReset`, `BootloaderJump`
 | `serial` | HAL error-code rules per interrupt, 1023-byte rings, drop counting, blocking TX; the register sequence of the interrupt (DR only with RXNE or an error flag); a writer sends itself only while PRIMASK or BASEPRI blocks the USART interrupt |
 | `irq` | the STM32duino priorities; which PRIMASK and BASEPRI values block an interrupt; the misuse checks and the BASEPRI sequence of the shared motor state |
 | `hw_timer` | the PSC/ARR values of §2.4 |
-| `vdm-stm-boot` | ESP 2.1 pattern (9-byte period, stray bytes), legacy pattern, flood of garbage |
+| `vdm-stm-boot` | ESP 2.1 pattern (9-byte period, stray bytes), legacy pattern, flood of garbage; the register sequences of the polled USART1 (DR only with RXNE, TXE before every byte, TC), the jump, the IWDG start, each bounded wait at its bound; the pin fields; the ID block spans |
 | ID block | NUL layout, at most 64 bytes, scanner finds version and tag (also C4) |
 
 ### 7.4 Cross-implementation goldens

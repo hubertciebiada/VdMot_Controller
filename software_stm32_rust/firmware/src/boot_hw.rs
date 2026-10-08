@@ -1,18 +1,19 @@
 //! The boot stage on the registers (docs/rust/GLUE-DESIGN-STM.md §5.2): the traits of
-//! vdm-stm-boot on the PAC, polled, without interrupts, embassy or flash accesses (B2, B4),
-//! and the jump into the ROM bootloader. The decisions (order, HSE limit, BRR, the window)
-//! are in vdm_stm_boot::run; this file maps them to registers.
+//! vdm-stm-boot on the PAC, polled, without interrupts, embassy or flash writes (B2, B4). Every
+//! method is one register access or a fixed set-up sequence; the decisions (order, every wait
+//! and its bound, the HSE limit, BRR, the window, when USART1's data register is read, the
+//! jump into the ROM bootloader, the IWDG start) are in vdm_stm_boot.
 //!
-//! Every wait for a hardware flag is bounded (B2). D9: the image check proves that this code
-//! and everything it calls lies in sector 0.
+//! D9: the image check proves that this code and everything it calls lies in sector 0.
 
 use cortex_m::peripheral::SYST;
 use stm32_metapac as pac;
 use stm32_metapac::{gpio, iwdg, rcc, syscfg, usart};
 
 use vdm_stm_boot::app_check::RECORD_WORDS;
+use vdm_stm_boot::gpio::fields2;
 use vdm_stm_boot::id_block::{BootId, ID_BLOCK_ADDR};
-use vdm_stm_boot::{BootEnd, BootHw, BootIo, BootToken, ClockIo, FlashRead, NOINIT_LEN};
+use vdm_stm_boot::{BootHw, BootIo, BootToken, ClockIo, FlashRead, IwdgIo, JumpIo, NOINIT_LEN};
 
 use crate::id::LAYOUT;
 use crate::noinit;
@@ -48,13 +49,11 @@ const CR1_PCE: u32 = 1 << 10;
 const CR1_M: u32 = 1 << 12;
 const CR1_UE: u32 = 1 << 13;
 
-// IWDG (§17.4): `IWatchdog.begin(8000000)`, prescaler /64, reload 3999 = 8 s at 32 kHz
-// (5.4-15 s with the LSI spread)
-const IWDG_ENABLE: u16 = 0x5555;
-const IWDG_RELOAD: u16 = 0xAAAA;
-const IWDG_START: u16 = 0xCCCC;
-const IWDG_PR_DIV64: u32 = 4;
-const IWDG_RLR_8S: u32 = 3999;
+// GPIO MODER, OSPEEDR, PUPDR values of a pin
+const MODE_OUTPUT: u32 = 0b01;
+const MODE_AF: u32 = 0b10;
+const SPEED_HIGH: u32 = 0b11;
+const PULL_UP: u32 = 0b01;
 
 // SysTick
 const SYST_ENABLE: u32 = 1 << 0;
@@ -74,10 +73,6 @@ const LED_PC_MASK: u32 = 1 << 13;
 const USART1_PA_MASK: u32 = (1 << 9) | (1 << 10);
 const AF_USART1: u32 = 7;
 
-/// Polls of a hardware flag that settles within a few clock cycles (switch of SYSCLK, HSI
-/// on) or within one character at 115200 Bd (TXE, TC): far above both on any clock here.
-const SPIN_LIMIT: u32 = 200_000;
-
 /// B8: magic, first address, length and CRC-32 of the application part (sectors 1..n), at
 /// 0x08000240 in sector 0 (memory/vdm.x, design §5.11). The placeholder fails the check; after the
 /// link `vdm-stm-image-check patch` (tools/rust/stm/build_images.sh) writes the record of the
@@ -89,41 +84,17 @@ static APP_CHECK: [u32; RECORD_WORDS] = [u32::MAX; RECORD_WORDS];
 /// The boot stage registers (no state: the registers are the state).
 pub struct Regs;
 
-/// Steps 1 to 6 of the boot stage; returns only without a handshake (B1: the only source of
-/// a `BootToken`). A function of its own: Renode E8 raises a fault at its entry.
+/// Steps 1 to 6 of the boot stage (`vdm_stm_boot::boot`): returns only without a handshake
+/// (B1: the only source of a `BootToken`), jumps into the ROM bootloader after one. A function
+/// of its own: Renode E8 raises a fault at its entry.
 #[inline(never)]
 pub fn run() -> BootToken {
-    match vdm_stm_boot::run(&mut Regs) {
-        BootEnd::Timeout(token) => token,
-        BootEnd::Update => jump_to_bootloader(),
-    }
-}
-
-fn spin_until(mut done: impl FnMut() -> bool) {
-    for _ in 0..SPIN_LIMIT {
-        if done() {
-            return;
-        }
-    }
-}
-
-/// The 2-bit fields (MODER, OSPEEDR, PUPDR) of the pins in `pins`: (field mask, `value` in
-/// every field).
-fn fields2(pins: u32, value: u32) -> (u32, u32) {
-    let mut mask = 0;
-    let mut set = 0;
-    for p in 0..16 {
-        if pins & (1 << p) != 0 {
-            mask |= 0b11 << (2 * p);
-            set |= value << (2 * p);
-        }
-    }
-    (mask, set)
+    vdm_stm_boot::boot(&mut Regs)
 }
 
 /// MODER 01 (output), push-pull or open drain, no pull.
 fn outputs(port: gpio::Gpio, pins: u32, open_drain: bool) {
-    let (mask, output) = fields2(pins, 0b01);
+    let (mask, output) = fields2(pins, MODE_OUTPUT);
     port.otyper().modify(|w| {
         if open_drain {
             w.0 |= pins
@@ -186,12 +157,14 @@ impl ClockIo for Regs {
         pac::RCC.cr().modify(|w| w.0 &= !CR_HSEON);
     }
 
-    fn sysclk_hse(&mut self) {
-        // 25 MHz needs no flash wait state (reset value 0)
+    fn sysclk_select_hse(&mut self) {
         pac::RCC
             .cfgr()
             .modify(|w| w.0 = (w.0 & !CFGR_SW) | CFGR_SW_HSE);
-        spin_until(|| pac::RCC.cfgr().read().0 & CFGR_SWS == CFGR_SWS_HSE);
+    }
+
+    fn sysclk_is_hse(&mut self) -> bool {
+        pac::RCC.cfgr().read().0 & CFGR_SWS == CFGR_SWS_HSE
     }
 }
 
@@ -218,9 +191,9 @@ impl BootIo for Regs {
         let _ = pac::RCC.apb2enr().read();
         // PA9 TX, PA10 RX: AF7, high speed, pull-up (STM32duino PinMap_UART of the C++)
         let a = pac::GPIOA;
-        let (mask, af) = fields2(USART1_PA_MASK, 0b10);
-        let (_, high) = fields2(USART1_PA_MASK, 0b11);
-        let (_, up) = fields2(USART1_PA_MASK, 0b01);
+        let (mask, af) = fields2(USART1_PA_MASK, MODE_AF);
+        let (_, high) = fields2(USART1_PA_MASK, SPEED_HIGH);
+        let (_, up) = fields2(USART1_PA_MASK, PULL_UP);
         // AFRH: pins 9 and 10 at bits 4..8 and 8..12
         a.afr(1)
             .modify(|w| w.0 = (w.0 & !0x0FF0) | (AF_USART1 << 4) | (AF_USART1 << 8));
@@ -238,30 +211,91 @@ impl BootIo for Regs {
             .write_value(usart::regs::Cr1(CR1_UE | CR1_M | CR1_PCE | CR1_TE | CR1_RE));
     }
 
-    fn rx(&mut self) -> Option<u8> {
-        let u = pac::USART1;
-        // RXNE also with PE, FE, NE or ORE: SR then DR clears them; the byte is kept as in C++
-        if u.sr().read().0 & SR_RXNE != 0 {
-            Some(u.dr().read().0 as u8)
-        } else {
-            None
-        }
+    fn uart_rx_ready(&mut self) -> bool {
+        pac::USART1.sr().read().0 & SR_RXNE != 0
     }
 
-    fn tx(&mut self, byte: u8) {
-        let u = pac::USART1;
-        spin_until(|| u.sr().read().0 & SR_TXE != 0);
-        u.dr().write_value(usart::regs::Dr(u32::from(byte)));
+    fn uart_read(&mut self) -> u8 {
+        pac::USART1.dr().read().0 as u8
     }
 
-    fn flush(&mut self) {
-        let u = pac::USART1;
-        spin_until(|| u.sr().read().0 & SR_TC != 0);
+    fn uart_tx_empty(&mut self) -> bool {
+        pac::USART1.sr().read().0 & SR_TXE != 0
+    }
+
+    fn uart_tx_complete(&mut self) -> bool {
+        pac::USART1.sr().read().0 & SR_TC != 0
+    }
+
+    fn uart_write(&mut self, byte: u8) {
+        pac::USART1
+            .dr()
+            .write_value(usart::regs::Dr(u32::from(byte)));
     }
 
     fn uart_end(&mut self) {
         pac::RCC.apb2rstr().modify(|w| w.0 |= APB2_USART1);
         pac::RCC.apb2rstr().modify(|w| w.0 &= !APB2_USART1);
+    }
+}
+
+impl IwdgIo for Regs {
+    fn iwdg_key(&mut self, key: u16) {
+        iwdg_key(key);
+    }
+
+    fn iwdg_prescaler(&mut self, pr: u32) {
+        pac::IWDG.pr().write_value(iwdg::regs::Pr(pr));
+    }
+
+    fn iwdg_reload_value(&mut self, rlr: u32) {
+        pac::IWDG.rlr().write_value(iwdg::regs::Rlr(rlr));
+    }
+
+    fn iwdg_updating(&mut self) -> bool {
+        pac::IWDG.sr().read().0 != 0
+    }
+}
+
+impl JumpIo for Regs {
+    fn hsi_on(&mut self) {
+        pac::RCC.cr().modify(|w| w.0 |= CR_HSION);
+    }
+
+    fn hsi_ready(&mut self) -> bool {
+        pac::RCC.cr().read().0 & CR_HSIRDY != 0
+    }
+
+    fn cfgr_reset(&mut self) {
+        pac::RCC.cfgr().write_value(rcc::regs::Cfgr(0));
+    }
+
+    fn sysclk_is_hsi(&mut self) -> bool {
+        pac::RCC.cfgr().read().0 & CFGR_SWS == CFGR_SWS_HSI
+    }
+
+    fn oscillators_off(&mut self) {
+        pac::RCC
+            .cr()
+            .modify(|w| w.0 &= !(CR_HSEON | CR_HSEBYP | CR_CSSON | CR_PLLON | CR_PLLI2SON));
+    }
+
+    fn irq_disable(&mut self) {
+        cortex_m::interrupt::disable();
+    }
+
+    fn syscfg_on(&mut self) {
+        pac::RCC.apb2enr().modify(|w| w.0 |= APB2ENR_SYSCFG);
+        let _ = pac::RCC.apb2enr().read();
+    }
+
+    fn system_memory_at_0(&mut self) {
+        pac::SYSCFG.memrm().write_value(syscfg::regs::Memrm(0b01));
+    }
+
+    fn bootload(&mut self) -> ! {
+        // SAFETY: the ROM bootloader's vector table at 0x1FFF0000 (AN2606); never returns
+        unsafe { cortex_m::asm::bootload(0x1FFF_0000 as *const u32) }
     }
 }
 
@@ -311,10 +345,6 @@ impl BootHw for Regs {
         id
     }
 
-    fn watchdog_start(&mut self) {
-        watchdog_start();
-    }
-
     fn app_record(&mut self) -> [u32; RECORD_WORDS] {
         // SAFETY: the record in sector 0; volatile, as the patch step changed it after the link
         unsafe { core::ptr::read_volatile(core::ptr::addr_of!(APP_CHECK)) }
@@ -331,20 +361,6 @@ impl FlashRead for Regs {
     }
 }
 
-/// `IWatchdog.begin(8000000)` on the registers: the boot stage at the end of a window without
-/// handshake, the application stage again before `embassy_stm32::init` (§5.4). A second call
-/// changes nothing: the start key leaves a running IWDG running, PR and RLR get the same values,
-/// the reload restarts the 8 s.
-pub fn watchdog_start() {
-    iwdg_key(IWDG_START);
-    iwdg_key(IWDG_ENABLE);
-    pac::IWDG.pr().write_value(iwdg::regs::Pr(IWDG_PR_DIV64));
-    pac::IWDG.rlr().write_value(iwdg::regs::Rlr(IWDG_RLR_8S));
-    // PVU, RVU: the new values reach the LSI domain within a few LSI cycles
-    spin_until(|| pac::IWDG.sr().read().0 == 0);
-    iwdg_key(IWDG_RELOAD);
-}
-
 /// Volatile reads from the ID block in flash: the bytes the ESP validated, not constants the
 /// compiler could fold.
 pub fn flash_bytes(offset: usize, out: &mut [u8]) {
@@ -356,40 +372,17 @@ pub fn flash_bytes(offset: usize, out: &mut [u8]) {
 }
 
 /// A field of the ID block in flash as a slice (`gvers` and the banner of the application read
-/// version and tag from it). `offset + len` beyond the block gives an empty slice.
+/// version and tag from it); `IdLayout::flash_span` gives an empty one for a range beyond the
+/// block.
 #[cfg(feature = "app")]
 pub fn id_field(offset: usize, len: usize) -> &'static [u8] {
-    if offset.saturating_add(len) > LAYOUT.len {
-        return &[];
-    }
-    // SAFETY: inside the ID block (checked above), in flash, never written by the firmware (B4)
-    unsafe { core::slice::from_raw_parts((ID_BLOCK_ADDR as usize + offset) as *const u8, len) }
+    let (addr, len) = LAYOUT.flash_span(offset, len);
+    // SAFETY: inside the ID block, or empty (flash_span), in flash, never written by the
+    // firmware (B4)
+    unsafe { core::slice::from_raw_parts(addr as usize as *const u8, len) }
 }
 
-/// Step 6a, as `JumpToBootloader` of the C++ (`HAL_RCC_DeInit`, SysTick off,
-/// `__disable_irq`, MEMRMP, MSP, jump). VTOR stays 0: with MEMRMP = 01 address 0 is the
-/// system memory (R2: only hardware proves the ROM bootloader start, §5.9).
-pub fn jump_to_bootloader() -> ! {
-    // clocks back to the reset state: HSI on and SYSCLK, prescalers 1, HSE and PLLs off
-    pac::RCC.cr().modify(|w| w.0 |= CR_HSION);
-    spin_until(|| pac::RCC.cr().read().0 & CR_HSIRDY != 0);
-    pac::RCC.cfgr().write_value(rcc::regs::Cfgr(0));
-    spin_until(|| pac::RCC.cfgr().read().0 & CFGR_SWS == CFGR_SWS_HSI);
-    pac::RCC
-        .cr()
-        .modify(|w| w.0 &= !(CR_HSEON | CR_HSEBYP | CR_CSSON | CR_PLLON | CR_PLLI2SON));
-    let mut regs = Regs;
-    regs.tick_stop();
-    cortex_m::interrupt::disable();
-    // system memory at address 0
-    pac::RCC.apb2enr().modify(|w| w.0 |= APB2ENR_SYSCFG);
-    let _ = pac::RCC.apb2enr().read();
-    pac::SYSCFG.memrm().write_value(syscfg::regs::Memrm(0b01));
-    // SAFETY: the ROM bootloader's vector table at 0x1FFF0000 (AN2606); never returns
-    unsafe { cortex_m::asm::bootload(0x1FFF_0000 as *const u32) }
-}
-
-/// IWDG key register (fault.rs, app.rs).
+/// IWDG key register (fault.rs, board.rs, the IwdgIo of the boot stage).
 pub fn iwdg_key(key: u16) {
     pac::IWDG.kr().write_value(iwdg::regs::Kr(u32::from(key)));
 }

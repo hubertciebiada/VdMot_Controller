@@ -12,6 +12,7 @@
 use crate::fifo::Fifo;
 use crate::id_block::BootId;
 use crate::io::BootIo;
+use crate::uart;
 
 /// `timer > 3000` ends the window: calls 1..=3001 listen.
 pub const WINDOW_CALLS: u32 = 3000;
@@ -45,7 +46,7 @@ pub fn wait_ms_with<I: BootIo, W: FnMut(&mut I)>(
 ) {
     let mut left = ms;
     while left > 0 {
-        if let Some(byte) = io.rx() {
+        if let Some(byte) = uart::rx(io) {
             fifo.push(byte);
         }
         work(io);
@@ -168,11 +169,11 @@ impl Window {
                 // Serial1.println("BEEFIT"); CR and LF as immediates: no .rodata outside the
                 // boot stage's flash (D9)
                 for &byte in id.reply.iter() {
-                    io.tx(byte);
+                    uart::tx(io, byte);
                 }
-                io.tx(b'\r');
-                io.tx(b'\n');
-                io.flush();
+                uart::tx(io, b'\r');
+                uart::tx(io, b'\n');
+                uart::flush(io);
                 wait_ms(io, AFTER_REPLY_MS, fifo, elapsed);
                 Step::Jump
             }

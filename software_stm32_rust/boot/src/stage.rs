@@ -8,9 +8,10 @@
 //! 4. `BootSetup`: LED on, USART1 115200 8E1, 10 ms, drop
 //! 5. the window ([`crate::window`]), meanwhile the check of the application part
 //!    ([`crate::app_check`])
-//! 6. `BEEFIT` sent -> [`BootEnd::Update`] (the firmware jumps); timeout with a matching
-//!    application part -> USART1 and SysTick back to their reset state, the IWDG started,
-//!    [`BootEnd::Timeout`] with the [`BootToken`]; without a match the next window, for ever
+//! 6. `BEEFIT` sent -> [`BootEnd::Update`] ([`boot`] jumps, [`crate::jump`]); timeout with a
+//!    matching application part -> USART1 and SysTick back to their reset state, the IWDG
+//!    started ([`crate::watchdog`]), [`BootEnd::Timeout`] with the [`BootToken`]; without a
+//!    match the next window, for ever
 //!
 //! B2: nothing here waits without a bound or needs interrupts; every wait counts SysTick
 //! periods. Only the windows repeat without end, and only when sectors 1..n do not belong to
@@ -22,7 +23,10 @@
 
 use crate::app_check::AppCheck;
 use crate::capture::{capture_reset, ResetInfo};
-use crate::io::{BootHw, ClockIo};
+use crate::io::{BootHw, ClockIo, JumpIo};
+use crate::jump::jump;
+use crate::poll::spin_until;
+use crate::watchdog;
 use crate::window::{window_with, WindowEnd};
 
 /// HSI after reset.
@@ -131,7 +135,9 @@ pub fn run<H: BootHw>(hw: &mut H) -> BootEnd {
     hw.tick_start(HSI_TICK_RELOAD);
     let hse = probe_hse(hw, BOOT_HSE_LIMIT_MS, &mut boot_ms);
     let brr = if hse {
-        hw.sysclk_hse();
+        // 25 MHz needs no flash wait state (reset value 0); the switch takes a few cycles
+        hw.sysclk_select_hse();
+        spin_until(|| hw.sysclk_is_hse());
         hw.tick_start(HSE_TICK_RELOAD);
         BRR_HSE
     } else {
@@ -161,12 +167,21 @@ pub fn run<H: BootHw>(hw: &mut H) -> BootEnd {
     hw.tick_stop();
     // last, right before the application: whatever runs from here on is watched (B6: the
     // window is over)
-    hw.watchdog_start();
+    watchdog::start(hw);
     BootEnd::Timeout(BootToken {
         reset,
         boot_ms,
         hse,
     })
+}
+
+/// The boot stage as the firmware runs it after every reset: [`run`], after a handshake the
+/// jump into the ROM bootloader. Returns only the token of a window without handshake (B1).
+pub fn boot<H: BootHw + JumpIo>(hw: &mut H) -> BootToken {
+    match run(hw) {
+        BootEnd::Timeout(token) => token,
+        BootEnd::Update => jump(hw),
+    }
 }
 
 #[cfg(test)]

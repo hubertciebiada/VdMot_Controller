@@ -524,7 +524,7 @@ entry by entry; restart reasons 0..6 have the C++ names and severities.
 | HSE within 5 ms else HSI; application PLL from HSI | `stage.rs` `probe_hse`; `stm:firmware/src/clocks.rs` | `stm:boot/src/stage/tests.rs::a_dead_hse_is_switched_off_after_5_ms_and_the_window_runs_on_hsi`; Renode E6 | deviation: D1, D5 (GLUE-DESIGN-STM.md 5.3) |
 | Faults: outputs off, fault record, IWDG reset; the boot stage starts the IWDG at the end of a window without a handshake | `stm:firmware/src/fault.rs`; `stm:boot/src/fault_record.rs`; `stm:boot/src/stage.rs` | `stm:boot/src/fault_record/tests.rs::the_count_continues_a_valid_record_and_starts_at_1_otherwise`; `stm:boot/src/stage/tests.rs::the_watchdog_starts_once_after_a_window_without_handshake`; Renode E7, E8 | deviation: D4 (GLUE-DESIGN-STM.md 5.4, 5.5) |
 | Reset capture, safe mode (3 watchdog resets in 10 min, leave after 30 min or `ssafe 0`) | `capture.rs`; core `reset_guard`; `stm:glue/src/sysstat.rs` | `stm:boot/src/capture/tests.rs::s9_three_watchdog_resets_within_10_min_enter_safe_mode`; `stm:glue/src/sysstat/tests.rs::s9_ssafe_0_leaves_safe_mode_and_clears_the_window_a_power_on_clears_it_too`; Renode E9, A5 | same |
-| Entry into the real ROM bootloader, real erase and program timing, the HSE start-up | `boot_hw.rs` `jump_to_bootloader` | Renode E1/E11 with a model of the ROM | hardware (H3) |
+| Entry into the real ROM bootloader, real erase and program timing, the HSE start-up | `stm:boot/src/jump.rs` `jump`; `boot_hw.rs` `JumpIo` | `stm:boot/src/jump/tests.rs::the_clocks_go_back_to_hsi_before_systick_interrupts_the_remap_and_the_jump`; Renode E1/E11 with a model of the ROM | hardware (H3) |
 
 ### 3.9 Network (ESP)
 

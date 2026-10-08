@@ -11,7 +11,8 @@
 //! unchecked arithmetic (Cargo.toml lints); the firmware's `boot-probe` build links the boot
 //! stage with a panic handler that does not exist, so a panic path fails the link.
 //! No `static`, no heap, no unsafe: the firmware owns the register implementation
-//! (`firmware/src/boot_hw.rs`).
+//! (`firmware/src/boot_hw.rs`), whose calls are single register accesses; every wait, its
+//! bound and every branch of the boot stage are here (docs/rust/GLUE-DESIGN-STM.md §1.1).
 #![no_std]
 
 #[cfg(test)]
@@ -21,15 +22,20 @@ pub mod app_check;
 pub mod capture;
 pub mod fault_record;
 pub mod fifo;
+pub mod gpio;
 pub mod id_block;
 pub mod io;
+pub mod jump;
+pub mod poll;
 pub mod stage;
+pub mod uart;
+pub mod watchdog;
 pub mod window;
 
 pub use capture::{capture_reset, ResetInfo, NOINIT_LEN};
 pub use id_block::BootId;
-pub use io::{BootHw, BootIo, ClockIo, FlashRead};
-pub use stage::{run, BootEnd, BootToken};
+pub use io::{BootHw, BootIo, ClockIo, FlashRead, IwdgIo, JumpIo};
+pub use stage::{boot, run, BootEnd, BootToken};
 pub use window::WindowEnd;
 
 #[cfg(test)]

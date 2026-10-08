@@ -2,7 +2,9 @@
 //! `test_otasupport.cpp` and `test_sysstat.cpp`): time in microseconds, SysTick from the
 //! reload value and the system clock, the HSE with a start-up time, USART1 with a schedule of
 //! received bytes (one data register: a byte that arrives while the previous one is unread is
-//! lost, as with ORE), and an event log with time stamps.
+//! lost, as with ORE; a transmitter that takes a byte at once and needs one character time
+//! for it), the IWDG and the clock registers of the jump, and an event log with time stamps.
+//! The register sequences themselves are pinned by the tests of `uart`, `watchdog` and `jump`.
 #![allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -15,8 +17,9 @@ use std::vec::Vec;
 use crate::app_check::{record, APP_START, RECORD_WORDS};
 use crate::capture::NOINIT_LEN;
 use crate::id_block::BootId;
-use crate::io::{BootHw, BootIo, ClockIo, FlashRead};
+use crate::io::{BootHw, BootIo, ClockIo, FlashRead, IwdgIo, JumpIo};
 use crate::stage::{HSE_HZ, HSI_HZ};
+use crate::watchdog::KEY_START;
 
 /// One character at 115200 8E1 (11 bits) in µs, rounded.
 pub const BYTE_US: u64 = 95;
@@ -32,16 +35,57 @@ pub enum Ev {
     TickStop,
     HseOn,
     HseOff,
+    /// RCC_CFGR.SW = HSE
     SysclkHse,
     LedBegin,
     Led(bool),
     UartBegin(u16),
     UartEnd,
+    /// a write of USART1_DR
     Tx(u8),
-    Flush,
+    /// a read of USART1_SR.TC (the fake's transmitter is done at once: one read per flush)
+    TcPoll,
     BootId,
+    /// the start key written to IWDG_KR (the whole sequence is in `Fake::iwdg`)
     WatchdogStart,
     AppRecord,
+    // the jump (crate::jump)
+    HsiOn,
+    CfgrReset,
+    OscillatorsOff,
+    IrqDisable,
+    SyscfgOn,
+    SystemMemoryAt0,
+    Bootload,
+}
+
+/// A write to the IWDG.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Iwdg {
+    Key(u16),
+    Pr(u32),
+    Rlr(u32),
+}
+
+/// The payload of the fake `bootload`: the jump into the ROM bootloader never returns.
+#[derive(Debug)]
+pub struct Jumped;
+
+/// Runs `f`; true when it ended in the fake `bootload`. The panic of the jump prints nothing.
+pub fn expect_jump(f: impl FnOnce()) -> bool {
+    static QUIET: std::sync::Once = std::sync::Once::new();
+    QUIET.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(std::boxed::Box::new(move |info| {
+            if !info.payload().is::<Jumped>() {
+                default(info);
+            }
+        }));
+    });
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(()) => false,
+        Err(payload) => payload.is::<Jumped>(),
+    }
 }
 
 pub struct Fake {
@@ -73,6 +117,8 @@ pub struct Fake {
     pub flash_bytes_read: usize,
     pub first_flash_read_us: Option<u64>,
     pub last_flash_read_us: u64,
+    /// the writes to the IWDG, in order
+    pub iwdg: Vec<Iwdg>,
 }
 
 /// The application part of the fake flash: 1000 bytes of a pattern.
@@ -111,6 +157,7 @@ impl Fake {
             flash_bytes_read: 0,
             first_flash_read_us: None,
             last_flash_read_us: 0,
+            iwdg: Vec::new(),
         }
     }
 
@@ -200,13 +247,17 @@ impl ClockIo for Fake {
         self.hse_on_at = None;
     }
 
-    fn sysclk_hse(&mut self) {
+    fn sysclk_select_hse(&mut self) {
         self.ev(Ev::SysclkHse);
         assert!(
             self.hse_ready(),
             "SYSCLK switched to an HSE that is not ready"
         );
         self.sysclk_hz = HSE_HZ;
+    }
+
+    fn sysclk_is_hse(&mut self) -> bool {
+        self.sysclk_hz == HSE_HZ
     }
 }
 
@@ -233,32 +284,39 @@ impl BootIo for Fake {
         }
     }
 
-    fn rx(&mut self) -> Option<u8> {
-        if !self.uart_on {
-            return None;
+    fn uart_rx_ready(&mut self) -> bool {
+        self.uart_on && matches!(self.rx_schedule.front(), Some(&(t, _)) if t <= self.now_us)
+    }
+
+    fn uart_read(&mut self) -> u8 {
+        if !self.uart_rx_ready() {
+            panic!("USART1_DR read without RXNE");
         }
-        let (t, byte) = *self.rx_schedule.front()?;
-        if t > self.now_us {
-            return None;
-        }
-        self.rx_schedule.pop_front();
+        let Some((_, byte)) = self.rx_schedule.pop_front() else {
+            panic!("USART1_DR read without RXNE");
+        };
         // bytes that completed while this one waited in the data register are lost
         while matches!(self.rx_schedule.front(), Some(&(t2, _)) if t2 <= self.now_us) {
             self.rx_schedule.pop_front();
             self.rx_overruns += 1;
         }
         self.rx_reads += 1;
-        Some(byte)
+        byte
     }
 
-    fn tx(&mut self, byte: u8) {
+    fn uart_tx_empty(&mut self) -> bool {
+        true
+    }
+
+    fn uart_tx_complete(&mut self) -> bool {
+        self.ev(Ev::TcPoll);
+        true
+    }
+
+    fn uart_write(&mut self, byte: u8) {
         self.ev(Ev::Tx(byte));
         self.tx_bytes.push(byte);
         self.now_us += BYTE_US;
-    }
-
-    fn flush(&mut self) {
-        self.ev(Ev::Flush);
     }
 
     fn uart_end(&mut self) {
@@ -297,13 +355,71 @@ impl BootHw for Fake {
         self.id
     }
 
-    fn watchdog_start(&mut self) {
-        self.ev(Ev::WatchdogStart);
-    }
-
     fn app_record(&mut self) -> [u32; RECORD_WORDS] {
         self.ev(Ev::AppRecord);
         self.record
+    }
+}
+
+impl IwdgIo for Fake {
+    fn iwdg_key(&mut self, key: u16) {
+        if key == KEY_START {
+            self.ev(Ev::WatchdogStart);
+        }
+        self.iwdg.push(Iwdg::Key(key));
+    }
+
+    fn iwdg_prescaler(&mut self, pr: u32) {
+        self.iwdg.push(Iwdg::Pr(pr));
+    }
+
+    fn iwdg_reload_value(&mut self, rlr: u32) {
+        self.iwdg.push(Iwdg::Rlr(rlr));
+    }
+
+    fn iwdg_updating(&mut self) -> bool {
+        false
+    }
+}
+
+impl JumpIo for Fake {
+    fn hsi_on(&mut self) {
+        self.ev(Ev::HsiOn);
+    }
+
+    fn hsi_ready(&mut self) -> bool {
+        true
+    }
+
+    fn cfgr_reset(&mut self) {
+        self.ev(Ev::CfgrReset);
+        self.sysclk_hz = HSI_HZ;
+    }
+
+    fn sysclk_is_hsi(&mut self) -> bool {
+        self.sysclk_hz == HSI_HZ
+    }
+
+    fn oscillators_off(&mut self) {
+        self.ev(Ev::OscillatorsOff);
+        self.hse_on_at = None;
+    }
+
+    fn irq_disable(&mut self) {
+        self.ev(Ev::IrqDisable);
+    }
+
+    fn syscfg_on(&mut self) {
+        self.ev(Ev::SyscfgOn);
+    }
+
+    fn system_memory_at_0(&mut self) {
+        self.ev(Ev::SystemMemoryAt0);
+    }
+
+    fn bootload(&mut self) -> ! {
+        self.ev(Ev::Bootload);
+        std::panic::panic_any(Jumped)
     }
 }
 

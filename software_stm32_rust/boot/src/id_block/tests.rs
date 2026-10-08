@@ -128,3 +128,28 @@ fn constants() {
     assert_eq!(BootId::STANDARD.reply, *b"BEEFIT");
     assert_eq!(IdLayout::new(0, 0).len, 26);
 }
+
+// ---- the spans the application reads (firmware/src/boot_hw.rs id_field: gvers, the banner)
+
+#[test]
+fn flash_span_of_the_version_and_the_tag() {
+    let l = IdLayout::new(14, 2);
+    assert_eq!(l.flash_span(l.version, l.version_len), (0x0800_0201, 14));
+    assert_eq!(l.flash_span(l.tag, l.tag_len), (0x0800_0217, 2));
+}
+
+#[test]
+fn flash_span_up_to_the_end_of_the_block_and_no_byte_beyond() {
+    let l = IdLayout::new(14, 2);
+    assert_eq!(l.flash_span(40, 2), (0x0800_0228, 2));
+    assert_eq!(l.flash_span(42, 0), (0x0800_022A, 0));
+    assert_eq!(l.flash_span(41, 2), (ID_BLOCK_ADDR, 0));
+    assert_eq!(l.flash_span(43, 0), (ID_BLOCK_ADDR, 0));
+}
+
+#[test]
+fn flash_span_of_a_range_that_overflows_is_empty() {
+    let l = IdLayout::new(14, 2);
+    assert_eq!(l.flash_span(1, usize::MAX), (ID_BLOCK_ADDR, 0));
+    assert_eq!(l.flash_span(usize::MAX, 1), (ID_BLOCK_ADDR, 0));
+}

@@ -133,14 +133,15 @@ fn deadbeef_answers_beefit_and_jumps_into_the_bootloader() {
     let log_before = rig.fake.log.len();
     assert_eq!(rig.call(), Step::Jump);
     assert_eq!(rig.fake.tx_bytes, b"BEEFIT\r\n");
-    assert_eq!(rig.fake.count(|e| *e == Ev::Flush), 1);
-    // LED off (HIGH on the blackpill), delay(10), BEEFIT, flush, delay(200)
+    assert_eq!(rig.fake.count(|e| *e == Ev::TcPoll), 1);
+    // LED off (HIGH on the blackpill), delay(10), BEEFIT, flush (one TC read: the fake's
+    // transmitter is done at once), delay(200)
     let log = &rig.fake.log[log_before..];
     assert_eq!(log[0].1, Ev::Led(true));
     assert_eq!(log[1].1, Ev::Tx(b'B'));
     let first_tx = log[1].0 - log[0].0;
     assert!(first_tx > 9_000 && first_tx <= 10_000 + 5, "{first_tx}");
-    assert_eq!(log[9].1, Ev::Flush);
+    assert_eq!(log[9].1, Ev::TcPoll);
     let after_flush = rig.fake.now_us - log[9].0;
     assert!(
         after_flush > 199_000 && after_flush <= 200_000 + 5,
