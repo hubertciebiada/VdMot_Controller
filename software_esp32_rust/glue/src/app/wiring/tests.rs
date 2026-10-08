@@ -165,7 +165,8 @@ impl Fw<'_> {
         Task::start(&mut self.mqtt, wd.clone());
     }
 
-    /// The three threads for `ms` of fake time: each pass once its delay is over.
+    /// The three threads for `ms` of fake time: each pass once its delay is over. A pass that
+    /// asks for no delay fails the test (the fake time would stand still here).
     fn run_ms(&mut self, ms: u64) {
         let clock = &self.dev.clock;
         let end = clock.ms() + ms;
@@ -185,6 +186,7 @@ impl Fw<'_> {
             if next > clock.ms() {
                 clock.set_ms(next);
             }
+            assert!(clock.ms() > now, "no fake time passed");
         }
     }
 }
