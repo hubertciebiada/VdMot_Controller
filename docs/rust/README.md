@@ -24,6 +24,8 @@ Installing it on a controller: [INSTALL.md](INSTALL.md).
 | [CHANGES.md](CHANGES.md) | what differs from C++ 2.1.7, for users |
 | [PARITY.md](PARITY.md), [PARITY-TESTS.md](PARITY-TESTS.md) | the audit of the port against C++ 2.1.7: every C++ test case and every external feature with its Rust code and tests, the open gaps |
 | [INSTALL.md](INSTALL.md) | first flash and rollout on a controller |
+| [REVIEW-ESP-SAFETY.md](REVIEW-ESP-SAFETY.md), [REVIEW-STM-SAFETY.md](REVIEW-STM-SAFETY.md) | the safety reviews against the closed-cabinet bar: every path of boot, update and STM flashing that could need physical access, the findings with their fixes or reasons to stay open |
+| [mutation-esp32-core.md](mutation-esp32-core.md), [mutation-esp32-glue.md](mutation-esp32-glue.md), [mutation-stm32.md](mutation-stm32.md) | the mutation reports: the score of every file, the runs and their trees, the equivalent mutants with reasons, the survivors and the cases that killed them, the timeouts run again alone |
 | [tools/rust/README.md](../../tools/rust/README.md) | the container scripts, their images and options |
 
 ## Layout
@@ -99,7 +101,7 @@ on every branch.
 | host tests | every test case of the ported C++ modules with all its assertions, new cases for the Rust mechanisms (ports, boot guard, HTTP and MQTT protocol code), differential checks that run the C++ and the Rust code on the same random inputs | [PORTING.md](PORTING.md#modules-and-tests), [PORT-NOTES.md](PORT-NOTES.md) |
 | STM32 goldens | the STM32 glue reproduces the UART bytes, EEPROM rows and no-init bytes of every C++ glue_system case, byte for byte | [GLUE-DESIGN-STM.md §7.4](GLUE-DESIGN-STM.md#74-cross-implementation-goldens) |
 | interop tests | `json_body` gives what ArduinoJson 6.21.6 gives on the device's 32-bit layout; `mqtt_conn` works against Mosquitto | [GLUE-DESIGN-ESP.md §4.4](GLUE-DESIGN-ESP.md#44-json-bodies), [§7](GLUE-DESIGN-ESP.md#7-open-risks-and-decisions) item 11 |
-| mutation gate | the tests kill at least 95 % of the mutants of every file | [PORTING.md](PORTING.md#mutation-gate) |
+| mutation gate | the tests kill at least 95 % of the mutants of every file; on the final tree every file of the gated crates (ESP core and glue, STM core, boot and glue) is at 100 % | [PORTING.md](PORTING.md#mutation-gate), [mutation-esp32-core.md](mutation-esp32-core.md), [mutation-esp32-glue.md](mutation-esp32-glue.md), [mutation-stm32.md](mutation-stm32.md) |
 | image check | the ESP 2.1.7 accepts every STM32 image (chip, board, version, handshake, erase set), the layout of each image, the boot stage inside sector 0 (D9), the reference values on the C++ 2.1.7 images (C6) | [GLUE-DESIGN-STM.md §5.8](GLUE-DESIGN-STM.md#58-byte-level-image-check) |
 | Renode | per STM32 image: the boot window (both ESP handshakes, stray bytes, HSE dead, faults, no-init cells), the application against the C++ goldens, warm start from C++ 2.1.7 state, the watchdog, a flash cycle C++ -> Rust -> C++ with the Rust ESP flasher (E11) | [GLUE-DESIGN-STM.md §5.7](GLUE-DESIGN-STM.md#57-proof-in-the-emulator-renode) |
 | QEMU | the ESP32 image with the devices' bootloader and partition table: trial, confirmation, boot limit, boot deadline, switch back, OTA to the C++ image, the C++ NVS and LittleFS read and written, HTTP, MQTT, load | [GLUE-DESIGN-ESP.md §5.5](GLUE-DESIGN-ESP.md#55-end-to-end-in-qemu-vdm-esp-fw) |
