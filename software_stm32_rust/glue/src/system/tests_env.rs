@@ -509,6 +509,50 @@ fn shorts_on_three_valves_suspend_the_limits_and_gstax_reports_it() {
     b.finish();
 }
 
+/// Valve v's next move, to `pct`, with an inrush above the limit (reported only, the move goes
+/// on): one trip; the inrush is gone afterwards.
+fn inrush_move(b: &mut Boot<'_>, v: usize, pct: u8) {
+    {
+        let mut s = b.sim();
+        s.valve[v].inrush_peak_dma = 2800;
+        s.valve[v].inrush_ms = 60;
+    }
+    let trips = b.m().mots[v].trip_seq;
+    let set = std::format!("stgtp {v} {pct}\n");
+    assert_eq!(b.exchange(&set), "stgtp\r\n");
+    assert!(b.run_main_until(|b| b.idle_at(v, pct), 60000), "valve {v}");
+    assert_eq!(b.m().mots[v].trip_seq, trips.wrapping_add(1), "valve {v}");
+    b.sim().valve[v].inrush_peak_dma = 0;
+    // the app hands the trip to the protection guard
+    b.run_main(100);
+}
+
+#[test]
+fn inrush_trips_on_three_valves_count_for_the_guard_only_within_600_s_of_uptime() {
+    let mut c = case();
+    let mut b = c.boot(sim(0x0FF0), |_| {});
+    b.run_main(40000);
+    b.calibrated_idle(4);
+    assert!(b.run_main_until(settled, 60000));
+    // the lease off: no failsafe while the time jumps
+    assert_eq!(b.exchange("slcfg 0\n"), "slcfg ok\r\n");
+    // three valves, each trip more than 600 s of uptime after the one before
+    for v in 0..3 {
+        if v > 0 {
+            b.jump_s(700);
+            assert!(b.run_main_until(settled, 60000));
+        }
+        inrush_move(&mut b, v, 70);
+        assert_eq!(b.gstax(23), 0, "valve {v}");
+    }
+    // two more within 600 s of the last one: three valves within the window
+    inrush_move(&mut b, 0, 40);
+    assert_eq!(b.gstax(23), 0);
+    inrush_move(&mut b, 1, 40);
+    assert_eq!(b.gstax(23), 1);
+    b.finish();
+}
+
 #[test]
 fn gprof_reports_the_last_move_and_the_terminal_waits_for_the_valve_machine() {
     let mut c = case();

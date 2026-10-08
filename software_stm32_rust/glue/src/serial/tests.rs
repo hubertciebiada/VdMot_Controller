@@ -302,7 +302,8 @@ fn irq_while_txe_is_clear_the_transmitter_is_left_alone() {
 
 /// A USART for the writer: TXEIE on lets the interrupt run at once when `isr` is set (it drains
 /// the ring onto `wire` through [`Port::irq`]); otherwise only a writer that finds the
-/// interrupt blocked sends. SR, PRIMASK and BASEPRI as set by the test.
+/// interrupt blocked sends. SR, PRIMASK and BASEPRI as set by the test; while `tc_clear` counts
+/// down, the SR reads find TC clear (the last byte still in the shift register).
 struct TestUsart<'a> {
     port: &'a Port,
     wire: &'a RefCell<Vec<u8>>,
@@ -311,11 +312,17 @@ struct TestUsart<'a> {
     primask: bool,
     basepri: u8,
     sr: &'a Cell<u32>,
+    tc_clear: &'a Cell<u32>,
     txeie: Cell<bool>,
 }
 
 impl UsartRegs for TestUsart<'_> {
     fn sr(&self) -> u32 {
+        let left = self.tc_clear.get();
+        if left > 0 {
+            self.tc_clear.set(left - 1);
+            return self.sr.get() & !SR_TC;
+        }
         self.sr.get()
     }
 
@@ -354,6 +361,7 @@ struct Rig {
     wire: RefCell<Vec<u8>>,
     starts: Cell<u32>,
     sr: Cell<u32>,
+    tc_clear: Cell<u32>,
 }
 
 impl Rig {
@@ -363,6 +371,7 @@ impl Rig {
             wire: RefCell::new(Vec::new()),
             starts: Cell::new(0),
             sr: Cell::new(sr),
+            tc_clear: Cell::new(0),
         }
     }
 
@@ -378,6 +387,7 @@ impl Rig {
                 primask,
                 basepri,
                 sr: &self.sr,
+                tc_clear: &self.tc_clear,
                 txeie: Cell::new(false),
             },
         }
@@ -467,6 +477,24 @@ fn flush_waits_for_the_empty_ring_and_tc() {
     s.flush();
     assert_eq!(rig.wire(), b"x".to_vec());
     assert_eq!(rig.starts.get(), 1);
+}
+
+#[test]
+fn flush_with_the_ring_empty_waits_until_tc_is_set() {
+    let rig = Rig::new(SR_TXE + SR_TC);
+    let mut s = rig.serial(true, false, 0);
+    // the last byte is still in the shift register for the next three SR reads
+    rig.tc_clear.set(3);
+    s.flush();
+    assert_eq!(rig.tc_clear.get(), 0);
+    assert!(rig.starts.get() >= 1);
+    // the same with the interrupt blocked and a byte left in the ring
+    let mut s = rig.serial(false, true, 0);
+    assert!(rig.port.push_tx(b'z'));
+    rig.tc_clear.set(4);
+    s.flush();
+    assert_eq!(rig.wire(), b"z".to_vec());
+    assert_eq!(rig.tc_clear.get(), 0);
 }
 
 #[test]

@@ -1,0 +1,8 @@
+[
+ {"file": "glue/src/i2c_master.rs", "function": "",
+  "mutation": "replace << with >>",
+  "reason": "only the shift of SR1_SB = 1 << 0 survives: a shift by 0, so 1 >> 0 is the same bit; the << -> >> mutants of the other SR1_* and SR2_BUSY constants (shifts by 1 to 10) are killed by the transfer tests and fall under this name"},
+ {"file": "glue/src/i2c_master.rs", "function": "I2cV1<R, C>::wait",
+  "mutation": "replace | with ^ in I2cV1<R, C>::wait",
+  "reason": "SR1_ARLO | SR1_BERR (bits 9 and 8) in the test and in the clear: disjoint bits, so | and ^ give the same mask"}
+]

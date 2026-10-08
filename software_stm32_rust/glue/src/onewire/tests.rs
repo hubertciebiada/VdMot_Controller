@@ -155,6 +155,31 @@ fn search_after_the_last_device_returns_false_once_without_bus_traffic() {
 }
 
 #[test]
+fn reset_search_starts_the_next_search_at_the_first_device_again() {
+    let devices = vec![
+        SimDevice::new(0x28, 0x01, Kind::Ds18),
+        SimDevice::new(0x28, 0x02, Kind::Ds18),
+    ];
+    let roms: Vec<[u8; 8]> = devices.iter().map(|d| d.rom).collect();
+    let order = search_order(&roms);
+    let mut ow = bus(devices);
+    let mut a = [0u8; 8];
+    // within a search: the reset forgets the discrepancy, the first device comes again
+    assert!(ow.search(&mut a, true));
+    assert_eq!(a, order[0]);
+    ow.reset_search();
+    assert!(ow.search(&mut a, true));
+    assert_eq!(a, order[0]);
+    // without one the search goes on with the next device
+    assert!(ow.search(&mut a, true));
+    assert_eq!(a, order[1]);
+    // after the last device: the reset forgets that it was the last one
+    ow.reset_search();
+    assert!(ow.search(&mut a, true));
+    assert_eq!(a, order[0]);
+}
+
+#[test]
 fn search_without_a_presence_pulse_finds_nothing_and_restarts() {
     let mut d = SimDevice::new(0x28, 0x05, Kind::Ds18);
     d.present = false;

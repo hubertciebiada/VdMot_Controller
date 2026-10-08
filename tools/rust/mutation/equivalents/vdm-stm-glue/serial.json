@@ -1,0 +1,8 @@
+[
+ {"file": "glue/src/serial.rs", "function": "",
+  "mutation": "replace << with >>",
+  "reason": "only the shift of SR_PE = 1 << 0 survives: a shift by 0, so 1 >> 0 is the same bit; the << -> >> mutants of the other SR_* constants (shifts by 1 to 7) are killed by hal_error_bits_are_the_cores_and_one_per_flag and fall under this name"},
+ {"file": "glue/src/serial.rs", "function": "",
+  "mutation": "replace | with ^",
+  "reason": "const SR_READ_DR = SR_RXNE | SR_ORE | SR_NE | SR_FE | SR_PE: five disjoint bits, so each of the four | gives the same mask as ^"}
+]
