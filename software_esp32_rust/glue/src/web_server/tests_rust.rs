@@ -624,6 +624,19 @@ fn status_shows_the_clock_the_last_sync_and_the_board_figures() {
 }
 
 #[test]
+fn status_the_next_calibration_is_valid_with_a_bare_conversion() {
+    // C++ set nextCalibLocal.valid itself once localtime_r had converted the slot: the time
+    // shows also when the conversion gives the broken-down time only
+    let rig = Rig::started();
+    rig.state().calib.next_epoch = 1_790_000_000; // 2026-09-21 14:13:20 UTC
+    rig.dev.wall.bare_conversion();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let r = text(&perform(&mut web, get("/api/status")));
+    assert!(r.contains("\"next\":\"2026-09-21T14:13:20\"}"), "{r}");
+}
+
+#[test]
 fn answers_without_content_carry_no_content_type() {
     let rig = Rig::started();
     rig.dev.fs.put("/x.bin", b"x");

@@ -353,6 +353,8 @@ struct WallState {
     base_us: i64,
     rule: TzRule,
     zones: Vec<String>,
+    /// [`FakeWall::bare_conversion`]
+    bare: bool,
 }
 
 /// Wall clock of a boot: `epoch()` advances with the [`FakeClock`]; before [`FakeWall::set`] it
@@ -373,8 +375,14 @@ impl FakeWall {
                 base_us: 0,
                 rule: TzRule::UTC,
                 zones: Vec::new(),
+                bare: false,
             })),
         }
+    }
+    /// From now on a conversion gives the broken-down time only (`valid` false, `epoch` 0), as
+    /// a bare `localtime_r` does: the glue sets both itself, as the C++ glue did.
+    pub(crate) fn bare_conversion(&self) {
+        lock(&self.state).bare = true;
     }
     /// The wall clock reads `epoch` seconds now (SNTP set it).
     pub(crate) fn set(&self, epoch: i64) {
@@ -401,8 +409,17 @@ impl WallClock for FakeWall {
         s.zones.push(posix.to_string());
     }
     fn local_time(&self, epoch: i64) -> Option<LocalTime> {
-        let rule = lock(&self.state).rule;
-        Some(local(&rule, epoch))
+        let s = lock(&self.state);
+        let t = local(&s.rule, epoch);
+        Some(if s.bare {
+            LocalTime {
+                valid: false,
+                epoch: 0,
+                ..t
+            }
+        } else {
+            t
+        })
     }
 }
 
