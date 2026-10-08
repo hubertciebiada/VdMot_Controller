@@ -19,13 +19,13 @@ worth knowing, no fault.
 | F1 | High | A manual switch back from a confirmed image confirmed its target without a trial | fixed, 574d728 |
 | F2 | Medium | A restart over MQTT confirmed an image on trial whose web server never answered | fixed, 8459b4f |
 | F3 | Low | An image left by an upload stayed confirmed: installed again later, it ran without a trial | fixed, 574d728 |
-| F4 | Medium | A failure in the D9 sector-0 pass of an STM flash ends with an NRST pulse into an erased sector 0 | open (design) |
-| F5 | Medium | No way back from a confirmed image that crash-loops or hangs before its web server runs | open (design, 6.6) |
-| F6 | Medium | WiFi starts on stacks that were measured with WiFi off | open (device campaign) |
+| F4 | Medium | A failure in the D9 sector-0 pass of an STM flash ends with an NRST pulse into an erased sector 0 | fixed, f8904f5, 31c31c7 |
+| F5 | Medium | No way back from a confirmed image that crash-loops or hangs before its web server runs | fixed, 20d87dd, 2d831b6 |
+| F6 | Medium | WiFi starts on stacks that were measured with WiFi off | open (device campaign; first-flash step 9, 1184efb) |
 | F7 | Low | The first confirmation after a switch rewrites the active otadata sector in place | open |
 | F8 | Low | The STM flash flag drops while the flash waits for the EEPROM gate | open (C++ parity) |
-| F9 | Low | The trial proves GET only: an image whose POST path fails is confirmed | open (procedure) |
-| F10 | Low | Trial detection needs the ELF SHA-256 in the app descriptor; an image without it is blind | open (build check) |
+| F9 | Low | The trial proves GET only: an image whose POST path fails is confirmed | procedure, 1184efb |
+| F10 | Low | Trial detection needs the ELF SHA-256 in the app descriptor; an image without it is blind | fixed, 729b403 |
 | F11 | Info | Upload and switch-back answers that do not match what happens | open (UX) |
 | F12 | Low | Without a usable NVS the guard forgets which image failed last | open |
 | — | — | Paths checked without a finding | see the last section |
@@ -85,7 +85,7 @@ build A again: `otaOk == A`, so A booted confirmed without a trial, on state it 
 trial anyway (its own AppId). Tests `an_upload_of_the_cpp_firmware_leaves_no_confirmation_behind`,
 `leaving_for_an_upload_removes_the_confirmation_only`.
 
-## F4 — STM flash: a failed sector-0 pass resets an STM without a vector table (Medium, open)
+## F4 — STM flash: a failed sector-0 pass resets an STM without a vector table (Medium, fixed)
 
 The boards do not wire BOOT0: an STM image is re-flashed only through its own boot window
 (GLUE-DESIGN-STM, requirement). D9 writes sector 0 last, so an *interruption* (ESP crash, power
@@ -113,7 +113,18 @@ path leave NRST alone in that state (an ESP restart releases NRST and loses the 
 erasing sector 0, an upper pass that needed session retries could stop and leave the STM in the
 recoverable state of the old boot stage.
 
-## F5 — a confirmed image that crash-loops before its web server runs (Medium, open)
+**Fix** (f8904f5, 31c31c7). Once the sector list of the sector-0 erase went out
+(`FlashStatus::sector0_at_risk`, until sector 0 verifies) a failure no longer pulses NRST: the
+phase `sector0_pending` (event 326 `stm_sector0_pending`) keeps the ROM session and repeats the
+pass every 30 s, or at once on a new flash request, with session retries of its own; the image
+bytes of sector 0 are held in RAM and checked against the CRC of the Validating phase before
+every erase, and an abort is ignored. Meanwhile the ESP refuses its restarts (`409
+stm_sector0_pending`, MQTT `cmd/restart` reason 8) and lets the automatic ones wait (event 123
+`restart_deferred`). Left: an ESP crash or a power loss during the pass itself (about 2 s).
+Tests in `core/src/stm_flasher/tests_d9.rs`, `core/src/stm_session/tests_mut.rs` and the
+restart cases of the glue (`ota`, `web_server`, `mqtt_client`).
+
+## F5 — a confirmed image that crash-loops before its web server runs (Medium, fixed)
 
 Design 6.6 lists "a defect that shows after the 120 s confirmation" as uncovered. While the web
 server answers between two resets, the switch back is the remedy; the paths that end in a
@@ -136,6 +147,19 @@ NVS (written in `main` after the guard, cleared after N minutes of uptime with t
 and a passing self-check); above K (e.g. 6) the guard switches to the other slot when it
 verifies, removing `otaOk` (the target runs a trial, F1), once per image (recorded like
 `away`), so two images that both fail in this environment do not take turns.
+
+**Fix** (20d87dd, 2d831b6; design 6.2 step 1). The RTC mirror of a confirmed image keeps a crash
+streak: a boot that ended with a panic or a watchdog reset (`esp_reset_reason` 4..7) or by the
+boot deadline counts, unless it ran 10 min (`OtaService::service` calls
+`BootGuard::note_stable`); any other end sets it to 0. At the 4th such end in a row the guard
+selects the other slot when its image verifies and did not fail the last trial (the mirror keeps
+that image, at the first confirmed boot taken from the trial record), without `otaOk`: a Rust
+image there runs a trial with the crashing image as its fallback (event 107 -4 arg2 3), the C++
+firmware just runs; otherwise event 107 -3 arg2 3, once. Decisions: RTC instead of NVS (no flash
+write per boot; a power cycle ends a streak anyway, and forgets the failed image), 10 min of
+uptime without a health condition (a network outage switches nothing), 4 ends. A hang of the
+app thread before `web_begin` ends in a TWDT panic and counts too. Tests: the F5 cases of
+`glue/src/boot_guard/tests.rs`, `glue/src/ota/tests_boots.rs`, `glue/src/app/tests.rs`.
 
 ## F6 — WiFi starts on stacks measured with WiFi off (Medium, open)
 
@@ -177,7 +201,7 @@ interrupts, so STM replies get lost and retried, at worst into F4. **Fix candida
 `flash_active = !idle || s.flash_pending` (the web's STM commands then get 409 `flashing` during
 the gate too), or a separate flag for the OTA host and the heap guard.
 
-## F9 — the trial proves GET, not POST (Low, open)
+## F9 — the trial proves GET, not POST (Low, procedure)
 
 The self-check is `GET /api/health` over loopback (`ota.rs` `self_check`). An image whose POST
 body path fails on the device (the upload and the switch back are both POSTs) is confirmed after
@@ -187,13 +211,19 @@ unlikely. **Recommendation:** the first-flash procedure on an accessible device 
 upload (the C++ image back) and a switch back before any cabinet device; or the self-check sends
 a small POST (`POST /api/config?dryRun=1` with `{}`).
 
-## F10 — trial detection needs the ELF SHA-256 in the image (Low, open)
+**Procedure** (1184efb): steps 2 and 3 of the first-flash checklist (INSTALL.md §3.4) switch back
+to the C++ image and upload the Rust image again on the accessible device.
+
+## F10 — trial detection needs the ELF SHA-256 in the image (Low, fixed)
 
 `AppId` is `app_elf_sha256[..8]`, which `esptool elf2image --elf-sha256-offset 0xb0` writes
 (`tools/rust/esp/docker.sh` does). An image built without it has `AppId` 0…0, as every legacy
 1.4.x image in `releases/WTH32` has: two such Rust builds would look identical, and an update
 between them would boot confirmed without a trial. **Recommendation:** the build and the release
 packaging fail on an all-zero ELF SHA-256 at image offset 0xB0.
+
+**Fix** (729b403): the guard treats an all-zero `AppId` as unknown and stays out
+(`UNKNOWN_APP`), and the firmware build fails on it (`tools/rust/esp/app_id.py`).
 
 ## F11 — answers that do not match what happens (Info, open)
 
