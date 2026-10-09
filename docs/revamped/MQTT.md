@@ -316,6 +316,10 @@ Per device:
 | sensor (timestamp) | `diag_calibration_next` | ESP | newDiag |
 | sensor | `diag_mqtt_eventsSuppressed`, `diag_mqtt_commandsRejected` | ESP | newDiag |
 
+`diag_calibration_next` uses `value_template: {{ value if value else 'None' }}`: its empty
+payload (no next slot) shows as unknown, without an "Invalid state message" warning in the HA
+log.
+
 The per-valve diag values arrive only with a revamped STM. The 2.0.0 entity
 `diag_stm_uptime` is removed (replaced by `diag_stm_started`).
 

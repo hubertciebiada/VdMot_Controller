@@ -657,6 +657,7 @@ fn discovery_device_entities_k3_2_e29_1_w15_2() {
         format!(
             "{{\"name\":\"Next calibration\",\"unique_id\":\"VdMot.diag.calibration.next\",\
              \"state_topic\":\"VdMot/diag/calibration/next\",\
+             \"value_template\":\"{{{{ value if value else 'None' }}}}\",\
              \"device_class\":\"timestamp\",{e}{dev}"
         ),
     );

@@ -839,7 +839,9 @@ Entity tables and the user view: `docs/revamped/MQTT.md`. The table in
   board tag (absent while unknown), sw_version, configuration_url
   `http://<ip>/`}. Everything is JSON-escaped. Temperature/volt sensors get
   `value_template` `{{ value | replace(',', '.') | float(None) }}` and
-  `expire_after` max(3 x publishIntervalS, 60). The valve entity gets
+  `expire_after` max(3 x publishIntervalS, 60). Next calibration gets
+  `value_template` `{{ value if value else 'None' }}` (its empty payload is
+  unknown in HA, not an invalid timestamp). The valve entity gets
   `qos: 1` and, with protocol 3, `payload_stop: STOP`. The event entity lists
   `eventMqttNames()`. Payloads up to 2047 B.
 - The first-run cleanup of mode 1 does not wait for settled STM data (it

@@ -633,6 +633,9 @@ const DROP_VALVE: [DropDef; DROP_KINDS] = [
 ];
 
 const TEMP_TEMPLATE: &str = "{{ value | replace(',', '.') | float(None) }}";
+/// Next calibration: HA logs the empty payload (no slot) as an invalid timestamp, "None" is
+/// unknown.
+const EMPTY_AS_NONE_TEMPLATE: &str = "{{ value if value else 'None' }}";
 
 // ---------------------------------------------------------------- helpers
 
@@ -1036,6 +1039,9 @@ fn tail_entity(ctx: &DiscoveryContext, d: &TailDef, e: &mut Entity) -> Option<()
     e.options = d.options;
     e.avail = d.avail;
     e.event_types = d.comp == HaComponent::Event;
+    if d.topic == Topic::DiagCalibrationNext {
+        e.value_template = Some(EMPTY_AS_NONE_TEMPLATE);
+    }
     e.object_id = cat(&[d.object_id])?;
     e.object_id_raw = cat(&[d.object_id])?;
     e.name = cat(&[d.name])?;

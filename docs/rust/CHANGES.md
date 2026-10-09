@@ -8,6 +8,17 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Unreleased
+
+### ESP32: MQTT
+
+- The Home Assistant sensor Next calibration (`diag_calibration_next`) gets `value_template`
+  `{{ value if value else 'None' }}`: its empty payload (no slot) shows as unknown instead of an
+  "Invalid state message" warning in the HA log. The topic and its payload do not change. The C++
+  sources have the same change ([CHANGELOG.md](../revamped/CHANGELOG.md), Unreleased), so the
+  discovery payloads of both stay the same
+  ([MQTT.md](../revamped/MQTT.md#new-entities)).
+
 ## 2.2.0-revamped
 
 The first Rust release, ESP32 and STM32. How to install it and how to go back:

@@ -189,6 +189,8 @@ const DropDef kDropValve[kDropKinds] = {
 };
 
 constexpr char kTempTemplate[] = "{{ value | replace(',', '.') | float(None) }}";
+// Next calibration: HA logs the empty payload (no slot) as an invalid timestamp, "None" is unknown.
+constexpr char kEmptyAsNoneTemplate[] = "{{ value if value else 'None' }}";
 
 // ---------------------------------------------------------------- helpers
 
@@ -526,6 +528,7 @@ Describe describeTail(const DiscoveryContext& ctx, uint16_t k, Entity& e) {
   e.options = d.options;
   e.avail = d.avail;
   e.eventTypes = d.comp == HaComponent::Event;
+  if (d.topic == Topic::DiagCalibrationNext) e.valueTemplate = kEmptyAsNoneTemplate;
   Str(e.objectId, sizeof e.objectId).add(d.objectId);
   Str(e.objectIdRaw, sizeof e.objectIdRaw).add(d.objectId);
   Str(e.name, sizeof e.name).add(d.name);

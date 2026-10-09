@@ -281,41 +281,41 @@ Rust tests in `core/src/ha_discovery/tests.rs` unless a path is given.
 | 213 | discovery: KEEP entities carry no availability (K3-1, K4-1, W3-8) | exact | `discovery_keep_entities_carry_no_availability_k3_1_k4_1_w3_8` |
 | 286 | discovery: new per-valve entities (E29-1, W15-1) | exact | `discovery_new_per_valve_entities_e29_1_w15_1` |
 | 341 | discovery: device entities (K3-2, E29-1, W15-2) | exact | `discovery_device_entities_k3_2_e29_1_w15_2` |
-| 443 | discovery gates and counts | exact | `discovery_gates_and_counts` |
-| 508 | discovery: E22 published segment and topicKnown | exact | `discovery_e22_published_segment_and_topic_known` |
-| 536 | discovery: HA-safe ids, raw names, root and prefix (E20-2, H5) | exact | `discovery_ha_safe_ids_raw_names_root_and_prefix_e20_2_h5` |
-| 595 | discovery: v20Topic, the 2.0.0 form of changed ids (E20-3) | exact | `discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3` |
-| 635 | discovery: device block with hw_version and variants (W15-4) | exact | `discovery_device_block_with_hw_version_and_variants_w15_4` |
-| 677 | discovery refuses a missing or unsafe station | exact | `discovery_refuses_a_missing_or_unsafe_station` |
-| 719 | discovery skips an entity that cannot be built and continues | exact | `discovery_skips_an_entity_that_cannot_be_built_and_continues` |
-| 773 | discovery with every entity enabled fits the MQTT buffer (W15-2) | exact | `discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2` |
-| 811 | DROP list: legacy entities of both segment forms, once each | exact | `drop_list_legacy_entities_of_both_segment_forms_once_each` |
-| 877 | classify discovery list lines (W4-1) | exact | `classify_discovery_list_lines_w4_1` |
-| 938 | classify fuzz: only exact current topics match | exact | `classify_fuzz_only_exact_current_topics_match` |
-| 980 | discovery fuzz: random context bytes never overflow or emit bad JSON framing | exact | `discovery_fuzz_random_context_bytes_never_overflow_or_emit_bad_json_framing` |
-| 1071 | discovery: a volt unit of the full 8 characters is kept whole | exact | `discovery_a_volt_unit_of_the_full_8_characters_is_kept_whole` |
-| 1096 | buildDiscoveryContext and discoveryInputKey | exact | `build_discovery_context_and_discovery_input_key` |
-| 1360 | readListLine: CR/LF, empty and overlong lines | exact | `read_list_line_cr_lf_empty_and_overlong_lines` |
-| 1387 | DiscoveryRun: prune before publish, rewrite the list (W4-2, W4-3) | exact | `discovery_run_prune_before_publish_rewrite_the_list_w4_2_w4_3` |
-| 1434 | DiscoveryRun: KeptUnknown lines are carried first and deleted once known (W4-4) | exact | `discovery_run_kept_unknown_lines_are_carried_first_and_deleted_once_known_w4_4` |
-| 1460 | DiscoveryRun: Delete and DeleteAndPublish (W4-5) | exact | `discovery_run_delete_and_delete_and_publish_w4_5` |
-| 1537 | DiscoveryRun: missing list, budget, failures (W4-6, W4-7, W4-10) | exact | `discovery_run_missing_list_budget_failures_w4_6_w4_7_w4_10` |
-| 1652 | DiscoveryRun: first-run cleanup, migration, foreign and oversize entries | exact | `discovery_run_first_run_cleanup_migration_foreign_and_oversize_entries` |
-| 1718 | discovery: a one-char station and a one-char prefix | exact | `discovery_a_one_char_station_and_a_one_char_prefix` |
-| 1730 | discovery: expire_after is three publish intervals, at least 60 s | exact | `discovery_expire_after_is_three_publish_intervals_at_least_60_s` |
-| 1742 | discovery: a valve name of the full 10 chars is kept whole in entity names | exact | `discovery_a_valve_name_of_the_full_10_chars_is_kept_whole_in_entity_names` |
-| 1750 | discovery: the event entity lists fewer than 127 event types | exact | `discovery_the_event_entity_lists_fewer_than_127_event_types` |
-| 1754 | classify: the shape of a config topic | exact | `classify_the_shape_of_a_config_topic` |
-| 1770 | v20Topic: nothing for an unsafe station or a skipped last entity | exact | `v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity` |
-| 1788 | DiscoveryIterator::reset starts again at the first entity | exact | `discovery_iterator_reset_starts_again_at_the_first_entity` |
-| 1802 | readListLine: a NUL byte does not end a line | exact | `read_list_line_a_nul_byte_does_not_end_a_line` |
-| 1812 | discoveryInputKey: CRC32 over the snapshot parts in their order | exact | `discovery_input_key_crc32_over_the_snapshot_parts_in_their_order` |
-| 1862 | DiscoveryRun: a prune without publish writes a missing list | exact | `discovery_run_a_prune_without_publish_writes_a_missing_list` |
-| 1876 | DiscoveryRun: the same topics in another order are written again | exact | `discovery_run_the_same_topics_in_another_order_are_written_again` |
-| 1893 | DiscoveryRun: an unbuildable entity adds no list line | exact | `discovery_run_an_unbuildable_entity_adds_no_list_line` |
-| 1909 | DiscoveryRun: eight list lines per step | exact | `discovery_run_eight_list_lines_per_step` |
-| 1929 | DiscoveryRun: eight current topics per list write step | exact | `discovery_run_eight_current_topics_per_list_write_step` |
-| 1950 | DiscoveryRun: delete and publish with prune closes and commits each list once | exact | `discovery_run_delete_and_publish_with_prune_closes_and_commits_each_list_once` |
+| 444 | discovery gates and counts | exact | `discovery_gates_and_counts` |
+| 509 | discovery: E22 published segment and topicKnown | exact | `discovery_e22_published_segment_and_topic_known` |
+| 537 | discovery: HA-safe ids, raw names, root and prefix (E20-2, H5) | exact | `discovery_ha_safe_ids_raw_names_root_and_prefix_e20_2_h5` |
+| 596 | discovery: v20Topic, the 2.0.0 form of changed ids (E20-3) | exact | `discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3` |
+| 636 | discovery: device block with hw_version and variants (W15-4) | exact | `discovery_device_block_with_hw_version_and_variants_w15_4` |
+| 678 | discovery refuses a missing or unsafe station | exact | `discovery_refuses_a_missing_or_unsafe_station` |
+| 720 | discovery skips an entity that cannot be built and continues | exact | `discovery_skips_an_entity_that_cannot_be_built_and_continues` |
+| 774 | discovery with every entity enabled fits the MQTT buffer (W15-2) | exact | `discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2` |
+| 812 | DROP list: legacy entities of both segment forms, once each | exact | `drop_list_legacy_entities_of_both_segment_forms_once_each` |
+| 878 | classify discovery list lines (W4-1) | exact | `classify_discovery_list_lines_w4_1` |
+| 939 | classify fuzz: only exact current topics match | exact | `classify_fuzz_only_exact_current_topics_match` |
+| 981 | discovery fuzz: random context bytes never overflow or emit bad JSON framing | exact | `discovery_fuzz_random_context_bytes_never_overflow_or_emit_bad_json_framing` |
+| 1072 | discovery: a volt unit of the full 8 characters is kept whole | exact | `discovery_a_volt_unit_of_the_full_8_characters_is_kept_whole` |
+| 1097 | buildDiscoveryContext and discoveryInputKey | exact | `build_discovery_context_and_discovery_input_key` |
+| 1361 | readListLine: CR/LF, empty and overlong lines | exact | `read_list_line_cr_lf_empty_and_overlong_lines` |
+| 1388 | DiscoveryRun: prune before publish, rewrite the list (W4-2, W4-3) | exact | `discovery_run_prune_before_publish_rewrite_the_list_w4_2_w4_3` |
+| 1435 | DiscoveryRun: KeptUnknown lines are carried first and deleted once known (W4-4) | exact | `discovery_run_kept_unknown_lines_are_carried_first_and_deleted_once_known_w4_4` |
+| 1461 | DiscoveryRun: Delete and DeleteAndPublish (W4-5) | exact | `discovery_run_delete_and_delete_and_publish_w4_5` |
+| 1538 | DiscoveryRun: missing list, budget, failures (W4-6, W4-7, W4-10) | exact | `discovery_run_missing_list_budget_failures_w4_6_w4_7_w4_10` |
+| 1653 | DiscoveryRun: first-run cleanup, migration, foreign and oversize entries | exact | `discovery_run_first_run_cleanup_migration_foreign_and_oversize_entries` |
+| 1719 | discovery: a one-char station and a one-char prefix | exact | `discovery_a_one_char_station_and_a_one_char_prefix` |
+| 1731 | discovery: expire_after is three publish intervals, at least 60 s | exact | `discovery_expire_after_is_three_publish_intervals_at_least_60_s` |
+| 1743 | discovery: a valve name of the full 10 chars is kept whole in entity names | exact | `discovery_a_valve_name_of_the_full_10_chars_is_kept_whole_in_entity_names` |
+| 1751 | discovery: the event entity lists fewer than 127 event types | exact | `discovery_the_event_entity_lists_fewer_than_127_event_types` |
+| 1755 | classify: the shape of a config topic | exact | `classify_the_shape_of_a_config_topic` |
+| 1771 | v20Topic: nothing for an unsafe station or a skipped last entity | exact | `v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity` |
+| 1789 | DiscoveryIterator::reset starts again at the first entity | exact | `discovery_iterator_reset_starts_again_at_the_first_entity` |
+| 1803 | readListLine: a NUL byte does not end a line | exact | `read_list_line_a_nul_byte_does_not_end_a_line` |
+| 1813 | discoveryInputKey: CRC32 over the snapshot parts in their order | exact | `discovery_input_key_crc32_over_the_snapshot_parts_in_their_order` |
+| 1863 | DiscoveryRun: a prune without publish writes a missing list | exact | `discovery_run_a_prune_without_publish_writes_a_missing_list` |
+| 1877 | DiscoveryRun: the same topics in another order are written again | exact | `discovery_run_the_same_topics_in_another_order_are_written_again` |
+| 1894 | DiscoveryRun: an unbuildable entity adds no list line | exact | `discovery_run_an_unbuildable_entity_adds_no_list_line` |
+| 1910 | DiscoveryRun: eight list lines per step | exact | `discovery_run_eight_list_lines_per_step` |
+| 1930 | DiscoveryRun: eight current topics per list write step | exact | `discovery_run_eight_current_topics_per_list_write_step` |
+| 1951 | DiscoveryRun: delete and publish with prune closes and commits each list once | exact | `discovery_run_delete_and_publish_with_prune_closes_and_commits_each_list_once` |
 
 ## software_esp32_revamped/test/native/test_health_monitor.cpp (11)
 

@@ -8,6 +8,14 @@ the ESP, the tooling and a summary of the STM.
 
 ## [Unreleased]
 
+### Changed
+- ESP: the Home Assistant sensor Next calibration (`diag_calibration_next`)
+  gets `value_template: {{ value if value else 'None' }}`. Its empty payload
+  (no slot: before the NTP time or with the schedule off) was an invalid
+  timestamp for HA, logged as "Invalid state message" at every ESP start; it
+  now shows as unknown without a warning. The topic and its payload do not
+  change ([MQTT.md](MQTT.md)).
+
 ## [2.1.7-revamped]
 
 Dashboard release of the ESP. The STM firmware is unchanged; its image

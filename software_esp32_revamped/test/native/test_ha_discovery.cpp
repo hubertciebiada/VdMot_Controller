@@ -397,7 +397,8 @@ TEST_CASE("discovery: device entities (K3-2, E29-1, W15-2)") {
         "\"payload_off\":\"0\",\"entity_category\":\"diagnostic\"," + es + dev);
   CHECK(json(v, tail(13)) ==
         "{\"name\":\"Next calibration\",\"unique_id\":\"VdMot.diag.calibration.next\","
-        "\"state_topic\":\"VdMot/diag/calibration/next\",\"device_class\":\"timestamp\"," + e + dev);
+        "\"state_topic\":\"VdMot/diag/calibration/next\",\"value_template\":\"{{ value if value else 'None' }}\","
+        "\"device_class\":\"timestamp\"," + e + dev);
   CHECK(json(v, tail(14)) ==
         "{\"name\":\"Suppressed events\",\"unique_id\":\"VdMot.diag.mqtt.eventsSuppressed\","
         "\"state_topic\":\"VdMot/diag/mqtt/eventsSuppressed\",\"state_class\":\"total_increasing\","
