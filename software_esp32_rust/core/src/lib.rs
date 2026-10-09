@@ -1,6 +1,6 @@
 //! VdMot Revamped ESP32 core: the hardware-free logic of the firmware, a port of
 //! `software_esp32_revamped/lib/core` (C++17). Every module keeps the name, the contract
-//! and the behaviour of its C++ original; `software_esp32_revamped/DESIGN.md` stays binding.
+//! and the behaviour of its C++ original; `docs/revamped/DESIGN.md` stays binding.
 //! No heap, no unsafe, fixed-size storage, every input bounded (docs/rust/PORTING.md).
 #![no_std]
 

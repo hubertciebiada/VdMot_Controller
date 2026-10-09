@@ -5,10 +5,10 @@
 #
 #   image_check.sh [<directory of the C++ 2.1.7 release images>]
 #
-# - C1-C3 and the ESP's erase set: the C++ validateImage/checkBoard of
-#   software_esp32_revamped/lib/core (what an ESP 2.1.7 runs before it flashes), built with the
-#   container's g++ (image-check/esp_validate.cpp), plus the ESP's acceptance of the gvers
-#   reply the image gives after the flash
+# - C1-C3 and the ESP's erase set: the C++ validateImage/checkBoard of the ESP 2.1.7 core (its
+#   release tag, extracted by tools/rust/cpp217.sh: what an ESP 2.1.7 runs before it flashes),
+#   built with the container's g++ (image-check/esp_validate.cpp), plus the ESP's acceptance of
+#   the gvers reply the image gives after the flash
 # - C4, C5, D9: vdm-stm-image-check on the ELF and the .bin
 # - C6 (with a directory): the same ESP validation on the C++ release images in it, one
 #   *STM32F401_C1.bin ... *STM32F411_C2.bin each, after their SHA-256 matched the values pinned
@@ -27,7 +27,7 @@ CARGO_TARGET_DIR=/target/software_stm32_rust cargo build -q --release -p vdm-stm
 check=/target/software_stm32_rust/release/vdm-stm-image-check
 
 esp=/target/esp_validate
-core=/src/software_esp32_revamped/lib/core
+core=/src/.cache/cpp-2.1.7/lib/core
 g++ -std=c++17 -O1 -Wall -Wextra -Werror -fno-exceptions -fno-rtti -I "$core/include" \
   "$core"/src/*.cpp image-check/esp_validate.cpp -o "$esp"
 

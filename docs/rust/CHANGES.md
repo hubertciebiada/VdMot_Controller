@@ -4,7 +4,7 @@ Every externally visible difference of the Rust firmware from VdMot Revamped C++
 release first. Each entry links to its source of truth. Everything not listed behaves as in
 2.1.7: the HTTP API ([docs/revamped/API.md](../revamped/API.md)), MQTT and Home Assistant
 ([docs/revamped/MQTT.md](../revamped/MQTT.md)), the UART protocol
-([software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md)), the settings and files in
+([docs/revamped/PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md)), the settings and files in
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
@@ -14,9 +14,7 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
 - The Home Assistant sensor Next calibration (`diag_calibration_next`) gets `value_template`
   `{{ value if value else 'None' }}`: its empty payload (no slot) shows as unknown instead of an
-  "Invalid state message" warning in the HA log. The topic and its payload do not change. The C++
-  sources have the same change ([CHANGELOG.md](../revamped/CHANGELOG.md), Unreleased), so the
-  discovery payloads of both stay the same
+  "Invalid state message" warning in the HA log. The topic and its payload do not change
   ([MQTT.md](../revamped/MQTT.md#new-entities)).
 
 ## 2.2.0-revamped

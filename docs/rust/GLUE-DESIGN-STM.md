@@ -3,7 +3,7 @@
 Design of the Rust port of `software_stm32/src` (the glue) and of the firmware around
 `vdm-stm-core`. The implementation in `software_stm32_rust/` follows it; where it departs from
 the first design, the text says so (*Implementation:*). Binding documents: `docs/rust/PORTING.md`,
-`software_stm32/PROTOCOL_V2.md`, `software_esp32_revamped/DESIGN.md` §15. Values marked
+`docs/revamped/PROTOCOL_V2.md`, `docs/revamped/DESIGN.md` §15. Values marked
 *measured* come from the four C++ 2.1.7 release envs built with PlatformIO `ststm32@19.7.0`;
 embassy, cortex-m-rt and Renode facts come from the sources of the `embassy-stm32-v0.6.0` tag,
 of `cortex-m-rt` and of `renode-infrastructure`.
@@ -779,7 +779,8 @@ A C++ STM flash takes 26-30 s for 70 KB through the ESP; a 128 KiB image takes a
 | `test_system_boot`, `_calib`, `_config`, `_io`, `_motion`, `_proto3` | 3 + 3 + 5 + 2 + 8 + 6 | the whole glue with the valve sim over the UART across resets and power cycles | `glue/src/system/tests_*.rs` |
 | `test_terminal.cpp`, `__mut` | 12 + 12 | commands, outputs, `sena` limits, read budget, argument ranges | `terminal/` |
 
-336 cases (+7 for C1); the C++ suites stay runnable as the reference (`tools/native/docker.sh`).
+336 cases (+7 for C1); the C++ suites were runnable as the reference (`tools/native/docker.sh`) until the C++ sources
+left the branch (they are in the tag `v2.1.7-revamped`).
 
 ### 7.2 Fakes
 

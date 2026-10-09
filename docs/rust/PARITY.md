@@ -1,10 +1,14 @@
 # VdMot Revamped in Rust: parity with C++ 2.1.7
 
+> The audit as last written by `tools/rust/parity/parity.py` (on `2ab2f72`). The C++ sources and
+> the tool left the branch afterwards; the C++ paths below name the sources of the branch
+> `revamped` (tag `v2.1.7-revamped`), the tool is in the tag `v2.2.0-revamped`.
+
 Audit of the claim "the firmware fully rewritten in Rust, with tests, full functionality
 preserved" for both firmwares (ESP32 and STM32), on `revamped-rust` at `729b403` with the
 audit's commits (section 4.1). Reference: the C++ 2.1.7 sources (`software_esp32_revamped`,
 `software_stm32`) and their contract documents (`docs/revamped/API.md`, `docs/revamped/MQTT.md`,
-`software_esp32_revamped/DESIGN.md`, `software_stm32/PROTOCOL_V2.md`).
+`docs/revamped/DESIGN.md`, `docs/revamped/PROTOCOL_V2.md`).
 
 ## Verdict
 

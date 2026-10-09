@@ -1,6 +1,6 @@
 //! The UART protocol to the ESP (`software_stm32/src/communication.cpp`,
 //! `include/communication.h`): protocol v1 (byte-exact against firmware 2.0.0), v2 and v3
-//! (`software_stm32/PROTOCOL_V2.md`). Requests are lines of the core line assembler, split by the
+//! (`docs/revamped/PROTOCOL_V2.md`). Requests are lines of the core line assembler, split by the
 //! core tokenizer; v1 replies are written with Arduino `Print`, v2/v3 replies are formatted by the
 //! core into one reply buffer. Unknown commands get no reply.
 

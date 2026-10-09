@@ -661,8 +661,7 @@ fn the_dashboard_is_every_file_of_web_gzipped_with_its_etag() {
     use super::assets::DASHBOARD;
     use vdm_esp_core::config::crc32;
     assert_eq!(crc32(b"123456789", 0), 0xCBF4_3926); // the CRC-32 of zlib
-    let dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../software_esp32_revamped/web");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web");
     let mut files: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())

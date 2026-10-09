@@ -7,9 +7,9 @@ Tortoise UFH add-on keep working. A few legacy topics carry different content
 removed features (PI control, window logic) are no longer published or
 subscribed.
 
-Source of truth: `software_esp32_revamped/lib/core/src/mqtt_topics.cpp`,
-`mqtt_policy.cpp`, `mqtt_values.cpp`, `ha_discovery.cpp` and
-`src/mqtt_client.cpp`. Event codes: DESIGN.md section 13.
+Source of truth: `software_esp32_rust/core/src/mqtt_topics.rs`,
+`mqtt_policy.rs`, `mqtt_values.rs`, `ha_discovery.rs` and
+`software_esp32_rust/glue/src/mqtt_client.rs`. Event codes: DESIGN.md section 13.
 
 ## Connection
 

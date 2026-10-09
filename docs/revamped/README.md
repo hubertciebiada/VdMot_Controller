@@ -6,9 +6,13 @@
 > the upstream project. Every artifact carries the suffix `-revamped`, so it
 > cannot be confused with the official firmware.
 
-The Rust port of this firmware (2.2.0-revamped) is described in [docs/rust/README.md](../rust/README.md).
+The firmware of both MCUs is written in Rust since **2.2.0-revamped**
+([docs/rust/README.md](../rust/README.md); installation
+[docs/rust/INSTALL.md](../rust/INSTALL.md); every difference from the C++ 2.1.7 in
+[docs/rust/CHANGES.md](../rust/CHANGES.md)). The C++ firmware ended with 2.1.7-revamped
+(branch `revamped`, release `v2.1.7-revamped`), the way back from the Rust one. This page
+describes what VdMot Revamped does; the user-facing behaviour is the same in both.
 
-Version: **2.1.0-revamped** (ESP32 and STM32).
 Base: branch `hc-version` = upstream `developer` 1.4.12 plus the owner's fixes,
 a pinned toolchain and CI.
 
@@ -23,7 +27,7 @@ VdMot Revamped changes both:
 | Part | Upstream 1.4.x | VdMot Revamped |
 |---|---|---|
 | STM32 | valve control, calibration | same job, hardened; calibration fixes; move diagnostics; failsafe lease; settings and calibrations kept in the EEPROM; protocol 3 (new commands only) |
-| ESP32 | `software_esp32` (PI controller, window logic, alarms, web UI) | new firmware `software_esp32_revamped`: precise valve control, failsafe, dashboard, diagnostics, event log, HA discovery. No PI controller, no alarms |
+| ESP32 | `software_esp32` (PI controller, window logic, alarms, web UI) | new firmware (`software_esp32_rust`, in C++ up to 2.1.7): precise valve control, failsafe, dashboard, diagnostics, event log, HA discovery. No PI controller, no alarms |
 
 Compatibility between the two halves:
 - the revamped STM works with the old ESP: the v1 request and reply bytes are
@@ -36,7 +40,7 @@ Compatibility between the two halves:
 ## What changed in 2.1
 
 The full list is in [CHANGELOG.md](CHANGELOG.md) (ESP) and
-[software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md) (STM). The main points:
+[CHANGELOG-STM.md](CHANGELOG-STM.md) (STM). The main points:
 
 ### Safety
 - **Failsafe when the regulator goes silent.** The ESP renews a lease on the STM
@@ -93,53 +97,39 @@ See [MQTT.md](MQTT.md) and [API.md](API.md) for the details.
 
 ## Dashboard preview
 
-`python3 software_esp32_revamped/tools/mock_api.py` serves the dashboard with simulated data on a
+`python3 software_esp32_rust/tools/mock_api.py` serves the dashboard with simulated data on a
 local port, without a controller. `--proto 3 --scenario health --import-report` adds a blocked valve
 at its failsafe position, an unconfirmed target, stale data and the legacy import report.
 
 ## Testing
 
-- **Native unit tests** (host, doctest, `-Wall -Wextra -Werror`, AddressSanitizer +
-  UBSan) for all decision logic, which lives in hardware-free cores:
-  `software_stm32/lib/core` and `software_esp32_revamped/lib/core`. Parsers get
-  fixed-seed random-input tests.
-- **Glue suites:** the Arduino glue of both firmwares (`src/*.cpp`) is built on
-  the host against fakes of the hardware and libraries (`tools/native/testkit`)
-  and tested there, including multi-boot scenarios.
-- **Mutation testing** (`tools/mutation/mutate.py`): target **95 %** overall and
-  for every file, for the four suites (stillborn mutants and equivalent mutants,
-  each listed with its reason, are not counted). Results: `stm32` 99.0 %,
-  `stm32-glue` 97.9 %, `esp32` 97.7 %, `esp32-glue` 99.7 %, every file >= 95 %.
-  Reports: [mutation-stm32.md](mutation-stm32.md),
-  [mutation-stm32-glue.md](mutation-stm32-glue.md),
-  [mutation-esp32.md](mutation-esp32.md),
-  [mutation-esp32-glue.md](mutation-esp32-glue.md).
-- All suites run the same everywhere in a container:
-  `bash tools/native/docker.sh test stm32|esp32`,
-  `bash tools/native/docker.sh mutate <suite>`.
-- **Build checks** of every STM env and both ESP firmwares; ESP image size budget
-  1.2 MB (partition 1.25 MB).
-- On-device behaviour: manual checklist in [INSTALL.md](INSTALL.md#4-after-the-upgrade-checklist).
-  Items marked **[HW]** there still need a measurement on a device.
+Host tests of every module, the mutation gate (95 % for every file; every file of the gated
+crates is at 100 %), Renode runs of the four STM32 images, the QEMU harness of the ESP32
+image, the cross checks against the C++ 2.1.7 and the safety reviews: [docs/rust/README.md](../rust/README.md).
+The steps on a controller: [docs/rust/INSTALL.md](../rust/INSTALL.md).
 
 ## CI/CD
 
-`.github/workflows/build.yml` (pinned PlatformIO 6.1.19, esptool 4.11.0, platforms and libraries):
+`.github/workflows/build.yml`, the scripts of `tools/rust` (the same commands as on a
+workstation; [tools/rust/README.md](../../tools/rust/README.md)):
 
 | Job | When | What |
 |---|---|---|
-| native | push / PR | native tests of both cores, mutation tool self-test |
-| mutation | push / PR (changed files), weekly and manual (all) | informational, does not block a release |
-| stm32 | push / PR | `STM32_release_C1/C2`, `STM32F411_release_C1/C2` |
-| esp32 | push / PR | revamped + legacy ESP, digest-less image, size check |
-| release | tag `v*-revamped` | `tools/release/package.py`, GitHub Release (pre-release for `-rc`) |
-| release-legacy | other `v*` tags | legacy binaries as before |
+| rust-host | push / PR | host tests, rustfmt, clippy, interop tests of both workspaces |
+| rust-stm | push / PR | the four STM32 images, image check C1-C6 and D9 |
+| rust-renode | push / PR | Renode E1-E11 and A1-A6 per STM32 image |
+| rust-esp | push / PR | the ESP32 image, size budget, digest-less copy, clippy of the firmware |
+| rust-esp-qemu | weekly and manual | the QEMU harness of the ESP32 image |
+| rust-mutation | weekly and manual | cargo-mutants and the 95 % gate per file |
+| release-rust | tag `v*-revamped` | `tools/release/package.py`, GitHub Release (pre-release for `-rc`) |
+| esp32-legacy | push / PR | the legacy ESP firmware of the upstream project, as before |
 
 ## Branches
 
 | Branch | Content |
 |---|---|
-| `revamped` | VdMot Revamped: STM firmware, new ESP firmware `software_esp32_revamped`, native tests and harness, mutation configs, CI, release packaging, these docs. Built on `hc-version`; the only branch of this project |
+| `revamped-rust` | VdMot Revamped from 2.2.0 on: the Rust firmware of both MCUs, the dashboard, tools, CI, release packaging, these docs |
+| `revamped` | VdMot Revamped in C++ up to 2.1.7-revamped (ended): STM firmware, ESP firmware `software_esp32_revamped`, native tests, mutation configs. Built on `hc-version` |
 | `hc-version` | base: upstream `developer` 1.4.12 plus the owner's fixes |
 
 Fixes for the legacy `software_esp32` (no features) are kept apart on
@@ -147,12 +137,11 @@ Fixes for the legacy `software_esp32` (no features) are kept apart on
 
 ## Documentation
 
-- [INSTALL.md](INSTALL.md): building, release assets, upgrade, rollback, recovery
+- [INSTALL.md](INSTALL.md): the C++ 2.1.x guide: building, release assets, upgrade, rollback,
+  recovery (the Rust one: [docs/rust/INSTALL.md](../rust/INSTALL.md))
 - [MQTT.md](MQTT.md): topics and Home Assistant entities
 - [API.md](API.md): HTTP JSON API
-- [CHANGELOG.md](CHANGELOG.md)
-- [software_stm32/PROTOCOL_V2.md](../../software_stm32/PROTOCOL_V2.md): UART protocol 2 and 3
-- [software_esp32_revamped/DESIGN.md](../../software_esp32_revamped/DESIGN.md): ESP design (internals)
-- [web-server-stability.md](web-server-stability.md): the ESP web server under concurrent connections: the AsyncTCP panic, the 2.1.3 fix, the residual, the next step
-- [mutation-stm32.md](mutation-stm32.md), [mutation-stm32-glue.md](mutation-stm32-glue.md),
-  [mutation-esp32.md](mutation-esp32.md), [mutation-esp32-glue.md](mutation-esp32-glue.md)
+- [CHANGELOG.md](CHANGELOG.md), [CHANGELOG-STM.md](CHANGELOG-STM.md): the releases up to 2.1.7
+- [PROTOCOL_V2.md](PROTOCOL_V2.md): UART protocol 2 and 3
+- [DESIGN.md](DESIGN.md): ESP design (internals)
+- [web-server-stability.md](web-server-stability.md): the C++ ESP web server under concurrent connections: the AsyncTCP panic, the 2.1.3 fix, the residual, the next step

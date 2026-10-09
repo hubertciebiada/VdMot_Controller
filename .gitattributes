@@ -1,5 +1,5 @@
 # Shell scripts run in Linux containers and CI: keep LF on every checkout.
 *.sh text eol=lf
 Dockerfile text eol=lf
-# Goldens of the C++ glue_system scenarios (tools/rust/stm/golden): byte-identical on every checkout.
+# Goldens of the C++ 2.1.7 glue_system scenarios: byte-identical on every checkout.
 software_stm32_rust/glue/tests/golden/*.txt text eol=lf

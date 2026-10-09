@@ -5,8 +5,7 @@ of `software_stm32/lib/core`, 36 modules), `vdm-stm-boot` (`boot/`, the boot sta
 and `vdm-stm-glue` (`glue/`, the logic of `software_stm32/src/*.cpp` and of the libraries it
 uses, over port traits). The firmware crate is outside the gate (docs/rust/PORTING.md).
 Target: >= 95 % overall and >= 95 % for every file, as for the C++ suites
-([mutation-stm32.md](../revamped/mutation-stm32.md),
-[mutation-stm32-glue.md](../revamped/mutation-stm32-glue.md)).
+(`docs/revamped/mutation-stm32.md` and `mutation-stm32-glue.md` in the tag `v2.1.7-revamped`).
 Result: **100.00 % in every crate and every file, gate passed: core 1333 / 1333, boot
 196 / 196, glue 1869 / 1869 killed.** 3574 mutants, 50 equivalent, 126 unviable.
 Measured on 2026-10-07 and 08 with cargo-mutants 27.1.0, 4 jobs, in the runs listed under Runs;

@@ -3,18 +3,11 @@
 Unofficial fork of VdMot_Controller. Versions carry the suffix `-revamped`.
 Base: `hc-version` (upstream `developer` 1.4.12 + fixes).
 The STM entries of each release are in
-[software_stm32/ChangeLog.md](../../software_stm32/ChangeLog.md); this file lists
+[CHANGELOG-STM.md](CHANGELOG-STM.md); this file lists
 the ESP, the tooling and a summary of the STM.
 
-## [Unreleased]
-
-### Changed
-- ESP: the Home Assistant sensor Next calibration (`diag_calibration_next`)
-  gets `value_template: {{ value if value else 'None' }}`. Its empty payload
-  (no slot: before the NTP time or with the schedule off) was an invalid
-  timestamp for HA, logged as "Invalid state message" at every ESP start; it
-  now shows as unknown without a warning. The topic and its payload do not
-  change ([MQTT.md](MQTT.md)).
+The C++ firmware ended with 2.1.7-revamped. The Rust firmware (2.2.0-revamped on) lists its
+changes in [docs/rust/CHANGES.md](../rust/CHANGES.md).
 
 ## [2.1.7-revamped]
 
@@ -42,7 +35,7 @@ instead of up to six. The STM firmware is unchanged; its image differs from
   /api/valves/{n}/profile` and the MQTT diag topic `diag/valves/<V>/profile`
   copy the one profile they need. Nothing visible changes.
 - ESP: the web server's working set shrinks from about 33 KB to about 10 KB
-  (software_esp32_revamped/DESIGN.md sections 9 and 12): a JSON body gets a
+  (docs/revamped/DESIGN.md sections 9 and 12): a JSON body gets a
   heap buffer of its length for its request instead of a permanent 8 KB
   buffer; the views and lists of the handlers share one scratch buffer; the
   patched copy of a config save lives on the heap for that request only.
@@ -93,7 +86,7 @@ only in the version string and needs no update.
   station's host name (2.0.0 sent the default `esp32-xxxxxx`), and Arduino's
   automatic reconnect is off: it would start a stopped WiFi again on
   Arduino's event task. WiFi takes about 33 KB of heap while it runs
-  (software_esp32_revamped/DESIGN.md sections 9 and 16).
+  (docs/revamped/DESIGN.md sections 9 and 16).
 - ESP: the stack monitor (`/api/health` `tasks`, event 114 `stack_low`) also
   watches the ESP-IDF event loop `sys_evt` (network events) and the lwIP task
   `tiT` (TCP/IP, DHCP, SNTP), as it already did `arduino_events`, the task of

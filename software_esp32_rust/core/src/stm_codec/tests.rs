@@ -1685,7 +1685,7 @@ fn gvlvx_golden() {
 
 #[test]
 fn gvlvx_cal_state_is_a_bit_field_and_calibrating_follows_it() {
-    // Examples of software_stm32/PROTOCOL_V2.md (revamped STM 2.x).
+    // Examples of docs/revamped/PROTOCOL_V2.md (revamped STM 2.x).
     let mut r = Reply::default();
     assert_eq!(
         parse(

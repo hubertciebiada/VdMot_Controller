@@ -1,5 +1,5 @@
-// The config codec of the C++ firmware 2.1.7 (software_esp32_revamped/lib/core, the code its
-// storage runs) as a command-line tool for the QEMU harness (scenario nvs): the C++ side of the
+// The config codec of the C++ firmware 2.1.7 (software_esp32_revamped/lib/core of its release
+// tag, extracted by tools/rust/cpp217.sh; the code its storage runs) as a command-line tool for the QEMU harness (scenario nvs): the C++ side of the
 // NVS `cfg`/`cfgx` blobs, since the C++ image cannot read or write the flash of Espressif's QEMU.
 //
 //   cpp_config encode <dir> <json>     defaults + POST /api/config patch <json> -> <dir>/cfg.bin,

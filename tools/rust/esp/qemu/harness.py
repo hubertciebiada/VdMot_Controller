@@ -26,8 +26,8 @@ mklittlefs image does not mount), and GPIO2 reads LOW (the factory pin is held: 
 at every start). So "the C++ firmware starts" is proven by the bootloader starting the C++
 image and its ESP-IDF 4.4.4 startup line, with no Rust banner after it; its LittleFS mount and
 its boot event ("fw 2.1.7-revamped") are logged when they come. What the C++ firmware reads of
-NVS and LittleFS is proven with its own code outside QEMU: the C++ config codec of
-software_esp32_revamped/lib/core compiled natively (cpp_config.cpp), ESP-IDF's NVS tools
+NVS and LittleFS is proven with its own code outside QEMU: the C++ config codec of the 2.1.7
+core (its release tag, tools/rust/cpp217.sh) compiled natively (cpp_config.cpp), ESP-IDF's NVS tools
 (nvs_partition_gen, nvs_tool) and mklittlefs of the C++ toolchain.
 
 The Rust image under test is the qemu variant: the same firmware with OpenETH instead of the
@@ -89,8 +89,8 @@ Scenarios (default: all but health):
              counters: the Rust app serves the same config document as the C++ codec; a config
              saved by the Rust app is decoded by the C++ codec from the NVS it wrote
   dashboard  the dashboard files: gzip bytes, ETag, Cache-Control, 304 for a matching
-             If-None-Match (no Content-Type), the gunzipped files equal software_esp32_revamped/web
-  api        every GET route against the document structure of software_esp32_revamped/tools/
+             If-None-Match (no Content-Type), the gunzipped files equal software_esp32_rust/web
+  api        every GET route against the document structure of software_esp32_rust/tools/
              mock_api.py (the dashboard's contract), the 404/405/410 refusals, a config dry run
              and save, an STM image upload and delete, the log download (chunked); the heap and
              the httpd stack of /api/health after each kind of request
@@ -98,7 +98,7 @@ Scenarios (default: all but health):
              after a config save, publishes status online (retained); the idle heap 60 s after
              boot; values and the HA discovery (the broker holds every config the device
              reports); a broker restart is followed by a reconnect
-  soak       web load: software_esp32_revamped/tools/loadtest.py (GET /api/status, /api/valves,
+  soak       web load: software_esp32_rust/tools/loadtest.py (GET /api/status, /api/valves,
              /api/health and /; its request timeout raised from 5 to 30 s for QEMU) with 3,
              then 10 workers for 180 s each and a config POST every 15 s; free heap, its minimum
              and the largest block before, during and after, the 503 counts; no restart, the
@@ -183,10 +183,11 @@ MARKED_VALID = r"app_marked_valid firmware marked valid after (\d+) s"
 NVS_GEN = "/opt/espressif/esp-idf/v5.5.5/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
 NVS_TOOL = "/opt/espressif/esp-idf/v5.5.5/components/nvs_flash/nvs_partition_tool/nvs_tool.py"
 IDF_PY = "/opt/espressif/python_env/idf5.5_py3.11_env/bin/python"
-CORE = "/src/software_esp32_revamped/lib/core"
-WEB = "/src/software_esp32_revamped/web"
-MOCK = "/src/software_esp32_revamped/tools/mock_api.py"
-LOADTEST = "/src/software_esp32_revamped/tools/loadtest.py"
+# the C++ 2.1.7 core from its release tag (tools/rust/cpp217.sh, run by tools/rust/esp/docker.sh)
+CORE = "/src/.cache/cpp-2.1.7/lib/core"
+WEB = "/src/software_esp32_rust/web"
+MOCK = "/src/software_esp32_rust/tools/mock_api.py"
+LOADTEST = "/src/software_esp32_rust/tools/loadtest.py"
 # the config POST of the soak scenario, every this many seconds during each load phase
 SOAK_POST_S = 15
 # the STM image of the uploads scenario: a C++ release image of the repository (60 KB, the size of
@@ -195,7 +196,7 @@ STM_IMAGE = "/src/releases/revamped/2.0.0-revamped/STM32_C1_revamped_firmware.bi
 # the clients of the uploads scenario: path, period and timeout in s (None: waits for every
 # answer). The uploading dashboard on its maintenance view polls the status (every 5 s, aborted
 # after 6 s) and the STM flash state (every 1 s, aborted after 10 s), as
-# software_esp32_revamped/web/app.js does; a script polls the valves every 3 s and waits.
+# software_esp32_rust/web/app.js does; a script polls the valves every 3 s and waits.
 UPLOAD_POLLERS = (("/api/status", 5, 6), ("/api/stm/flash", 1, 10), ("/api/valves", 3, None))
 # after an upload the scenario waits this long before it reports: the dashboard's back-off after
 # its failed polls (up to 5 periods, app.js runPoller), its next poll's timeout and the queued

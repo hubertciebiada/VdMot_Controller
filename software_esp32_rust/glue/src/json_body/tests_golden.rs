@@ -317,7 +317,8 @@ fn every_body_has_the_outcome_of_arduinojson() {
 fn live_reference_matches_golden() {
     let glue = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = glue.join("tests/json_body");
-    let header_dir = glue.join("../../software_esp32_revamped/test/native/third_party");
+    // the C++ 2.1.7 tree of its release tag (tools/rust/cpp217.sh, run by docker.sh interop)
+    let header_dir = glue.join("../../.cache/cpp-2.1.7/test/native/third_party");
     let exe = std::env::temp_dir().join(format!("json_body_reference_{}", std::process::id()));
     let status = Command::new("g++")
         .args(["-m32", "-msse2", "-mfpmath=sse", "-std=gnu++17", "-O2"])

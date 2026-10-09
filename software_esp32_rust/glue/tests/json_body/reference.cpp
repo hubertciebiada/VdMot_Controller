@@ -3,9 +3,9 @@
 // src/json_body/tests_golden.rs formats json_body's outcome the same way.
 //
 // Build and run in the tools/rust image (the test live_reference_matches_golden does both), from
-// the repository root:
+// the repository root, after tools/rust/cpp217.sh extracted the C++ 2.1.7 tree:
 //   g++ -m32 -msse2 -mfpmath=sse -std=gnu++17 -O2 -Wall -Wextra -Werror
-//       -I software_esp32_revamped/test/native/third_party
+//       -I .cache/cpp-2.1.7/test/native/third_party
 //       -I software_esp32_rust/glue/tests/json_body/shim
 //       software_esp32_rust/glue/tests/json_body/reference.cpp -o /tmp/json_body_reference
 //   /tmp/json_body_reference software_esp32_rust/glue/tests/json_body/corpus.txt

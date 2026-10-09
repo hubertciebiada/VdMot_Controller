@@ -1,9 +1,10 @@
 # VdMot Revamped in Rust: porting rules
 
 The Rust firmware is a port of VdMot Revamped 2.1.7, not a redesign. The C++ sources
-(`software_esp32_revamped`, `software_stm32`) stay in the repository as the reference until the
-Rust firmware has run on the hardware. The binding documents stay binding for both:
-`software_esp32_revamped/DESIGN.md`, `software_stm32/PROTOCOL_V2.md`,
+(`software_esp32_revamped`, `software_stm32`) stayed in the repository as the reference until the
+Rust firmware had run on the hardware; since then they are on the branch `revamped` and in the
+tag `v2.1.7-revamped`, and the paths of C++ files in this tree name those sources. The binding documents stay binding for both:
+`docs/revamped/DESIGN.md`, `docs/revamped/PROTOCOL_V2.md`,
 `docs/revamped/API.md`, `docs/revamped/MQTT.md`, `docs/revamped/INSTALL.md`.
 
 ## Layout

@@ -177,6 +177,8 @@ $(export_script)"
   qemu)
     shift
     cpp="$(cpp_image)"
+    # the config codec of the C++ 2.1.7 for the nvs scenario (tools/rust/cpp217.sh)
+    bash "$ROOT/tools/rust/cpp217.sh" >/dev/null
     # the build lock guards the shared ESP-IDF build only: released before the harness, which
     # builds nothing and runs for about an hour
     in_container "$(build_script qemu)

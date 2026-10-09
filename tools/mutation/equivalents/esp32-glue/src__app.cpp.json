@@ -1,9 +1,0 @@
-[
-  {"line": 56, "col": 25, "original": "0", "replacement": "1", "text": "uint32_t gCfgRevision = 0;  // the config the app task's modules follow", "reason": "dead initial value: setup() assigns gCfgRevision before the app task that reads it exists"},
-  {"line": 82, "col": 24, "original": "false", "replacement": "true", "text": "bool gFactoryLatched = false;     // app task after setup", "reason": "dead initial value: setup() assigns gFactoryLatched before the app task that reads it exists"},
-  {"line": 90, "col": 15, "original": "false", "replacement": "true", "text": "bool held = false;", "reason": "factoryPinAtBoot() reads held only when the pin is low and no latch is set, the branch that assigns it"},
-  {"line": 137, "col": 17, "original": "2", "replacement": "3", "text": "vdm::Event ev[2];", "reason": "onHeap() writes at most 2 events (low heap, fragmented) and gets the capacity 2 passed separately"},
-  {"line": 140, "col": 92, "original": "2", "replacement": "3", "text": "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), now, ev, 2);", "reason": "onHeap() produces at most 2 events (low heap, fragmented), so a capacity of 3 never limits it"},
-  {"line": 152, "col": 71, "original": "1", "replacement": "2", "text": "uxTaskGetStackHighWaterMark(t.handle), ev, 1);", "reason": "onStack() writes at most one event (out[0]), so a capacity of 2 never changes its result"},
-  {"line": 336, "col": 20, "original": "false", "replacement": "true", "text": "bool formatted = false;", "reason": "dead initial value: storage::beginFs() assigns formatted on every path"}
-]

@@ -4,9 +4,10 @@
 //! ArduinoJson's error name, so every leniency, limit and quirk of the library is kept.
 //!
 //! Parity: the bodies of `tests/json_body/corpus.txt` run through `tests/json_body/reference.cpp`
-//! (the vendored `software_esp32_revamped/test/native/third_party/ArduinoJson-v6.21.6.h` with the
-//! firmware's switches, built with `-m32` for the ESP32's 16-byte slots) and through this module;
-//! the outcomes of both are `tests/json_body/golden.txt` (`json_body/tests_golden.rs`).
+//! (`ArduinoJson-v6.21.6.h` as vendored in the C++ 2.1.7 tree, extracted by
+//! `tools/rust/cpp217.sh`, with the firmware's switches, built with `-m32` for the ESP32's 16-byte
+//! slots) and through this module; the outcomes of both are `tests/json_body/golden.txt`
+//! (`json_body/tests_golden.rs`).
 //!
 //! What the deserializer (`JsonDeserializer` with `StringMover`, no filter) accepts:
 //!

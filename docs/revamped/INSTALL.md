@@ -2,6 +2,10 @@
 
 > Unofficial firmware (fork of VdMot_Controller). Version **2.1.7-revamped**.
 > Read this page completely before flashing.
+>
+> This is the guide of the C++ firmware 2.1.x, the last C++ release. The firmware is the Rust
+> one since 2.2.0-revamped: [docs/rust/INSTALL.md](../rust/INSTALL.md) (first flash, way back to
+> 2.1.7). The paths of section 2 are those of the branch `revamped` (tag `v2.1.7-revamped`).
 
 ## 1. Which files
 

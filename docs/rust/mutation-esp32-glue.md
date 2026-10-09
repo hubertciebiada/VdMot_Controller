@@ -4,7 +4,7 @@ Scope: `software_esp32_rust/glue`, crate `vdm-esp-glue`: the logic of
 `software_esp32_revamped/src` and of the Arduino libraries it used, over the port traits; 23 files
 with mutants. The firmware crate is outside the gate (docs/rust/PORTING.md).
 Target: >= 95 % overall and >= 95 % for every file, as for the C++ glue suite
-([mutation-esp32-glue.md](../revamped/mutation-esp32-glue.md): 99.71 %, 3817 / 3828).
+(`docs/revamped/mutation-esp32-glue.md` in the tag `v2.1.7-revamped`: 99.71 %, 3817 / 3828).
 Result: **100.00 % overall (3313 / 3313 killed), every file 100.00 %, gate passed.** 3541
 mutants, 7 equivalent, 221 unviable.
 Measured on 2026-10-08 with cargo-mutants 27.1.0, 4 jobs, in the runs listed under Runs (2 h

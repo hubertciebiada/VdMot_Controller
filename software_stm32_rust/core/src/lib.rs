@@ -1,6 +1,6 @@
 //! VdMot Revamped STM32 core: the hardware-free logic of the firmware, a port of
 //! `software_stm32/lib/core` (C++17). Every module keeps the name, the contract and the
-//! behaviour of its C++ original; `software_stm32/PROTOCOL_V2.md` stays binding.
+//! behaviour of its C++ original; `docs/revamped/PROTOCOL_V2.md` stays binding.
 //! No heap, no unsafe, fixed-size storage, every input bounded (docs/rust/PORTING.md).
 //!
 //! Build switches: no -D flag of software_stm32/platformio.ini reaches lib/core (it has no

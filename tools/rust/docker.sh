@@ -16,12 +16,15 @@
 #                                                       -> software_stm32_rust/firmware/images/
 #                                                       (tools/rust/stm/build_images.sh)
 #   tools/rust/docker.sh image-check [<dir>]            C1-C5 and D9 on those images, with the
-#                                                       ESP's C++ validation (tools/rust/stm/image_check.sh);
+#                                                       ESP's C++ 2.1.7 validation from its release
+#                                                       tag (tools/rust/cpp217.sh,
+#                                                       tools/rust/stm/image_check.sh);
 #                                                       with <dir>: C6 on the four C++ 2.1.7 release images
 #                                                       in it (*STM32F401_C1.bin ..., SHA-256 pinned in
 #                                                       tools/rust/stm/cpp217.sha256)
 #   tools/rust/docker.sh interop <workspace>            the ignored tests that need the image's
-#                                                       external programs (mosquitto, g++ -m32)
+#                                                       external programs (mosquitto, g++ -m32;
+#                                                       the ArduinoJson header from tools/rust/cpp217.sh)
 #   tools/rust/docker.sh run <command...>               any command in the container, repo at /src
 #
 # The Renode tests of the images run in their own container: tools/rust/renode.sh (README.md).
@@ -32,8 +35,8 @@
 #
 # Each checkout (git worktree) has its own target volume, so parallel worktrees never share
 # build directories; `run` builds into /target/run, never into the checkout. The cargo registry
-# is one shared volume. Mutation runs of all checkouts
-# (Rust and C++, tools/native/docker.sh) share one lock: a second run waits for the first.
+# is one shared volume. Mutation runs of all checkouts share one lock: a second run waits for
+# the first.
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -160,6 +163,8 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
       bash tools/rust/stm/build_images.sh"
     ;;
   image-check)
+    # the STM image validation of the ESP 2.1.7 (tools/rust/cpp217.sh)
+    bash "$ROOT/tools/rust/cpp217.sh" >/dev/null
     if [ $# -ge 2 ]; then
       # C6: the C++ release images, mounted read-only
       cpp="$(cd "$2" && pwd)"
@@ -174,6 +179,8 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
     [ $# -ge 2 ] || { echo "usage: $0 interop <workspace>" >&2; exit 2; }
     ws="$2"
     check_workspace "$ws"
+    # the ArduinoJson header of the json_body reference program (tools/rust/cpp217.sh)
+    bash "$ROOT/tools/rust/cpp217.sh" >/dev/null
     in_container "set -e
       exec 8>/target/$ws.lock
       if ! flock -n 8; then echo 'waiting for another cargo run of $ws in this checkout' >&2; flock 8; fi
@@ -185,7 +192,7 @@ python3 /src/tools/rust/mutation_gate.py --workspace $ws --package $pkg --outcom
     in_container "$*"
     ;;
   *)
-    sed -n '2,36p' "$0" >&2
+    sed -n '2,39p' "$0" >&2
     exit 2
     ;;
 esac

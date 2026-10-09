@@ -3,7 +3,7 @@
 Binding for `software_esp32_rust/glue` (crate `vdm-esp-glue`) and `software_esp32_rust/firmware`
 (crate `vdm-esp-fw`). It maps the C++ glue of 2.1.7 (`software_esp32_revamped/src/*.cpp`) onto
 ports, threads and ESP-IDF. `docs/rust/PORTING.md` applies; D§n is section n of
-`software_esp32_revamped/DESIGN.md`, which stays binding. Every behaviour that changes is listed in
+`docs/revamped/DESIGN.md`, which stays binding. Every behaviour that changes is listed in
 §4.7 and §7.
 
 Fixed inputs: esp-idf-svc 0.53, esp-idf-hal 0.47, esp-idf-sys 0.38.1, ESP-IDF 5.5.5 (std);

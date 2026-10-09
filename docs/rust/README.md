@@ -8,8 +8,11 @@ EEPROM and warm state), so the C++ and the Rust firmware replace each other in b
 The rules are in [PORTING.md](PORTING.md); every difference from 2.1.7 is listed in
 [CHANGES.md](CHANGES.md). The first Rust release is `2.2.0-revamped` on both MCUs (decision D8 of
 [GLUE-DESIGN-STM.md](GLUE-DESIGN-STM.md#8-open-decisions-and-risks)), so `gvers` and the dashboard
-tell it from C++ 2.1.7. The C++ sources (`software_esp32_revamped`, `software_stm32`) stay in the
-repository as the reference.
+tell it from C++ 2.1.7. The C++ sources (`software_esp32_revamped`, `software_stm32`) left the
+branch after the Rust firmware had run on the controllers: they are on the branch `revamped` and
+in the tag `v2.1.7-revamped`, and the paths of C++ files in the comments and documents of the
+port name those sources. The cross checks against the C++ 2.1.7 take its code from the tag
+(`tools/rust/cpp217.sh`).
 
 Installing it on a controller: [INSTALL.md](INSTALL.md).
 

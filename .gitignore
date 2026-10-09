@@ -4,20 +4,16 @@
 ## PlatformIO — build artefakty (oba MCU) ########
 .pio/
 
-## native unit test builds (CMake) ########
-software_stm32/build/
-
 ## Rust STM32 images, Renode results and the E11 flasher program (tools/rust/docker.sh fw, tools/rust/renode.sh) ########
 software_stm32_rust/firmware/images/
 software_stm32_rust/renode/results/
 software_stm32_rust/renode/e11/
 
-## mutation tool: local kill cache and reports ########
-tools/mutation/*.cache.json
-tools/mutation/*.report.json
-
 ## Python bytecode of the tools ########
 __pycache__/
+
+## the C++ 2.1.7 references of the cross checks (tools/rust/cpp217.sh) ########
+.cache/
 
 ## Rust ESP32 release images (tools/rust/esp/docker.sh export) ########
 software_esp32_rust/firmware/images/

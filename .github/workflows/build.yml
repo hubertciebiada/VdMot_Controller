@@ -1,21 +1,9 @@
 name: Build firmware
 
-# VdMot Revamped CI/CD (hc-version, the revamped and the revamped-rust branch).
-#   native     : host unit tests of the pure-logic cores (STM + new ESP), ASan/UBSan, -Werror
-#   mutation   : mutation testing of the cores and the glue (stm32, stm32-glue, esp32,
-#                esp32-glue). PR/push: changed files only; weekly + manual: everything.
-#                Informational (does not block a release); the release gate is
-#                tools/native/docker.sh mutate-all.
-#   stm32      : all release envs (F401 + F411, HW C1 + C2)
-#   esp32      : new firmware (software_esp32_revamped) + legacy firmware (software_esp32)
-#   release    : tag v*-revamped -> packaged VdMot Revamped release (tools/release/package.py);
-#                release-firmware decides: the C++ firmware here, the Rust one in release-rust
-#   release-legacy : any other v* tag -> legacy ESP + STM C2 binaries, as before
-# Everything is pinned (PlatformIO core, esptool, platforms, lib_deps) so a CI
-# build byte-matches a local build.
-#
-# The Rust port (software_esp32_rust, software_stm32_rust; docs/rust/README.md) runs the
-# container scripts of tools/rust, the same commands as on a workstation:
+# VdMot Revamped CI/CD of the revamped-rust branch. The firmware of both MCUs is the Rust one
+# (software_esp32_rust, software_stm32_rust; docs/rust/README.md); the C++ firmware 2.1.7 is on
+# the branch revamped and its release tag. The jobs run the container scripts of tools/rust, the
+# same commands as on a workstation:
 #   rust-host      : host tests, rustfmt and clippy -D warnings, interop tests (both workspaces)
 #   rust-stm       : the four STM32 images, image check C1-C6 and D9
 #   rust-renode    : Renode E1-E10, A1-A6 and E11 per STM32 image
@@ -23,8 +11,10 @@ name: Build firmware
 #   rust-esp-qemu  : the QEMU harness of the ESP32 firmware. Weekly + manual (input qemu).
 #   rust-mutation  : cargo-mutants per package in shards, then the 95 % per-file gate of each
 #                    package (rust-mutation-gate). Weekly + manual (input rust_mutation).
-#   release-rust   : a v*-revamped tag with the version of the Rust firmware -> the same asset
-#                    set from the Rust images (tools/release/package.py)
+#   release-rust   : a v*-revamped tag with the version of the firmware -> the release assets
+#                    (tools/release/package.py)
+#   esp32-legacy   : the legacy ESP firmware of the upstream project (software_esp32), built as
+#                    before; PlatformIO core, esptool, platforms and lib_deps pinned
 # GitHub starts the schedule and workflow_dispatch runs only when this file exists on the
 # repository's default branch.
 
@@ -35,13 +25,9 @@ on:
   pull_request:
     branches: [hc-version, revamped, revamped-rust]
   schedule:
-    - cron: '17 3 * * 1'        # weekly full mutation run, Rust QEMU harness
+    - cron: '17 3 * * 1'        # weekly Rust mutation gate, Rust QEMU harness
   workflow_dispatch:
     inputs:
-      full_mutation:
-        description: Run mutation testing on every core file
-        type: boolean
-        default: false
       rust_mutation:
         description: Run the Rust mutation gate of every package (hours, sharded)
         type: boolean
@@ -66,133 +52,15 @@ env:
   PIO_VERSION: "6.1.19"
   ESPTOOL_VERSION: "4.11.0"
   APP_PARTITION_BYTES: "1310720"      # app0/app1 in the default partition table (unchanged, OTA-compatible)
-  APP_SIZE_BUDGET_BYTES: "1228800"    # revamped firmware keeps 80 KB headroom
 
 jobs:
-  native:
-    name: Native tests (${{ matrix.project }})
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        project: [software_stm32, software_esp32_revamped]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S ${{ matrix.project }}/test/native -B build/${{ matrix.project }} -DCMAKE_BUILD_TYPE=Debug
-      - name: Build
-        run: cmake --build build/${{ matrix.project }} -j 4
-      - name: Test
-        run: ctest --test-dir build/${{ matrix.project }} --output-on-failure
-      - name: Mutation tool self-test
-        if: matrix.project == 'software_stm32'
-        run: bash tools/mutation/selftest.sh
-
-  mutation:
-    name: Mutation (${{ matrix.target }})
-    needs: native
-    if: "!startsWith(github.ref, 'refs/tags/')"
-    runs-on: ubuntu-24.04
-    timeout-minutes: 350
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [stm32, stm32-glue, esp32, esp32-glue]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Select files
-        id: sel
-        run: |
-          if [ ! -f tools/mutation/${{ matrix.target }}.json ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No config for ${{ matrix.target }}." >> "$GITHUB_STEP_SUMMARY"; exit 0
-          fi
-          FULL=false
-          case "${{ github.event_name }}" in
-            schedule) FULL=true ;;
-            workflow_dispatch) FULL="${{ inputs.full_mutation }}" ;;
-          esac
-          if [ "$FULL" = "true" ]; then
-            echo "args=" >> "$GITHUB_OUTPUT"; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
-            BASE=$(git rev-parse HEAD~1)
-          fi
-          FILES=$(python3 tools/mutation/mutate.py --config tools/mutation/${{ matrix.target }}.json --changed-since "$BASE")
-          if [ -z "$FILES" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "No mutated files changed." >> "$GITHUB_STEP_SUMMARY"; else
-            echo "run=true" >> "$GITHUB_OUTPUT"; echo "args=--files $FILES" >> "$GITHUB_OUTPUT"; fi
-      - name: Toolchain of the mutation builds (as tools/native/Dockerfile)
-        if: steps.sel.outputs.run == 'true'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build mold ccache
-      - name: Mutation testing
-        if: steps.sel.outputs.run == 'true'
-        run: |
-          set -o pipefail
-          python3 tools/mutation/mutate.py --config tools/mutation/${{ matrix.target }}.json --jobs 4 ${{ steps.sel.outputs.args }} | tee mutation-${{ matrix.target }}.md
-      - name: Summary
-        if: always() && steps.sel.outputs.run == 'true'
-        run: grep -v '^\[' mutation-${{ matrix.target }}.md >> "$GITHUB_STEP_SUMMARY" || true
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.sel.outputs.run == 'true'
-        with:
-          name: mutation-${{ matrix.target }}
-          path: |
-            mutation-${{ matrix.target }}.md
-            tools/mutation/${{ matrix.target }}.report.json
-          if-no-files-found: ignore
-
-  stm32:
-    name: STM32 ${{ matrix.env }}
-    needs: native
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        env: [STM32_release_C1, STM32_release_C2, STM32F411_release_C1, STM32F411_release_C2]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.platformio
-            ~/.cache/pip
-          key: pio-stm32-${{ hashFiles('software_stm32/platformio.ini') }}
-          restore-keys: pio-stm32-
-      - run: python -m pip install "platformio==${PIO_VERSION}"
-      - name: Build
-        working-directory: software_stm32
-        run: pio run -e ${{ matrix.env }}
-      - name: Stage
-        run: |
-          mkdir -p out
-          cp software_stm32/.pio/build/${{ matrix.env }}/firmware.bin out/${{ matrix.env }}.bin
-          echo "${{ matrix.env }}: $(stat -c%s out/${{ matrix.env }}.bin) B" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: stm32-${{ matrix.env }}
-          path: out/*.bin
-          if-no-files-found: error
-
-  esp32:
+  esp32-legacy:
     name: ESP32 ${{ matrix.name }}
-    needs: native
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: revamped
-            dir: software_esp32_revamped
-            env: wt32-eth01_revamped
           - name: legacy
             dir: software_esp32
             env: wt32-eth01_release
@@ -219,7 +87,6 @@ jobs:
             --dont-append-digest -o firmware_nodigest.bin firmware.elf
           SIZE=$(stat -c%s firmware.bin)
           LIMIT=${APP_PARTITION_BYTES}
-          [ "${{ matrix.name }}" = "revamped" ] && LIMIT=${APP_SIZE_BUDGET_BYTES}
           echo "firmware.bin = $SIZE B (limit $LIMIT)" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "$SIZE" -le "$LIMIT" ] || { echo "::error::firmware.bin ($SIZE B) exceeds $LIMIT B"; exit 1; }
       - name: Stage
@@ -509,33 +376,16 @@ jobs:
             tools/rust/mutation/${{ matrix.package }}.report.json
           if-no-files-found: ignore
 
-  # Which firmware a release tag publishes: rust when the tag carries the version of the Rust
-  # firmware (tools/release/package.py), else cpp.
-  release-firmware:
-    name: Firmware of the release tag
+  # The release assets from the images: ESP32 app image and its digest-less copy, the four STM32
+  # images, SHA256SUMS, manifest.json, docs/rust/INSTALL.md, the release notes from
+  # docs/rust/CHANGES.md. package.py refuses a tag that is not the version of both firmwares and
+  # images that do not carry it.
+  release-rust:
+    name: Publish VdMot Revamped release (Rust)
     if: >-
       (startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && contains(inputs.release_tag, '-revamped'))
-    runs-on: ubuntu-24.04
-    env:
-      TAG: ${{ inputs.release_tag || github.ref_name }}
-    outputs:
-      firmware: ${{ steps.of.outputs.firmware }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: of
-        run: |
-          firmware=$(python3 tools/release/package.py --tag "$TAG" --firmware-of-tag)
-          echo "firmware=$firmware" >> "$GITHUB_OUTPUT"
-          echo "$TAG: $firmware firmware" >> "$GITHUB_STEP_SUMMARY"
-
-  release:
-    name: Publish VdMot Revamped release
-    if: >-
-      needs.release-firmware.outputs.firmware == 'cpp' && (
-      (startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-revamped')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && contains(inputs.release_tag, '-revamped')))
-    needs: [release-firmware, native, stm32, esp32]
+    needs: [rust-host, rust-stm, rust-renode, rust-esp]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -559,60 +409,4 @@ jobs:
           [[ "$TAG" == *-rc* ]] && PRE="--prerelease"
           # on a manual run the tag does not exist yet: gh creates it at the built commit
           gh release create "$TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "VdMot Revamped $TAG" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
-
-  # The same assets from the Rust images: ESP32 app image and its digest-less copy, the four
-  # STM32 images, SHA256SUMS, manifest.json, docs/rust/INSTALL.md, the release notes from
-  # docs/rust/CHANGES.md. package.py refuses a tag that is not the version of both firmwares
-  # and images that do not carry it.
-  release-rust:
-    name: Publish VdMot Revamped release (Rust)
-    if: needs.release-firmware.outputs.firmware == 'rust'
-    needs: [release-firmware, rust-host, rust-stm, rust-renode, rust-esp]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      TAG: ${{ inputs.release_tag || github.ref_name }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Package
-        run: python3 tools/release/package.py --artifacts artifacts --tag "$TAG" --firmware rust --out dist
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PRE=""
-          [[ "$TAG" == *-rc* ]] && PRE="--prerelease"
-          # on a manual run the tag does not exist yet: gh creates it at the built commit
-          gh release create "$TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
             --title "VdMot Revamped $TAG (Rust)" --notes-file dist/RELEASE_NOTES.md $PRE dist/*
-
-  release-legacy:
-    name: Publish legacy release
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-revamped')
-    needs: [stm32, esp32]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir dist
-          cp artifacts/esp32-legacy/esp32-legacy.bin dist/ESP32_firmware.bin
-          cp artifacts/esp32-legacy/esp32-legacy_nodigest.bin dist/ESP32_firmware_nodigest.bin
-          cp artifacts/stm32-STM32_release_C2/STM32_release_C2.bin dist/STM32_C2_firmware.bin
-          cp artifacts/stm32-STM32F411_release_C2/STM32F411_release_C2.bin dist/STM32F411_C2_firmware.bin
-          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" --generate-notes dist/*

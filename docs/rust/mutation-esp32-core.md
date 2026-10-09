@@ -3,7 +3,7 @@
 Scope: `software_esp32_rust/core`, crate `vdm-esp-core`: the port of
 `software_esp32_revamped/lib/core`, 37 modules.
 Target: >= 95 % overall and >= 95 % for every file, as for the C++ suites
-([mutation-esp32.md](../revamped/mutation-esp32.md)).
+(`docs/revamped/mutation-esp32.md` in the tag `v2.1.7-revamped`).
 Result: **100.00 % overall (6433 / 6433 killed), every file 100.00 %, gate passed.**
 Measured on `f0342a6` (2026-10-07 and 08; the core is the same up to `d9e032f`),
 cargo-mutants 27.1.0, 4 jobs, 8 h 1 min of runs.

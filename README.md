@@ -1,4 +1,4 @@
-> This fork ships **VdMot Revamped** (unofficial) — see [docs/revamped/README.md](docs/revamped/README.md)
+> This fork ships **VdMot Revamped** (unofficial), firmware in Rust since 2.2.0 — see [docs/revamped/README.md](docs/revamped/README.md) and [docs/rust/README.md](docs/rust/README.md)
 
 # VdMot_Controller
 This is a controller for HmIP-VdMot actuators.

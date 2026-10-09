@@ -2,9 +2,9 @@
 
 The dashboard uses this JSON API; scripts can use it too. Base URL
 `http://<device>/`, port 80. Source of truth:
-`software_esp32_revamped/lib/core/src/json_api.cpp` (routes, documents),
-`web_guard.cpp` (request guard), `legacy_http.cpp` (legacy aliases) and
-`src/web_server.cpp` (handlers). Event codes: DESIGN.md section 13.
+`software_esp32_rust/core/src/json_api.rs` (routes, documents),
+`web_guard.rs` (request guard), `legacy_http.rs` (legacy aliases) and
+`software_esp32_rust/glue/src/web_server.rs` (handlers). Event codes: DESIGN.md section 13.
 
 ## Security
 
@@ -321,17 +321,17 @@ for any method: `/netinfo`, `/sysinfo`, `/sysdyninfo`, `/update/identity` →
 
 ## Development mock
 
-`software_esp32_revamped/tools/mock_api.py` serves the dashboard with a
+`software_esp32_rust/tools/mock_api.py` serves the dashboard with a
 simulated API (standard library only) that follows the firmware, including the
 request guard; `tools/test_mock_api.py` checks it.
 
 ```sh
-python3 software_esp32_revamped/tools/mock_api.py --port 8080            # protocol 2 STM
-python3 software_esp32_revamped/tools/mock_api.py --proto 1              # legacy STM 1.4.x
-python3 software_esp32_revamped/tools/mock_api.py --proto 3              # STM 2.1: failsafe lease, stop, safe mode
-python3 software_esp32_revamped/tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
-python3 software_esp32_revamped/tools/mock_api.py --import-report        # a legacy import report
-python3 software_esp32_revamped/tools/mock_api.py --station west --station-name "Dom Północ"
+python3 software_esp32_rust/tools/mock_api.py --port 8080            # protocol 2 STM
+python3 software_esp32_rust/tools/mock_api.py --proto 1              # legacy STM 1.4.x
+python3 software_esp32_rust/tools/mock_api.py --proto 3              # STM 2.1: failsafe lease, stop, safe mode
+python3 software_esp32_rust/tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
+python3 software_esp32_rust/tools/mock_api.py --import-report        # a legacy import report
+python3 software_esp32_rust/tools/mock_api.py --station west --station-name "Dom Północ"
 ```
 
 Scenarios: `health` (stale, unconfirmed target, failed temperature), `busy`
