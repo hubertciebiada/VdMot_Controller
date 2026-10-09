@@ -1176,14 +1176,14 @@ class Harness:
             for n in range(1, 7):
                 a = request(self.port, "GET", "/api/log", timeout=60)
                 text = a.text()
-                if "fw 2.2.0-revamped" in text[len(cpp_log):] or a.status != 200:
+                if "fw 2.2.1-revamped" in text[len(cpp_log):] or a.status != 200:
                     break
                 time.sleep(5)
             log(f"  GET /api/log (download {n}) -> {a.status}, {len(a.body)} B, transfer-encoding "
                 f"{a.headers.get('transfer-encoding')}; last line {text.strip().splitlines()[-1]!r}")
             check(a.status == 200 and a.headers.get("transfer-encoding") == "chunked", "log download")
             check(text.startswith(cpp_log.decode()), "the C++ lines are not the start of the log")
-            check("fw 2.2.0-revamped" in text[len(cpp_log):], "no Rust boot event in the log")
+            check("fw 2.2.1-revamped" in text[len(cpp_log):], "no Rust boot event in the log")
         finally:
             q.quit()
         part = fl.read()[SPIFFS_OFFSET:SPIFFS_OFFSET + SPIFFS_SIZE]

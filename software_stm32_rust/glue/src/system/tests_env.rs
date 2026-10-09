@@ -59,11 +59,11 @@ fn gvers_and_the_banner_report_the_identity_of_the_image() {
     let mut b = c.boot(PLAIN, |_| {});
     assert!(b
         .take_dbg()
-        .starts_with("VdMot Controller 2.2.0-revamped_C1\r\n"));
-    assert_eq!(b.exchange("gvers\n"), "gvers 2.2.0-revamped_C1 1 \r\n");
+        .starts_with("VdMot Controller 2.2.1-revamped_C1\r\n"));
+    assert_eq!(b.exchange("gvers\n"), "gvers 2.2.1-revamped_C1 1 \r\n");
     assert!(b
         .terminal("gvers\n")
-        .contains("Version: 2.2.0-revamped\r\n"));
+        .contains("Version: 2.2.1-revamped\r\n"));
     b.finish();
 }
 

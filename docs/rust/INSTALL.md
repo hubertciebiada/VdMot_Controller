@@ -1,6 +1,6 @@
 # VdMot Revamped in Rust: first flash and rollout
 
-> Unofficial firmware (fork of VdMot_Controller). Version **2.2.0-revamped**, the Rust port of
+> Unofficial firmware (fork of VdMot_Controller). Version **2.2.1-revamped**, the Rust port of
 > VdMot Revamped 2.1.7 for the ESP32 and the STM32 ([README.md](README.md)). Read this page
 > completely before flashing.
 
@@ -12,16 +12,16 @@ the network trial, the recovery table, syslog. What differs from 2.1.7 is listed
 
 ## 1. Files
 
-The release `v2.2.0-revamped` contains:
+The release `v2.2.1-revamped` contains:
 
 | File | For |
 |---|---|
-| `VdMot-Revamped_2.2.0-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
-| `VdMot-Revamped_2.2.0-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it |
-| `VdMot-Revamped_2.2.0-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
-| `VdMot-Revamped_2.2.0-revamped_STM32F411_C1.bin` | F411, hardware C1 |
-| `VdMot-Revamped_2.2.0-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
-| `VdMot-Revamped_2.2.0-revamped_STM32F401_C1.bin` | F401, hardware C1 |
+| `VdMot-Revamped_2.2.1-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
+| `VdMot-Revamped_2.2.1-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it |
+| `VdMot-Revamped_2.2.1-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
+| `VdMot-Revamped_2.2.1-revamped_STM32F411_C1.bin` | F411, hardware C1 |
+| `VdMot-Revamped_2.2.1-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
+| `VdMot-Revamped_2.2.1-revamped_STM32F401_C1.bin` | F401, hardware C1 |
 | `SHA256SUMS`, `manifest.json` | checksums and asset list |
 
 Check the download: `sha256sum -c SHA256SUMS --ignore-missing`. The STM image is chosen as for
@@ -30,10 +30,10 @@ Check the download: `sha256sum -c SHA256SUMS --ignore-missing`. The STM image is
 Keep the files of the way back at hand, from the release `v2.1.7-revamped`: the ESP image
 `VdMot-Revamped_2.1.7-revamped_ESP32-WT32-ETH01.bin` and the STM image of your chip and board.
 
-Give the STM images short names before you upload them, e.g. `stm220.bin` for 2.2.0 and
+Give the STM images short names before you upload them, e.g. `stm221.bin` for 2.2.1 and
 `stm217.bin` for the C++ 2.1.7 image. The dashboard keeps at most 31 characters of a name (a
 longer one becomes its first 27 characters and `.bin`), so the four release names all arrive as
-`VdMot-Revamped_2.2.0-revamp.bin`, without chip and board.
+`VdMot-Revamped_2.2.1-revamp.bin`, without chip and board.
 
 ## 2. Order
 
@@ -76,12 +76,12 @@ section 3.3 is built for it.
 ### 3.2 Upload
 
 Dashboard → Maintenance → **ESP firmware update**: upload
-`VdMot-Revamped_2.2.0-revamped_ESP32-WT32-ETH01.bin`. The C++ firmware checks the image, writes it
+`VdMot-Revamped_2.2.1-revamped_ESP32-WT32-ETH01.bin`. The C++ firmware checks the image, writes it
 into the other app slot and restarts after 1 s. When the STM link is up at the upload, the trial
 of the new image requires it (section 3.3).
 
-After the restart the header shows ESP `2.2.0-revamped`, and the event log shows
-`boot (reset sw, count …, fw 2.2.0-revamped)`.
+After the restart the header shows ESP `2.2.1-revamped`, and the event log shows
+`boot (reset sw, count …, fw 2.2.1-revamped)`.
 
 ### 3.3 The trial
 
@@ -166,7 +166,7 @@ QEMU cannot show it: it cannot run a restart after the first minute of uptime
 | 3.2 to 3.3 | the controller does not answer for a few minutes | wait: the boot limit switches back within a few boots, the start-up deadline after 60 s per boot, the health limit after 15 min |
 | 3.3 | back on `2.1.7-revamped` | the trial failed. Note the time, the C++ event log and the header chips, report them. An image that failed its trial gets a new trial when it is uploaded again |
 | 3.3 | not confirmed, `ota.checks` shows a check `false` | fix that cause (network, HTTP, STM link); after 15 min the guard switches back |
-| 3.4 step 2 | the switch back is not answered `202`, or the controller stays on `2.2.0-revamped` | stop the rollout, report; the image stays confirmed and runs |
+| 3.4 step 2 | the switch back is not answered `202`, or the controller stays on `2.2.1-revamped` | stop the rollout, report; the image stays confirmed and runs |
 | 3.4 step 3 | the upload from the C++ dashboard is refused, or the new trial fails | the C++ image runs; report the text or the C++ event log |
 | 3.4 steps 5, 6 | no dashboard and no ping 5 minutes after the restart or the power cycle | the image loops before `main`. USB-UART: write the C++ 2.1.7 image to `0x10000` and erase otadata, as in "ESP does not boot at all" ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)). The settings stay |
 | any time | the Rust image misbehaves while its HTTP API answers | switch back (section 3.3) and report |
@@ -212,7 +212,7 @@ jumper X20 fitted, its ESP on the Rust firmware (the bench unit of section 3.1 s
 
 After each flash (steps 1 to 4) check:
 
-- `gvers`: Maintenance → STM32 shows the new firmware (`2.2.0-revamped` or `2.1.7-revamped`),
+- `gvers`: Maintenance → STM32 shows the new firmware (`2.2.1-revamped` or `2.1.7-revamped`),
   the board and protocol `v3`;
 - the warm restore: the valves keep their status, position and target; no presence test and no
   calibration starts ([GLUE-DESIGN-STM.md §3.2](GLUE-DESIGN-STM.md#32-warm-state-and-reset-cells-in-no-init-ram)).
@@ -228,7 +228,7 @@ sector 0 and once for sectors 1 and up: sector 0 first for a Rust image, last fo
 
 1. Conditions: the bench proof passed for the controller's chip; the controller's ESP runs the
    Rust firmware and passed its checklist (section 3.4).
-2. Upload `stm220.bin` (and keep `stm217.bin` in the image list: the known-good image to go
+2. Upload `stm221.bin` (and keep `stm217.bin` in the image list: the known-good image to go
    back to). Flash it.
 3. Check `gvers` and the warm restore as in 4.1, then valves and sensors as in
    [docs/revamped/INSTALL.md §4](../revamped/INSTALL.md#4-after-the-upgrade-checklist).
@@ -274,3 +274,15 @@ sector 0 and once for sectors 1 and up: sector 0 first for a Rust image, last fo
 
 Flash `stm217.bin` from the image list, mode normal. The warm state stays: the Rust and the C++
 images keep it at the same addresses (decision D3).
+
+## 5. Update from an earlier Rust release
+
+The steps of sections 3.2, 3.3 and 4.2 with the files of the new release:
+
+1. ESP32: upload the new ESP image. It runs on trial with the running Rust image as its fallback
+   and is confirmed after 120 s of health (section 3.3). The upload writes the other app slot:
+   when that slot held the C++ 2.1.7 image (the fallback of the first Rust image), the C++ image
+   is gone from the controller, and the way back to it is its upload (section 3.6).
+2. STM32: upload the new STM image under a short name (`stm221.bin` for 2.2.1) and flash it,
+   mode normal; keep `stm217.bin` in the list. The release notes say when the STM firmware did
+   not change and the flash only keeps the versions of the two MCUs equal.

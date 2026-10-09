@@ -686,14 +686,14 @@ checksum = "77439c1b53d2303b20d9459b1ade71a83c716e3f9c34f3228c00e6f185d6c002"
 
 [[package]]
 name = "vdm-stm-boot"
-version = "2.2.0-revamped"
+version = "2.2.1-revamped"
 dependencies = [
  "vdm-stm-core",
 ]
 
 [[package]]
 name = "vdm-stm-core"
-version = "2.2.0-revamped"
+version = "2.2.1-revamped"
 dependencies = [
  "heapless",
 ]
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "vdm-stm-glue"
-version = "2.2.0-revamped"
+version = "2.2.1-revamped"
 dependencies = [
  "vdm-stm-boot",
  "vdm-stm-core",

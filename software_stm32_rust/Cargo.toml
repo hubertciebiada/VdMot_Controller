@@ -9,7 +9,7 @@ exclude = ["firmware"]
 [workspace.package]
 # the version of the four images: firmware/build.rs writes it into the ID block, gvers reports
 # it (D8: 2.2.0-revamped for the first Rust release, so gvers tells Rust from C++ 2.1.7)
-version = "2.2.0-revamped"
+version = "2.2.1-revamped"
 edition = "2021"
 rust-version = "1.90"
 license = "GPL-3.0-only"

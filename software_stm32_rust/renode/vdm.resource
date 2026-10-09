@@ -21,7 +21,7 @@ ${IMAGES}         ${REPO}/software_stm32_rust/firmware/images
 ${IMAGE}          STM32F401_C2
 ${CHIP}           f401
 ${TAG}            C2
-${VERSION}        2.2.0-revamped
+${VERSION}        2.2.1-revamped
 ${APP_RUN}        0x0
 ${BOOT_RUN}       0x0
 ${MIPS}           4

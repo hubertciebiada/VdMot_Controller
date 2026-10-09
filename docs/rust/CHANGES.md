@@ -8,7 +8,11 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
-## Unreleased
+## 2.2.1-revamped
+
+ESP32 release. The STM32 firmware is the one of 2.2.0 with the version 2.2.1-revamped: flash it
+to keep the versions of both MCUs equal; it needs no update otherwise. The C++ sources left the
+repository branch; the C++ 2.1.7 release stays the way back ([INSTALL.md](INSTALL.md)).
 
 ### ESP32: MQTT
 
