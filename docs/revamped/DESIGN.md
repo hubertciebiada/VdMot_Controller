@@ -403,8 +403,9 @@ hold; the next target ends it. Inactive valves never get pushes, and
 bit 7; phase 1 alone (time trigger queued, automatic retry, or a valve that
 calibrates on its first target change) is shown as "calibration queued" and
 may last for days. `calState` is split into the phase (bits 0..1) and the
-flags (bit 2 early end stop since the last good calibration, bit 3 last
-calibration failed); a calibration that ends with bit 3 set is CalibFailed.
+flags (bit 2 early end stop the next move did not recover, since the last
+good calibration, bit 3 last calibration failed); a calibration that ends
+with bit 3 set is CalibFailed.
 
 Failsafe (K1, `LeaseClient`, `vdm/failsafe.h`):
 - Regulator: `regulatorCause(mqtt::regulatorState())`: MQTT off -> alive;

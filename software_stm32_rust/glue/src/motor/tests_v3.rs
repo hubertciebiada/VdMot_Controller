@@ -38,16 +38,18 @@ fn partial_move_at_an_obstacle(rev: BoardRev) {
     assert_eq!(b.m.mots[0].status, ST_IDLE);
     assert_eq!(b.last(0).stop_reason, reason(StopReason::EarlyEndStop));
     assert_eq!(b.last(0).requested_counts, 40 * 36);
-    assert_eq!(b.diag(0).early_stops, 1);
-    assert!(b.diag(0).early_warn);
+    // not counted before the retry shows whether it was recovered
+    assert_eq!(b.diag(0).early_stops, 0);
+    assert!(!b.diag(0).early_warn);
     assert!(b.diag(0).last_early);
     assert_eq!(b.diag(0).early_run.count(), 1);
     assert!(!b.m.mots[0].early_learn_due);
     assert_eq!(b.m.mots[0].move_seq, 1);
-    // the retry stops early again: a calibration is requested
+    // the retry stops early again: counted, a calibration is requested
     b.run(CMD_A_OPEN, 0, 35, 0);
     assert_eq!(b.m.mots[0].actual_position, 25);
-    assert_eq!(b.diag(0).early_stops, 2);
+    assert_eq!(b.diag(0).early_stops, 1);
+    assert!(b.diag(0).early_warn);
     assert_eq!(b.diag(0).early_run.count(), 0);
     assert!(b.m.mots[0].early_learn_due);
     assert_eq!(b.m.mots[0].move_seq, 2);
@@ -57,6 +59,35 @@ fn partial_move_at_an_obstacle(rev: BoardRev) {
 fn w9_a_partial_move_that_meets_an_obstacle_takes_its_position_from_the_counted_pulses() {
     for rev in REVS {
         partial_move_at_an_obstacle(rev);
+    }
+}
+
+fn breakaway_then_retry(rev: BoardRev) {
+    let mut b = start_valves(rev);
+    b.place(0, 0);
+    // the first move away from the closed end stop stops after 1 %
+    b.rig.valve[0].jam_from = 50;
+    b.rig.valve[0].jam_to = 3600;
+    b.run(CMD_A_OPEN, 0, 15, 0);
+    assert_eq!(b.last(0).stop_reason, reason(StopReason::EarlyEndStop));
+    assert_eq!(b.m.mots[0].actual_position, 1);
+    assert_eq!(b.diag(0).early_run.count(), 1);
+    // the retry reaches the target: no early stop counted, no warning
+    b.rig.valve[0].jam_from = -1;
+    b.run(CMD_A_OPEN, 0, 14, 0);
+    assert_eq!(b.last(0).stop_reason, reason(StopReason::Target));
+    assert_eq!(b.m.mots[0].actual_position, 15);
+    assert_eq!(b.diag(0).early_stops, 0);
+    assert!(!b.diag(0).early_warn);
+    assert!(!b.diag(0).last_early);
+    assert_eq!(b.diag(0).early_run.count(), 0);
+    assert!(!b.m.mots[0].early_learn_due);
+}
+
+#[test]
+fn w9_an_early_partial_stop_whose_retry_reaches_the_target_is_not_counted() {
+    for rev in REVS {
+        breakaway_then_retry(rev);
     }
 }
 

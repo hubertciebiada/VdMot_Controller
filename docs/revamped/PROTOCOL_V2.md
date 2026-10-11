@@ -100,8 +100,8 @@ Firmware 1.x does not answer `gproto␠\n` (no v1 command starts with
 | dc | cc − oc, may be negative |
 | cr | failed calibration passes of the last calibration |
 | moves | position changes since the last successful calibration of this valve (as `gvlvd`); `stlnm` also resets the counters of all valves |
-| calState | bit field, values 0..15: bits 0..1: 0 idle, 1 calibration requested, 2 calibration running; bit 2 (4): early end stop since the last successful calibration; bit 3 (8): the last calibration did not succeed. A client reads the state as `calState & 3` and the flags separately |
-| earlyStops | early end stops of normal moves since start-up (see below) |
+| calState | bit field, values 0..15: bits 0..1: 0 idle, 1 calibration requested, 2 calibration running; bit 2 (4): an early end stop counted in earlyStops since the last successful calibration; bit 3 (8): the last calibration did not succeed. A client reads the state as `calState & 3` and the flags separately |
+| earlyStops | early end stops of normal moves since start-up that the next move did not recover (see below) |
 | cmdRejected | target changes the STM did not execute because the valve is failed (4) or blocked (9), since start-up |
 | lastDir | direction of the last move: 0 open, 1 close |
 | lastReq | requested pulses, 65535 = run to the end stop |
@@ -483,11 +483,15 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   early end stop. A partial move that ends at an end stop takes its position
   from the counted pulses (1.x set 0 or 100 %); when it stopped before 80 % of
   the requested pulses it is an early end stop too. An early end stop gives
-  `lastStop` 3 (or 6), `earlyStops` + 1 and calState bit 2; after an early
-  partial stop exactly one more move in the same direction is made for the
-  same drive target (flag `earlyPending`), the second early stop in a row
-  requests a calibration. Moves before the first successful calibration are
-  not checked.
+  `lastStop` 3 (or 6); after an early partial stop exactly one more move in
+  the same direction is made for the same drive target (flag `earlyPending`),
+  the second early stop in a row requests a calibration. `earlyStops` + 1 and
+  calState bit 2 come with that second early partial stop in a row, and at
+  once with an early stop of a move to an end stop (it gets no retry): the
+  first move away from an end stop the valve was pressed against can stop
+  early, and its retry then reaches the target (up to 2.2.1 every early end
+  stop counted). Moves before the first successful calibration are not
+  checked.
 
 ## Firmware update handshake
 

@@ -168,7 +168,7 @@ before).
 | `<main>valves/<V>/failsafe` | `off`, `lease` (regulator silent), `blocked` (blocked valve at its failsafe position) | yes | setting | active valve |
 | `<main>valves/<V>/problem` | `1` when the valve is blocked, failed, without contact, stale, its target is not confirmed or a temperature failed, else `0` | yes | setting | active valve |
 | `<main>diag/valves/<V>/lastMove` | `{"dir":"open","req":408,"cnt":395,"stop":"endstop","peak":299,"ms":15784}` | no | setting | v2, after each move |
-| `<main>diag/valves/<V>/earlyStops` | count since STM start | no | setting | v2, on change |
+| `<main>diag/valves/<V>/earlyStops` | count since STM start (early stops the next move did not recover) | no | setting | v2, on change |
 | `<main>diag/valves/<V>/cmdRejected` | count since STM start | no | setting | v2, on change |
 | `<main>diag/valves/<V>/calState` | `0` idle, `1` calibration requested, `2` running | no | setting | v2, on change |
 | `<main>diag/valves/<V>/profile` | `{"valve":1,"count":n,"samples":[[count,current],...]}` | no | never | v2, when a new profile is read |

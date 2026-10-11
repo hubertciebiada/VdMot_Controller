@@ -8,6 +8,20 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Unreleased
+
+### STM32: early end stops
+
+- `earlyStops` (`gvlvx`, `/api/valves` `ext.earlyStops`, MQTT `diag/valves/<V>/earlyStops`) and
+  calState bit 2 (`calEarlyStop`), and with them the ESP health flag `earlyStop` and the event
+  `early_stop`, count only the early end stops the next move did not recover: the second early
+  partial stop in a row (which requests a calibration, as before) and an early stop of a move to
+  an end stop. The first opening of a valve that stood closed, pressed against its seat, can
+  stop early after about 1 % of the stroke; its retry reaches the target and no longer leaves a
+  warning until the next calibration (the health flag: until the next ESP restart). `lastStop`
+  `early_endstop` and the one retry do not change
+  ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
+
 ## 2.2.1-revamped
 
 ESP32 release. The STM32 firmware is the one of 2.2.0 with the version 2.2.1-revamped: flash it

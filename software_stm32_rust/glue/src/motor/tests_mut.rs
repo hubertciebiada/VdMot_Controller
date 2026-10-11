@@ -293,6 +293,9 @@ fn early_warning_and_failed_flag(rev: BoardRev) {
     b.rig.valve[0].jam_from = 900;
     b.rig.valve[0].jam_to = 3600;
     b.run(CMD_A_OPEN, 0, 40, 0);
+    assert!(!b.diag(0).early_warn);
+    // the retry stops early too
+    b.run(CMD_A_OPEN, 0, 15, 0);
     assert!(b.diag(0).early_warn);
     // strokes too short: BLOCKS, the warning stays
     b.rig.valve[0].jam_from = -1;

@@ -241,9 +241,10 @@ pub struct ValveMotor {
 pub struct ValveDiag {
     /// last move (normal, calibration stroke or service move)
     pub last: MoveResult,
-    /// early end stops of normal moves since start-up
+    /// early end stops of normal moves since start-up that the next move did not recover: the
+    /// second early partial stop in a row, an early stop on the way to an end stop
     pub early_stops: u16,
-    /// early end stop since the last successful calibration
+    /// such an early end stop since the last successful calibration
     pub early_warn: bool,
     /// the last calibration did not succeed
     pub last_cal_failed: bool,
@@ -970,22 +971,24 @@ impl MotorShared {
             duration,
         );
         rec.diag.last_early = c.early;
-        if c.early && self.move_kind == MOVE_NORMAL {
-            rec.diag.early_stops = rec.diag.early_stops.saturating_add(1);
-            rec.diag.early_warn = true;
-        }
         let mot = &mut self.mots[v];
         if self.move_kind == MOVE_NORMAL {
+            let partial_early = c.early && self.move_req.partial_early_check;
             // the second early partial stop in a row requests a calibration; the moves of a
             // failed or blocked valve never do (its calibrations come from staln and the
             // automatic retry only)
-            if self.move_flags & MOVE_KEEP_STATUS == 0
-                && rec
-                    .diag
-                    .early_run
-                    .on_move(c.early && self.move_req.partial_early_check)
-            {
+            let repeated = self.move_flags & MOVE_KEEP_STATUS == 0
+                && rec.diag.early_run.on_move(partial_early);
+            if repeated {
                 mot.early_learn_due = true;
+            }
+            // an early partial stop gets one retry (valve_scheduler) and counts only when the
+            // next move stops early too: the first move away from a pressed end stop can stop
+            // early and the retry then reaches the target; an early stop on the way to an end
+            // stop gets no retry and counts at once
+            if repeated || (c.early && !partial_early) {
+                rec.diag.early_stops = rec.diag.early_stops.saturating_add(1);
+                rec.diag.early_warn = true;
             }
             mot.move_seq = mot.move_seq.wrapping_add(1);
         }
