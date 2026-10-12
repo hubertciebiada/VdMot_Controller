@@ -14,12 +14,14 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
 - A partial opening move that starts at 50 % or above and stops at the end-stop threshold sets
   the position to 100 % and is never an early end stop (`lastStop` `endstop`); the valve then
-  moves to its target. An opening step travels further than its counted pulses, so a valve
+  moves to its target. An opening step travels further than its counted pulses, and the open
+  end of a hot valve lay up to 6 % below the one of the last cold calibration, so a valve
   opened in many small steps reached its open end at a counted 74..96 %: the counted position
   stayed, the next steps stopped early twice and started a calibration that closed the valve
   for about a minute while heating. Closing, a safety stop and a move of a blocked or failed
-  valve keep the counted position. An actuator that jams while opening above 50 % is now taken
-  as open, without a warning
+  valve keep the counted position. A valve that jams while opening above 50 % (a normally
+  closed insert whose pin sticks while it is pushed in) is now taken as open, without a
+  warning
   ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
 
 ## 2.2.2-revamped
@@ -33,8 +35,8 @@ to keep the versions of both MCUs equal; it needs no update otherwise.
   calState bit 2 (`calEarlyStop`), and with them the ESP health flag `earlyStop` and the event
   `early_stop`, count only the early end stops the next move did not recover: the second early
   partial stop in a row (which requests a calibration, as before) and an early stop of a move to
-  an end stop. The first opening of a valve that stood closed, pressed against its seat, can
-  stop early after about 1 % of the stroke; its retry reaches the target and no longer leaves a
+  an end stop. The first opening of a valve that stood closed for a long time can stop early
+  after about 1 % of the stroke; its retry reaches the target and no longer leaves a
   warning until the next calibration (the health flag: until the next ESP restart). `lastStop`
   `early_endstop` and the one retry do not change
   ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
