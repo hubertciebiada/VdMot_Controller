@@ -21,7 +21,7 @@ use vdm_stm_core::calibration::{
     MEAN_CURRENT_DEFAULT_MA, MEAN_CURRENT_FLOOR_MA, MIN_TRAVEL_COUNTS, SAFETY_LIMIT_MA,
 };
 use vdm_stm_core::coast::{
-    coast_sample, opposite, shortened_target, MoveEnd, ValveCoast, COAST_PROBE_COUNTS,
+    coast_sample, shortened_target, MoveEnd, ValveCoast, COAST_PROBE_COUNTS,
 };
 use vdm_stm_core::config_store::ConfigImage;
 use vdm_stm_core::end_stop_detector::{EndStopDetector, InrushMode, Trip};
@@ -174,9 +174,9 @@ pub enum AState {
     Svc1 = 15,
     Svc2 = 16,
     Gap = 17,
-    /// the step of a calibration away from the end stop it reached (coast)
+    /// the closing step of a calibration away from the open end stop (coast)
     Probe1 = 18,
-    /// the move of a calibration back to that end stop
+    /// the move of a calibration back to the open end stop
     Probe2 = 19,
 }
 
@@ -357,15 +357,10 @@ struct LoopState {
     /// stroke after the temperature gap
     gap_dir: u8,
     gap_next: AState,
-    /// the end stop of the coast probe (DIR_OPEN: the open end stop)
-    probe_end: u8,
-    /// the stroke after the coast probe
-    probe_next: AState,
     /// pulses of the probe step, None when it did not end on its pulse count
     probe_counted: Option<u32>,
-    /// coast samples of the calibration pass, kept until the pass is accepted
-    probe_open: Option<u16>,
-    probe_close: Option<u16>,
+    /// the coast sample of the calibration pass, kept until the pass is accepted
+    probe_sample: Option<u16>,
     svc_move_dir: u8,
     svc_move_counts: u16,
     svc_move_maxma: u8,
@@ -643,11 +638,8 @@ impl MotorShared {
                 gaptimer: 0,
                 gap_dir: DIR_OPEN,
                 gap_next: AState::Learn3,
-                probe_end: DIR_CLOSE,
-                probe_next: AState::Learn3,
                 probe_counted: None,
-                probe_open: None,
-                probe_close: None,
+                probe_sample: None,
                 svc_move_dir: 0,
                 svc_move_counts: 0,
                 svc_move_maxma: 0,
@@ -1179,10 +1171,10 @@ impl MotorShared {
         self.start_learn_move(io, v, dir);
     }
 
-    /// Starts the step of the coast probe away from the end stop of `lp.probe_end`, on the
-    /// thresholds of the stroke in its direction.
+    /// Starts the closing step of the coast probe away from the open end stop, on the thresholds
+    /// of the closing stroke.
     fn start_probe_step<H: MotorHw>(&mut self, io: &Io<H>, v: usize) {
-        let dir = opposite(self.lp.probe_end);
+        let dir = DIR_CLOSE;
         // the motor stops on pulse target + 1; the sample takes the counted pulses
         io.pulse
             .target
@@ -1200,12 +1192,11 @@ impl MotorShared {
         self.start_learn_move(io, v, dir);
     }
 
-    /// Starts the move of the coast probe back to its end stop, on the thresholds of the stroke
-    /// that reached it.
+    /// Starts the move of the coast probe back to the open end stop, on the thresholds of the
+    /// opening stroke that reached it.
     fn start_probe_back<H: MotorHw>(&mut self, io: &Io<H>, v: usize) {
-        let dir = self.lp.probe_end;
-        self.prepare_learn_stroke(io, v, dir, false);
-        self.start_learn_move(io, v, dir);
+        self.prepare_learn_stroke(io, v, DIR_OPEN, false);
+        self.start_learn_move(io, v, DIR_OPEN);
     }
 
     /// Starts the prepared calibration move.
@@ -1214,15 +1205,6 @@ impl MotorShared {
         self.mots[v].status = if open { ST_OPENING } else { ST_CLOSING };
         self.motorcycle(io, v as i32, if open { CMD_M_OPEN } else { CMD_M_CLOSE });
         self.waittimer = WAIT_TIMER20;
-    }
-
-    /// After an end stop of a calibration the coast probe of that end stop comes next, then the
-    /// stroke `next` away from it.
-    fn probe_after(&mut self, end: u8, next: AState) {
-        self.lp.probe_end = end;
-        self.lp.probe_next = next;
-        self.lp.gap_dir = opposite(end);
-        self.lp.gap_next = AState::Probe1;
     }
 
     /// Starts what follows the pause between two calibration moves: the coast probe or a stroke.
@@ -1539,16 +1521,18 @@ impl MotorShared {
         }
         self.finish_move(io, v);
         if self.valvestate == AState::Learn2 {
-            // second: the coast of an opening step, then opening completely and count rotations
-            self.probe_after(DIR_CLOSE, AState::Learn3);
+            // second: opening completely and count rotations
+            self.lp.gap_dir = DIR_OPEN;
+            self.lp.gap_next = AState::Learn3;
         } else if self.valvestate == AState::Learn3 {
             self.lp.opening_count = io.pulse.counter.load(Ordering::SeqCst);
             // kept until the pass is accepted
             self.lp.open_mean_ma = self.stroke_mean_ma;
             self.lp.open_mean_samples = self.stroke_mean_samples;
-            // third: the coast of a closing step, then closing completely and count rotations,
-            // threshold from the learned mean current but not below the 1.x closing threshold
-            self.probe_after(DIR_OPEN, AState::Learn4);
+            // third: the coast of a closing step (Probe1, Probe2), then closing completely and
+            // count rotations, threshold from the learned mean current but not below the 1.x
+            // closing threshold
+            self.lp.gap_next = AState::Probe1;
         } else {
             self.lp.closing_count = io.pulse.counter.load(Ordering::SeqCst);
             // because the valve was closed completely
@@ -1560,8 +1544,8 @@ impl MotorShared {
         self.after_learn_end_stop(io, v);
     }
 
-    /// Probe1 (the step away from the end stop a stroke reached) and Probe2 (the move back to
-    /// it): the move back counts the step and its coast. A step that stopped at a threshold (a
+    /// Probe1 (the closing step away from the open end stop) and Probe2 (the move back to it):
+    /// the move back counts the step and its coast. A step that stopped at a threshold (a
     /// pin that sticks) gives no sample; the calibration goes on.
     fn state_probe<H: MotorHw>(&mut self, io: &Io<H>, runcmd: u8) {
         let v = self.lp.valveindex;
@@ -1584,13 +1568,9 @@ impl MotorShared {
                 .probe_counted
                 .filter(|_| self.motor_stop_cause == MotorStop::EndStop)
                 .and_then(|step| coast_sample(step, back));
-            if self.lp.probe_end == DIR_CLOSE {
-                self.lp.probe_open = sample;
-            } else {
-                self.lp.probe_close = sample;
-            }
-            self.lp.gap_dir = opposite(self.lp.probe_end);
-            self.lp.gap_next = self.lp.probe_next;
+            self.lp.probe_sample = sample;
+            self.lp.gap_dir = DIR_CLOSE;
+            self.lp.gap_next = AState::Learn4;
             self.after_learn_end_stop(io, v);
         } else {
             self.learn_move_failed(io, v, temp);
@@ -1629,14 +1609,9 @@ impl MotorShared {
             mot.calib_failed = false;
             mot.fault_reason = ValveFault::None as u8;
             mot.calib_seq = mot.calib_seq.wrapping_add(1);
-            // the coast samples of the pass (a probe without one keeps the coast of its
-            // direction); the closed end stop the valve stands at is that of the calibration
-            // threshold, so the move to the target starts no move pair
-            if let Some(sample) = self.lp.probe_open {
-                mot.coast.set(DIR_OPEN, sample);
-            }
-            if let Some(sample) = self.lp.probe_close {
-                mot.coast.set(DIR_CLOSE, sample);
+            // the coast sample of the pass (a probe without one keeps the coast)
+            if let Some(sample) = self.lp.probe_sample {
+                mot.coast.set(sample);
             }
             let diag = &mut self.valve_records[v].diag;
             diag.last_cal_failed = false;

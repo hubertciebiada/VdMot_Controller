@@ -27,8 +27,9 @@ pub struct ValveExtV3Reply {
     pub retry_s: u32,
     /// automatic retries since the fault began
     pub retries: u8,
-    /// learned coast of an opening / closing step in pulses, 0 = not learned (coast)
+    /// the coast of an opening step: 0, not learned (coast)
     pub coast_open: u16,
+    /// learned coast of a closing step in pulses, 0 = not learned (coast)
     pub coast_close: u16,
 }
 

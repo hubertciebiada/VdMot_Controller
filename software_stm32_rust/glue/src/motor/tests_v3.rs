@@ -740,20 +740,18 @@ fn temperature_gap(rev: BoardRev) {
     assert!(b.rig.ms - gap_start <= 3010);
     // C++: the last temp_command() call is temp_command(2) (LOCK)
     assert!(b.flags.temp_lock.load(Ordering::SeqCst));
-    // the coast probe of the closed end stop
-    assert_eq!(b.state(), AState::Probe1);
+    assert_eq!(b.state(), AState::Learn3);
     assert!(b.flags.temp_gap_timeout.load(Ordering::SeqCst));
     b.flags.temp_gap_timeout.store(false, Ordering::SeqCst);
-    // the probe's move back ends at the end stop: a pause again; the request ends: the next
-    // stroke starts at once
+    // the request ends: the coast probe of the open end stop starts at once
     assert!(b.run_until(|b| b.state() == AState::Gap, 30000));
     b.run_ms(100);
     b.flags.temp_refresh_request.store(false, Ordering::SeqCst);
     b.run_ms(20);
-    assert_eq!(b.state(), AState::Learn3);
+    assert_eq!(b.state(), AState::Probe1);
     assert!(!b.flags.temp_gap_timeout.load(Ordering::SeqCst));
     assert!(b.run_until(|b| calibration_done(b, 0), 30000));
-    assert_eq!(states(&b.rig), "5 6 17 18 19 17 7 18 19 8 9 10 11 1");
+    assert_eq!(states(&b.rig), "5 6 17 7 17 18 19 8 9 10 11 1");
     assert_eq!(b.m.mots[0].status, ST_IDLE);
     assert_eq!(b.m.mots[0].calib_seq, 1);
 }

@@ -504,9 +504,9 @@ fn calibration_the_temperature_gap_ends_after_exactly_3_s() {
         b.rig.valve[0].pulses_per_ms = 1.0;
         b.flags.temp_refresh_request.store(true, Ordering::SeqCst);
         assert_eq!(b.appsetaction(CMD_A_LEARN, 0, 0), 0);
-        assert!(b.run_until(|b| b.state() == AState::Probe1, 60000));
+        assert!(b.run_until(|b| b.state() == AState::Learn3, 60000));
         let gap = state_step(&b.rig, AState::Gap).expect("gap");
-        let next = state_step(&b.rig, AState::Probe1).expect("probe1");
+        let next = state_step(&b.rig, AState::Learn3).expect("learn3");
         assert_eq!(next.ms - gap.ms, 3000);
     }
 }

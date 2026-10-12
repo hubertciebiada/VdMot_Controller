@@ -91,7 +91,7 @@ pub struct Transcript {
 }
 
 /// The goldens the Rust bench wrote (`VDM_GOLDEN_RECORD`): the cases that calibrate a valve,
-/// since the coast probes of the calibration (GLUE-DESIGN-STM §7.4).
+/// since the coast probe of the calibration (GLUE-DESIGN-STM §7.4).
 pub const RUST_RECORDED: [&str; 9] = [
     "calib__w2_5_after_a_calibration_and_a_reset_the_counts_position_and_sta",
     "calib__w2_6_after_a_power_cycle_the_counts_come_back_a_reference_move_i",

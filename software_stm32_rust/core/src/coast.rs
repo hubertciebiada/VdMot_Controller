@@ -1,40 +1,38 @@
 //! The coast of a valve motor: the pulses it turns after its enable went off. The revolution
 //! pulses come from the motor current, which stops with the enable, so a step that stops on its
-//! pulse count travels further than it counted. A step away from an end stop and the move back
-//! to that end stop measure it: the move back counts the step and its coast (a play of the gears
-//! counts in both moves, each starts with a reversal). A partial move is shortened by the coast
-//! learned for its direction. Hardware-free.
+//! pulse count travels further than it counted. A closing step away from the open end stop and
+//! the move back to it measure it: the move back counts the step and its coast (a play of the
+//! gears counts in both moves, each starts with a reversal). A partial closing move is shortened
+//! by the learned coast. Hardware-free.
 //!
-//! The probes of a calibration set the coast. A move pair of normal moves refines it by a quarter
+//! Only the closing coast is learned. A closing step has the spring of the normally closed insert
+//! behind it and coasts 50..80 pulses; an opening step works against the spring, which stops the
+//! motor within a few pulses (about 2..14 in the field data of 2.2.4). A step away from the closed
+//! end stop cannot measure it: the move back counts the pulses the motor turns against the hard
+//! stop of the actuator until the end-stop threshold trips (2.2.4: 44..98 pulses or more than
+//! COAST_MAX_COUNTS on 13 valves).
+//!
+//! The probe of a calibration sets the coast. A move pair of normal moves refines it by a quarter
 //! when it agrees with it; two pairs in a row that agree with each other but not with it replace
 //! it by their mean, and set it before one is learned: a single false pair changes nothing, and a
 //! coast the normal moves do not confirm does not stay until the next calibration. Every sample
-//! comes from a step next to an end stop, where the load of the insert differs most from the
-//! middle of the stroke; the coast of a step in the middle is not measured.
+//! comes from a step next to the open end stop, where the spring of the insert is compressed most;
+//! the coast of a step in the middle of the stroke is not measured.
 
 use crate::move_classifier::{DIR_CLOSE, DIR_OPEN};
 
-/// Pulses of the step away from an end stop that a calibration makes in each direction (about
-/// 4 % of a stroke of 4500..5400 pulses).
+/// Pulses of the closing step away from the open end stop that a calibration makes (about 4 % of
+/// a stroke of 4500..5400 pulses).
 pub const COAST_PROBE_COUNTS: u16 = 200;
 /// The shortest step of a normal move that gives a sample with the move back: a shorter step
 /// can stop before the motor reaches its speed.
 pub const COAST_SAMPLE_MIN_COUNTS: u32 = 100;
 /// A larger difference between the move back and the step is no coast: one of them did not end
-/// where the sample assumes (the actuators coast 40..70 pulses).
+/// where the sample assumes (the actuators coast 50..80 pulses when closing).
 pub const COAST_MAX_COUNTS: u16 = 100;
 /// The smallest difference of a move pair's sample from the coast it refines that still agrees
 /// with it (half of the coast, but at least this).
 pub const COAST_AGREE_MIN: u16 = 8;
-
-/// The other direction.
-pub fn opposite(dir: u8) -> u8 {
-    if dir == DIR_OPEN {
-        DIR_CLOSE
-    } else {
-        DIR_OPEN
-    }
-}
 
 /// The coast of a step that counted `step` pulses away from an end stop, from the `back` pulses
 /// of the move back to it; None when the move back counted fewer pulses than the step or more
@@ -61,7 +59,7 @@ fn pair_agrees(a: u16, b: u16) -> bool {
     agrees(a.min(b), a.max(b))
 }
 
-/// The learned coast of one direction.
+/// The learned closing coast.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CoastEstimate {
     counts: u16,
@@ -103,13 +101,14 @@ impl CoastEstimate {
 /// Where a valve stands for the samples of its normal moves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Probe {
-    /// not known to be at an end stop
+    /// not known to be at the open end stop
     #[default]
     None,
-    /// at the end stop of this direction (DIR_OPEN: the open end stop)
-    AtEnd(u8),
-    /// a step away from the end stop of `end` ended on its pulse count after `counted` pulses
-    Away { end: u8, counted: u32 },
+    /// at the open end stop
+    AtOpenEnd,
+    /// a closing step away from the open end stop ended on its pulse count after `counted`
+    /// pulses
+    Away { counted: u32 },
 }
 
 /// How a normal move ended ([`ValveCoast::on_move`]).
@@ -125,36 +124,28 @@ pub struct MoveEnd {
     pub counted: u32,
 }
 
-/// The learned coast of one valve and the step away from an end stop that waits for its move
-/// back. RAM only: a start of the STM begins without a coast.
+/// The learned closing coast of one valve and the closing step away from the open end stop that
+/// waits for its move back. RAM only: a start of the STM begins without a coast.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValveCoast {
-    open: CoastEstimate,
     close: CoastEstimate,
     probe: Probe,
 }
 
 impl ValveCoast {
-    /// The learned coast of a step in `dir` in pulses, 0 before it is learned.
+    /// The learned coast of a step in `dir` in pulses: 0 for an opening step (not learned) and
+    /// for a closing step before it is learned.
     pub fn counts(&self, dir: u8) -> u16 {
-        if dir == DIR_OPEN {
-            self.open.counts()
-        } else {
+        if dir == DIR_CLOSE {
             self.close.counts()
-        }
-    }
-
-    fn estimate(&mut self, dir: u8) -> &mut CoastEstimate {
-        if dir == DIR_OPEN {
-            &mut self.open
         } else {
-            &mut self.close
+            0
         }
     }
 
-    /// The sample of a calibration probe of a step in `dir`.
-    pub fn set(&mut self, dir: u8, sample: u16) {
-        self.estimate(dir).set(sample);
+    /// The sample of the calibration probe.
+    pub fn set(&mut self, sample: u16) {
+        self.close.set(sample);
     }
 
     /// The valve moved in a way that gives no sample (a move of another kind, a move of a failed
@@ -163,27 +154,23 @@ impl ValveCoast {
         self.probe = Probe::None;
     }
 
-    /// The end of a normal move. A step that leaves an end stop and ends on its pulse count,
-    /// followed by a move back that ends at that end stop, gives a sample of the step's
-    /// direction; every other move ends the pair.
+    /// The end of a normal move. A closing step that leaves the open end stop and ends on its
+    /// pulse count, followed by a move back that ends at the open end stop, gives a sample;
+    /// every other move ends the pair.
     pub fn on_move(&mut self, m: &MoveEnd) {
-        self.probe = if m.at_end {
-            if let Probe::Away { end, counted } = self.probe {
-                if end == m.dir {
-                    if let Some(sample) = coast_sample(counted, m.counted) {
-                        self.estimate(opposite(end)).refine(sample);
-                    }
+        self.probe = if m.at_end && m.dir == DIR_OPEN {
+            if let Probe::Away { counted } = self.probe {
+                if let Some(sample) = coast_sample(counted, m.counted) {
+                    self.close.refine(sample);
                 }
             }
-            Probe::AtEnd(m.dir)
-        } else if m.count_reached
+            Probe::AtOpenEnd
+        } else if m.dir == DIR_CLOSE
+            && m.count_reached
             && m.counted >= COAST_SAMPLE_MIN_COUNTS
-            && self.probe == Probe::AtEnd(opposite(m.dir))
+            && self.probe == Probe::AtOpenEnd
         {
-            Probe::Away {
-                end: opposite(m.dir),
-                counted: m.counted,
-            }
+            Probe::Away { counted: m.counted }
         } else {
             Probe::None
         };

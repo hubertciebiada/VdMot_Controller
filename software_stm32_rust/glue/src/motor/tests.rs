@@ -73,9 +73,8 @@ fn calibration_learns_the_stroke(rev: BoardRev) {
         |b| !b.m.mots[0].calib_active && b.state() == AState::Idle,
         30000
     ));
-    // Learn1, Learn2, the opening coast probe, Learn3, the closing coast probe, Learn4, Set,
-    // Set1, Set2, Idle
-    assert_eq!(states(&b.rig), "5 6 18 19 7 18 19 8 9 10 11 1");
+    // Learn1, Learn2, Learn3, the closing coast probe, Learn4, Set, Set1, Set2, Idle
+    assert_eq!(states(&b.rig), "5 6 7 18 19 8 9 10 11 1");
     let mot = b.m.mots[0];
     assert_eq!(mot.status, ST_IDLE);
     assert!((3598..=3602).contains(&mot.opening_count));

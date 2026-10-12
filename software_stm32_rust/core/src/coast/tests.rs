@@ -1,5 +1,5 @@
 //! The coast samples, the estimate a calibration sets and move pairs refine, the shortened pulse
-//! target and the move pairs of normal moves.
+//! target and the move pairs of normal moves (closing steps from the open end stop).
 
 use super::*;
 
@@ -21,19 +21,12 @@ fn back(dir: u8, counted: u32) -> MoveEnd {
     }
 }
 
-/// a valve with the coast of a calibration that a normal move closed
-fn calibrated(open: u16, close: u16) -> ValveCoast {
+/// a valve with the closing coast of a calibration that a normal move opened
+fn calibrated(close: u16) -> ValveCoast {
     let mut c = ValveCoast::default();
-    c.set(DIR_OPEN, open);
-    c.set(DIR_CLOSE, close);
-    c.on_move(&back(DIR_CLOSE, 900));
+    c.set(close);
+    c.on_move(&back(DIR_OPEN, 900));
     c
-}
-
-#[test]
-fn opposite_swaps_the_directions() {
-    assert_eq!(opposite(DIR_OPEN), DIR_CLOSE);
-    assert_eq!(opposite(DIR_CLOSE), DIR_OPEN);
 }
 
 #[test]
@@ -185,40 +178,23 @@ fn two_samples_agree_on_half_of_the_smaller_one_in_either_order() {
 }
 
 #[test]
-fn a_valve_learns_each_direction_apart() {
+fn only_the_closing_coast_is_learned() {
     let mut c = ValveCoast::default();
     assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (0, 0));
-    c.set(DIR_OPEN, 50);
-    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (50, 0));
-    c.set(DIR_CLOSE, 70);
-    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (50, 70));
-}
-
-#[test]
-fn a_step_up_from_the_closed_end_and_the_move_back_refine_the_opening_coast() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&step(DIR_OPEN, 201));
-    assert_eq!(
-        c.probe,
-        Probe::Away {
-            end: DIR_CLOSE,
-            counted: 201
-        }
-    );
-    // 255 - 201
-    c.on_move(&back(DIR_CLOSE, 255));
-    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (44, 40));
-    assert_eq!(c.probe, Probe::AtEnd(DIR_CLOSE));
+    c.set(70);
+    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (0, 70));
 }
 
 #[test]
 fn a_step_down_from_the_open_end_and_the_move_back_refine_the_closing_coast() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&back(DIR_OPEN, 1500));
-    assert_eq!(c.probe, Probe::AtEnd(DIR_OPEN));
+    let mut c = calibrated(40);
+    assert_eq!(c.probe, Probe::AtOpenEnd);
     c.on_move(&step(DIR_CLOSE, 181));
+    assert_eq!(c.probe, Probe::Away { counted: 181 });
+    // 241 - 181
     c.on_move(&back(DIR_OPEN, 241));
-    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (40, 45));
+    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (0, 45));
+    assert_eq!(c.probe, Probe::AtOpenEnd);
     // the next pair refines it again
     c.on_move(&step(DIR_CLOSE, 181));
     c.on_move(&back(DIR_OPEN, 241));
@@ -226,92 +202,115 @@ fn a_step_down_from_the_open_end_and_the_move_back_refine_the_closing_coast() {
 }
 
 #[test]
-fn a_step_needs_at_least_the_sample_minimum() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&step(DIR_OPEN, COAST_SAMPLE_MIN_COUNTS - 1));
-    assert_eq!(c.probe, Probe::None);
+fn a_step_up_from_the_closed_end_and_the_move_back_give_no_sample() {
+    let mut c = calibrated(40);
     c.on_move(&back(DIR_CLOSE, 900));
-    c.on_move(&step(DIR_OPEN, COAST_SAMPLE_MIN_COUNTS));
+    assert_eq!(c.probe, Probe::None);
+    c.on_move(&step(DIR_OPEN, 201));
+    assert_eq!(c.probe, Probe::None);
+    c.on_move(&back(DIR_CLOSE, 255));
+    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (0, 40));
+    assert_eq!(c.probe, Probe::None);
+}
+
+#[test]
+fn a_step_needs_at_least_the_sample_minimum() {
+    let mut c = calibrated(40);
+    c.on_move(&step(DIR_CLOSE, COAST_SAMPLE_MIN_COUNTS - 1));
+    assert_eq!(c.probe, Probe::None);
+    c.on_move(&back(DIR_OPEN, 900));
+    c.on_move(&step(DIR_CLOSE, COAST_SAMPLE_MIN_COUNTS));
     assert_eq!(
         c.probe,
         Probe::Away {
-            end: DIR_CLOSE,
             counted: COAST_SAMPLE_MIN_COUNTS
         }
     );
 }
 
 #[test]
-fn only_a_step_that_leaves_the_end_stop_starts_a_pair() {
-    // not at an end stop
+fn only_a_closing_step_that_leaves_the_open_end_stop_starts_a_pair() {
+    // not at the open end stop
     let mut c = ValveCoast::default();
-    c.on_move(&step(DIR_OPEN, 200));
-    assert_eq!(c.probe, Probe::None);
-    // a step towards the end stop it stands at
-    c.on_move(&back(DIR_CLOSE, 900));
     c.on_move(&step(DIR_CLOSE, 200));
     assert_eq!(c.probe, Probe::None);
-    // a step that did not end on its pulse count
-    c.on_move(&back(DIR_CLOSE, 900));
+    // an opening step at the open end stop
+    c.on_move(&back(DIR_OPEN, 900));
+    c.on_move(&step(DIR_OPEN, 200));
+    assert_eq!(c.probe, Probe::None);
+    // a closing step that did not end on its pulse count
+    c.on_move(&back(DIR_OPEN, 900));
     c.on_move(&MoveEnd {
-        dir: DIR_OPEN,
+        dir: DIR_CLOSE,
         count_reached: false,
         at_end: false,
         counted: 200,
     });
     assert_eq!(c.probe, Probe::None);
+    // an opening move that ends without reaching the open end stop
+    c.on_move(&back(DIR_OPEN, 900));
+    c.on_move(&step(DIR_CLOSE, 200));
+    assert_eq!(c.probe, Probe::Away { counted: 200 });
+    c.on_move(&MoveEnd {
+        dir: DIR_OPEN,
+        count_reached: false,
+        at_end: false,
+        counted: 260,
+    });
+    assert_eq!(c.probe, Probe::None);
+    assert_eq!(c.counts(DIR_CLOSE), 0);
 }
 
 #[test]
 fn a_second_step_ends_the_pair() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&step(DIR_OPEN, 200));
-    c.on_move(&step(DIR_OPEN, 200));
+    let mut c = calibrated(40);
+    c.on_move(&step(DIR_CLOSE, 200));
+    c.on_move(&step(DIR_CLOSE, 200));
     assert_eq!(c.probe, Probe::None);
-    c.on_move(&back(DIR_CLOSE, 460));
-    assert_eq!(c.counts(DIR_OPEN), 40);
-    assert_eq!(c.probe, Probe::AtEnd(DIR_CLOSE));
+    c.on_move(&back(DIR_OPEN, 460));
+    assert_eq!(c.counts(DIR_CLOSE), 40);
+    assert_eq!(c.probe, Probe::AtOpenEnd);
 }
 
 #[test]
-fn a_move_to_the_other_end_stop_gives_no_sample() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&step(DIR_OPEN, 200));
-    c.on_move(&back(DIR_OPEN, 4300));
-    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (40, 40));
-    assert_eq!(c.probe, Probe::AtEnd(DIR_OPEN));
+fn a_move_to_the_closed_end_stop_gives_no_sample() {
+    let mut c = calibrated(40);
+    c.on_move(&step(DIR_CLOSE, 200));
+    c.on_move(&back(DIR_CLOSE, 4300));
+    assert_eq!(c.counts(DIR_CLOSE), 40);
+    assert_eq!(c.probe, Probe::None);
 }
 
 #[test]
 fn a_move_back_outside_the_limits_gives_no_sample_but_ends_at_the_end_stop() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&step(DIR_OPEN, 200));
-    c.on_move(&back(DIR_CLOSE, 190));
-    assert_eq!(c.counts(DIR_OPEN), 40);
-    assert_eq!(c.probe, Probe::AtEnd(DIR_CLOSE));
-    c.on_move(&step(DIR_OPEN, 200));
-    c.on_move(&back(DIR_CLOSE, 301));
-    assert_eq!(c.counts(DIR_OPEN), 40);
+    let mut c = calibrated(40);
+    c.on_move(&step(DIR_CLOSE, 200));
+    c.on_move(&back(DIR_OPEN, 190));
+    assert_eq!(c.counts(DIR_CLOSE), 40);
+    assert_eq!(c.probe, Probe::AtOpenEnd);
+    c.on_move(&step(DIR_CLOSE, 200));
+    c.on_move(&back(DIR_OPEN, 301));
+    assert_eq!(c.counts(DIR_CLOSE), 40);
 }
 
 #[test]
 fn forget_ends_the_pair() {
-    let mut c = calibrated(40, 40);
-    c.on_move(&step(DIR_OPEN, 200));
+    let mut c = calibrated(40);
+    c.on_move(&step(DIR_CLOSE, 200));
     c.forget();
     assert_eq!(c.probe, Probe::None);
-    c.on_move(&back(DIR_CLOSE, 260));
-    assert_eq!(c.counts(DIR_OPEN), 40);
+    c.on_move(&back(DIR_OPEN, 260));
+    assert_eq!(c.counts(DIR_CLOSE), 40);
 }
 
 #[test]
-fn without_a_calibration_two_pairs_of_a_direction_set_its_coast() {
+fn without_a_calibration_two_pairs_set_the_closing_coast() {
     let mut c = ValveCoast::default();
-    c.on_move(&back(DIR_CLOSE, 900));
-    c.on_move(&step(DIR_OPEN, 321));
-    c.on_move(&back(DIR_CLOSE, 361));
+    c.on_move(&back(DIR_OPEN, 900));
+    c.on_move(&step(DIR_CLOSE, 321));
+    c.on_move(&back(DIR_OPEN, 361));
     assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (0, 0));
-    c.on_move(&step(DIR_OPEN, 321));
-    c.on_move(&back(DIR_CLOSE, 365));
-    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (42, 0));
+    c.on_move(&step(DIR_CLOSE, 321));
+    c.on_move(&back(DIR_OPEN, 365));
+    assert_eq!((c.counts(DIR_OPEN), c.counts(DIR_CLOSE)), (0, 42));
 }
