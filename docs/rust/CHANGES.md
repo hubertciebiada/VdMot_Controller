@@ -8,7 +8,10 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
-## Unreleased
+## 2.2.4-revamped
+
+STM32 and ESP32 release: the STM learns the coast of each valve and shortens partial moves by it, the ESP
+reports the learned coast. Flash both; either MCU can be updated first.
 
 ### STM32: the coast of partial moves
 
