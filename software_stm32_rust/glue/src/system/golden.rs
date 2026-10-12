@@ -6,8 +6,8 @@
 //! protocol 3 adds values at the end (PROTOCOL_V2.md, extension rule), the C++ goldens carry 25.
 //!
 //! `VDM_GOLDEN_RECORD=1` makes a system test write its transcript as its golden instead of
-//! comparing it, marked `recorder rust`; it keeps a golden of the C++ recorder unless the value
-//! is `force`. RUST_RECORDED names the goldens written so.
+//! comparing it, marked `recorder rust`; it refuses to replace a golden of the C++ recorder (the
+//! test fails) unless the value is `force`. RUST_RECORDED names the goldens written so.
 
 use std::fmt::Write as _;
 use std::format;
@@ -164,7 +164,7 @@ pub fn parse(text: &str) -> Transcript {
         let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
         match key {
             "case" => t.case = rest.to_string(),
-            "recorder" if rest == "rust" => t.rust = true,
+            "recorder" => t.rust = rest == "rust",
             "boot" => {
                 let (index, reset) = rest.split_once(' ').unwrap();
                 let reset = [Reset::PowerOn, Reset::Pin, Reset::Software, Reset::Watchdog]
@@ -244,7 +244,7 @@ pub fn store(slug: &str, t: &Transcript, force: bool) {
 }
 
 /// Writes the transcript at `path`, marked `recorder rust`; a golden of the C++ recorder there
-/// stays unless `force`.
+/// fails the test unless `force`.
 fn store_at(path: &str, t: &Transcript, force: bool) {
     let cpp = std::fs::read_to_string(path).is_ok_and(|old| !parse(&old).rust);
     assert!(

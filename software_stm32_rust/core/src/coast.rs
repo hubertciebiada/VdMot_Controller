@@ -5,10 +5,12 @@
 //! counts in both moves, each starts with a reversal). A partial move is shortened by the coast
 //! learned for its direction. Hardware-free.
 //!
-//! The probes of a calibration set the coast; the move pairs of normal moves refine it by a
-//! quarter when they agree with it, and without a coast from a calibration two agreeing pairs in
-//! a row set it. Every sample comes from a step next to an end stop, where the load of the insert
-//! differs most from the middle of the stroke; the coast of a step in the middle is not measured.
+//! The probes of a calibration set the coast. A move pair of normal moves refines it by a quarter
+//! when it agrees with it; two pairs in a row that agree with each other but not with it replace
+//! it by their mean, and set it before one is learned: a single false pair changes nothing, and a
+//! coast the normal moves do not confirm does not stay until the next calibration. Every sample
+//! comes from a step next to an end stop, where the load of the insert differs most from the
+//! middle of the stroke; the coast of a step in the middle is not measured.
 
 use crate::move_classifier::{DIR_CLOSE, DIR_OPEN};
 
@@ -54,12 +56,17 @@ fn agrees(reference: u16, sample: u16) -> bool {
     reference.abs_diff(sample) <= (reference / 2).max(COAST_AGREE_MIN)
 }
 
+/// Two samples agree when they differ by at most half of the smaller one (in either order).
+fn pair_agrees(a: u16, b: u16) -> bool {
+    agrees(a.min(b), a.max(b))
+}
+
 /// The learned coast of one direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CoastEstimate {
     counts: u16,
     learned: bool,
-    /// the sample of a move pair that waits for an agreeing one (no coast learned)
+    /// the sample of a move pair that waits for a second one that agrees with it
     candidate: Option<u16>,
 }
 
@@ -69,26 +76,24 @@ impl CoastEstimate {
         self.counts
     }
 
-    /// The sample of a calibration probe: it is the coast.
+    /// The sample of a calibration probe (at most COAST_MAX_COUNTS): it is the coast.
     pub fn set(&mut self, sample: u16) {
-        self.counts = sample;
+        self.counts = sample.min(COAST_MAX_COUNTS);
         self.learned = true;
         self.candidate = None;
     }
 
-    /// The sample of a move pair: it moves a learned coast by a quarter towards it when it
-    /// agrees with it and is dropped otherwise; without a learned coast the mean of two agreeing
-    /// samples in a row is the coast.
+    /// The sample of a move pair (at most COAST_MAX_COUNTS): it moves a learned coast a quarter
+    /// towards it when it agrees with it. Otherwise it waits; the next sample, when it does not
+    /// agree with the learned coast but with the waiting one, makes their mean the coast.
     pub fn refine(&mut self, sample: u16) {
-        if self.learned {
-            if agrees(self.counts, sample) {
-                // rounded; at most COAST_MAX_COUNTS
-                self.counts = ((3 * u32::from(self.counts) + u32::from(sample) + 2) / 4) as u16;
-            }
-        } else if let Some(first) = self.candidate.filter(|&first| agrees(first, sample)) {
-            self.counts = (u32::from(first) + u32::from(sample)).div_ceil(2) as u16;
-            self.learned = true;
+        let sample = sample.min(COAST_MAX_COUNTS);
+        if self.learned && agrees(self.counts, sample) {
+            // rounded
+            self.counts = ((3 * u32::from(self.counts) + u32::from(sample) + 2) / 4) as u16;
             self.candidate = None;
+        } else if let Some(first) = self.candidate.filter(|&first| pair_agrees(first, sample)) {
+            self.set((u32::from(first) + u32::from(sample)).div_ceil(2) as u16);
         } else {
             self.candidate = Some(sample);
         }
@@ -150,11 +155,6 @@ impl ValveCoast {
     /// The sample of a calibration probe of a step in `dir`.
     pub fn set(&mut self, dir: u8, sample: u16) {
         self.estimate(dir).set(sample);
-    }
-
-    /// The valve stands at the end stop of `end` (a calibration closed it).
-    pub fn at_end(&mut self, end: u8) {
-        self.probe = Probe::AtEnd(end);
     }
 
     /// The valve moved in a way that gives no sample (a move of another kind, a move of a failed

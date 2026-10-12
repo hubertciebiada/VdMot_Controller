@@ -21,12 +21,12 @@ fn back(dir: u8, counted: u32) -> MoveEnd {
     }
 }
 
-/// a valve with the coast of a calibration, at its closed end stop
+/// a valve with the coast of a calibration that a normal move closed
 fn calibrated(open: u16, close: u16) -> ValveCoast {
     let mut c = ValveCoast::default();
     c.set(DIR_OPEN, open);
     c.set(DIR_CLOSE, close);
-    c.at_end(DIR_CLOSE);
+    c.on_move(&back(DIR_CLOSE, 900));
     c
 }
 
@@ -84,6 +84,8 @@ fn a_calibration_sets_the_coast() {
     // the next calibration replaces it
     e.set(40);
     assert_eq!(e.counts(), 40);
+    e.set(COAST_MAX_COUNTS + 1);
+    assert_eq!(e.counts(), COAST_MAX_COUNTS);
 }
 
 #[test]
@@ -101,11 +103,12 @@ fn a_move_pair_moves_a_learned_coast_by_a_rounded_quarter() {
 }
 
 #[test]
-fn a_move_pair_that_does_not_agree_with_the_learned_coast_is_dropped() {
+fn a_move_pair_that_does_not_agree_with_the_learned_coast_changes_it_not_alone() {
     let mut e = CoastEstimate::default();
     e.set(40);
     e.refine(61);
     assert_eq!(e.counts(), 40);
+    // does not agree with 61 either
     e.refine(19);
     assert_eq!(e.counts(), 40);
     e.refine(60);
@@ -119,11 +122,39 @@ fn a_move_pair_that_does_not_agree_with_the_learned_coast_is_dropped() {
 }
 
 #[test]
+fn two_move_pairs_in_a_row_that_agree_with_each_other_but_not_with_the_coast_replace_it() {
+    let mut e = CoastEstimate::default();
+    e.set(90);
+    e.refine(40);
+    assert_eq!(e.counts(), 90);
+    // (40 + 42 + 1) / 2
+    e.refine(42);
+    assert_eq!(e.counts(), 41);
+    // a sample that agrees with the coast ends the row
+    e.set(40);
+    e.refine(70);
+    e.refine(44);
+    assert_eq!(e.counts(), 41);
+    e.refine(70);
+    assert_eq!(e.counts(), 41);
+    e.refine(71);
+    assert_eq!(e.counts(), 71);
+    // a calibration drops a waiting sample
+    e.set(40);
+    e.refine(90);
+    e.set(40);
+    e.refine(92);
+    assert_eq!(e.counts(), 40);
+    e.refine(93);
+    assert_eq!(e.counts(), 93);
+}
+
+#[test]
 fn without_a_calibration_two_agreeing_move_pairs_in_a_row_set_the_coast() {
     let mut e = CoastEstimate::default();
     e.refine(148);
     assert_eq!(e.counts(), 0);
-    // does not agree with 148: it waits instead
+    // does not agree with 100 (148 limited): it waits instead
     e.refine(40);
     assert_eq!(e.counts(), 0);
     // (40 + 51 + 1) / 2
@@ -132,12 +163,25 @@ fn without_a_calibration_two_agreeing_move_pairs_in_a_row_set_the_coast() {
     // learned: the next sample refines it
     e.refine(50);
     assert_eq!(e.counts(), 47);
-    // a calibration drops a waiting sample
+    // samples beyond the limit count as the limit
     let mut e = CoastEstimate::default();
-    e.refine(40);
-    e.set(60);
-    e.refine(50);
-    assert_eq!(e.counts(), 58);
+    e.refine(150);
+    e.refine(150);
+    assert_eq!(e.counts(), COAST_MAX_COUNTS);
+}
+
+#[test]
+fn two_samples_agree_on_half_of_the_smaller_one_in_either_order() {
+    assert!(pair_agrees(40, 60));
+    assert!(pair_agrees(60, 40));
+    assert!(!pair_agrees(40, 61));
+    assert!(!pair_agrees(61, 40));
+    for (a, b) in [(40, 61), (61, 40)] {
+        let mut e = CoastEstimate::default();
+        e.refine(a);
+        e.refine(b);
+        assert_eq!(e.counts(), 0);
+    }
 }
 
 #[test]
@@ -186,7 +230,7 @@ fn a_step_needs_at_least_the_sample_minimum() {
     let mut c = calibrated(40, 40);
     c.on_move(&step(DIR_OPEN, COAST_SAMPLE_MIN_COUNTS - 1));
     assert_eq!(c.probe, Probe::None);
-    c.at_end(DIR_CLOSE);
+    c.on_move(&back(DIR_CLOSE, 900));
     c.on_move(&step(DIR_OPEN, COAST_SAMPLE_MIN_COUNTS));
     assert_eq!(
         c.probe,
@@ -204,11 +248,11 @@ fn only_a_step_that_leaves_the_end_stop_starts_a_pair() {
     c.on_move(&step(DIR_OPEN, 200));
     assert_eq!(c.probe, Probe::None);
     // a step towards the end stop it stands at
-    c.at_end(DIR_CLOSE);
+    c.on_move(&back(DIR_CLOSE, 900));
     c.on_move(&step(DIR_CLOSE, 200));
     assert_eq!(c.probe, Probe::None);
     // a step that did not end on its pulse count
-    c.at_end(DIR_CLOSE);
+    c.on_move(&back(DIR_CLOSE, 900));
     c.on_move(&MoveEnd {
         dir: DIR_OPEN,
         count_reached: false,

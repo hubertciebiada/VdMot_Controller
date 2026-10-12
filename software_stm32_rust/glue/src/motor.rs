@@ -1629,14 +1629,15 @@ impl MotorShared {
             mot.calib_failed = false;
             mot.fault_reason = ValveFault::None as u8;
             mot.calib_seq = mot.calib_seq.wrapping_add(1);
-            // the coast samples of the pass; the valve stands at its closed end stop
+            // the coast samples of the pass (a probe without one keeps the coast of its
+            // direction); the closed end stop the valve stands at is that of the calibration
+            // threshold, so the move to the target starts no move pair
             if let Some(sample) = self.lp.probe_open {
                 mot.coast.set(DIR_OPEN, sample);
             }
             if let Some(sample) = self.lp.probe_close {
                 mot.coast.set(DIR_CLOSE, sample);
             }
-            mot.coast.at_end(DIR_CLOSE);
             let diag = &mut self.valve_records[v].diag;
             diag.last_cal_failed = false;
             diag.early_warn = false;

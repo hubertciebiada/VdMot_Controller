@@ -4,6 +4,7 @@
 // a probe move.
 use core::sync::atomic::Ordering;
 
+use vdm_stm_core::coast::COAST_PROBE_COUNTS;
 use vdm_stm_core::move_classifier::{StopReason, DIR_CLOSE, DIR_OPEN};
 use vdm_stm_core::valve_codes::{ValveFault, ST_BLOCKED, ST_FAILED, ST_IDLE, ST_OPEN_CIRCUIT};
 
@@ -238,6 +239,48 @@ fn coast_a_probe_step_that_meets_an_obstacle_gives_no_sample_the_calibration_goe
     }
 }
 
+fn probe_without_a_sample_keeps_the_coast(rev: BoardRev) {
+    let mut b = calibrated(rev);
+    b.rig.valve[0].coast_pulses = 60;
+    assert_eq!(b.appsetaction(CMD_A_LEARN, 0, 0), 0);
+    b.run_ms(10);
+    assert!(b.run_until(|b| b.state() == AState::Probe1, 60000));
+    b.rig.valve[0].jam_from = 150;
+    b.rig.valve[0].jam_to = 151;
+    assert!(b.run_until(|b| b.state() == AState::Probe2, 30000));
+    b.rig.valve[0].jam_from = -1;
+    b.rig.valve[0].jam_to = -1;
+    learn_done(&mut b);
+    assert_eq!(b.m.mots[0].status, ST_IDLE);
+    assert_eq!(b.m.mots[0].calib_seq, 2);
+    // the closing probe measured 60, the opening one gave no sample: its coast stays
+    assert_eq!(coast(&b), (40, 60));
+}
+
+#[test]
+fn coast_a_probe_of_a_new_calibration_without_a_sample_keeps_the_coast_of_its_direction() {
+    for rev in REVS {
+        probe_without_a_sample_keeps_the_coast(rev);
+    }
+}
+
+fn no_pair_from_the_calibration_end(rev: BoardRev) {
+    let mut b = calibrated(rev);
+    // the move to the target started at the end stop of the calibration: no step of a pair
+    // (with one, the 20 pulses more of the move back would be a sample of 60)
+    b.rig.valve[0].position += 20;
+    b.run(CMD_A_CLOSE_END, 0, 0, 0);
+    assert_eq!(b.last(0).stop_reason, StopReason::EndStop as u8);
+    assert_eq!(coast(&b), (40, 40));
+}
+
+#[test]
+fn coast_the_move_to_the_target_after_a_calibration_starts_no_move_pair() {
+    for rev in REVS {
+        no_pair_from_the_calibration_end(rev);
+    }
+}
+
 fn failed_pass(rev: BoardRev) {
     let mut b = start_valves(rev);
     b.rig.valve[0].pulses_per_ms = 1.0;
@@ -266,10 +309,13 @@ fn probe_back_on_the_safety_limit(rev: BoardRev) {
     // 40 mA x 1.7 above it): no sample, the calibration goes on
     let mut b = learn_until(rev, AState::Probe1);
     let mean = b.m.mots[0].meancurrent;
+    // the move back takes its threshold from the mean current at its start
     b.m.mots[0].meancurrent = 40;
-    assert!(b.run_until(|b| b.state() == AState::Learn3, 30000));
-    assert_eq!(b.last(0).stop_reason, StopReason::SafetyOvercurrent as u8);
+    assert!(b.run_until(|b| b.state() == AState::Probe2, 30000));
+    assert_eq!(b.last(0).stop_reason, StopReason::Target as u8);
     b.m.mots[0].meancurrent = mean;
+    assert!(b.run_until(|b| b.state() != AState::Probe2, 30000));
+    assert_eq!(b.last(0).stop_reason, StopReason::SafetyOvercurrent as u8);
     learn_done(&mut b);
     assert_eq!(b.m.mots[0].status, ST_IDLE);
     assert!(b.m.mots[0].calibrated);
@@ -285,12 +331,22 @@ fn coast_a_probe_move_back_that_stops_on_the_safety_limit_gives_no_sample() {
 
 fn sstop_in_a_probe(rev: BoardRev, state: AState) {
     let mut b = learn_until(rev, state);
-    // the probe move runs
-    b.run_ms(600);
-    assert_eq!(b.state(), state);
+    // the probe move turns
+    assert!(b.run_until(
+        |b| b.state() == state
+            && b.pulse.turning.load(Ordering::SeqCst)
+            && (50..100).contains(&b.pulse.counter.load(Ordering::SeqCst)),
+        30000
+    ));
+    assert!(b.pulse.turning.load(Ordering::SeqCst));
     assert_eq!(b.m.appstop(0), 0);
     learn_done(&mut b);
     assert_eq!(b.last(0).stop_reason, StopReason::Aborted as u8);
+    let counted = u32::from(b.last(0).counted_counts);
+    assert!(
+        (50..u32::from(COAST_PROBE_COUNTS)).contains(&counted),
+        "{counted}"
+    );
     let mot = b.m.mots[0];
     assert_eq!(mot.status, ST_IDLE);
     assert!(mot.needs_reference);
