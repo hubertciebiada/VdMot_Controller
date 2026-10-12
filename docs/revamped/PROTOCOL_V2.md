@@ -486,15 +486,17 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   starts at 50 % or above and stops at the end-stop threshold has reached the
   open end stop instead: position 100 %, never early. An opening step travels
   further than its counted pulses (the motor keeps turning after it is
-  switched off), and the open end of a hot valve can lie a few % below the
-  one a cold calibration measured, so a valve opened in many small steps
+  switched off), and while heating the open end can lie a few % below the
+  one a calibration measured before, so a valve opened in many small steps
   reaches its open end below a counted 100 % (up to 2.2.2 it kept the counted
   position and its next steps stopped early). The price: a valve that jams
-  while opening above 50 % (a normally closed insert whose pin sticks while
-  it is pushed in) is taken as open, without a warning. A safety stop keeps
-  the counted position, so does a move of a blocked or failed valve (status
-  kept), and closing always does (with a normally open insert a stuck pin can
-  stop the closing spindle anywhere). An early end stop gives `lastStop` 3 (or 6); after an early partial stop
+  while opening above 50 % (a normally closed pin stuck while it is pushed
+  in, an actuator stuck while it retracts) is taken as open, without a
+  warning. A safety stop keeps the counted position, so does a move of a
+  blocked or failed valve (status kept), and closing always does: closing
+  steps travel further than counted too, but no valve closed in many small
+  steps reached its closed end early in the field, and taking a closing stop
+  as 0 % would take a valve that jams on the way down as closed. An early end stop gives `lastStop` 3 (or 6); after an early partial stop
   exactly one more move in the same direction is made for the same drive
   target (flag `earlyPending`), the second early stop in a row requests a
   calibration.

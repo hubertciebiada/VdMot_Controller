@@ -14,14 +14,14 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
 - A partial opening move that starts at 50 % or above and stops at the end-stop threshold sets
   the position to 100 % and is never an early end stop (`lastStop` `endstop`); the valve then
-  moves to its target. An opening step travels further than its counted pulses, and the open
-  end of a hot valve lay up to 6 % below the one of the last cold calibration, so a valve
-  opened in many small steps reached its open end at a counted 74..96 %: the counted position
+  moves to its target. An opening step travels further than its counted pulses, and while
+  heating the open end lay up to 6 % below the one of the last calibration before, so a valve
+  opened in many small steps reached its open end at a counted 71..96 %: the counted position
   stayed, the next steps stopped early twice and started a calibration that closed the valve
   for about a minute while heating. Closing, a safety stop and a move of a blocked or failed
   valve keep the counted position. A valve that jams while opening above 50 % (a normally
-  closed insert whose pin sticks while it is pushed in) is now taken as open, without a
-  warning
+  closed pin stuck while it is pushed in, an actuator stuck while it retracts) is now taken as
+  open, without a warning
   ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
 
 ## 2.2.2-revamped

@@ -77,17 +77,20 @@ pub struct MoveRequest {
 pub const PARTIAL_EARLY_PCT: u8 = 80;
 
 /// An opening step travels further than its counted pulses (the motor turns on after its enable
-/// went off), and the open end of a hot valve can lie a few % below the one a cold calibration
-/// measured (up to 6 % in the field): a valve opened in many small steps reaches its open end
-/// stop while its counted position is lower (seen at 74..96 % after steps of about 4 %). An end
-/// stop of a partial opening move that starts at this position or above is taken as the open end
-/// stop. With a normally closed insert, opening pushes the pin in against the insert spring and
-/// the open end is where the load reaches the threshold, as in a calibration; with a normally
-/// open insert, opening retracts the spindle up to the actuator's own end. The price: a normally
-/// closed insert whose pin jams while it is pushed in the upper half is taken as open, without a
-/// warning. A valve that cannot leave its closed end stops near 0 % and keeps the early check.
-/// Closing keeps the counted position: with a normally open insert a stuck pin can stop the
-/// closing spindle anywhere.
+/// went off), and while heating the open end can lie a few % below the one a calibration measured
+/// before (up to 6 % in the field): a valve opened in many small steps reaches its open end stop
+/// while its counted position is lower (seen at 71..96 % after steps of about 4 %). An end stop
+/// of a partial opening move that starts at this position or above is taken as the open end stop.
+/// With a normally closed insert, opening pushes the pin in against the insert spring and the
+/// open end is where the load reaches the threshold, as in a calibration; with a normally open
+/// insert, opening retracts the spindle up to the actuator's own end. The price: a valve that
+/// jams while it opens in the upper half (a normally closed pin stuck while it is pushed in, an
+/// actuator stuck while it retracts) is taken as open, without a warning. A valve that cannot
+/// leave its closed end stops near 0 % and keeps the early check.
+/// Closing keeps the counted position. Closing steps travel further than counted too, so a valve
+/// closed in many small steps can reach its closed end early in the same way; the field data
+/// show no such case, and taking a closing stop as 0 % would take a valve that jams on the way
+/// down (its actuator, or a normally open pin) as closed.
 pub const OPEN_END_MIN_START_PCT: u8 = 50;
 
 /// A partial move in `dir` from `start` % ends at the open end stop when it ends at the
