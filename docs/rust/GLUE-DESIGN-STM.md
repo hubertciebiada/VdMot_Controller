@@ -823,8 +823,8 @@ readable and the glue tests need no JSON parser. The Rust bench (`glue/src/syste
 reproduces all 27 cases byte for byte; `app.robot` replays some of them against the images
 (§5.7).
 
-Since the coast probes of the calibration (2.2.4, PROTOCOL_V2.md "Calibration and end-stop
-detection") two exceptions apply. A `gvlvy` reply line is compared on the values of the
+Since the coast probe of the calibration (2.2.4, one probe since 2.2.5, PROTOCOL_V2.md
+"Calibration and end-stop detection") two exceptions apply. A `gvlvy` reply line is compared on the values of the
 golden's reply (`golden::matches`): protocol 3 appends values (extension rule), the C++ goldens
 carry 25. And the nine goldens of cases that calibrate a valve are written by the Rust bench,
 `golden::RUST_RECORDED` names them and their second line is `recorder rust`
@@ -832,7 +832,7 @@ carry 25. And the nine goldens of cases that calibrate a valve are written by th
 golden instead of comparing it; it refuses to replace a golden of the C++ recorder, the test
 fails, unless the value is `force`). Compared with their C++ originals (git history up to 2.2.3) every byte of both
 UARTs is the same in the same order, the requests included, and so is the EEPROM; the times
-after a calibration are 2.0..9.0 s later (the probes, about 2.9 s per pass in the bench), and
+after a calibration are 1.0..4.3 s later (the probe, about 1.4 s per pass in the bench), and
 the warm state differs only in the fields that carry a time (the lease ages, the retry time, the
 reset guard's uptime) and in its CRCs. `gvlvy` lines carry values 26 and 27 (0: the bench
 valves do not coast) and are compared on all 27. The other 18 goldens stay the C++ recordings; `app.robot` uses none of

@@ -111,7 +111,7 @@ Firmware 1.x does not answer `gproto␠\n` (no v1 command starts with
 | lastMs | duration of the move in ms (0 when it did not start) |
 
 The last move is any motor move: a normal position change, a failsafe or
-reference move, each of the three strokes and the four coast moves of a
+reference move, each of the three strokes and the two coast moves of a
 calibration, or a service move. The counters start at 0 after a reset of the STM.
 
 ### `gprof idx` – current profile of the last move
@@ -271,7 +271,7 @@ Fields 1..19 = `gvlvx`. Then:
 | 23 | drive | position the valve is driven to (see above) |
 | 24 | retryS | seconds to the next automatic retry, 0 = none |
 | 25 | retries | automatic retries since the fault began, 0..255 |
-| 26 | coastOpen | learned coast of an opening step in pulses, 0 = not learned (since 2.2.4) |
+| 26 | coastOpen | 0: the coast of an opening step is not learned (since 2.2.5; 2.2.4: the learned coast of an opening step in pulses) |
 | 27 | coastClose | learned coast of a closing step in pulses, 0 = not learned (since 2.2.4) |
 
 | Bit | Value | Name | Set when |
@@ -471,39 +471,44 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   repetitions the valve is blocked (9), driven to its failsafe position and
   calibrated again by `staln`, the time or movement trigger, or the automatic
   retry.
-- **Coast** (since 2.2.4). The motor keeps turning after its enable is switched
-  off, and its pulses are not counted then: the pulses come from the motor
-  current, which stops with the enable, and the L293 has no brake. A pass
-  measures that coast at both end stops: after the closed end stop a step of
-  200 pulses up and back down to the end stop, after the open end stop a step
-  of 200 pulses down and back up. The move back counts the step and its coast
-  (`coastOpen`, `coastClose`). The pass takes four short moves more (about
-  6 s at 0.25 pulses/ms), and a due temperature cycle can pause it after each
-  move back as after a stroke. Only an
-  accepted pass keeps its samples, and each replaces the coast of its
-  direction; a probe step that stops at a threshold gives none, the coast
-  of its direction stays and the pass goes on. A normal move that steps
-  away from an end stop the valve stands at, stops on its pulse count after
-  at least 100 pulses and is followed by a move back to that end stop gives
-  a further sample (the move to the target after a pass starts none: the
-  pass closed the valve with its own threshold). A sample moves the learned
+- **Coast** (since 2.2.4; closing steps only since 2.2.5). The motor keeps
+  turning after its enable is switched off, and its pulses are not counted
+  then: the pulses come from the motor current, which stops with the enable,
+  and the L293 has no brake. Only the coast of a closing step is learned
+  (`coastClose`): the spring of the normally closed insert drives a closing
+  step on (50..80 pulses on the installed actuators), while an opening step
+  works against the spring, which stops the motor within a few pulses. After
+  the third stroke reached the open end stop, a pass makes a closing step of
+  200 pulses and moves back up to the open end stop; the move back counts the
+  step and its coast. The pass takes two short moves more (about 3 s at
+  0.25 pulses/ms), and a due temperature cycle can pause it after the move
+  back as after a stroke. Only an accepted pass keeps its sample, and it
+  replaces the coast; a probe step that stops at a threshold gives none, the
+  coast stays and the pass goes on. A normal closing move that leaves the
+  open end stop, stops on its pulse count after at least 100 pulses and is
+  followed by a move back to the open end stop (a move to it, or an opening
+  move that meets it) gives a further sample. A sample moves the learned
   coast a quarter towards it when it differs from it by at most half of it
   (at least 8 pulses); otherwise it waits, and the next sample replaces the
   coast by the mean of the two when it differs from the waiting one by at
   most half of the smaller (at least 8 pulses) and does not agree with the
   coast. Without a coast from a pass, two such samples in a row set it. A
   move back, of a probe or of a normal move, that counts fewer pulses than
-  the step or more than 100 beyond it gives no sample. A
-  partial move of a valve that is not blocked or failed then stops the
-  learned coast of its direction earlier, by at most half of its pulses:
-  `lastReq` (gvlvx field 15) keeps the requested pulses, `lastCnt` (16)
-  counts about the coast less.
-  Moves to an end stop, service moves and moves of a blocked or failed valve
-  are not shortened. The coast is kept in RAM only (no EEPROM, no warm
+  the step or more than 100 beyond it gives no sample. A partial closing
+  move of a valve that is not blocked or failed then stops the learned coast
+  earlier, by at most half of its pulses: `lastReq` (gvlvx field 15) keeps
+  the requested pulses, `lastCnt` (16) counts about the coast less. Opening
+  moves, moves to an end stop, service moves and moves of a blocked or failed
+  valve are not shortened. The coast is kept in RAM only (no EEPROM, no warm
   state): a start of the STM begins without it, the next calibration or move
-  pair learns it again. Every sample comes from a step next to an end stop,
-  where the insert loads the motor differently from the middle of the stroke;
-  the coast in the middle of the stroke is not measured.
+  pair learns it again. Every sample comes from a step next to the open end
+  stop, where the spring of the insert is compressed most; the coast in the
+  middle of the stroke is not measured. 2.2.4 also probed the opening coast
+  with a step up from the closed end stop and the move back down to it; that
+  move back counts the pulses the motor turns against the hard stop of the
+  actuator until the end-stop threshold trips, not the coast (44..98 pulses
+  on three valves, more than 100 and no sample on ten), so 2.2.5 has neither
+  that probe nor such move pairs.
 - The 60 mA safety limit trips after more than 10 consecutive 1 ms samples
   above it (1.x counted samples over the whole move, so short spikes in a long
   move added up to a false end stop). The 100 mA hard limit trips at the
@@ -561,15 +566,17 @@ period brings one block into alignment within 8 sends.
   current flows and the pulses (the ripple of the current) stop. Up to 2.2.3 a
   partial move ended its coast further than counted and the error added up
   until the next end stop; since 2.2.4 the calibration learns the coast and
-  partial moves stop it earlier (see "Calibration and end-stop detection").
-  What remains: the difference between the coast near an end stop and in the
-  middle of the stroke, and the variation from move to move. A step of less
-  than twice the coast is shortened by half of its pulses only and keeps the
-  rest of the error (coast 40 pulses, scaler 45: a 1 % step ends about 0.4 %
-  further than counted), and every partial move ends one pulse beyond its
-  pulse count (the count stops on the pulse after the target); both add up
-  until the next end stop. The coast is learned next to the end stops: a
-  coast that is larger there than in the middle of the stroke makes partial
-  moves end short of their position.
+  partial closing moves stop it earlier (see "Calibration and end-stop
+  detection"). What remains: an opening step is not shortened and ends its
+  coast (a few pulses) further than counted; the difference between the
+  coast near the open end stop and in the middle of the stroke, and the
+  variation from move to move. A closing step of less than twice the coast is
+  shortened by half of its pulses only and keeps the rest of the error (coast
+  40 pulses, scaler 45: a 1 % step ends about 0.4 % further than counted),
+  and every partial move ends one pulse beyond its pulse count (the count
+  stops on the pulse after the target); these add up until the next end
+  stop. The coast is learned next to the open end stop: a coast that is
+  larger there than in the middle of the stroke makes partial closing moves
+  end short of their position.
 - The short-circuit and inrush limits (200 mA filtered, 250 mA raw) are not
   yet confirmed on the hardware and only report by default (see above).

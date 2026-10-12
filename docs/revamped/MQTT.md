@@ -171,7 +171,7 @@ before).
 | `<main>diag/valves/<V>/earlyStops` | count since STM start (early stops the next move did not recover) | no | setting | v2, on change |
 | `<main>diag/valves/<V>/cmdRejected` | count since STM start | no | setting | v2, on change |
 | `<main>diag/valves/<V>/calState` | `0` idle, `1` calibration requested, `2` running | no | setting | v2, on change |
-| `<main>diag/valves/<V>/coastOpen`, `coastClose` | coast the STM learned for an opening / a closing step, motor pulses; `0` = not learned since the STM started | no | setting | STM 2.2.4, on change |
+| `<main>diag/valves/<V>/coastOpen`, `coastClose` | coast the STM learned for an opening / a closing step, motor pulses; `0` = not learned since the STM started (`coastOpen` always `0` since STM 2.2.5) | no | setting | STM 2.2.4, on change |
 | `<main>diag/valves/<V>/profile` | `{"valve":1,"count":n,"samples":[[count,current],...]}` | no | never | v2, when a new profile is read |
 | `<main>diag/stm/proto` | `1`, `2` or `3` | no | setting | on change |
 | `<main>diag/stm/link` | `unknown`, `up`, `degraded`, `down`, `booting`, `suspended` | no | setting | on change |
@@ -190,7 +190,8 @@ Units: `lastMove.peak` and profile currents are in **0.1 mA** (299 = 29.9 mA);
 `req` 65535 means "run to the end stop"; `stop` is one of `none`, `target`,
 `endstop`, `early_endstop`, `timeout`, `undercurrent`, `safety_overcurrent`,
 `aborted`. `coastOpen` and `coastClose` are in motor pulses, the unit of
-`openCount`/`closeCount`; the STM shortens partial moves by them. An STM before
+`openCount`/`closeCount`; the STM shortens partial closing moves by
+`coastClose` (since STM 2.2.5 it learns no opening coast). An STM before
 2.2.4 does not report them: the ESP publishes nothing for them then.
 
 `diag/*` topics need **newDiag**, `events` needs **events**. `status`,

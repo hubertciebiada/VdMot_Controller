@@ -168,8 +168,10 @@ Valve entry (`/api/valves`):
   uses 0.1 mA).
 - `ext.coastOpen` / `ext.coastClose`: the coast the STM learned for an opening
   and a closing step, in motor pulses (the unit of `oc`/`cc`; `gvlvy` fields 26
-  and 27). The STM shortens partial moves by it. 0 = not learned since the STM
-  started; null while the STM does not report it (below STM 2.2.4).
+  and 27). The STM shortens partial closing moves by `coastClose`. 0 = not
+  learned since the STM started; `coastOpen` is always 0 since STM 2.2.5 (the
+  opening coast is not learned); null while the STM does not report it (below
+  STM 2.2.4).
 - `failsafe.state`: `off`, `lease` (regulator silent), `blocked`; `pct` null =
   hold.
 - `calibrationEnd`: end of the last calibration seen since the ESP booted, or

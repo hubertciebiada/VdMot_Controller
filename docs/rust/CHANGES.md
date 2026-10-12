@@ -8,6 +8,23 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Unreleased
+
+STM32 release: only the closing coast is learned.
+
+### STM32: the closing coast only
+
+- A calibration pass probes the coast once: after the third stroke reached the open end stop, a
+  closing step of 200 pulses and the move back up. The probe at the closed end stop is gone: its
+  move back counts the pulses the motor turns against the hard stop of the actuator until the
+  end-stop threshold trips, not the coast (2.2.4 on the installed valves: more than 100 pulses
+  and no sample on ten of thirteen). A pass takes two short moves less than in 2.2.4 (about 3 s
+  at 0.25 pulses/ms). Normal move pairs refine the coast only from the open end stop (a closing
+  step away from it and the move back), and only partial closing moves are shortened: an opening
+  step works against the spring of the normally closed insert, which stops the motor within a
+  few pulses. `gvlvy` value 26 `coastOpen` stays and is always 0; the ESP reports it as 0
+  ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
+
 ## 2.2.4-revamped
 
 STM32 and ESP32 release: the STM learns the coast of each valve and shortens partial moves by it, the ESP
