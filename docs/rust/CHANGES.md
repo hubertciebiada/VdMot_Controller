@@ -8,6 +8,33 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Unreleased
+
+### STM32: the coast of partial moves
+
+- A calibration pass measures the coast of the motor (the pulses it turns after its enable went
+  off, which the STM cannot count) with a step of 200 pulses away from each end stop and the move
+  back: four short moves more, a pass takes about 6 s longer (at the 0.25 pulses/ms of the
+  installed actuators; a due temperature cycle can pause it after each move back as well).
+  Normal moves refine it (a step away from an end stop and
+  the move back). A partial move then stops the learned coast of its direction earlier, by at
+  most half of its pulses, so a valve opened or closed in many small steps stays where it is
+  counted instead of drifting by the coast of every step. `lastReq` keeps the requested pulses,
+  `lastCnt` counts about the coast less. The coast lives in RAM only: the EEPROM and the warm
+  state stay those of 2.1.7, a start of the STM begins without a coast. `gvlvy` gets the values
+  26 `coastOpen` and 27 `coastClose` (pulses, 0 = not learned)
+  ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
+
+### ESP32: the learned coast
+
+- The ESP reads `gvlvy` values 26 and 27 when the STM sends both and reports them: `/api/valves`
+  `ext.coastOpen` / `ext.coastClose` (motor pulses, null below STM 2.2.4), MQTT
+  `diag/valves/<V>/coastOpen` / `coastClose` (on change, nothing below STM 2.2.4), two Home
+  Assistant diagnostic sensors per valve (`diag_coastOpen_<R>`, `diag_coastClose_<R>`, unknown
+  below STM 2.2.4; 333 discovery configs instead of 309 for 12 valves) and the dashboard row Coast
+  ([API.md](../revamped/API.md), [MQTT.md](../revamped/MQTT.md#new-entities)). An ESP 2.2.3
+  ignores the two values: either MCU can be updated first.
+
 ## 2.2.3-revamped
 
 STM32 release. The ESP32 firmware is the one of 2.2.2 with the version 2.2.3-revamped: flash it

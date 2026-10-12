@@ -221,21 +221,22 @@ arguments (`glcfg`, `gstax`, `gtlnt`) ignore extra arguments.
 | `slcfg` | `slcfg <min>` (0 = off, or 5..1440) | `slcfg ok` | `slcfg err` | sets the lease timeout and stores it; marks a lease client; does not renew, except that a change from 0 to a non-zero value starts a fresh lease |
 | `sfspo` | `sfspo <idx\|255> <pct\|255>` (pct 0..100, 255 = hold) | `sfspo <idx> ok` (`sfspo 255 ok` for all) | `sfspo <idx> err 1` (idx valid, pct missing, invalid or extra arguments), `sfspo -1 err 1` (idx missing or invalid) | failsafe position of one or all valves; effective at once; stored |
 | `glcfg` | `glcfg` | `glcfg <timeoutMin> <fs0> ... <fs11>` (13 values) | – | marks a lease client |
-| `gvlvy` | `gvlvy <idx>` | 25 values, below | none for an invalid idx (as `gvlvx`) | read; values 1..19 equal `gvlvx` of the same instant |
+| `gvlvy` | `gvlvy <idx>` | 27 values, below (25 up to 2.2.3) | none for an invalid idx (as `gvlvx`) | read; values 1..19 equal `gvlvx` of the same instant |
 | `gstax` | `gstax` | 23 values, below | – | read; values 1..6 equal `gstat` |
 | `sstop` | `sstop <idx\|255>` | `sstop <idx> ok` (also when nothing ran) | `sstop -1 err 1` | stops the running move, calibration or service move of idx (255: whatever runs), cancels the requested calibrations of idx (255: all), leaves the valve where it stopped (service hold) |
 | `gtlnt` | `gtlnt` | `gtlnt <seconds>` (stored learn time; 0 = time trigger off) | – | read |
 | `ssafe` | `ssafe 0` | `ssafe ok` | `ssafe err` (not exactly one argument, or value != 0) | leaves safe mode and clears the watchdog reset window |
 
     > gvlvy 3
-    < gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0
+    < gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0 0 0
     > gstax
     < gstax 86400 3 2 0 2 0 1 3540 1 60 0 0 0 0 0 0 0 0 0 12 2 3600 0
     > sfspo 12 50
     < sfspo -1 err 1
 
 (Valve 3: blocked (9) at its failsafe position 50 %, flags 66 = fsBlocked +
-retry, fault 4, first automatic retry in 3540 s, none done yet.)
+retry, fault 4, first automatic retry in 3540 s, none done yet, no coast
+learned.)
 
 ### Lease and failsafe
 
@@ -270,6 +271,8 @@ Fields 1..19 = `gvlvx`. Then:
 | 23 | drive | position the valve is driven to (see above) |
 | 24 | retryS | seconds to the next automatic retry, 0 = none |
 | 25 | retries | automatic retries since the fault began, 0..255 |
+| 26 | coastOpen | learned coast of an opening step in pulses, 0 = not learned (since 2.2.4) |
+| 27 | coastClose | learned coast of a closing step in pulses, 0 = not learned (since 2.2.4) |
 
 | Bit | Value | Name | Set when |
 |---|---|---|---|
@@ -468,6 +471,29 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   repetitions the valve is blocked (9), driven to its failsafe position and
   calibrated again by `staln`, the time or movement trigger, or the automatic
   retry.
+- **Coast** (since 2.2.4). The motor keeps turning after its enable is switched
+  off, and its pulses are not counted then: the pulses come from the motor
+  current, which stops with the enable, and the L293 has no brake. A pass
+  measures that coast at both end stops: after the closed end stop a step of
+  200 pulses up and back down to the end stop, after the open end stop a step
+  of 200 pulses down and back up. The move back counts the step and its coast
+  (`coastOpen`, `coastClose`). The pass takes four short moves more (about
+  6 s at 0.25 pulses/ms), and a due temperature cycle can pause it after each
+  move back as after a stroke. Only an
+  accepted pass keeps its samples; a probe step that stops at a threshold
+  gives none and the pass goes on. A normal move that steps away from an end
+  stop the valve stands at, stops on its pulse count after at least 100
+  pulses and is followed by a move back to that end stop gives a further
+  sample (a running mean: each sample counts a quarter). A partial move of a
+  valve that is not blocked or failed then stops the learned coast of its
+  direction earlier, by at most half of its pulses: `lastReq` (gvlvx field
+  15) keeps the requested pulses, `lastCnt` (16) counts about the coast less.
+  Moves to an end stop, service moves and moves of a blocked or failed valve
+  are not shortened. The coast is kept in RAM only (no EEPROM, no warm
+  state): a start of the STM begins without it, the next calibration or move
+  pair learns it again. Every sample comes from a step next to an end stop,
+  where the insert loads the motor differently from the middle of the stroke;
+  the coast in the middle of the stroke is not measured.
 - The 60 mA safety limit trips after more than 10 consecutive 1 ms samples
   above it (1.x counted samples over the whole move, so short spikes in a long
   move added up to a false end stop). The 100 mA hard limit trips at the
@@ -520,11 +546,13 @@ period brings one block into alignment within 8 sends.
 
 ## Known limitations
 
-- **Motor coast (TODO).** The pulse counter is detached when the motor enable
-  (ENA) is switched off, and the L293 lets the motor coast with EN = 0. A
-  partial move therefore ends a few pulses further than the STM counts, and
-  the error adds up until the next end stop. The number of coast pulses is to
-  be measured on the device; if it matters, the pulses are to be counted for
-  about 200 ms after ENA off.
+- **Motor coast.** The motor coasts after its enable (ENA) is switched off,
+  and no pulse can be counted then: with EN = 0 the L293 outputs float, no
+  current flows and the pulses (the ripple of the current) stop. Up to 2.2.3 a
+  partial move ended its coast further than counted and the error added up
+  until the next end stop; since 2.2.4 the calibration learns the coast and
+  partial moves stop it earlier (see "Calibration and end-stop detection").
+  What remains: the difference between the coast near an end stop and in the
+  middle of the stroke, and the variation from move to move.
 - The short-circuit and inrush limits (200 mA filtered, 250 mA raw) are not
   yet confirmed on the hardware and only report by default (see above).
