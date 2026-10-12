@@ -149,3 +149,32 @@ fn sim_end_stop_obstacle_open_circuit_short_inrush_and_coast() {
     assert_eq!(rig.current_dma(), 2000);
     assert_eq!(rig.valve[0].position, 204);
 }
+
+// New case: the play of the gears (motor tests_coast).
+#[test]
+fn sim_the_play_of_the_gears_takes_the_first_pulses_after_a_reversal() {
+    let rev = BoardRev::C2;
+    let board = FakeBoard::new();
+    let mut rig = Rig::new(rev);
+    rig.install(0, [0; 12]);
+    let exti = Cell::new(0);
+    board.set(Out::PsuEna, false);
+    mux_on(&board, rev);
+    rig.valve[0].pulses_per_ms = 1.0;
+    rig.valve[0].backlash_pulses = 5;
+    rig.valve[0].position = 1000;
+    // the first move takes the play too
+    board.set(Out::Dir, false);
+    board.set(Out::Ena0, true);
+    run(&board, &mut rig, 20, &exti);
+    assert_eq!(rig.valve[0].position, 1015);
+    // on in the same direction: no play
+    run(&board, &mut rig, 10, &exti);
+    assert_eq!(rig.valve[0].position, 1025);
+    // reversed: 5 pulses of play, then the valve moves
+    board.set(Out::Dir, true);
+    run(&board, &mut rig, 20, &exti);
+    assert_eq!(rig.valve[0].position, 1010);
+    // the play turns the motor: every pulse counts
+    assert_eq!(rig.valve[0].pulses, 50);
+}

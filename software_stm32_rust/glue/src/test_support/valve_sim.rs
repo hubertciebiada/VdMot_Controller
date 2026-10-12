@@ -56,6 +56,8 @@ pub struct SimValve {
     pub inrush_ms: u32,
     /// pulses the motor turns on after the enable went off
     pub coast_pulses: i32,
+    /// pulses the motor turns after a reversal before the valve moves (the play of the gears)
+    pub backlash_pulses: i32,
     /// obstacle: opening stalls in [jam_from, jam_to), closing stalls in (jam_from, jam_to]
     pub jam_from: i32,
     pub jam_to: i32,
@@ -80,6 +82,7 @@ impl Default for SimValve {
             inrush_peak_dma: 0,
             inrush_ms: 0,
             coast_pulses: 0,
+            backlash_pulses: 0,
             jam_from: -1,
             jam_to: -1,
             pulses: 0,
@@ -122,6 +125,9 @@ pub struct Rig {
     pulse_acc: [f32; VALVES],
     coast_left: [i32; VALVES],
     coast_dir: [i32; VALVES],
+    /// direction of the last pulse, and the play left before the valve moves
+    turn_dir: [i32; VALVES],
+    slack_left: [i32; VALVES],
     last_state: u8,
     last_status: [u8; VALVES],
 }
@@ -140,6 +146,8 @@ impl Rig {
             pulse_acc: [0.0; VALVES],
             coast_left: [0; VALVES],
             coast_dir: [0; VALVES],
+            turn_dir: [0; VALVES],
+            slack_left: [0; VALVES],
             last_state: 0xFF,
             last_status: [0; VALVES],
         }
@@ -182,6 +190,21 @@ impl Rig {
     pub fn adc_counts(&self) -> u16 {
         let counts = (f64::from(self.current) * 100.0 / CURRENT_GAIN).round() as i64;
         (ADC_MID + counts).clamp(0, 4095) as u16
+    }
+
+    /// One pulse of the motor of valve `i` in `dir`: after a reversal the play of the gears takes
+    /// the first backlash_pulses, then the valve moves.
+    fn turn(&mut self, i: usize, dir: i32) {
+        if dir != self.turn_dir[i] {
+            self.turn_dir[i] = dir;
+            self.slack_left[i] = self.valve[i].backlash_pulses;
+        }
+        if self.slack_left[i] > 0 {
+            self.slack_left[i] -= 1;
+        } else {
+            self.valve[i].position += dir;
+        }
+        self.valve[i].pulses += 1;
     }
 
     /// The motor model of one millisecond; `fire` is a rising edge on REVIN (the EXTI handler).
@@ -241,8 +264,7 @@ impl Rig {
                     && self.enabled_valve(board) == e
                 {
                     self.pulse_acc[i] -= 1.0;
-                    self.valve[i].position += dir;
-                    self.valve[i].pulses += 1;
+                    self.turn(i, dir);
                     fire();
                 }
                 if stalled(&self.valve[i], dir) {
@@ -265,8 +287,7 @@ impl Rig {
             {
                 self.pulse_acc[k] -= 1.0;
                 self.coast_left[k] -= 1;
-                self.valve[k].position += self.coast_dir[k];
-                self.valve[k].pulses += 1;
+                self.turn(k, self.coast_dir[k]);
                 fire();
             }
             if stalled(&self.valve[k], self.coast_dir[k]) {

@@ -1631,10 +1631,10 @@ impl MotorShared {
             mot.calib_seq = mot.calib_seq.wrapping_add(1);
             // the coast samples of the pass; the valve stands at its closed end stop
             if let Some(sample) = self.lp.probe_open {
-                mot.coast.add(DIR_OPEN, sample);
+                mot.coast.set(DIR_OPEN, sample);
             }
             if let Some(sample) = self.lp.probe_close {
-                mot.coast.add(DIR_CLOSE, sample);
+                mot.coast.set(DIR_CLOSE, sample);
             }
             mot.coast.at_end(DIR_CLOSE);
             let diag = &mut self.valve_records[v].diag;

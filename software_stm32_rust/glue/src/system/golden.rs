@@ -2,11 +2,12 @@
 //! written by `tools/rust/stm/golden` (recorder.cpp holds the format), and the transcript the
 //! Rust bench records in the same shape. A system test compares its whole transcript with the
 //! C++ one: every byte both UARTs carried, at the same millisecond, the EEPROM and the no-init
-//! cells at the end of every boot. A gvlvy reply is compared on its first 25 values: protocol 3
-//! adds values at the end (PROTOCOL_V2.md, extension rule), the C++ goldens carry 25.
+//! cells at the end of every boot. A gvlvy reply is compared on the values of the golden's reply:
+//! protocol 3 adds values at the end (PROTOCOL_V2.md, extension rule), the C++ goldens carry 25.
 //!
 //! `VDM_GOLDEN_RECORD=1` makes a system test write its transcript as its golden instead of
-//! comparing it (GLUE-DESIGN-STM §7.4 names the goldens written so).
+//! comparing it, marked `recorder rust`; it keeps a golden of the C++ recorder unless the value
+//! is `force`. RUST_RECORDED names the goldens written so.
 
 use std::fmt::Write as _;
 use std::format;
@@ -84,8 +85,24 @@ pub struct BootRecord {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Transcript {
     pub case: String,
+    /// written by the Rust bench (`recorder rust`), not by the C++ recorder
+    pub rust: bool,
     pub boots: Vec<BootRecord>,
 }
+
+/// The goldens the Rust bench wrote (`VDM_GOLDEN_RECORD`): the cases that calibrate a valve,
+/// since the coast probes of the calibration (GLUE-DESIGN-STM §7.4).
+pub const RUST_RECORDED: [&str; 9] = [
+    "calib__w2_5_after_a_calibration_and_a_reset_the_counts_position_and_sta",
+    "calib__w2_6_after_a_power_cycle_the_counts_come_back_a_reference_move_i",
+    "calib__w2_8_a_calibration_that_ended_blocked_needs_a_full_calibration_a",
+    "motion__c_1_a_valve_jammed_at_25_makes_one_calibration_series_and_one_fa",
+    "motion__c_2_failsafe_30_after_a_power_cycle_with_a_silent_esp_reference",
+    "motion__c_2_failsafe_50_after_a_power_cycle_with_a_silent_esp_reference",
+    "motion__k2_c_1_a_blocked_valve_makes_one_failsafe_move_and_waits_for_its",
+    "motion__s8_4_a_target_change_of_another_valve_goes_between_two_calibrati",
+    "proto3__k2_3_a_calibration_with_every_stroke_too_short_ends_blocked_at_t",
+];
 
 /// The bytes as the recorder writes them.
 pub fn escape(bytes: &[u8]) -> String {
@@ -147,6 +164,7 @@ pub fn parse(text: &str) -> Transcript {
         let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
         match key {
             "case" => t.case = rest.to_string(),
+            "recorder" if rest == "rust" => t.rust = true,
             "boot" => {
                 let (index, reset) = rest.split_once(' ').unwrap();
                 let reset = [Reset::PowerOn, Reset::Pin, Reset::Software, Reset::Watchdog]
@@ -203,6 +221,9 @@ pub fn load(slug: &str) -> Transcript {
 /// The transcript in the format of the recorder.
 pub fn render(t: &Transcript) -> String {
     let mut s = format!("case {}\n", t.case);
+    if t.rust {
+        s.push_str("recorder rust\n");
+    }
     for b in &t.boots {
         let _ = writeln!(s, "boot {} {}", b.index, b.reset.name());
         for e in &b.events {
@@ -218,27 +239,45 @@ pub fn render(t: &Transcript) -> String {
 }
 
 /// Writes the transcript as the golden of a case (`VDM_GOLDEN_RECORD`).
-pub fn store(slug: &str, t: &Transcript) {
-    let path = path(slug);
-    std::fs::write(&path, render(t)).unwrap_or_else(|e| panic!("{path}: {e}"));
+pub fn store(slug: &str, t: &Transcript, force: bool) {
+    store_at(&path(slug), t, force);
 }
 
-/// The values of a gvlvy reply the goldens compare.
-const GVLVY_COMPARED: usize = 25;
+/// Writes the transcript at `path`, marked `recorder rust`; a golden of the C++ recorder there
+/// stays unless `force`.
+fn store_at(path: &str, t: &Transcript, force: bool) {
+    let cpp = std::fs::read_to_string(path).is_ok_and(|old| !parse(&old).rust);
+    assert!(
+        force || !cpp,
+        "{path}: a golden of the C++ recorder; VDM_GOLDEN_RECORD=force replaces it"
+    );
+    let t = Transcript {
+        rust: true,
+        ..t.clone()
+    };
+    std::fs::write(path, render(&t)).unwrap_or_else(|e| panic!("{path}: {e}"));
+}
 
-/// An event as the goldens compare it: a gvlvy reply line cut to its first 25 values.
-fn compared(e: &Event) -> Event {
+/// The values of a gvlvy reply of one line on USART1, None for any other event.
+fn gvlvy_values(e: &Event) -> Option<Vec<&[u8]>> {
     let one_line =
         e.bytes.ends_with(b"\r\n") && e.bytes.iter().filter(|&&b| b == b'\n').count() == 1;
     if e.dir != Dir::Tx || !e.bytes.starts_with(b"gvlvy ") || !one_line {
-        return e.clone();
+        return None;
     }
-    let text = String::from_utf8_lossy(&e.bytes[..e.bytes.len() - 2]).into_owned();
-    let cut: Vec<&str> = text.split(' ').take(1 + GVLVY_COMPARED).collect();
-    Event {
-        ms: e.ms,
-        dir: e.dir,
-        bytes: format!("{}\r\n", cut.join(" ")).into_bytes(),
+    Some(
+        e.bytes[6..e.bytes.len() - 2]
+            .split(|&b| b == b' ')
+            .collect(),
+    )
+}
+
+/// The Rust event `r` matches the golden's `g`: a gvlvy reply on the values the golden's reply
+/// carries, at the same millisecond; every other event byte for byte.
+fn matches(g: &Event, r: &Event) -> bool {
+    match (gvlvy_values(g), gvlvy_values(r)) {
+        (Some(gv), Some(rv)) => g.ms == r.ms && rv.get(..gv.len()) == Some(&gv[..]),
+        _ => g == r,
     }
 }
 
@@ -278,7 +317,7 @@ pub fn diff(golden: &Transcript, rust: &Transcript) -> Option<String> {
             ));
         }
         for (k, (ge, re)) in g.events.iter().zip(&r.events).enumerate() {
-            if compared(ge) != compared(re) {
+            if !matches(ge, re) {
                 let before: Vec<String> =
                     g.events[k.saturating_sub(3)..k].iter().map(show).collect();
                 return Some(format!(
@@ -397,6 +436,49 @@ fn golden_render_writes_every_golden_as_the_recorder() {
     assert_eq!(n, 27);
 }
 
+#[test]
+fn golden_the_goldens_marked_as_written_by_the_rust_bench_are_the_named_ones() {
+    let dir = format!("{}/tests/golden", env!("CARGO_MANIFEST_DIR"));
+    let mut rust: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if parse(&std::fs::read_to_string(&path).unwrap()).rust {
+            rust.push(path.file_stem().unwrap().to_str().unwrap().to_string());
+        }
+    }
+    rust.sort();
+    assert_eq!(rust, RUST_RECORDED);
+}
+
+#[test]
+fn golden_store_keeps_a_golden_of_the_cpp_recorder_unless_forced() {
+    let path = std::env::temp_dir().join(format!("vdm-golden-{}.txt", std::process::id()));
+    let path = path.to_str().unwrap();
+    let cpp = "case system: x\nboot 0 power-on\nend case\nnoinit a5\n";
+    std::fs::write(path, cpp).unwrap();
+    let mut t = parse(cpp);
+    t.boots[0].end = "reboot software".to_string();
+    let kept = std::panic::catch_unwind(|| store_at(path, &t, false));
+    assert!(kept.is_err());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), cpp);
+    store_at(path, &t, true);
+    let written = std::fs::read_to_string(path).unwrap();
+    assert!(written.starts_with("case system: x\nrecorder rust\nboot 0"));
+    assert!(parse(&written).rust);
+    // a golden the Rust bench wrote is written again without force
+    t.boots[0].end = "case".to_string();
+    store_at(path, &t, false);
+    assert_eq!(
+        parse(&std::fs::read_to_string(path).unwrap()).boots[0].end,
+        "case"
+    );
+    // a new golden
+    std::fs::remove_file(path).unwrap();
+    store_at(path, &t, false);
+    assert!(parse(&std::fs::read_to_string(path).unwrap()).rust);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn tx(bytes: &[u8]) -> Event {
     Event {
         ms: 7,
@@ -406,14 +488,27 @@ fn tx(bytes: &[u8]) -> Event {
 }
 
 #[test]
-fn golden_a_gvlvy_reply_is_compared_on_its_first_25_values() {
+fn golden_a_gvlvy_reply_is_compared_on_the_values_of_the_golden_reply() {
     let v25 = "gvlvy 0 1 30 30 20 3600 3600 0 0 0 0 0 0 0 0 0 0 0 0 32 0 50 30 0 0";
     let g = tx(format!("{v25}\r\n").as_bytes());
+    assert_eq!(gvlvy_values(&g).unwrap().len(), 25);
     // values 26 and 27 of protocol 3
-    assert_eq!(compared(&tx(format!("{v25} 54 61\r\n").as_bytes())), g);
-    assert_eq!(compared(&g), g);
-    // value 25 differs
-    assert_ne!(compared(&tx(format!("{v25}1 54 61\r\n").as_bytes())), g);
+    let v27 = tx(format!("{v25} 54 61\r\n").as_bytes());
+    assert!(matches(&g, &v27));
+    assert!(matches(&g, &g));
+    // a golden of 27 values compares them all
+    assert!(matches(&v27, &v27));
+    assert!(!matches(&v27, &tx(format!("{v25} 54 62\r\n").as_bytes())));
+    assert!(!matches(&v27, &g));
+    // value 25 differs, the time differs
+    assert!(!matches(&g, &tx(format!("{v25}1 54 61\r\n").as_bytes())));
+    assert!(!matches(
+        &g,
+        &Event {
+            ms: 8,
+            ..v27.clone()
+        }
+    ));
     // only a gvlvy reply of one line on USART1
     for other in [
         tx(format!("gvlvx{} 54\r\n", &v25[5..]).as_bytes()),
@@ -424,7 +519,9 @@ fn golden_a_gvlvy_reply_is_compared_on_its_first_25_values() {
             ..tx(format!("{v25} 54\r\n").as_bytes())
         },
     ] {
-        assert_eq!(compared(&other), other);
+        assert_eq!(gvlvy_values(&other), None);
+        assert!(!matches(&g, &other));
+        assert!(matches(&other, &other));
     }
     let mut t = Transcript::default();
     t.boots.push(boot_end(
@@ -436,6 +533,7 @@ fn golden_a_gvlvy_reply_is_compared_on_its_first_25_values() {
         &[0; NOINIT_SIZE],
     ));
     let mut longer = t.clone();
-    longer.boots[0].events[0] = tx(format!("{v25} 54 61\r\n").as_bytes());
+    longer.boots[0].events[0] = v27;
     assert_eq!(diff(&t, &longer), None);
+    assert!(diff(&longer, &t).unwrap().contains("event 0"));
 }

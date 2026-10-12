@@ -1,11 +1,14 @@
 //! The coast of a valve motor: the pulses it turns after its enable went off. The revolution
 //! pulses come from the motor current, which stops with the enable, so a step that stops on its
 //! pulse count travels further than it counted. A step away from an end stop and the move back
-//! to that end stop measure it: the move back counts the step and its coast. A partial move is
-//! shortened by the coast learned for its direction. Hardware-free.
+//! to that end stop measure it: the move back counts the step and its coast (a play of the gears
+//! counts in both moves, each starts with a reversal). A partial move is shortened by the coast
+//! learned for its direction. Hardware-free.
 //!
-//! Every sample comes from a step next to an end stop, where the load of the insert differs
-//! most from the middle of the stroke; the coast of a step in the middle is not measured.
+//! The probes of a calibration set the coast; the move pairs of normal moves refine it by a
+//! quarter when they agree with it, and without a coast from a calibration two agreeing pairs in
+//! a row set it. Every sample comes from a step next to an end stop, where the load of the insert
+//! differs most from the middle of the stroke; the coast of a step in the middle is not measured.
 
 use crate::move_classifier::{DIR_CLOSE, DIR_OPEN};
 
@@ -16,8 +19,11 @@ pub const COAST_PROBE_COUNTS: u16 = 200;
 /// can stop before the motor reaches its speed.
 pub const COAST_SAMPLE_MIN_COUNTS: u32 = 100;
 /// A larger difference between the move back and the step is no coast: one of them did not end
-/// where the sample assumes.
-pub const COAST_MAX_COUNTS: u16 = 200;
+/// where the sample assumes (the actuators coast 40..70 pulses).
+pub const COAST_MAX_COUNTS: u16 = 100;
+/// The smallest difference of a move pair's sample from the coast it refines that still agrees
+/// with it (half of the coast, but at least this).
+pub const COAST_AGREE_MIN: u16 = 8;
 
 /// The other direction.
 pub fn opposite(dir: u8) -> u8 {
@@ -42,28 +48,50 @@ pub fn shortened_target(nominal: u16, coast: u16) -> u16 {
     nominal - coast.min(nominal / 2)
 }
 
-/// The learned coast of one direction: the first sample, then a running mean that gives each
-/// further sample a quarter.
+/// A sample agrees with `reference` when it differs by at most half of it (at least
+/// COAST_AGREE_MIN).
+fn agrees(reference: u16, sample: u16) -> bool {
+    reference.abs_diff(sample) <= (reference / 2).max(COAST_AGREE_MIN)
+}
+
+/// The learned coast of one direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CoastEstimate {
     counts: u16,
     learned: bool,
+    /// the sample of a move pair that waits for an agreeing one (no coast learned)
+    candidate: Option<u16>,
 }
 
 impl CoastEstimate {
-    /// The learned coast in pulses, 0 before the first sample.
+    /// The learned coast in pulses, 0 before it is learned.
     pub fn counts(&self) -> u16 {
         self.counts
     }
 
-    pub fn add(&mut self, sample: u16) {
-        self.counts = if self.learned {
-            // rounded; the mean of two u16 values fits a u16
-            ((3 * u32::from(self.counts) + u32::from(sample) + 2) / 4) as u16
-        } else {
-            sample
-        };
+    /// The sample of a calibration probe: it is the coast.
+    pub fn set(&mut self, sample: u16) {
+        self.counts = sample;
         self.learned = true;
+        self.candidate = None;
+    }
+
+    /// The sample of a move pair: it moves a learned coast by a quarter towards it when it
+    /// agrees with it and is dropped otherwise; without a learned coast the mean of two agreeing
+    /// samples in a row is the coast.
+    pub fn refine(&mut self, sample: u16) {
+        if self.learned {
+            if agrees(self.counts, sample) {
+                // rounded; at most COAST_MAX_COUNTS
+                self.counts = ((3 * u32::from(self.counts) + u32::from(sample) + 2) / 4) as u16;
+            }
+        } else if let Some(first) = self.candidate.filter(|&first| agrees(first, sample)) {
+            self.counts = (u32::from(first) + u32::from(sample)).div_ceil(2) as u16;
+            self.learned = true;
+            self.candidate = None;
+        } else {
+            self.candidate = Some(sample);
+        }
     }
 }
 
@@ -102,7 +130,7 @@ pub struct ValveCoast {
 }
 
 impl ValveCoast {
-    /// The learned coast of a step in `dir` in pulses, 0 before the first sample.
+    /// The learned coast of a step in `dir` in pulses, 0 before it is learned.
     pub fn counts(&self, dir: u8) -> u16 {
         if dir == DIR_OPEN {
             self.open.counts()
@@ -111,13 +139,17 @@ impl ValveCoast {
         }
     }
 
-    /// A sample of the coast of a step in `dir`.
-    pub fn add(&mut self, dir: u8, sample: u16) {
+    fn estimate(&mut self, dir: u8) -> &mut CoastEstimate {
         if dir == DIR_OPEN {
-            self.open.add(sample);
+            &mut self.open
         } else {
-            self.close.add(sample);
+            &mut self.close
         }
+    }
+
+    /// The sample of a calibration probe of a step in `dir`.
+    pub fn set(&mut self, dir: u8, sample: u16) {
+        self.estimate(dir).set(sample);
     }
 
     /// The valve stands at the end stop of `end` (a calibration closed it).
@@ -139,7 +171,7 @@ impl ValveCoast {
             if let Probe::Away { end, counted } = self.probe {
                 if end == m.dir {
                     if let Some(sample) = coast_sample(counted, m.counted) {
-                        self.add(opposite(end), sample);
+                        self.estimate(opposite(end)).refine(sample);
                     }
                 }
             }

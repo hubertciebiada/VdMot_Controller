@@ -412,6 +412,7 @@ impl Case {
             boots: 0,
             transcript: Transcript {
                 case: String::from(name),
+                rust: false,
                 boots: Vec::new(),
             },
         }
@@ -543,8 +544,8 @@ impl Case {
 
     /// Compares the transcript of every boot with the golden of the C++ case.
     pub fn check_golden(&self) {
-        if std::env::var_os("VDM_GOLDEN_RECORD").is_some() {
-            golden::store(self.slug, &self.transcript);
+        if let Some(mode) = std::env::var_os("VDM_GOLDEN_RECORD") {
+            golden::store(self.slug, &self.transcript, mode.to_str() == Some("force"));
             return;
         }
         let golden = golden::load(self.slug);
