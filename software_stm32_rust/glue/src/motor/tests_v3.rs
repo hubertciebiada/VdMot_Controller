@@ -215,6 +215,13 @@ fn open_end_limits(rev: BoardRev) {
     assert_eq!(b.diag(3).early_run.count(), 0);
     assert_eq!(b.diag(3).early_stops, 0);
     assert!(!b.m.mots[3].early_learn_due);
+    // a move to the open end from exactly 50 % keeps its early check
+    b.place(4, 50);
+    b.rig.valve[4].position = 3400;
+    b.run(CMD_A_OPEN_END, 4, 0, 0);
+    assert_eq!(b.last(4).stop_reason, reason(StopReason::EarlyEndStop));
+    assert_eq!(b.m.mots[4].actual_position, 100);
+    assert_eq!(b.diag(4).early_stops, 1);
 }
 
 #[test]

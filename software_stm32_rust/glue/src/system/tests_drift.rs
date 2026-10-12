@@ -35,6 +35,9 @@ fn w9_opening_steps_that_overshoot_end_at_the_open_end_and_move_back_to_the_targ
         let mut m = b.m_mut();
         m.mots[0].opening_count = 3600;
         m.mots[0].closing_count = 3600;
+        // the valve stands where it is counted: the drift comes from the coast alone
+        let at = m.mots[0].actual_position;
+        b.sim().valve[0].position = i32::from(at) * 36;
     }
     step(&mut b, 50);
     let calib_seq = b.m().mots[0].calib_seq;
