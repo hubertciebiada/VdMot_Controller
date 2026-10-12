@@ -829,8 +829,8 @@ golden's reply (`golden::matches`): protocol 3 appends values (extension rule), 
 carry 25. And the nine goldens of cases that calibrate a valve are written by the Rust bench,
 `golden::RUST_RECORDED` names them and their second line is `recorder rust`
 (`VDM_GOLDEN_RECORD=1 cargo test -p vdm-stm-glue <case>` writes the transcript of a case as its
-golden instead of comparing it; it keeps a golden of the C++ recorder unless the value is
-`force`). Compared with their C++ originals (git history up to 2.2.3) every byte of both
+golden instead of comparing it; it refuses to replace a golden of the C++ recorder, the test
+fails, unless the value is `force`). Compared with their C++ originals (git history up to 2.2.3) every byte of both
 UARTs is the same in the same order, the requests included, and so is the EEPROM; the times
 after a calibration are 2.0..9.0 s later (the probes, about 2.9 s per pass in the bench), and
 the warm state differs only in the fields that carry a time (the lease ages, the retry time, the

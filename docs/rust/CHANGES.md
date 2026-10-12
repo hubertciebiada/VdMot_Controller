@@ -16,10 +16,9 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   off, which the STM cannot count) with a step of 200 pulses away from each end stop and the move
   back: four short moves more, a pass takes about 6 s longer (at the 0.25 pulses/ms of the
   installed actuators; a due temperature cycle can pause it after each move back as well).
-  A pass sets the coast; a normal move pair (a step away from an end stop and the move back)
-  moves it a quarter towards its sample when the two agree within half of the coast, and
-  without a pass two agreeing pairs in a row set it. A partial move then stops the learned coast
-  of its direction earlier, by at
+  A pass sets the coast; normal move pairs (a step away from an end stop and the move back)
+  refine it, and two pairs in a row that agree with each other but not with it replace it. A
+  partial move then stops the learned coast of its direction earlier, by at
   most half of its pulses, so a valve opened or closed in many small steps stays where it is
   counted instead of drifting by the coast of every step. `lastReq` keeps the requested pulses,
   `lastCnt` counts about the coast less. The coast lives in RAM only: the EEPROM and the warm

@@ -480,15 +480,20 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   (`coastOpen`, `coastClose`). The pass takes four short moves more (about
   6 s at 0.25 pulses/ms), and a due temperature cycle can pause it after each
   move back as after a stroke. Only an
-  accepted pass keeps its samples, and they replace the coast learned
-  before; a probe step that stops at a threshold gives none and the pass
-  goes on. A normal move that steps away from an end stop the valve stands
-  at, stops on its pulse count after at least 100 pulses and is followed by
-  a move back to that end stop gives a further sample. It moves the learned
+  accepted pass keeps its samples, and each replaces the coast of its
+  direction; a probe step that stops at a threshold gives none, the coast
+  of its direction stays and the pass goes on. A normal move that steps
+  away from an end stop the valve stands at, stops on its pulse count after
+  at least 100 pulses and is followed by a move back to that end stop gives
+  a further sample (the move to the target after a pass starts none: the
+  pass closed the valve with its own threshold). A sample moves the learned
   coast a quarter towards it when it differs from it by at most half of it
-  (at least 8 pulses) and is dropped otherwise; without a coast from a pass,
-  two such samples in a row that agree set it to their mean. A move back
-  that counts more than 100 pulses beyond the step gives no sample. A
+  (at least 8 pulses); otherwise it waits, and the next sample replaces the
+  coast by the mean of the two when it differs from the waiting one by at
+  most half of the smaller (at least 8 pulses) and does not agree with the
+  coast. Without a coast from a pass, two such samples in a row set it. A
+  move back, of a probe or of a normal move, that counts fewer pulses than
+  the step or more than 100 beyond it gives no sample. A
   partial move of a valve that is not blocked or failed then stops the
   learned coast of its direction earlier, by at most half of its pulses:
   `lastReq` (gvlvx field 15) keeps the requested pulses, `lastCnt` (16)
