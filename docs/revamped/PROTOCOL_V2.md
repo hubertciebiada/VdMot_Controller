@@ -111,8 +111,8 @@ Firmware 1.x does not answer `gproto␠\n` (no v1 command starts with
 | lastMs | duration of the move in ms (0 when it did not start) |
 
 The last move is any motor move: a normal position change, a failsafe or
-reference move, each of the three strokes of a calibration, or a service
-move. The counters start at 0 after a reset of the STM.
+reference move, each of the three strokes and the four coast moves of a
+calibration, or a service move. The counters start at 0 after a reset of the STM.
 
 ### `gprof idx` – current profile of the last move
 
@@ -480,14 +480,19 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   (`coastOpen`, `coastClose`). The pass takes four short moves more (about
   6 s at 0.25 pulses/ms), and a due temperature cycle can pause it after each
   move back as after a stroke. Only an
-  accepted pass keeps its samples; a probe step that stops at a threshold
-  gives none and the pass goes on. A normal move that steps away from an end
-  stop the valve stands at, stops on its pulse count after at least 100
-  pulses and is followed by a move back to that end stop gives a further
-  sample (a running mean: each sample counts a quarter). A partial move of a
-  valve that is not blocked or failed then stops the learned coast of its
-  direction earlier, by at most half of its pulses: `lastReq` (gvlvx field
-  15) keeps the requested pulses, `lastCnt` (16) counts about the coast less.
+  accepted pass keeps its samples, and they replace the coast learned
+  before; a probe step that stops at a threshold gives none and the pass
+  goes on. A normal move that steps away from an end stop the valve stands
+  at, stops on its pulse count after at least 100 pulses and is followed by
+  a move back to that end stop gives a further sample. It moves the learned
+  coast a quarter towards it when it differs from it by at most half of it
+  (at least 8 pulses) and is dropped otherwise; without a coast from a pass,
+  two such samples in a row that agree set it to their mean. A move back
+  that counts more than 100 pulses beyond the step gives no sample. A
+  partial move of a valve that is not blocked or failed then stops the
+  learned coast of its direction earlier, by at most half of its pulses:
+  `lastReq` (gvlvx field 15) keeps the requested pulses, `lastCnt` (16)
+  counts about the coast less.
   Moves to an end stop, service moves and moves of a blocked or failed valve
   are not shortened. The coast is kept in RAM only (no EEPROM, no warm
   state): a start of the STM begins without it, the next calibration or move
@@ -553,6 +558,13 @@ period brings one block into alignment within 8 sends.
   until the next end stop; since 2.2.4 the calibration learns the coast and
   partial moves stop it earlier (see "Calibration and end-stop detection").
   What remains: the difference between the coast near an end stop and in the
-  middle of the stroke, and the variation from move to move.
+  middle of the stroke, and the variation from move to move. A step of less
+  than twice the coast is shortened by half of its pulses only and keeps the
+  rest of the error (coast 40 pulses, scaler 45: a 1 % step ends about 0.4 %
+  further than counted), and every partial move ends one pulse beyond its
+  pulse count (the count stops on the pulse after the target); both add up
+  until the next end stop. The coast is learned next to the end stops: a
+  coast that is larger there than in the middle of the stroke makes partial
+  moves end short of their position.
 - The short-circuit and inrush limits (200 mA filtered, 250 mA raw) are not
   yet confirmed on the hardware and only report by default (see above).

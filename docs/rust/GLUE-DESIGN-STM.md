@@ -824,18 +824,18 @@ reproduces all 27 cases byte for byte; `app.robot` replays some of them against 
 (§5.7).
 
 Since the coast probes of the calibration (2.2.4, PROTOCOL_V2.md "Calibration and end-stop
-detection") two exceptions apply. A `gvlvy` reply line is compared on its first 25 values
-(`golden::compared`): protocol 3 appends values (extension rule), the C++ goldens carry 25. And
-the nine goldens of cases that calibrate a valve are written by the Rust bench
+detection") two exceptions apply. A `gvlvy` reply line is compared on the values of the
+golden's reply (`golden::matches`): protocol 3 appends values (extension rule), the C++ goldens
+carry 25. And the nine goldens of cases that calibrate a valve are written by the Rust bench,
+`golden::RUST_RECORDED` names them and their second line is `recorder rust`
 (`VDM_GOLDEN_RECORD=1 cargo test -p vdm-stm-glue <case>` writes the transcript of a case as its
-golden instead of comparing it): `calib__w2_5`, `calib__w2_6`, `calib__w2_8`, `motion__c_1`,
-`motion__c_2_failsafe_30`, `motion__c_2_failsafe_50`, `motion__k2_c_1`, `motion__s8_4` and
-`proto3__k2_3`. Compared with their C++ originals (git history up to 2.2.3) every byte of both
+golden instead of comparing it; it keeps a golden of the C++ recorder unless the value is
+`force`). Compared with their C++ originals (git history up to 2.2.3) every byte of both
 UARTs is the same in the same order, the requests included, and so is the EEPROM; the times
 after a calibration are 2.0..9.0 s later (the probes, about 2.9 s per pass in the bench), and
 the warm state differs only in the fields that carry a time (the lease ages, the retry time, the
 reset guard's uptime) and in its CRCs. `gvlvy` lines carry values 26 and 27 (0: the bench
-valves do not coast). The other 18 goldens stay the C++ recordings; `app.robot` uses none of
+valves do not coast) and are compared on all 27. The other 18 goldens stay the C++ recordings; `app.robot` uses none of
 the nine.
 
 ### 7.5 Mutation gate
