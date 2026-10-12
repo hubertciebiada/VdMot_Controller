@@ -8,9 +8,10 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
-## Unreleased
+## 2.2.5-revamped
 
-STM32 release: only the closing coast is learned.
+STM32 release: only the closing coast is learned. The ESP32 firmware is the one of 2.2.4 with the version
+2.2.5-revamped: flash it to keep the versions of both MCUs equal; it needs no update otherwise.
 
 ### STM32: the closing coast only
 
