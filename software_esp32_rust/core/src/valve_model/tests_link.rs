@@ -166,6 +166,58 @@ fn gvlvy_fields_enter_the_state_gvlvx_and_gvlvd_clear_them() {
 }
 
 #[test]
+fn gvlvy_coast_enters_the_state_a_25_field_reply_gvlvx_and_gvlvd_clear_it() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x001);
+    let mut d = ex_v3(0, 30, 0);
+    d.has_coast = true;
+    d.coast_open = 12;
+    d.coast_close = 9;
+    m.apply_valve_ex(&d, 0);
+    let v = *m.valve(0);
+    assert!(v.has_coast);
+    assert_eq!((v.coast_open, v.coast_close), (12, 9));
+    // A new value is a change of the state, the same one is not.
+    let rev = v.revision;
+    m.apply_valve_ex(&d, 10);
+    assert_eq!(m.valve(0).revision, rev);
+    d.coast_open = 13;
+    m.apply_valve_ex(&d, 20);
+    assert_eq!(m.valve(0).coast_open, 13);
+    assert_eq!(m.valve(0).revision, rev + 1);
+    d.coast_close = 8;
+    m.apply_valve_ex(&d, 30);
+    assert_eq!(m.valve(0).coast_close, 8);
+    assert_eq!(m.valve(0).revision, rev + 2);
+    // 25 fields (an STM before 2.2.4 flashed in): unknown again.
+    m.apply_valve_ex(&ex_v3(0, 30, 0), 40);
+    let v = *m.valve(0);
+    assert!(v.has_v3);
+    assert!(!v.has_coast);
+    assert_eq!((v.coast_open, v.coast_close), (0, 0));
+    assert_eq!(v.revision, rev + 3);
+    // gvlvx and gvlvd carry no protocol 3 fields.
+    m.apply_valve_ex(&d, 50);
+    assert!(m.valve(0).has_coast);
+    let mut x = d;
+    x.v3 = false;
+    m.apply_valve_ex(&x, 60);
+    let v = *m.valve(0);
+    assert!(!v.has_coast);
+    assert_eq!((v.coast_open, v.coast_close), (0, 0));
+    m.apply_valve_ex(&d, 70);
+    m.apply_valve_data(&data(0), 80);
+    let v = *m.valve(0);
+    assert!(!v.has_coast);
+    assert_eq!((v.coast_open, v.coast_close), (0, 0));
+    // An unsupported STM: unknown.
+    m.apply_valve_ex(&d, 90);
+    m.forget_stm_data();
+    assert!(!m.valve(0).has_coast);
+    assert_eq!(m.valve(0).coast_open, 0);
+}
+
+#[test]
 fn auto_retry_set_when_retries_rise_cleared_at_the_calibration_end_or_with_retries_0() {
     let mut m = ValveModel::default();
     m.set_active_mask(0x001);

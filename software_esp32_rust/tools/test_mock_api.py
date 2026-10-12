@@ -223,6 +223,15 @@ class Valves(unittest.TestCase):  # M6
             self.assertIn(key, v[0]["ext"])
         self.assertEqual(v[0]["failsafe"], {"state": "off", "pct": 50})
 
+    def test_coast(self):
+        device()  # protocol 2: the STM does not report the coast
+        v = req("GET", "/api/valves").json["valves"]
+        self.assertEqual((v[0]["ext"]["coastOpen"], v[0]["ext"]["coastClose"]), (None, None))
+        device(proto=3)
+        v = req("GET", "/api/valves").json["valves"]
+        self.assertEqual((v[0]["ext"]["coastOpen"], v[0]["ext"]["coastClose"]), (8, 6))
+        self.assertEqual((v[11]["ext"]["coastOpen"], v[11]["ext"]["coastClose"]), (0, 0))  # inactive
+
 
 class Volts(unittest.TestCase):  # M7, E15-1
     def test_formula(self):

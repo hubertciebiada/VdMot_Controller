@@ -408,6 +408,8 @@ struct DiagPub {
     early_stops: u32,
     cmd_rejected: u32,
     cal_state: u8,
+    /// the coast published last, open and close (None: the STM does not report it)
+    coast: Option<[u16; 2]>,
     /// StmSnapshot::profile_seq of the last profile check
     profile_seq: u32,
     profile_crc: u32,
@@ -420,6 +422,7 @@ impl DiagPub {
         early_stops: 0,
         cmd_rejected: 0,
         cal_state: 0,
+        coast: None,
         profile_seq: 0,
         profile_crc: 0,
     };
@@ -2096,6 +2099,7 @@ where
             }
             let (move_seq, early_stops, cmd_rejected, cal_state) =
                 (v.move_seq, v.early_stops, v.cmd_rejected, v.cal_state);
+            let coast = v.has_coast.then_some([v.coast_open, v.coast_close]);
             let d = self.diag.get(i).copied().unwrap_or_default();
             if !d.valid || d.move_seq != move_seq {
                 if move_seq != 0 {
@@ -2116,11 +2120,23 @@ where
                 self.out
                     .publish_uint(Topic::DiagValveCalState, seg, u32::from(cal_state));
             }
+            // The coast of an STM before 2.2.4 is unknown: nothing goes out.
+            if let Some([open, close]) = coast {
+                if d.coast.map(|c| c[0]) != Some(open) {
+                    self.out
+                        .publish_uint(Topic::DiagValveCoastOpen, seg, u32::from(open));
+                }
+                if d.coast.map(|c| c[1]) != Some(close) {
+                    self.out
+                        .publish_uint(Topic::DiagValveCoastClose, seg, u32::from(close));
+                }
+            }
             if let Some(d) = self.diag.get_mut(i) {
                 d.move_seq = move_seq;
                 d.early_stops = early_stops;
                 d.cmd_rejected = cmd_rejected;
                 d.cal_state = cal_state;
+                d.coast = coast;
             }
             self.check_profile(i, &mut budget);
             if let Some(d) = self.diag.get_mut(i) {

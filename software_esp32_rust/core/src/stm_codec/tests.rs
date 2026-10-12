@@ -2072,6 +2072,9 @@ fn gvlvy_golden() {
     assert_eq!(x.drive, 50);
     assert_eq!(x.retry_s, 3540);
     assert_eq!(x.retries, 0);
+    assert!(!x.has_coast);
+    assert_eq!(x.coast_open, 0);
+    assert_eq!(x.coast_close, 0);
 
     // Every v3 field at its upper limit, distinct values.
     assert_eq!(
@@ -2095,7 +2098,8 @@ fn gvlvy_golden() {
     assert_eq!(parse(&gvlvy_with(23, "0"), &mut r), ParseStatus::Ok);
     assert_eq!(r.valve_ex.drive, 0);
 
-    // Field count: at least 25; numeric extras are ignored.
+    // Field count: at least 25; the coast fields 26/27 (gvlvy_learned_coast_fields_26_and_27)
+    // and the numeric extras after them.
     let short = &GVLVY_GOLDEN[..GVLVY_GOLDEN.rfind(' ').expect("space")];
     assert_eq!(parse(short, &mut r), ParseStatus::BadArgCount);
     assert!(is_empty_reply(&r));
@@ -2103,7 +2107,7 @@ fn gvlvy_golden() {
     assert_eq!(r.valve_ex.retry_s, 3540);
     assert_eq!(r.valve_ex.retries, 0);
     assert_eq!(
-        parse(&format!("{GVLVY_GOLDEN} 0 4294967295"), &mut r),
+        parse(&format!("{GVLVY_GOLDEN} 0 0 0 4294967295"), &mut r),
         ParseStatus::Ok
     );
     assert_eq!(
@@ -2158,15 +2162,109 @@ fn gvlvy_golden() {
 }
 
 #[test]
+fn gvlvy_learned_coast_fields_26_and_27() {
+    let mut r = Reply::default();
+    // 25 fields (C++ STM 2.1.7, Rust STM up to 2.2.3): the coast is unknown.
+    dirty(&mut r);
+    assert_eq!(parse(GVLVY_GOLDEN, &mut r), ParseStatus::Ok);
+    assert!(r.valve_ex.v3);
+    assert!(!r.valve_ex.has_coast);
+    assert_eq!((r.valve_ex.coast_open, r.valve_ex.coast_close), (0, 0));
+
+    // 27 fields (STM 2.2.4): field 26 is the opening step, 27 the closing step.
+    dirty(&mut r);
+    assert_eq!(
+        parse(&format!("{GVLVY_GOLDEN} 12 9"), &mut r),
+        ParseStatus::Ok
+    );
+    let x = r.valve_ex;
+    assert!(x.v3);
+    assert!(x.has_coast);
+    assert_eq!(x.coast_open, 12);
+    assert_eq!(x.coast_close, 9);
+    assert_eq!(x.retry_s, 3540);
+    assert_eq!(x.retries, 0);
+    assert_eq!(x.fs_pct, 50);
+    // 0: not learned since the STM started, still a reported value
+    assert_eq!(
+        parse(&format!("{GVLVY_GOLDEN} 0 0"), &mut r),
+        ParseStatus::Ok
+    );
+    assert!(r.valve_ex.has_coast);
+    assert_eq!((r.valve_ex.coast_open, r.valve_ex.coast_close), (0, 0));
+    assert_eq!(
+        parse(&format!("{GVLVY_GOLDEN} 65535 65534"), &mut r),
+        ParseStatus::Ok
+    );
+    assert_eq!(
+        (r.valve_ex.coast_open, r.valve_ex.coast_close),
+        (65535, 65534)
+    );
+
+    // Ranges: 0..65535, strict decimal; a failure resets the reply.
+    let cases = [
+        ("65536 0", ParseStatus::OutOfRange),
+        ("0 65536", ParseStatus::OutOfRange),
+        ("4294967296 0", ParseStatus::OutOfRange),
+        ("x 0", ParseStatus::BadNumber),
+        ("0 -1", ParseStatus::BadNumber),
+        ("0 9 x", ParseStatus::BadNumber),
+    ];
+    for (coast, want) in cases {
+        dirty(&mut r);
+        assert_eq!(
+            parse(&format!("{GVLVY_GOLDEN} {coast}"), &mut r),
+            want,
+            "{coast}"
+        );
+        assert!(is_empty_reply(&r), "{coast}");
+    }
+
+    // Both or neither: a single 26th field is an extra (u32), not half a coast.
+    assert_eq!(
+        parse(&format!("{GVLVY_GOLDEN} 65536"), &mut r),
+        ParseStatus::Ok
+    );
+    assert!(!r.valve_ex.has_coast);
+    assert_eq!((r.valve_ex.coast_open, r.valve_ex.coast_close), (0, 0));
+
+    // 28 fields and more: the extension rule, the extras are ignored.
+    assert_eq!(
+        parse(&format!("{GVLVY_GOLDEN} 12 9 4294967295"), &mut r),
+        ParseStatus::Ok
+    );
+    assert!(r.valve_ex.has_coast);
+    assert_eq!((r.valve_ex.coast_open, r.valve_ex.coast_close), (12, 9));
+    let mut long = format!("{GVLVY_GOLDEN} 3 4");
+    for i in 0..12 {
+        long += &format!(" {i}");
+    }
+    assert_eq!(long.split(' ').count(), 40); // MAX_TOKENS
+    assert_eq!(parse(&long, &mut r), ParseStatus::Ok);
+    assert_eq!((r.valve_ex.coast_open, r.valve_ex.coast_close), (3, 4));
+
+    // gvlvx never carries them.
+    let gvlvx = "gvlvx 4 130 42 60 21 3120 3350 -230 1 57 2 7 3 1 3000 1450 3 412 8123";
+    assert_eq!(parse(gvlvx, &mut r), ParseStatus::Ok);
+    assert!(!r.valve_ex.has_coast);
+}
+
+#[test]
 fn failsafe_position_check_order_of_gvlvy_and_glcfg() {
-    // Rust: the C++ order of the checks (PORT-NOTES.md). gvlvy reads its six v3 fields before
-    // it checks the failsafe position; glcfg checks each position as soon as it is read.
+    // Rust: the C++ order of the checks (PORT-NOTES.md). gvlvy reads its six v3 fields (and the
+    // two coast fields) before it checks the failsafe position; glcfg checks each position as
+    // soon as it is read.
     let mut r = Reply::default();
     let mut tokens: Vec<&str> = GVLVY_GOLDEN.split(' ').collect();
     tokens[22] = "101";
     tokens[25] = "x";
     assert_eq!(parse(&tokens.join(" "), &mut r), ParseStatus::BadNumber);
     tokens[25] = "256";
+    assert_eq!(parse(&tokens.join(" "), &mut r), ParseStatus::OutOfRange);
+    tokens[25] = "0";
+    tokens.extend(["0", "x"]);
+    assert_eq!(parse(&tokens.join(" "), &mut r), ParseStatus::BadNumber);
+    tokens[27] = "0";
     assert_eq!(parse(&tokens.join(" "), &mut r), ParseStatus::OutOfRange);
     assert_eq!(
         parse("glcfg 60 101 50 50 50 50 50 50 50 50 50 50 x", &mut r),

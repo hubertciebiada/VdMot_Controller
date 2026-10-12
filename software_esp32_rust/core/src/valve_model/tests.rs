@@ -355,7 +355,7 @@ type Mutation = fn(&mut ValveState);
 fn diff_valve_reports_exactly_the_changed_groups() {
     let a = ValveState::default();
     assert_eq!(diff_valve(&a, &a), 0);
-    let cases: [(Mutation, u32); 27] = [
+    let cases: [(Mutation, u32); 30] = [
         (|s| s.status = 3, CHANGE_STATUS),
         (|s| s.calibrating = true, CHANGE_STATUS),
         (|s| s.position = 1, CHANGE_POSITION),
@@ -373,6 +373,9 @@ fn diff_valve_reports_exactly_the_changed_groups() {
         (|s| s.cal_flags = CAL_FLAG_LAST_FAILED, CHANGE_EXTENDED),
         (|s| s.early_stops = 1, CHANGE_EXTENDED),
         (|s| s.cmd_rejected = 1, CHANGE_EXTENDED),
+        (|s| s.has_coast = true, CHANGE_EXTENDED),
+        (|s| s.coast_open = 1, CHANGE_EXTENDED),
+        (|s| s.coast_close = 1, CHANGE_EXTENDED),
         (|s| s.move_seq = 1, CHANGE_LAST_MOVE),
         (|s| s.sync = TargetSync::Pending, CHANGE_SYNC),
         (|s| s.stm_target_known = true, CHANGE_SYNC),

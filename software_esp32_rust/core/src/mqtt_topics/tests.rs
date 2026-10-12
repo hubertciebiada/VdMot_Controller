@@ -428,6 +428,16 @@ fn compat_and_new_topics_byte_exact() {
         new_row(Topic::CmdDetect, b"", "VdMot/cmd/detect"),
         new_row(Topic::CmdStop, b"", "VdMot/cmd/stop"),
         new_row(Topic::CmdStmSafeExit, b"", "VdMot/cmd/stmSafeExit"),
+        new_row(
+            Topic::DiagValveCoastOpen,
+            b"3",
+            "VdMot/diag/valves/3/coastOpen",
+        ),
+        new_row(
+            Topic::DiagValveCoastClose,
+            b"Bad/WC",
+            "VdMot/diag/valves/Bad/WC/coastClose",
+        ),
     ];
     // every topic covered: the array type has TOPIC_COUNT entries
     for (i, r) in rows.iter().enumerate() {

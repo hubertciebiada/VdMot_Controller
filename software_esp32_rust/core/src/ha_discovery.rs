@@ -274,7 +274,7 @@ pub struct DiscoveryMessage {
 // ---------------------------------------------------------------- layout
 
 const COMMON_COUNT: usize = 4;
-const VALVE_KINDS: usize = 20;
+const VALVE_KINDS: usize = 22;
 const VALVES_FIRST: usize = COMMON_COUNT;
 const TEMPS_FIRST: usize = VALVES_FIRST + VALVE_COUNT as usize * VALVE_KINDS;
 const VOLTS_FIRST: usize = TEMPS_FIRST + TEMP_SLOT_COUNT as usize;
@@ -282,7 +282,7 @@ const TAIL_FIRST: usize = VOLTS_FIRST + VOLT_SLOT_COUNT as usize;
 const TAIL_COUNT: usize = 23;
 /// entity count (DESIGN.md)
 const ENTITY_COUNT: u16 = (TAIL_FIRST + TAIL_COUNT) as u16;
-const _: () = assert!(ENTITY_COUNT == 309, "entity count (DESIGN.md)");
+const _: () = assert!(ENTITY_COUNT == 333, "entity count (DESIGN.md)");
 
 const DROP_GLOBAL: usize = 2;
 const DROP_KINDS: usize = 7;
@@ -311,6 +311,8 @@ enum Kind {
     Actual,
     /// v2 diag counter
     Counter,
+    /// diag value that rises and falls (measurement)
+    Measurement,
     /// v2 last move stop reason (enum)
     LastStop,
     /// plain sensor
@@ -417,6 +419,8 @@ const VALVE_DEFS: [ValveDef; VALVE_KINDS] = {
         vdef(C::Sensor, Kind::Counter, NewDiag, DiagStyle, EspStm, b"cmdRejected", b"rejected commands", Topic::DiagValveCmdRejected, Some("mdi:alert-outline")),
         vdef(C::Sensor, Kind::LastStop, NewDiag, DiagStyle, EspStm, b"lastStop", b"last stop", Topic::DiagValveLastMove, Some("mdi:stop-circle-outline")),
         vdef(C::Sensor, Kind::Plain, NewDiag, DiagStyle, EspStm, b"calState", b"calibration state", Topic::DiagValveCalState, Some("mdi:progress-wrench")),
+        vdef(C::Sensor, Kind::Measurement, NewDiag, DiagStyle, EspStm, b"coastOpen", b"coast open", Topic::DiagValveCoastOpen, Some("mdi:debug-step-over")),
+        vdef(C::Sensor, Kind::Measurement, NewDiag, DiagStyle, EspStm, b"coastClose", b"coast close", Topic::DiagValveCoastClose, Some("mdi:debug-step-over")),
         vdef(C::BinarySensor, Kind::Problem, Always, New, Esp, b"problem", b"problem", Topic::ValveProblem, None),
         vdef(C::Sensor, Kind::Failsafe, Always, New, EspStm, b"failsafe", b"failsafe", Topic::ValveFailsafe, Some("mdi:shield-alert-outline")),
         vdef(C::Sensor, Kind::Sync, Always, New, Esp, b"sync", b"target delivery", Topic::ValveSync, None),
@@ -922,6 +926,10 @@ fn valve_entity(
             e.state_class = Some("total_increasing");
             e.category = Category::Diagnostic;
         }
+        Kind::Measurement => {
+            e.state_class = Some("measurement");
+            e.category = Category::Diagnostic;
+        }
         Kind::LastStop => {
             e.value_template = Some("{{ value_json.stop }}");
             e.device_class = Some("enum");
@@ -1255,13 +1263,13 @@ fn config_topic_shape(ctx: &DiscoveryContext, t: &[u8]) -> bool {
 // ---------------------------------------------------------------- DiscoveryIterator
 
 /// Iterates the current entity set in a fixed order: common (state, message, uptime*, ip), per
-/// active valve 20 kinds (state, target, actual, temp1*, temp2*, calibration date and
+/// active valve 22 kinds (state, target, actual, temp1*, temp2*, calibration date and
 /// repetitions, diag x5*, early stops*, rejected commands*, last stop*, calibration state*,
-/// problem, failsafe, target delivery, calibrate button), temps*, volts*, then the device
-/// entities (ESP/STM online, failsafe, lease*, safe mode*, link*, protocol*, version*,
-/// started*, resets*, overflows*, parse errors*, calibration running*, next calibration*,
-/// suppressed events*, rejected commands*, events*, buttons calibrate all, detect, stop*, reset
-/// STM, restart ESP, leave safe mode*). (* = gated.)
+/// coast open*, coast close*, problem, failsafe, target delivery, calibrate button), temps*,
+/// volts*, then the device entities (ESP/STM online, failsafe, lease*, safe mode*, link*,
+/// protocol*, version*, started*, resets*, overflows*, parse errors*, calibration running*, next
+/// calibration*, suppressed events*, rejected commands*, events*, buttons calibrate all, detect,
+/// stop*, reset STM, restart ESP, leave safe mode*). (* = gated.)
 ///
 /// Node id = build_ha_id(station), object ids from build_ha_id(segment); names and unique_ids
 /// ("<station with ' ' -> '_'>.<uid>") keep the raw segment. KEEP entities (legacy component,

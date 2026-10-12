@@ -623,7 +623,7 @@ function buildCard(i) {
   c.bar = h("i");
   c.mark = h("b");
   const items = [["Mean current", "mean"], ["Open/close", "occ"], ["Dead zone", "dc"], ["Retries", "cr"],
-    ["Moves", "moves"], ["Early stops", "early"], ["Rejected", "rej"], ["Data age", "age"]];
+    ["Moves", "moves"], ["Early stops", "early"], ["Rejected", "rej"], ["Coast", "coast"], ["Data age", "age"]];
   const dl = h("dl", { class: "kv" });
   for (const [label, key] of items) { const [div, dd] = kvItem(label); dl.append(div); c[key] = dd; }
   c.last = h("p", { class: "lastmove" });
@@ -697,6 +697,8 @@ function updateCard(c, v) {
   setText(c.moves, fmt(v.moves));
   setText(c.early, ext ? fmt(ext.earlyStops) : "–");
   setText(c.rej, ext ? fmt(ext.cmdRejected) : "–");
+  // learned coast of an opening / a closing step, motor pulses (null below STM 2.2.4)
+  setText(c.coast, ext && isNum(ext.coastOpen) ? fmt(ext.coastOpen) + " / " + fmt(ext.coastClose) : "–");
   setText(c.age, fmtAge(v.age));
   const lm = ext && ext.lastMove;
   if (lm && typeof lm === "object") {

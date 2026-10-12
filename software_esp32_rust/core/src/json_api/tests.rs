@@ -439,7 +439,7 @@ fn api_valves_document() {
         r#""calLastFailed":true,"earlyStops":3,"cmdRejected":4,"#,
         r#""lastMove":{"dir":"close","req":3000,"cnt":1500,"stop":"#,
         &q(stop_reason_name(StopReason::EarlyEndStop)),
-        r#","peak":12.3,"ms":4567},"moveSeq":9,"v3":null},"#,
+        r#","peak":12.3,"ms":4567},"moveSeq":9,"coastOpen":null,"coastClose":null,"v3":null},"#,
         r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null},"#,
         r#"{"idx":2,"name":"","active":false,"known":false,"state":0,"stateKey":"#,
         &q(valve_status_key(0)),
@@ -464,7 +464,7 @@ fn api_valves_document() {
         r#""earlyStops":0,"cmdRejected":0,"lastMove":{"dir":"open","#,
         r#""req":0,"cnt":0,"stop":"#,
         &q(stop_reason_name(StopReason::None)),
-        r#","peak":0.0,"ms":0},"moveSeq":0,"v3":null},"#,
+        r#","peak":0.0,"ms":0},"moveSeq":0,"coastOpen":null,"coastClose":null,"v3":null},"#,
         r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null}]}"#,
     ]
     .concat();
@@ -1218,6 +1218,9 @@ fn valves_v3_fields_failsafe_and_calibration_end() {
         drive: 40,
         retry_s: 1200,
         retries: 3,
+        has_coast: true,
+        coast_open: 65535,
+        coast_close: 0, // not learned since the STM started: a number, not null
         fs_pct: 30,
         ..ValveState::default()
     };
@@ -1241,7 +1244,7 @@ fn valves_v3_fields_failsafe_and_calibration_end() {
     let mut j = view(&st, true);
     assert!(j.contains("\"sensors\":[{\"sensor\":2,\"slot\":9,\"name\":\"Wall\",\"temp\":19.9}],"));
     let tail = [
-        r#""moveSeq":0,"v3":{"flags":["#,
+        r#""moveSeq":0,"coastOpen":65535,"coastClose":0,"v3":{"flags":["#,
         &q(stm_flag_name(0)),
         ",",
         &q(stm_flag_name(9)),
@@ -1293,6 +1296,10 @@ fn valves_v3_fields_failsafe_and_calibration_end() {
     j = view(&st, false);
     assert!(j.contains("\"v3\":null},"));
     assert!(j.contains("\"calibrationEnd\":null}"));
+    // the coast: null while the STM does not report it (before 2.2.4)
+    st.has_coast = false;
+    j = view(&st, false);
+    assert!(j.contains("\"moveSeq\":0,\"coastOpen\":null,\"coastClose\":null,\"v3\":null},"));
 }
 
 #[test]

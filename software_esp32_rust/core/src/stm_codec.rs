@@ -1166,6 +1166,13 @@ pub struct ValveEx {
     pub retry_s: u32,
     /// field 25, automatic retries since the fault began
     pub retries: u8,
+    /// fields 26 and 27 were sent (STM 2.2.4); else the coast is unknown and both are 0
+    pub has_coast: bool,
+    /// field 26, learned coast of an opening step in motor pulses (0 not learned since the STM
+    /// started)
+    pub coast_open: u16,
+    /// field 27, the same for a closing step
+    pub coast_close: u16,
 }
 
 impl Default for ValveEx {
@@ -1194,6 +1201,9 @@ impl Default for ValveEx {
             drive: 0,
             retry_s: 0,
             retries: 0,
+            has_coast: false,
+            coast_open: 0,
+            coast_close: 0,
         }
     }
 }
@@ -1383,6 +1393,8 @@ const VALVE_MAX: u8 = VALVE_COUNT - 1;
 const VALVE_MASK: u16 = (1 << VALVE_COUNT) - 1;
 const VALVE_EX_FIELDS: usize = 19;
 const VALVE_EX_V3_EXTRA: usize = 6;
+/// gvlvy fields 26 and 27 (STM 2.2.4)
+const VALVE_EX_COAST: usize = 2;
 const STATUS_FIELDS: usize = 6;
 const STATUS_V3_EXTRA: usize = 17;
 const LEASE_CONFIG_FIELDS: usize = 1 + VALVE_COUNT as usize;
@@ -1658,12 +1670,13 @@ fn read_valve_ex(f: &[&[u8]; VALVE_EX_FIELDS], x: &mut ValveEx) -> Parsed {
     Ok(())
 }
 
-/// gvlvy: the 19 gvlvx fields, 6 more, then numeric extras.
+/// gvlvy: the 19 gvlvx fields, 6 more, the two coast fields of STM 2.2.4 (both or neither: a
+/// single 26th field is an extra), then numeric extras.
 fn parse_valve_ex_v3(a: &[&[u8]], x: &mut ValveEx) -> Parsed {
     let Some((ex, rest)) = a.split_first_chunk::<VALVE_EX_FIELDS>() else {
         return Err(ParseStatus::BadArgCount);
     };
-    let Some(([flags, fault, fs_pct, drive, retry_s, retries], extras)) =
+    let Some(([flags, fault, fs_pct, drive, retry_s, retries], rest)) =
         rest.split_first_chunk::<VALVE_EX_V3_EXTRA>()
     else {
         return Err(ParseStatus::BadArgCount);
@@ -1675,6 +1688,15 @@ fn parse_valve_ex_v3(a: &[&[u8]], x: &mut ValveEx) -> Parsed {
     x.drive = read_u8(drive, 100)?;
     x.retry_s = read_u32(retry_s)?;
     x.retries = read_u8(retries, u8::MAX)?;
+    let extras = match rest.split_first_chunk::<VALVE_EX_COAST>() {
+        Some(([open, close], extras)) => {
+            x.coast_open = read_u16(open, u16::MAX)?;
+            x.coast_close = read_u16(close, u16::MAX)?;
+            x.has_coast = true;
+            extras
+        }
+        None => rest,
+    };
     if !failsafe_pct_valid(u32::from(fs_pct)) {
         return Err(ParseStatus::OutOfRange);
     }
@@ -1914,7 +1936,9 @@ fn parse_payload(cmd: Cmd, a: &[&[u8]], r: &mut Reply) -> Parsed {
 /// range-checked; on any error the status says why and `out` is reset to `Reply::default()`.
 /// gvlvx has exactly 19 fields and gstat exactly 6. The v3 replies with a fixed field list
 /// (gvlvy >= 25, gstax >= 23, glcfg >= 13, slhbt ok form >= 2) accept extra fields a later STM
-/// may append: each must be a strict decimal 0..2^32-1 and is ignored.
+/// may append: each must be a strict decimal 0..2^32-1 and is ignored. gvlvy fields 26 and 27
+/// (the learned coast, STM 2.2.4) are read when both are there, each 0..65535; the extras
+/// follow them.
 ///
 /// Fills the caller's [`Reply`] (C++ `Reply& out`) instead of returning one: it is 1.4 KB.
 pub fn parse_reply(line: &[u8], out: &mut Reply) -> ParseStatus {

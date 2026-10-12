@@ -277,9 +277,14 @@ pub enum Topic {
     CmdStop = 53,
     /// `<main>cmd/stmSafeExit` protocol >= 3
     CmdStmSafeExit = 54,
+    // ---- 2.2.4 ----
+    /// `<main>diag/valves/<V>/coastOpen` learned coast of an opening step, motor pulses
+    DiagValveCoastOpen = 55,
+    /// `<main>diag/valves/<V>/coastClose`
+    DiagValveCoastClose = 56,
 }
 
-pub const TOPIC_COUNT: u8 = 55;
+pub const TOPIC_COUNT: u8 = 57;
 
 /// Every topic in number order.
 const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
@@ -338,6 +343,8 @@ const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
     Topic::CmdDetect,
     Topic::CmdStop,
     Topic::CmdStmSafeExit,
+    Topic::DiagValveCoastOpen,
+    Topic::DiagValveCoastClose,
 ];
 
 impl Topic {
@@ -449,9 +456,11 @@ const TOPICS: [TopicDef; TOPIC_COUNT as usize] = [
     path(b"cmd/detect", false, N),
     path(b"cmd/stop", false, N),
     path(b"cmd/stmSafeExit", false, N),
+    item(b"diag/valves/", b"/coastOpen", false, S),
+    item(b"diag/valves/", b"/coastClose", false, S),
 ];
 const _: () = assert!(
-    Topic::CmdStmSafeExit as u8 + 1 == TOPIC_COUNT,
+    Topic::DiagValveCoastClose as u8 + 1 == TOPIC_COUNT,
     "TOPICS out of sync"
 );
 

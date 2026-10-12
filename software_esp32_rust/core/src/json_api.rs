@@ -700,6 +700,8 @@ fn write_valve(jw: &mut JsonWriter<'_>, idx: u32, v: &ValveView<'_>, now_ms: u32
         jw.key("lastMove");
         write_last_move(jw, &st.last_move);
         jw.kv("moveSeq", st.move_seq);
+        jw.kv("coastOpen", st.has_coast.then_some(st.coast_open));
+        jw.kv("coastClose", st.has_coast.then_some(st.coast_close));
         jw.key("v3");
         if st.has_v3 {
             jw.begin_object();
@@ -750,6 +752,8 @@ fn write_valve(jw: &mut JsonWriter<'_>, idx: u32, v: &ValveView<'_>, now_ms: u32
 /// 2.1 members: ext."v3" null|{"flags":[stm_flag_name..],"fault":"<valve_fault_name>",
 /// "drive":..,"retryS":..,"retries":..} (state.has_v3), then after "ext": "failsafe":{"state":
 /// failsafe_kind_name,"pct":fs_pct|null (hold)}, "calibrationEnd":"YYYY-MM-DDTHH:MM:SS"|null.
+/// 2.2.4 members: ext."coastOpen" and ext."coastClose" between "moveSeq" and "v3", motor
+/// pulses|null (null until the STM reports them, state.has_coast).
 /// A view without state or config renders them as empty. Returns jw.ok().
 pub fn write_valves_json(jw: &mut JsonWriter<'_>, views: &[ValveView<'_>], now_ms: u32) -> bool {
     jw.begin_object();

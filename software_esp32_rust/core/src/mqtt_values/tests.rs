@@ -58,6 +58,9 @@ pub(super) fn full_valve() -> ValveState {
         retry_s: 60,
         retries: 1,
         auto_retry: true,
+        has_coast: true,
+        coast_open: 12,
+        coast_close: 9,
         fs_override: true,
         fs_target: 20,
         force_push: true,
@@ -76,7 +79,7 @@ fn valve_compat_key_exactly_the_fields_of_the_compat_groups_change_the_key() {
     let base = full_valve();
     let key = valve_compat_key(&base);
     assert_eq!(valve_compat_key(&full_valve()), key);
-    let changes: [Change; 49] = [
+    let changes: [Change; 52] = [
         ("known", |v| v.known = false),
         ("lastSeenMs", |v| v.last_seen_ms += 1),
         ("status", |v| v.status += 1),
@@ -123,6 +126,9 @@ fn valve_compat_key_exactly_the_fields_of_the_compat_groups_change_the_key() {
         ("retryS", |v| v.retry_s += 1),
         ("retries", |v| v.retries += 1),
         ("autoRetry", |v| v.auto_retry = false),
+        ("hasCoast", |v| v.has_coast = false),
+        ("coastOpen", |v| v.coast_open += 1),
+        ("coastClose", |v| v.coast_close += 1),
         ("fsOverride", |v| v.fs_override = false),
         ("fsTarget", |v| v.fs_target += 1),
         ("forcePush", |v| v.force_push = false),

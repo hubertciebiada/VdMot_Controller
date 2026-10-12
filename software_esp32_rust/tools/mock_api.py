@@ -291,6 +291,7 @@ class Device:
                                 "src": "none", "sync": "unknown", "meanCur": 20, "moves": 0, "oc": 0, "cc": 0,
                                 "cr": 0, "earlyStops": 0, "cmdRejected": 0, "lastMove": None, "moveSeq": 0,
                                 "calUntil": 0.0, "calState": 0, "profile": None, "slots": [0, 0],
+                                "coast": [0, 0] if self.proto >= 3 else None,  # open, close; None below STM 2.2.4
                                 "moveFrom": 0.0, "moveStart": 0.0, "blocked": None, "baseEarly": 0, "baseRej": 0})
         for i, (name, blocked) in enumerate(STATIONS[self.station]):
             v = self.valves[i]
@@ -298,6 +299,8 @@ class Device:
             oc = rng.randrange(380, 520)
             v.update(active=True, state=1, meanCur=rng.choice([16, 16, 17, 17, 18]), moves=rng.randrange(900, 4200),
                      oc=oc, cc=oc + rng.randrange(20, 60), cr=0, src="mqtt", sync="synced")
+            if self.proto >= 3 and not blocked:
+                v["coast"] = [8 + i % 5, 6 + 3 * i % 7]  # learned; a blocked valve has not learned it
             v["pos"] = v["target"] = rng.choice([0, 15, 30, 45, 60, 100])
             slot = i + 1
             tid = one_wire_id(rng, 0x28)
@@ -682,7 +685,8 @@ class Device:
                 ext = {"calState": v["calState"], "calEarlyStop": v["blocked"] is not None,
                        "calLastFailed": v["blocked"] is not None, "earlyStops": v["earlyStops"],
                        "cmdRejected": v["cmdRejected"], "lastMove": v["lastMove"], "moveSeq": v["moveSeq"],
-                       "v3": None}
+                       "coastOpen": v["coast"][0] if v["coast"] else None,
+                       "coastClose": v["coast"][1] if v["coast"] else None, "v3": None}
                 if self.proto >= 3:
                     ext["v3"] = {"flags": (["fs_lease"] if lease_on else []) + (["needs_ref"] if v["blocked"] else []),
                                  "fault": "none", "drive": v["target"] or 0, "retryS": 0, "retries": 0}

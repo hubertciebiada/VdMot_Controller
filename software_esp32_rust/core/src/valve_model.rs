@@ -251,6 +251,12 @@ pub struct ValveState {
     pub retries: u8,
     /// retries rose since the last calibration end
     pub auto_retry: bool,
+    /// the STM reports its learned coast (gvlvy fields 26/27, STM 2.2.4)
+    pub has_coast: bool,
+    /// learned coast of an opening / a closing step in motor pulses (0 not learned since the STM
+    /// started)
+    pub coast_open: u16,
+    pub coast_close: u16,
     // ESP failsafe emulation (protocols 1/2): fs_target is pushed instead of desired.
     pub fs_override: bool,
     pub fs_target: u8,
@@ -310,6 +316,9 @@ impl ValveState {
         retry_s: 0,
         retries: 0,
         auto_retry: false,
+        has_coast: false,
+        coast_open: 0,
+        coast_close: 0,
         fs_override: false,
         fs_target: 0,
         force_push: false,
@@ -334,7 +343,7 @@ pub const CHANGE_TEMP2: u32 = 0x0020;
 /// moves, open_count, close_count, dead_zone
 pub const CHANGE_COUNTERS: u32 = 0x0040;
 pub const CHANGE_CALIB_RETRIES: u32 = 0x0080;
-/// cal_state, cal_flags, early_stops, cmd_rejected
+/// cal_state, cal_flags, early_stops, cmd_rejected, has_coast, coast_open, coast_close
 pub const CHANGE_EXTENDED: u32 = 0x0100;
 /// move_seq
 pub const CHANGE_LAST_MOVE: u32 = 0x0200;
@@ -381,6 +390,9 @@ pub fn diff_valve(a: &ValveState, b: &ValveState) -> u32 {
         || a.cal_flags != b.cal_flags
         || a.early_stops != b.early_stops
         || a.cmd_rejected != b.cmd_rejected
+        || a.has_coast != b.has_coast
+        || a.coast_open != b.coast_open
+        || a.coast_close != b.coast_close
     {
         m += CHANGE_EXTENDED;
     }
@@ -472,6 +484,9 @@ fn clear_v3(v: &mut ValveState) {
     v.retry_s = 0;
     v.retries = 0;
     v.auto_retry = false;
+    v.has_coast = false;
+    v.coast_open = 0;
+    v.coast_close = 0;
 }
 
 /// The value pushed to and verified on the STM: fs_target under the failsafe override, else
@@ -803,6 +818,9 @@ impl ValveModel {
             if d.retries == 0 || (before.calibrating && !d.calibrating) {
                 v.auto_retry = false;
             }
+            v.has_coast = d.has_coast;
+            v.coast_open = d.coast_open;
+            v.coast_close = d.coast_close;
         } else {
             clear_v3(v);
         }

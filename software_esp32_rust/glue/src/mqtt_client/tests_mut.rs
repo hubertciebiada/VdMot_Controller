@@ -868,6 +868,77 @@ fn diag_valve_last_move_counters_inactive_and_unextended_valves() {
     );
 }
 
+#[test]
+fn diag_valve_coast_on_change_only_and_nothing_while_unknown() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        for v in 0..3 {
+            c.valves[v].active = true;
+        }
+    });
+    rig.link_up();
+    rig.snap(|s| {
+        for v in 0..3 {
+            s.valves[v].known = true;
+            s.valves[v].has_extended = true;
+        }
+        // valve 1: STM 2.2.4, nothing learned yet; valve 2: learned; valve 3: an older STM
+        s.valves[0].has_coast = true;
+        s.valves[1].has_coast = true;
+        s.valves[1].coast_open = 12;
+        s.valves[1].coast_close = 9;
+    });
+    rig.publish_snap();
+    rig.settle(&mut c, 40);
+    rig.run(&mut c, 10);
+    let topic = |v: u32, which: &str| format!("VdMot/diag/valves/{v}/{which}");
+    assert_eq!(rig.payloads(&topic(1, "coastOpen")), vec!["0"]);
+    assert_eq!(rig.payloads(&topic(1, "coastClose")), vec!["0"]);
+    assert_eq!(rig.payloads(&topic(2, "coastOpen")), vec!["12"]);
+    assert_eq!(rig.payloads(&topic(2, "coastClose")), vec!["9"]);
+    assert_eq!(rig.count(&topic(3, "coastOpen")), 0);
+    assert_eq!(rig.count(&topic(3, "coastClose")), 0);
+    // its other diag values go out
+    assert_eq!(rig.payloads(&topic(3, "earlyStops")), vec!["0"]);
+    // A change publishes that value only; valve 3 gets an STM 2.2.4 while connected: both
+    // values go out, also when they equal the ones it had while unknown.
+    rig.snap(|s| {
+        s.valves[0].coast_open = 7;
+        s.valves[1].coast_close = 10;
+        s.valves[2].has_coast = true;
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 10);
+    assert_eq!(rig.payloads(&topic(1, "coastOpen")), vec!["0", "7"]);
+    assert_eq!(rig.payloads(&topic(1, "coastClose")), vec!["0"]);
+    assert_eq!(rig.payloads(&topic(2, "coastOpen")), vec!["12"]);
+    assert_eq!(rig.payloads(&topic(2, "coastClose")), vec!["9", "10"]);
+    assert_eq!(rig.payloads(&topic(3, "coastOpen")), vec!["0"]);
+    assert_eq!(rig.payloads(&topic(3, "coastClose")), vec!["0"]);
+    // Unknown again (an older STM flashed in): nothing goes out; known again: both go out.
+    rig.snap(|s| {
+        s.valves[1].has_coast = false;
+        s.valves[1].coast_open = 0;
+        s.valves[1].coast_close = 0;
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 10);
+    assert_eq!(rig.payloads(&topic(2, "coastOpen")), vec!["12"]);
+    assert_eq!(rig.payloads(&topic(2, "coastClose")), vec!["9", "10"]);
+    rig.snap(|s| {
+        s.valves[1].has_coast = true;
+        s.valves[1].coast_open = 12;
+        s.valves[1].coast_close = 10;
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 10);
+    assert_eq!(rig.payloads(&topic(2, "coastOpen")), vec!["12", "12"]);
+    assert_eq!(rig.payloads(&topic(2, "coastClose")), vec!["9", "10", "10"]);
+    assert_eq!(rig.payloads(&topic(1, "coastOpen")), vec!["0", "7"]);
+}
+
 /// A gprof reply: the profile goes to the store (the app fake), the snapshot counts it.
 fn set_profile(rig: &Rig, valve: u8, n: u8, seed: u32) {
     let mut h = rig.host.state();

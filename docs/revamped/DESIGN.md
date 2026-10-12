@@ -805,7 +805,9 @@ Topic tables, payloads, subscriptions, retained handling and broker settings:
 ## 11. HA discovery
 
 Entity tables and the user view: `docs/revamped/MQTT.md`. The table in
-`ha_discovery.cpp` is the source (`kEntityCount` 309).
+`ha_discovery.cpp` is the source (`kEntityCount` 309). The Rust table
+(`core/src/ha_discovery.rs`) has 333 since 2.2.4: 22 kinds per valve instead
+of 20, the two coast sensors after the calibration state.
 
 - Runs in mode 2; manual runs (`POST /api/mqtt/discovery`) also in mode 1
   (publish/republish need `separate`; delete does not). Triggers: every

@@ -94,7 +94,7 @@ pub(super) struct Msg {
     pub(super) json: Vec<u8>,
 }
 
-/// Every message of a fresh iterator (at most the 309 entities).
+/// Every message of a fresh iterator (at most the 333 entities).
 pub(super) fn all(c: &DiscoveryContext) -> Vec<Msg> {
     let mut it = DiscoveryIterator::new();
     let mut out = Vec::new();
@@ -108,7 +108,7 @@ pub(super) fn all(c: &DiscoveryContext) -> Vec<Msg> {
             topic: m.topic.to_vec(),
             json: jw.as_bytes().to_vec(),
         });
-        assert!(out.len() <= 309, "the iterator makes progress");
+        assert!(out.len() <= 333, "the iterator makes progress");
     }
     assert!(jw.ok()); // ended because the list is exhausted
     out
@@ -120,7 +120,7 @@ pub(super) fn topics(c: &DiscoveryContext) -> Vec<Vec<u8>> {
     let mut m = DiscoveryMessage::default();
     while it.next_topic(c, &mut m) {
         out.push(m.topic.to_vec());
-        assert!(out.len() <= 309, "the iterator makes progress");
+        assert!(out.len() <= 333, "the iterator makes progress");
     }
     assert!(m.topic.is_empty());
     out
@@ -158,7 +158,7 @@ pub(super) fn cls(c: &DiscoveryContext, t: impl AsRef<[u8]>) -> TopicClass {
     classify_discovery_topic(c, t.as_ref())
 }
 
-const VALVE_KIND_TOPICS: [&str; 20] = [
+const VALVE_KIND_TOPICS: [&str; 22] = [
     "text/VdMot/valves_state_",
     "valve/VdMot/valves_target_",
     "sensor/VdMot/valves_actual_",
@@ -175,6 +175,8 @@ const VALVE_KIND_TOPICS: [&str; 20] = [
     "sensor/VdMot/diag_cmdRejected_",
     "sensor/VdMot/diag_lastStop_",
     "sensor/VdMot/diag_calState_",
+    "sensor/VdMot/diag_coastOpen_",
+    "sensor/VdMot/diag_coastClose_",
     "binary_sensor/VdMot/valves_problem_",
     "sensor/VdMot/valves_failsafe_",
     "sensor/VdMot/valves_sync_",
@@ -272,7 +274,7 @@ fn discovery_golden_order() {
     }
     let v = all(&c);
     assert_eq!(v.len(), expected.len());
-    assert_eq!(v.len(), 65);
+    assert_eq!(v.len(), 69);
     for (m, e) in v.iter().zip(&expected) {
         assert_text(&m.topic, e);
     }
@@ -284,9 +286,9 @@ fn discovery_golden_order() {
     // With protocol 3 the two buttons follow.
     c.stm_v3 = true;
     let t3 = topics(&c);
-    assert_eq!(t3.len(), 67);
-    assert_text(&t3[63], tail(19));
-    assert_text(&t3[66], tail(22));
+    assert_eq!(t3.len(), 71);
+    assert_text(&t3[67], tail(19));
+    assert_text(&t3[70], tail(22));
 }
 
 #[test]
@@ -480,6 +482,25 @@ fn discovery_new_per_valve_entities_e29_1_w15_1() {
             "{{\"name\":\"Bad 1 calibration state\",\"unique_id\":\"VdMot.diag.Bad_1.calState\",\
              \"state_topic\":\"VdMot/diag/valves/Bad_1/calState\",\
              \"icon\":\"mdi:progress-wrench\",\"entity_category\":\"diagnostic\",{ESP_STM}{dev}"
+        ),
+    );
+    // The learned coast (STM 2.2.4) rises and falls: a measurement, no unit (motor pulses).
+    assert_text(
+        &json(&v, "homeassistant/sensor/VdMot/diag_coastOpen_Bad_1/config"),
+        format!(
+            "{{\"name\":\"Bad 1 coast open\",\"unique_id\":\"VdMot.diag.Bad_1.coastOpen\",\
+             \"state_topic\":\"VdMot/diag/valves/Bad_1/coastOpen\",\
+             \"icon\":\"mdi:debug-step-over\",\"state_class\":\"measurement\",\
+             \"entity_category\":\"diagnostic\",{ESP_STM}{dev}"
+        ),
+    );
+    assert_text(
+        &json(&v, "homeassistant/sensor/VdMot/diag_coastClose_2/config"),
+        format!(
+            "{{\"name\":\"Valve 2 coast close\",\"unique_id\":\"VdMot.diag.2.coastClose\",\
+             \"state_topic\":\"VdMot/diag/valves/2/coastClose\",\
+             \"icon\":\"mdi:debug-step-over\",\"state_class\":\"measurement\",\
+             \"entity_category\":\"diagnostic\",{ESP_STM}{dev}"
         ),
     );
     assert_text(
@@ -735,11 +756,11 @@ fn discovery_device_entities_k3_2_e29_1_w15_2() {
 fn discovery_gates_and_counts() {
     let mut c = new_ctx();
     valve(&mut c, 1, "2", true, true, b"");
-    assert_eq!(topics(&c).len(), 4 + 20 + 21);
+    assert_eq!(topics(&c).len(), 4 + 22 + 21);
     c.publish_uptime = false;
-    assert_eq!(topics(&c).len(), 3 + 20 + 21);
+    assert_eq!(topics(&c).len(), 3 + 22 + 21);
     c.publish_diag = false;
-    assert_eq!(topics(&c).len(), 3 + 15 + 21);
+    assert_eq!(topics(&c).len(), 3 + 17 + 21);
     c.new_diag = false;
     let t = topics(&c);
     assert_eq!(t.len(), 3 + 11 + 8);
@@ -973,7 +994,7 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
         if it.v20_topic(&c, &mut old) {
             olds.insert(m.topic.to_vec(), old.topic.to_vec());
         }
-        assert!(olds.len() <= 309);
+        assert!(olds.len() <= 333);
     }
     let old_of = |t: &str| olds.get(t.as_bytes()).cloned().unwrap_or_default();
     assert_text(
@@ -997,7 +1018,7 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
         produced += 1;
         assert!(!same.v20_topic(&c, &mut old));
         assert!(old.topic.is_empty());
-        assert!(produced <= 309);
+        assert!(produced <= 333);
     }
     assert!(produced > 20);
     // Another prefix: the legacy prefix differs.
@@ -1149,11 +1170,11 @@ fn discovery_skips_an_entity_that_cannot_be_built_and_continues() {
     let mut rest = 0;
     while it.next(&c, &mut m, &mut jw) {
         rest += 1;
-        assert!(rest <= 309);
+        assert!(rest <= 333);
     }
     assert_eq!(rest, 8 + 7);
     assert!(jw.ok());
-    assert_eq!(it.position(), 309);
+    assert_eq!(it.position(), 333);
     assert!(!it.next(&c, &mut m, &mut jw));
     // next_topic passes unbuildable entities over.
     assert_eq!(topics(&c).len(), 3 + 9 + 7);
@@ -1220,7 +1241,7 @@ fn discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2() {
         );
     }
     let v = all(&c);
-    assert_eq!(v.len(), 309);
+    assert_eq!(v.len(), 333);
     let mut longest = 0;
     for m in &v {
         longest = longest.max(m.json.len());
@@ -2540,7 +2561,7 @@ fn v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity() {
     let mut bad = DiscoveryIterator::new();
     let mut m = DiscoveryMessage::default();
     assert!(!bad.next_topic(&c, &mut m));
-    assert_eq!(bad.position(), 309);
+    assert_eq!(bad.position(), 333);
     assert!(!bad.v20_topic(&c, &mut m));
     small(&mut c);
     set(&mut c.station, b"Dom 1");
@@ -2548,9 +2569,9 @@ fn v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity() {
     let mut n = 0;
     while it.next_topic(&c, &mut m) {
         n += 1;
-        assert!(n <= 309);
+        assert!(n <= 333);
     }
-    assert_eq!(it.position(), 309); // the last entity (leave safe mode) needs STM v3
+    assert_eq!(it.position(), 333); // the last entity (leave safe mode) needs STM v3
     assert!(!it.v20_topic(&c, &mut m));
 }
 

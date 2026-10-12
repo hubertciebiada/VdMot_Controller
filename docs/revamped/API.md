@@ -148,6 +148,7 @@ Valve entry (`/api/valves`):
  "sensors":[{"sensor":1,"slot":1,"name":"KorWitryna","temp":20.9}],
  "ext":{"calState":0,"calEarlyStop":false,"calLastFailed":false,"earlyStops":0,"cmdRejected":0,
         "lastMove":{"dir":"open","req":408,"cnt":395,"stop":"endstop","peak":29.9,"ms":15784},"moveSeq":1,
+        "coastOpen":12,"coastClose":9,
         "v3":{"flags":["calRestored"],"fault":"none","drive":15,"retryS":0,"retries":0}},
  "failsafe":{"state":"off","pct":50},
  "calibrationEnd":"2026-09-23T03:12:40"}
@@ -165,6 +166,10 @@ Valve entry (`/api/valves`):
 - `ext` is null with a protocol 1 STM; `ext.v3` is null below protocol 3
   (flag and fault names: PROTOCOL_V2.md). `lastMove.peak` is in mA here (MQTT
   uses 0.1 mA).
+- `ext.coastOpen` / `ext.coastClose`: the coast the STM learned for an opening
+  and a closing step, in motor pulses (the unit of `oc`/`cc`; `gvlvy` fields 26
+  and 27). The STM shortens partial moves by it. 0 = not learned since the STM
+  started; null while the STM does not report it (below STM 2.2.4).
 - `failsafe.state`: `off`, `lease` (regulator silent), `blocked`; `pct` null =
   hold.
 - `calibrationEnd`: end of the last calibration seen since the ESP booted, or
