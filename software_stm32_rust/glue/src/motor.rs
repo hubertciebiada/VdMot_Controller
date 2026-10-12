@@ -896,13 +896,15 @@ impl MotorShared {
         io.pulse
             .target
             .store(u32::from(requested), Ordering::SeqCst);
+        // a partial move of a valve that is not failed or blocked
+        let checked = change != 255 && self.move_flags & MOVE_KEEP_STATUS == 0;
         self.move_req = MoveRequest {
             dir,
             requested_counts: requested,
             expected_travel_pct: expected,
             learned_travel: self.learned_travel(v, dir),
-            partial_early_check: change != 255 && self.move_flags & MOVE_KEEP_STATUS == 0,
-            open_end: change != 255 && open_end_reached(dir, self.mots[v].actual_position),
+            partial_early_check: checked,
+            open_end: checked && open_end_reached(dir, self.mots[v].actual_position),
         };
         self.move_kind = MOVE_NORMAL;
         self.set_move_bounds(v, MEAN_CURRENT_FLOOR_MA, 0);

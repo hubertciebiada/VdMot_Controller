@@ -17,7 +17,9 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   moves to its target. An opening step travels further than its counted pulses, so a valve
   opened in many small steps reached its open end at a counted 74..96 %: the counted position
   stayed, the next steps stopped early twice and started a calibration that closed the valve
-  for about a minute while heating. Closing and a safety stop keep the counted position
+  for about a minute while heating. Closing, a safety stop and a move of a blocked or failed
+  valve keep the counted position. An actuator that jams while opening above 50 % is now taken
+  as open, without a warning
   ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
 
 ## 2.2.2-revamped

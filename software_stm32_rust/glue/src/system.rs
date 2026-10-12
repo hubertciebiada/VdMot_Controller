@@ -1147,6 +1147,8 @@ mod tests_calib;
 #[cfg(all(test, feature = "terminal"))]
 mod tests_config;
 #[cfg(all(test, feature = "terminal"))]
+mod tests_drift;
+#[cfg(all(test, feature = "terminal"))]
 mod tests_env;
 #[cfg(all(test, feature = "terminal"))]
 mod tests_io;

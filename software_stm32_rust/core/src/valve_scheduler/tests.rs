@@ -564,6 +564,26 @@ fn a_non_early_end_stop_is_not_repeated_drive_95_actual_94() {
 }
 
 #[test]
+fn an_end_stop_taken_as_the_open_end_moves_back_down_to_the_unchanged_drive() {
+    let mut v = idle_all();
+    v[0].actual = 78;
+    v[0].drive = 82;
+    let mut s = ValveScheduler::default();
+    assert_eq!(next(&mut s, &v), "Open 0 4");
+    // the motor took the end stop as the open end (move_classifier::open_end_reached)
+    v[0].actual = 100;
+    s.move_ended(0, StopReason::EndStop, false, ST_IDLE);
+    assert!(s.latched(0));
+    assert_eq!(next(&mut s, &v), "Close 0 18");
+    v[0].actual = 82;
+    s.move_ended(0, StopReason::Target, false, ST_IDLE);
+    assert!(!s.latched(0));
+    for i in 0..20 {
+        assert_eq!(next(&mut s, &v), "None", "call {i}");
+    }
+}
+
+#[test]
 fn an_early_end_stop_gets_exactly_one_retry() {
     let mut v = idle_all();
     v[2].actual = 20;

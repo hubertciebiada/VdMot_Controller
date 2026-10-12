@@ -488,11 +488,14 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   further than its counted pulses (the motor keeps turning after it is
   switched off), so a valve opened in many small steps reaches its open end
   below a counted 100 % (up to 2.2.2 it kept the counted position and its next
-  steps stopped early). A safety stop keeps the counted position, and closing
-  always does: a stuck pin stops the closing spindle anywhere. An early end
-  stop gives `lastStop` 3 (or 6); after an early partial stop exactly one more
-  move in the same direction is made for the same drive target (flag
-  `earlyPending`), the second early stop in a row requests a calibration.
+  steps stopped early). The price: an actuator that jams while opening above
+  50 % is taken as open, without a warning. A safety stop keeps the counted
+  position, so does a move of a blocked or failed valve (status kept), and
+  closing always does: a stuck pin stops the closing spindle anywhere. An
+  early end stop gives `lastStop` 3 (or 6); after an early partial stop
+  exactly one more move in the same direction is made for the same drive
+  target (flag `earlyPending`), the second early stop in a row requests a
+  calibration.
   `earlyStops` + 1 and calState bit 2 come with that second early partial stop
   in a row, and at once with an early stop of a move to an end stop (it gets
   no retry): the first move away from an end stop the valve was pressed

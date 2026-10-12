@@ -171,6 +171,59 @@ fn w9_small_opening_steps_that_overshoot_end_at_the_open_end_without_an_early_st
     }
 }
 
+fn open_end_limits(rev: BoardRev) {
+    let mut b = start_valves(rev);
+    // the price of the rule: an obstacle at 70 % opening from 60 % is taken as the open end
+    b.place(0, 60);
+    b.rig.valve[0].jam_from = 2520;
+    b.rig.valve[0].jam_to = 3600;
+    b.run(CMD_A_OPEN, 0, 20, 0);
+    assert_eq!(b.last(0).stop_reason, reason(StopReason::EndStop));
+    assert_eq!(b.m.mots[0].actual_position, 100);
+    assert_eq!(b.diag(0).early_run.count(), 0);
+    assert_eq!(b.diag(0).early_stops, 0);
+    // a safety stop at that obstacle keeps the counted position and stays early
+    b.place(1, 60);
+    b.m.mots[1].meancurrent = 40;
+    b.rig.valve[1].jam_from = 2520;
+    b.rig.valve[1].jam_to = 3600;
+    b.run(CMD_A_OPEN, 1, 20, 0);
+    assert_eq!(b.last(1).stop_reason, reason(StopReason::SafetyOvercurrent));
+    assert!(b.diag(1).last_early);
+    assert_eq!(b.m.mots[1].actual_position, 70);
+    assert_eq!(b.diag(1).early_run.count(), 1);
+    // a blocked valve's failsafe move keeps the counted position
+    b.place(2, 60);
+    b.m.mots[2].status = ST_BLOCKED;
+    b.rig.valve[2].jam_from = 2520;
+    b.rig.valve[2].jam_to = 3600;
+    b.run(CMD_A_OPEN, 2, 30, MOVE_KEEP_STATUS);
+    assert_eq!(b.last(2).stop_reason, reason(StopReason::EndStop));
+    assert_eq!(b.m.mots[2].actual_position, 70);
+    assert_eq!(b.m.mots[2].status, ST_BLOCKED);
+    // an early stop below 50 % ends at 50 %: the retry from there reaches the open end, the run
+    // of early stops ends without a count
+    b.place(3, 48);
+    b.rig.valve[3].position = 3500;
+    b.run(CMD_A_OPEN, 3, 4, 0);
+    assert_eq!(b.last(3).stop_reason, reason(StopReason::EarlyEndStop));
+    assert_eq!(b.m.mots[3].actual_position, 50);
+    assert_eq!(b.diag(3).early_run.count(), 1);
+    b.run(CMD_A_OPEN, 3, 2, 0);
+    assert_eq!(b.last(3).stop_reason, reason(StopReason::EndStop));
+    assert_eq!(b.m.mots[3].actual_position, 100);
+    assert_eq!(b.diag(3).early_run.count(), 0);
+    assert_eq!(b.diag(3).early_stops, 0);
+    assert!(!b.m.mots[3].early_learn_due);
+}
+
+#[test]
+fn w9_the_open_end_rule_takes_threshold_stops_only_not_safety_stops_or_blocked_valves() {
+    for rev in REVS {
+        open_end_limits(rev);
+    }
+}
+
 fn keep_status_move(rev: BoardRev) {
     let mut b = start_valves(rev);
     b.place(1, 0);
