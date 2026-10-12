@@ -153,3 +153,29 @@ fn early_stop_run_the_second_early_partial_stop_in_a_row_requests_a_calibration(
     assert!(!run.on_move(true));
     assert!(run.on_move(true));
 }
+
+#[test]
+fn open_end_reached_by_a_partial_opening_move_from_50_pct_or_more() {
+    assert_eq!(OPEN_END_MIN_START_PCT, 50);
+    assert!(open_end_reached(DIR_OPEN, 50));
+    assert!(open_end_reached(DIR_OPEN, 100));
+    assert!(!open_end_reached(DIR_OPEN, 49));
+    assert!(!open_end_reached(DIR_CLOSE, 50));
+    assert!(!open_end_reached(DIR_CLOSE, 100));
+}
+
+#[test]
+fn classify_move_an_open_end_move_is_never_early_at_the_threshold_a_safety_stop_still_is() {
+    let mut r = partial_checked(1000);
+    r.open_end = true;
+    let c = classify_move(&r, MotorStop::EndStop, 10);
+    assert_eq!(c.reason, StopReason::EndStop);
+    assert!(!c.early);
+    let c = classify_move(&r, MotorStop::SafetyOvercurrent, 10);
+    assert_eq!(c.reason, StopReason::SafetyOvercurrent);
+    assert!(c.early);
+    assert_eq!(
+        classify_move(&r, MotorStop::CountReached, 1001).reason,
+        StopReason::Target
+    );
+}

@@ -95,9 +95,10 @@ fn w9_an_early_partial_stop_whose_retry_reaches_the_target_is_not_counted() {
 fn w9_an_end_stop_after_80_of_the_requested_pulses_is_not_early_the_position_still_counted() {
     for rev in REVS {
         let mut b = start_valves(rev);
-        b.place(0, 60);
-        // the open end stop at 95 %
-        b.rig.valve[0].stroke = 3420;
+        // below OPEN_END_MIN_START_PCT: the counted position
+        b.place(0, 40);
+        // the open end stop at 75 %
+        b.rig.valve[0].stroke = 2700;
         b.run(CMD_A_OPEN, 0, 40, 0);
         assert_eq!(b.last(0).stop_reason, reason(StopReason::EndStop));
         assert!(!b.diag(0).last_early);
@@ -105,8 +106,68 @@ fn w9_an_end_stop_after_80_of_the_requested_pulses_is_not_early_the_position_sti
         assert_eq!(b.diag(0).early_run.count(), 0);
         assert_eq!(
             b.m.mots[0].actual_position,
-            (60 + (3420 - 60 * 36) / 36) as u8
+            (40 + (2700 - 40 * 36) / 36) as u8
         );
+    }
+}
+
+fn open_end_after_drift(rev: BoardRev) {
+    let mut b = start_valves(rev);
+    // counted 85 %, the valve really stands 10 pulses below its open end stop
+    b.place(0, 85);
+    b.rig.valve[0].position = 3590;
+    b.run(CMD_A_OPEN, 0, 2, 0);
+    assert_eq!(b.last(0).stop_reason, reason(StopReason::EndStop));
+    assert!(!b.diag(0).last_early);
+    assert_eq!(b.m.mots[0].actual_position, 100);
+    assert_eq!(b.diag(0).early_run.count(), 0);
+    assert_eq!(b.diag(0).early_stops, 0);
+    assert!(!b.diag(0).early_warn);
+    // after more than 80 % of the requested pulses too
+    b.place(1, 60);
+    b.rig.valve[1].stroke = 3420;
+    b.run(CMD_A_OPEN, 1, 40, 0);
+    assert_eq!(b.last(1).stop_reason, reason(StopReason::EndStop));
+    assert_eq!(b.m.mots[1].actual_position, 100);
+    // closing keeps the counted position
+    b.place(2, 60);
+    b.rig.valve[2].jam_from = 0;
+    b.rig.valve[2].jam_to = 1800;
+    b.run(CMD_A_CLOSE, 2, 40, 0);
+    assert_eq!(b.last(2).stop_reason, reason(StopReason::EarlyEndStop));
+    assert_eq!(b.m.mots[2].actual_position, 50);
+}
+
+#[test]
+fn w9_a_partial_opening_move_from_50_or_more_that_meets_an_end_stop_is_at_the_open_end() {
+    for rev in REVS {
+        open_end_after_drift(rev);
+    }
+}
+
+fn opening_steps_with_coast(rev: BoardRev) {
+    let mut b = start_valves(rev);
+    b.place(0, 50);
+    // each step turns 40 pulses more than counted: the valve reaches its open end stop below a
+    // counted 100 %
+    b.rig.valve[0].coast_pulses = 40;
+    let mut steps = 0;
+    while b.m.mots[0].actual_position < 100 && steps < 20 {
+        b.run(CMD_A_OPEN, 0, 4, 0);
+        assert_ne!(b.last(0).stop_reason, reason(StopReason::EarlyEndStop));
+        steps += 1;
+    }
+    assert_eq!(b.last(0).stop_reason, reason(StopReason::EndStop));
+    assert_eq!(b.m.mots[0].actual_position, 100);
+    assert!(steps < 12, "{steps}");
+    assert_eq!(b.diag(0).early_stops, 0);
+    assert!(!b.m.mots[0].early_learn_due);
+}
+
+#[test]
+fn w9_small_opening_steps_that_overshoot_end_at_the_open_end_without_an_early_stop() {
+    for rev in REVS {
+        opening_steps_with_coast(rev);
     }
 }
 

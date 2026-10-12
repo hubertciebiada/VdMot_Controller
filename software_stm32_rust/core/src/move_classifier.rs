@@ -66,11 +66,28 @@ pub struct MoveRequest {
     /// early end stop: true only for normal partial moves (not for service moves,
     /// calibration strokes and the moves of a failed or blocked valve). C++ default false.
     pub partial_early_check: bool,
+    /// A partial opening move from at least OPEN_END_MIN_START_PCT (open_end_reached): an end
+    /// stop on the end-stop threshold is the open end stop, never early.
+    pub open_end: bool,
 }
 
 /// A partial move that ends at an end stop before this share of the requested
 /// pulses stopped early.
 pub const PARTIAL_EARLY_PCT: u8 = 80;
+
+/// An opening step travels further than its counted pulses, so a valve opened in many small
+/// steps reaches its open end stop while its counted position is lower (seen at 74..96 % after
+/// steps of about 4 %). Opening, the spindle only retracts: an end stop of a partial opening move
+/// that starts at this position or above is the open end stop. A valve that cannot break away
+/// from its closed seat stops near 0 % and keeps the early check. Closing keeps the counted
+/// position: a stuck pin stops the closing spindle anywhere.
+pub const OPEN_END_MIN_START_PCT: u8 = 50;
+
+/// A partial move in `dir` from `start` % ends at the open end stop when it ends at the
+/// end-stop threshold (OPEN_END_MIN_START_PCT).
+pub fn open_end_reached(dir: u8, start: u8) -> bool {
+    dir == DIR_OPEN && start >= OPEN_END_MIN_START_PCT
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MoveResult {
@@ -116,8 +133,8 @@ fn saturate16(v: u64) -> u16 {
 /// that ended at an end stop (threshold or safety limit) after less than 50 % of
 /// learned_travel * expected_travel_pct / 100; a partial move with
 /// partial_early_check that ended at an end stop before PARTIAL_EARLY_PCT % of the
-/// requested pulses. A safety stop keeps reason SafetyOvercurrent but may still
-/// be early.
+/// requested pulses, unless it is an open_end move. A safety stop keeps reason
+/// SafetyOvercurrent but may still be early, also on an open_end move.
 pub fn classify_move(req: &MoveRequest, stop: MotorStop, counted: u32) -> MoveClassification {
     match stop {
         MotorStop::CountReached => MoveClassification {
@@ -125,7 +142,7 @@ pub fn classify_move(req: &MoveRequest, stop: MotorStop, counted: u32) -> MoveCl
             early: false,
         },
         MotorStop::EndStop => {
-            let early = ended_early(req, counted);
+            let early = !req.open_end && ended_early(req, counted);
             MoveClassification {
                 reason: if early {
                     StopReason::EarlyEndStop

@@ -25,8 +25,8 @@ use vdm_stm_core::end_stop_detector::{EndStopDetector, InrushMode, Trip};
 use vdm_stm_core::legacy_layout::VALVE_COUNT;
 use vdm_stm_core::motor_params::MotorParams;
 use vdm_stm_core::move_classifier::{
-    classify_move, make_move_result, position_after_end_stop, EarlyStopRun, MotorStop, MoveRequest,
-    MoveResult, StopReason, DIR_CLOSE, DIR_OPEN, RUN_TO_END_STOP,
+    classify_move, make_move_result, open_end_reached, position_after_end_stop, EarlyStopRun,
+    MotorStop, MoveRequest, MoveResult, StopReason, DIR_CLOSE, DIR_OPEN, RUN_TO_END_STOP,
 };
 use vdm_stm_core::presence_test::{presence_outcome, PresenceResult, PresenceTest};
 use vdm_stm_core::profile_recorder::ProfileRecorder;
@@ -902,6 +902,7 @@ impl MotorShared {
             expected_travel_pct: expected,
             learned_travel: self.learned_travel(v, dir),
             partial_early_check: change != 255 && self.move_flags & MOVE_KEEP_STATUS == 0,
+            open_end: change != 255 && open_end_reached(dir, self.mots[v].actual_position),
         };
         self.move_kind = MOVE_NORMAL;
         self.set_move_bounds(v, MEAN_CURRENT_FLOOR_MA, 0);
@@ -920,6 +921,7 @@ impl MotorShared {
             expected_travel_pct: if full { 100 } else { 0 },
             learned_travel: self.learned_travel(v, dir),
             partial_early_check: false,
+            open_end: false,
         };
         self.move_kind = MOVE_LEARN;
         self.set_move_bounds(v, calibration_floor(dir), self.calib_retries);
@@ -944,6 +946,7 @@ impl MotorShared {
             expected_travel_pct: 0,
             learned_travel: self.learned_travel(v, dir),
             partial_early_check: false,
+            open_end: false,
         };
         self.move_kind = MOVE_SERVICE;
         self.move_bound_high = i32::from(maxma) * 10;
@@ -1094,16 +1097,22 @@ impl MotorShared {
                 self.mots[v].status = ST_FAILED;
             } else {
                 // a partial move takes the position from the counted pulses, a move to the end
-                // stop 0 / 100 %
+                // stop 0 / 100 %; a partial opening move from the upper half that stopped at the
+                // end-stop threshold reached the open end stop (a safety stop keeps the count)
                 let counted = io.pulse.counter.load(Ordering::SeqCst);
                 let mot = &mut self.mots[v];
-                mot.actual_position = position_after_end_stop(
-                    mot.actual_position,
-                    self.move_req.dir,
-                    self.move_req.requested_counts,
-                    counted,
-                    mot.scaler,
-                );
+                mot.actual_position =
+                    if self.move_req.open_end && self.motor_stop_cause == MotorStop::EndStop {
+                        100
+                    } else {
+                        position_after_end_stop(
+                            mot.actual_position,
+                            self.move_req.dir,
+                            self.move_req.requested_counts,
+                            counted,
+                            mot.scaler,
+                        )
+                    };
                 if self.pos_change == 255 {
                     mot.needs_reference = false;
                 }

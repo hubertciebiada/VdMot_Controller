@@ -478,20 +478,27 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   limits do not trip then. The inrush check (see "Short and inrush
   protection") watches that window on the raw current.
 - A move to an end stop (0 %/100 % target) that starts at least 50 % of the
-  stroke away from that end and stops at a threshold or the safety limit
-  after less than half of the travel expected from the learned stroke is an
-  early end stop. A partial move that ends at an end stop takes its position
-  from the counted pulses (1.x set 0 or 100 %); when it stopped before 80 % of
-  the requested pulses it is an early end stop too. An early end stop gives
-  `lastStop` 3 (or 6); after an early partial stop exactly one more move in
-  the same direction is made for the same drive target (flag `earlyPending`),
-  the second early stop in a row requests a calibration. `earlyStops` + 1 and
-  calState bit 2 come with that second early partial stop in a row, and at
-  once with an early stop of a move to an end stop (it gets no retry): the
-  first move away from an end stop the valve was pressed against can stop
-  early, and its retry then reaches the target (up to 2.2.1 every early end
-  stop counted). Moves before the first successful calibration are not
-  checked.
+  stroke away from that end and stops at a threshold or the safety limit after
+  less than half of the travel expected from the learned stroke is an early
+  end stop. A partial move that ends at an end stop takes its position from
+  the counted pulses (1.x set 0 or 100 %); when it stopped before 80 % of the
+  requested pulses it is an early end stop too. A partial opening move that
+  starts at 50 % or above and stops at the end-stop threshold has reached the
+  open end stop instead: position 100 %, never early. An opening step travels
+  further than its counted pulses (the motor keeps turning after it is
+  switched off), so a valve opened in many small steps reaches its open end
+  below a counted 100 % (up to 2.2.2 it kept the counted position and its next
+  steps stopped early). A safety stop keeps the counted position, and closing
+  always does: a stuck pin stops the closing spindle anywhere. An early end
+  stop gives `lastStop` 3 (or 6); after an early partial stop exactly one more
+  move in the same direction is made for the same drive target (flag
+  `earlyPending`), the second early stop in a row requests a calibration.
+  `earlyStops` + 1 and calState bit 2 come with that second early partial stop
+  in a row, and at once with an early stop of a move to an end stop (it gets
+  no retry): the first move away from an end stop the valve was pressed
+  against can stop early, and its retry then reaches the target (up to 2.2.1
+  every early end stop counted). Moves before the first successful calibration
+  are not checked.
 
 ## Firmware update handshake
 

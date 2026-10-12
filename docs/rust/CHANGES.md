@@ -8,6 +8,18 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Unreleased
+
+### STM32: the open end stop of partial moves
+
+- A partial opening move that starts at 50 % or above and stops at the end-stop threshold sets
+  the position to 100 % and is never an early end stop (`lastStop` `endstop`); the valve then
+  moves to its target. An opening step travels further than its counted pulses, so a valve
+  opened in many small steps reached its open end at a counted 74..96 %: the counted position
+  stayed, the next steps stopped early twice and started a calibration that closed the valve
+  for about a minute while heating. Closing and a safety stop keep the counted position
+  ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md#calibration-and-end-stop-detection)).
+
 ## 2.2.2-revamped
 
 STM32 release. The ESP32 firmware is the one of 2.2.1 with the version 2.2.2-revamped: flash it
