@@ -387,7 +387,7 @@ impl AppBench {
         self.app.app_temp_cycle_done(&mut self.env);
     }
 
-    /// gvlvy values 20..25, from a record that starts with all bits set (C++ `v3()`).
+    /// gvlvy values 20..27, from a record that starts with all bits set (C++ `v3()`).
     pub fn v3(&mut self, valve: u16) -> ValveV3Info {
         let mut info = ValveV3Info {
             flags: 0xFFFF,
@@ -396,6 +396,8 @@ impl AppBench {
             drive: 0xFF,
             retry_s: 0xFFFF_FFFF,
             retries: 0xFF,
+            coast_open: 0xFFFF,
+            coast_close: 0xFFFF,
         };
         self.app
             .app_get_valve_v3(&self.m, &mut self.env, valve, &mut info);

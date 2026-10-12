@@ -96,6 +96,8 @@ fn blocked_valve() -> ValveExtV3Reply {
         drive: 50,
         retry_s: 3540,
         retries: 0,
+        coast_open: 0,
+        coast_close: 0,
     }
 }
 
@@ -161,7 +163,7 @@ fn gvlvy_the_blocked_valve_of_the_protocol_table() {
     assert!(format_valve_ext_v3(&mut w, &blocked_valve()));
     assert_eq!(
         text(w.as_bytes()),
-        "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0"
+        "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0 0 0"
     );
 }
 
@@ -174,13 +176,15 @@ fn gvlvy_values_1_19_are_those_of_gvlvx() {
     r.drive = 30;
     r.retry_s = 86400;
     r.retries = 255;
+    r.coast_open = 54;
+    r.coast_close = 61;
     let mut v3 = StaticBufWriter::<{ VALVE_EXT_V3_REPLY_MAX_LEN + 1 }>::default();
     let mut v2 = StaticBufWriter::<{ VALVE_EXT_REPLY_MAX_LEN + 1 }>::default();
     assert!(format_valve_ext_v3(&mut v3, &r));
     assert!(format_valve_ext(&mut v2, &r.base));
     assert_eq!(
         after_command(v3.as_bytes()),
-        after_command(v2.as_bytes()) + " 515 5 255 30 86400 255"
+        after_command(v2.as_bytes()) + " 515 5 255 30 86400 255 54 61"
     );
 }
 
@@ -216,6 +220,8 @@ fn gvlvy_worst_case_fits_the_declared_maximum() {
         drive: 255,
         retry_s: u32::MAX,
         retries: 255,
+        coast_open: 65535,
+        coast_close: 65535,
     };
     let mut w = StaticBufWriter::<{ VALVE_EXT_V3_REPLY_MAX_LEN + 1 }>::default();
     assert!(format_valve_ext_v3(&mut w, &r));
@@ -431,6 +437,6 @@ fn protocol_3_formatters_write_nothing_when_the_buffer_is_too_small() {
 fn reply_maximum_lengths_are_the_contract_values() {
     // not in the C++ suite: the derived constants of the header, pinned so that a changed
     // operator in their definition does not pass unnoticed (mutation gate)
-    assert_eq!(VALVE_EXT_V3_REPLY_MAX_LEN, 305);
+    assert_eq!(VALVE_EXT_V3_REPLY_MAX_LEN, 329);
     assert_eq!(STAT_V3_REPLY_MAX_LEN, 281);
 }

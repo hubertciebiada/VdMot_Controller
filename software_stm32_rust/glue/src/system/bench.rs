@@ -543,6 +543,10 @@ impl Case {
 
     /// Compares the transcript of every boot with the golden of the C++ case.
     pub fn check_golden(&self) {
+        if std::env::var_os("VDM_GOLDEN_RECORD").is_some() {
+            golden::store(self.slug, &self.transcript);
+            return;
+        }
         let golden = golden::load(self.slug);
         assert!(
             golden.boots.iter().any(|b| !b.events.is_empty()),
@@ -824,6 +828,8 @@ pub const K_FLAGS: usize = 20;
 pub const K_FAULT: usize = 21;
 pub const K_DRIVE: usize = 23;
 pub const K_RETRY_S: usize = 24;
+pub const K_COAST_OPEN: usize = 26;
+pub const K_COAST_CLOSE: usize = 27;
 // gstax fields
 pub const K_LEASE: usize = 7;
 pub const K_LEASE_TIMEOUT: usize = 10;

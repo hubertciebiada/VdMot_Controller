@@ -20,6 +20,9 @@ use vdm_stm_core::calibration::{
     stroke_mean_current, CalibrationVerdict, EscalationConfig, ESCALATION_DEFAULT,
     MEAN_CURRENT_DEFAULT_MA, MEAN_CURRENT_FLOOR_MA, MIN_TRAVEL_COUNTS, SAFETY_LIMIT_MA,
 };
+use vdm_stm_core::coast::{
+    coast_sample, opposite, shortened_target, MoveEnd, ValveCoast, COAST_PROBE_COUNTS,
+};
 use vdm_stm_core::config_store::ConfigImage;
 use vdm_stm_core::end_stop_detector::{EndStopDetector, InrushMode, Trip};
 use vdm_stm_core::legacy_layout::VALVE_COUNT;
@@ -171,6 +174,10 @@ pub enum AState {
     Svc1 = 15,
     Svc2 = 16,
     Gap = 17,
+    /// the step of a calibration away from the end stop it reached (coast)
+    Probe1 = 18,
+    /// the move of a calibration back to that end stop
+    Probe2 = 19,
 }
 
 /// The states of the motor state machine (`M_*` of motorcycle()).
@@ -234,6 +241,8 @@ pub struct ValveMotor {
     pub move_seq: u8,
     /// counts short verdicts and inrush trips (protection guard)
     pub trip_seq: u8,
+    /// the learned coast and the step away from an end stop that waits for its move back
+    pub coast: ValveCoast,
 }
 
 /// Diagnostics of one valve, written by the valve state machine (C++ `struct valve_diag`).
@@ -348,6 +357,15 @@ struct LoopState {
     /// stroke after the temperature gap
     gap_dir: u8,
     gap_next: AState,
+    /// the end stop of the coast probe (DIR_OPEN: the open end stop)
+    probe_end: u8,
+    /// the stroke after the coast probe
+    probe_next: AState,
+    /// pulses of the probe step, None when it did not end on its pulse count
+    probe_counted: Option<u32>,
+    /// coast samples of the calibration pass, kept until the pass is accepted
+    probe_open: Option<u16>,
+    probe_close: Option<u16>,
     svc_move_dir: u8,
     svc_move_counts: u16,
     svc_move_maxma: u8,
@@ -625,6 +643,11 @@ impl MotorShared {
                 gaptimer: 0,
                 gap_dir: DIR_OPEN,
                 gap_next: AState::Learn3,
+                probe_end: DIR_CLOSE,
+                probe_next: AState::Learn3,
+                probe_counted: None,
+                probe_open: None,
+                probe_close: None,
                 svc_move_dir: 0,
                 svc_move_counts: 0,
                 svc_move_maxma: 0,
@@ -893,11 +916,16 @@ impl MotorShared {
             // below RUN_TO_END_STOP, fits a u16
             requested = counts.min(u32::from(RUN_TO_END_STOP - 1)) as u16;
         }
-        io.pulse
-            .target
-            .store(u32::from(requested), Ordering::SeqCst);
         // a partial move of a valve that is not failed or blocked
         let checked = change != 255 && self.move_flags & MOVE_KEEP_STATUS == 0;
+        // such a move stops its learned coast earlier; the request keeps its pulses (the early
+        // check compares the travel with them, gvlvx lastReq reports them)
+        let target = if checked {
+            shortened_target(requested, self.mots[v].coast.counts(dir))
+        } else {
+            requested
+        };
+        io.pulse.target.store(u32::from(target), Ordering::SeqCst);
         self.move_req = MoveRequest {
             dir,
             requested_counts: requested,
@@ -977,6 +1005,20 @@ impl MotorShared {
         );
         rec.diag.last_early = c.early;
         let mot = &mut self.mots[v];
+        // the move pairs of normal moves teach the coast; a move of another kind or of a failed or
+        // blocked valve ends the pair
+        if self.move_kind == MOVE_NORMAL && self.move_flags & MOVE_KEEP_STATUS == 0 {
+            let to_end =
+                self.move_req.requested_counts == RUN_TO_END_STOP || self.move_req.open_end;
+            mot.coast.on_move(&MoveEnd {
+                dir: self.move_req.dir,
+                count_reached: self.motor_stop_cause == MotorStop::CountReached,
+                at_end: to_end && self.motor_stop_cause == MotorStop::EndStop && !c.early,
+                counted,
+            });
+        } else {
+            mot.coast.forget();
+        }
         if self.move_kind == MOVE_NORMAL {
             let partial_early = c.early && self.move_req.partial_early_check;
             // the second early partial stop in a row requests a calibration; the moves of a
@@ -1133,11 +1175,76 @@ impl MotorShared {
 
     /// Starts a full calibration stroke (the valve stands at the opposite end stop).
     fn start_learn_stroke<H: MotorHw>(&mut self, io: &Io<H>, v: usize, dir: u8) {
+        self.prepare_learn_stroke(io, v, dir, true);
+        self.start_learn_move(io, v, dir);
+    }
+
+    /// Starts the step of the coast probe away from the end stop of `lp.probe_end`, on the
+    /// thresholds of the stroke in its direction.
+    fn start_probe_step<H: MotorHw>(&mut self, io: &Io<H>, v: usize) {
+        let dir = opposite(self.lp.probe_end);
+        // the motor stops on pulse target + 1; the sample takes the counted pulses
+        io.pulse
+            .target
+            .store(u32::from(COAST_PROBE_COUNTS), Ordering::SeqCst);
+        self.move_req = MoveRequest {
+            dir,
+            requested_counts: COAST_PROBE_COUNTS,
+            expected_travel_pct: 0,
+            learned_travel: self.learned_travel(v, dir),
+            partial_early_check: false,
+            open_end: false,
+        };
+        self.move_kind = MOVE_LEARN;
+        self.set_move_bounds(v, calibration_floor(dir), self.calib_retries);
+        self.start_learn_move(io, v, dir);
+    }
+
+    /// Starts the move of the coast probe back to its end stop, on the thresholds of the stroke
+    /// that reached it.
+    fn start_probe_back<H: MotorHw>(&mut self, io: &Io<H>, v: usize) {
+        let dir = self.lp.probe_end;
+        self.prepare_learn_stroke(io, v, dir, false);
+        self.start_learn_move(io, v, dir);
+    }
+
+    /// Starts the prepared calibration move.
+    fn start_learn_move<H: MotorHw>(&mut self, io: &Io<H>, v: usize, dir: u8) {
         let open = dir == DIR_OPEN;
         self.mots[v].status = if open { ST_OPENING } else { ST_CLOSING };
-        self.prepare_learn_stroke(io, v, dir, true);
         self.motorcycle(io, v as i32, if open { CMD_M_OPEN } else { CMD_M_CLOSE });
         self.waittimer = WAIT_TIMER20;
+    }
+
+    /// After an end stop of a calibration the coast probe of that end stop comes next, then the
+    /// stroke `next` away from it.
+    fn probe_after(&mut self, end: u8, next: AState) {
+        self.lp.probe_end = end;
+        self.lp.probe_next = next;
+        self.lp.gap_dir = opposite(end);
+        self.lp.gap_next = AState::Probe1;
+    }
+
+    /// Starts what follows the pause between two calibration moves: the coast probe or a stroke.
+    fn start_gap_next<H: MotorHw>(&mut self, io: &Io<H>, v: usize) {
+        if self.lp.gap_next == AState::Probe1 {
+            self.start_probe_step(io, v);
+        } else {
+            self.start_learn_stroke(io, v, self.lp.gap_dir);
+        }
+        self.valvestate = self.lp.gap_next;
+    }
+
+    /// Between two calibration moves (the motor stopped at an end stop): a due temperature cycle
+    /// first.
+    fn after_learn_end_stop<H: MotorHw>(&mut self, io: &Io<H>, v: usize) {
+        if io.flags.temp_refresh_request.load(Ordering::SeqCst) {
+            io.flags.temp_lock.store(false, Ordering::SeqCst);
+            self.lp.gaptimer = 0;
+            self.valvestate = AState::Gap;
+        } else {
+            self.start_gap_next(io, v);
+        }
     }
 
     /// The valve state machine went back to Idle without starting the motor (sstop).
@@ -1225,6 +1332,11 @@ impl MotorShared {
             AState::Learn2 | AState::Learn3 | AState::Learn4 => {
                 if self.waittimer == 0 {
                     self.state_learn_stroke(io, runcmd);
+                }
+            }
+            AState::Probe1 | AState::Probe2 => {
+                if self.waittimer == 0 {
+                    self.state_probe(io, runcmd);
                 }
             }
             AState::Gap => self.state_gap(io),
@@ -1376,42 +1488,27 @@ impl MotorShared {
         self.command = 0;
     }
 
-    /// Learn2 (to the start position), Learn3 (the opening stroke), Learn4 (the closing stroke).
-    fn state_learn_stroke<H: MotorHw>(&mut self, io: &Io<H>, runcmd: u8) {
-        let v = self.lp.valveindex;
-        let temp = self.motorcycle(io, v as i32, runcmd);
+    /// sstop or the inrush limit ended a calibration move: the calibration ends (true).
+    fn learn_move_stopped<H: MotorHw>(&mut self, io: &Io<H>, v: usize, temp: u8) -> bool {
         if temp == M_RES_STOP && self.motor_stop_cause == MotorStop::Aborted && self.stop_request {
             // sstop: the calibration ends without a result, the position is lost
             self.finish_move(io, v);
             self.learn_abort(v);
-            self.valvestate = AState::Idle;
         } else if temp == M_RES_ENDSTOP && self.endstop.inrush_trip() {
             // never calibration evidence: no counts, no BLOCKS
             self.finish_move(io, v);
             self.learn_failed(v, ValveFault::InrushTrip);
-            self.valvestate = AState::Idle;
-        } else if temp == M_RES_ENDSTOP && self.valvestate == AState::Learn2 {
-            self.finish_move(io, v);
-            // second: opening completely and count rotations
-            self.lp.gap_dir = DIR_OPEN;
-            self.lp.gap_next = AState::Learn3;
-        } else if temp == M_RES_ENDSTOP && self.valvestate == AState::Learn3 {
-            self.finish_move(io, v);
-            self.lp.opening_count = io.pulse.counter.load(Ordering::SeqCst);
-            // kept until the pass is accepted
-            self.lp.open_mean_ma = self.stroke_mean_ma;
-            self.lp.open_mean_samples = self.stroke_mean_samples;
-            // third: closing completely and count rotations, threshold from the learned mean
-            // current but not below the 1.x closing threshold
-            self.lp.gap_dir = DIR_CLOSE;
-            self.lp.gap_next = AState::Learn4;
-        } else if temp == M_RES_ENDSTOP {
-            self.finish_move(io, v);
-            self.lp.closing_count = io.pulse.counter.load(Ordering::SeqCst);
-            // because the valve was closed completely
-            self.mots[v].actual_position = 0;
-            self.learn_verdict(io, v);
-        } else if temp == M_RES_NOCURRENT {
+        } else {
+            return false;
+        }
+        self.valvestate = AState::Idle;
+        true
+    }
+
+    /// A calibration move that did not reach an end stop: no current, a timeout, a pulse count
+    /// run out or a motor that did not start end the calibration.
+    fn learn_move_failed<H: MotorHw>(&mut self, io: &Io<H>, v: usize, temp: u8) {
+        if temp == M_RES_NOCURRENT {
             self.finish_move(io, v);
             self.lost_contact(v);
             // the target stays: the valve goes there once it is found again
@@ -1427,19 +1524,76 @@ impl MotorShared {
             self.learn_failed(v, ValveFault::StrokeTimeout);
             self.valvestate = AState::Idle;
         }
+    }
 
-        // between two strokes (motor stopped at an end stop): a due temperature cycle first
-        if (self.valvestate == AState::Learn2 || self.valvestate == AState::Learn3)
-            && temp == M_RES_ENDSTOP
-        {
-            if io.flags.temp_refresh_request.load(Ordering::SeqCst) {
-                io.flags.temp_lock.store(false, Ordering::SeqCst);
-                self.lp.gaptimer = 0;
-                self.valvestate = AState::Gap;
+    /// Learn2 (to the start position), Learn3 (the opening stroke), Learn4 (the closing stroke).
+    fn state_learn_stroke<H: MotorHw>(&mut self, io: &Io<H>, runcmd: u8) {
+        let v = self.lp.valveindex;
+        let temp = self.motorcycle(io, v as i32, runcmd);
+        if self.learn_move_stopped(io, v, temp) {
+            return;
+        }
+        if temp != M_RES_ENDSTOP {
+            self.learn_move_failed(io, v, temp);
+            return;
+        }
+        self.finish_move(io, v);
+        if self.valvestate == AState::Learn2 {
+            // second: the coast of an opening step, then opening completely and count rotations
+            self.probe_after(DIR_CLOSE, AState::Learn3);
+        } else if self.valvestate == AState::Learn3 {
+            self.lp.opening_count = io.pulse.counter.load(Ordering::SeqCst);
+            // kept until the pass is accepted
+            self.lp.open_mean_ma = self.stroke_mean_ma;
+            self.lp.open_mean_samples = self.stroke_mean_samples;
+            // third: the coast of a closing step, then closing completely and count rotations,
+            // threshold from the learned mean current but not below the 1.x closing threshold
+            self.probe_after(DIR_OPEN, AState::Learn4);
+        } else {
+            self.lp.closing_count = io.pulse.counter.load(Ordering::SeqCst);
+            // because the valve was closed completely
+            self.mots[v].actual_position = 0;
+            self.learn_verdict(io, v);
+            return;
+        }
+        // between two moves: a due temperature cycle first
+        self.after_learn_end_stop(io, v);
+    }
+
+    /// Probe1 (the step away from the end stop a stroke reached) and Probe2 (the move back to
+    /// it): the move back counts the step and its coast. A step that stopped at a threshold (a
+    /// pin that sticks) gives no sample; the calibration goes on.
+    fn state_probe<H: MotorHw>(&mut self, io: &Io<H>, runcmd: u8) {
+        let v = self.lp.valveindex;
+        let temp = self.motorcycle(io, v as i32, runcmd);
+        if self.learn_move_stopped(io, v, temp) {
+            return;
+        }
+        let count_reached = temp == M_RES_STOP && self.motor_stop_cause == MotorStop::CountReached;
+        if self.valvestate == AState::Probe1 && (temp == M_RES_ENDSTOP || count_reached) {
+            self.finish_move(io, v);
+            self.lp.probe_counted = count_reached.then(|| io.pulse.counter.load(Ordering::SeqCst));
+            self.start_probe_back(io, v);
+            self.valvestate = AState::Probe2;
+        } else if self.valvestate == AState::Probe2 && temp == M_RES_ENDSTOP {
+            self.finish_move(io, v);
+            let back = io.pulse.counter.load(Ordering::SeqCst);
+            // only a stop at the bound of the end-stop threshold
+            let sample = self
+                .lp
+                .probe_counted
+                .filter(|_| self.motor_stop_cause == MotorStop::EndStop)
+                .and_then(|step| coast_sample(step, back));
+            if self.lp.probe_end == DIR_CLOSE {
+                self.lp.probe_open = sample;
             } else {
-                self.start_learn_stroke(io, v, self.lp.gap_dir);
-                self.valvestate = self.lp.gap_next;
+                self.lp.probe_close = sample;
             }
+            self.lp.gap_dir = opposite(self.lp.probe_end);
+            self.lp.gap_next = self.lp.probe_next;
+            self.after_learn_end_stop(io, v);
+        } else {
+            self.learn_move_failed(io, v, temp);
         }
     }
 
@@ -1475,6 +1629,14 @@ impl MotorShared {
             mot.calib_failed = false;
             mot.fault_reason = ValveFault::None as u8;
             mot.calib_seq = mot.calib_seq.wrapping_add(1);
+            // the coast samples of the pass; the valve stands at its closed end stop
+            if let Some(sample) = self.lp.probe_open {
+                mot.coast.add(DIR_OPEN, sample);
+            }
+            if let Some(sample) = self.lp.probe_close {
+                mot.coast.add(DIR_CLOSE, sample);
+            }
+            mot.coast.at_end(DIR_CLOSE);
             let diag = &mut self.valve_records[v].diag;
             diag.last_cal_failed = false;
             diag.early_warn = false;
@@ -1525,8 +1687,7 @@ impl MotorShared {
                 io.flags.temp_gap_timeout.store(true, Ordering::SeqCst);
             }
             io.flags.temp_lock.store(true, Ordering::SeqCst);
-            self.start_learn_stroke(io, v, self.lp.gap_dir);
-            self.valvestate = self.lp.gap_next;
+            self.start_gap_next(io, v);
         }
     }
 
@@ -1545,6 +1706,8 @@ impl MotorShared {
             PresenceResult::Present
         };
         let mot = &mut self.mots[v];
+        // the test current can turn the motor
+        mot.coast.forget();
         let outcome = presence_outcome(result, mot.calibrated, mot.recal);
         mot.status = outcome.status;
         mot.fault_reason = outcome.fault;
@@ -1877,6 +2040,8 @@ fn valve_index(valve: u32) -> Option<usize> {
 mod bench;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_coast;
 #[cfg(test)]
 mod tests_mut;
 #[cfg(test)]

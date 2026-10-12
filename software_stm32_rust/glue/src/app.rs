@@ -24,7 +24,7 @@ use vdm_stm_core::lease::{
 };
 use vdm_stm_core::legacy_layout::{SensorSlot, VALVE_COUNT};
 use vdm_stm_core::motor_params::{sanitize_motor_params, MotorParams};
-use vdm_stm_core::move_classifier::StopReason;
+use vdm_stm_core::move_classifier::{StopReason, DIR_CLOSE, DIR_OPEN};
 use vdm_stm_core::protection_guard::ProtectionGuard;
 use vdm_stm_core::settings::{
     countdown, effective_learn_time, sanitize_learn_movements, LEARN_MOVEMENTS_DEFAULT,
@@ -131,7 +131,7 @@ pub struct Valve {
     pub touched: bool,
 }
 
-/// gvlvy values 20..25 (C++ `struct valve_v3_info`).
+/// gvlvy values 20..27 (C++ `struct valve_v3_info` plus the coast of 26 and 27).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValveV3Info {
     pub flags: u16,
@@ -140,6 +140,8 @@ pub struct ValveV3Info {
     pub drive: u8,
     pub retry_s: u32,
     pub retries: u8,
+    pub coast_open: u16,
+    pub coast_close: u16,
 }
 
 /// Calls of app.cpp into the other glue modules, and the hardware it uses: the clock (temperature
@@ -1345,7 +1347,7 @@ impl App {
         self.guard.suspended()
     }
 
-    /// gvlvy values 20..25.
+    /// gvlvy values 20..27.
     pub fn app_get_valve_v3(
         &self,
         m: &MotorShared,
@@ -1404,6 +1406,8 @@ impl App {
             drive: drive.position,
             retry_s: self.retry[x].remaining_s(),
             retries: self.retry[x].attempts(),
+            coast_open: mot.coast.counts(DIR_OPEN),
+            coast_close: mot.coast.counts(DIR_CLOSE),
         };
     }
 }

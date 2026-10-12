@@ -1096,7 +1096,7 @@ impl Communication {
             let timeout = env.app_lease_timeout();
             format_lease_config(&mut self.reply_line, timeout, &fs)
         } else if req.is(APP_PRE_GETVLVEXT3) {
-            // gvlvx plus flags fault fsPct drive retryS retries
+            // gvlvx plus flags fault fsPct drive retryS retries coastOpen coastClose
             match (req.argc() == 1, valve(0)) {
                 (true, Some(x)) => {
                     let base = Self::fill_valve_ext(x, env);
@@ -1109,6 +1109,8 @@ impl Communication {
                         drive: info.drive,
                         retry_s: info.retry_s,
                         retries: info.retries,
+                        coast_open: info.coast_open,
+                        coast_close: info.coast_close,
                     };
                     format_valve_ext_v3(&mut self.reply_line, &data)
                 }

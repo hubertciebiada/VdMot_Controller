@@ -6,7 +6,9 @@
 use vdm_stm_core::move_classifier::StopReason;
 use vdm_stm_core::valve_codes::{ST_PRESENT, VLV_FLAG_EARLY_PENDING};
 
-use super::bench::{sim, Boot, Case, K_FLAGS, K_LAST_STOP};
+use super::bench::{
+    sim, Boot, Case, K_COAST_CLOSE, K_COAST_OPEN, K_FLAGS, K_LAST_CNT, K_LAST_REQ, K_LAST_STOP,
+};
 
 /// gvlvx earlyStops
 const K_EARLY_STOPS: usize = 12;
@@ -67,6 +69,44 @@ fn w9_opening_steps_that_overshoot_end_at_the_open_end_and_move_back_to_the_targ
     step(&mut b, 100);
     assert_eq!(b.gvlvx(0, K_LAST_STOP), StopReason::EndStop as i64);
     assert_eq!(b.sim().valve[0].position, 3600);
+    assert_eq!(b.m().mots[0].calib_seq, calib_seq);
+    assert!(!b.m().mots[0].early_learn_due);
+    b.finish();
+}
+
+// New case: the same valve calibrated by staln. Its coast probes learn the coast of 40 pulses,
+// gvlvy reports it, every opening step stops 40 pulses earlier and the valve stays where it is
+// counted: no move reaches the open end stop, no early stop, no calibration.
+#[test]
+fn w9_with_the_coast_learned_by_the_calibration_opening_steps_stay_where_they_are_counted() {
+    let mut case = Case::new("", "a case without a golden");
+    let mut b = case.boot(sim(0x0FFF & !1), |_| {});
+    b.run_main(40000);
+    assert_eq!(b.m().mots[0].status, ST_PRESENT);
+    b.sim().valve[0].coast_pulses = 40;
+    assert_eq!(b.exchange("staln 0\n"), "staln\r\n");
+    assert!(b.run_main_until(|b| b.m().mots[0].calib_active, 10000));
+    assert!(b.run_main_until(|b| !b.m().mots[0].calib_active && b.idle(), 120000));
+    assert!(b.m().mots[0].calibrated);
+    assert_eq!(b.gvlvy(0, K_COAST_OPEN), 40);
+    assert_eq!(b.gvlvy(0, K_COAST_CLOSE), 40);
+    assert_eq!(b.m().mots[0].scaler, 36);
+    step(&mut b, 50);
+    let calib_seq = b.m().mots[0].calib_seq;
+    let mut target = 50;
+    while target < 98 {
+        target += 4;
+        let enables = b.sim().valve[0].enables;
+        step(&mut b, target);
+        assert_eq!(b.sim().valve[0].enables, enables + 1, "{target}");
+        // gvlvx lastReq: the pulses of the step, lastCnt: the pulses counted up to the stop
+        assert_eq!(b.gvlvx(0, K_LAST_REQ), 144);
+        assert_eq!(b.gvlvx(0, K_LAST_CNT), 105);
+    }
+    b.run_main(1000);
+    // the pulse that stops the motor, once per move
+    let real = b.sim().valve[0].position;
+    assert!((0..=14).contains(&(real - 98 * 36)), "{real}");
     assert_eq!(b.m().mots[0].calib_seq, calib_seq);
     assert!(!b.m().mots[0].early_learn_due);
     b.finish();

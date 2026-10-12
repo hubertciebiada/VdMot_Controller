@@ -46,6 +46,8 @@ fn golden_valve_3(r: &mut Rig) {
         drive: 50,
         retry_s: 3540,
         retries: 0,
+        coast_open: 0,
+        coast_close: 0,
     };
 }
 
@@ -349,7 +351,7 @@ fn gvlvy_the_golden_of_contracts_1_2_gvlvx_the_same_first_values_none_for_a_bad_
     let e = r.exchange("gvlvy 3\n");
     assert_eq!(
         e.reply,
-        "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0\r\n"
+        "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 66 4 50 50 3540 0 0 0\r\n"
     );
     assert_eq!(
         e.calls,
@@ -370,10 +372,12 @@ fn gvlvy_the_golden_of_contracts_1_2_gvlvx_the_same_first_values_none_for_a_bad_
         drive: 100,
         retry_s: 86400,
         retries: 255,
+        coast_open: 54,
+        coast_close: 65535,
     };
     assert_eq!(
         r.request("gvlvy 3\n"),
-        "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 1023 5 255 100 86400 255\r\n"
+        "gvlvy 3 9 50 30 17 3567 3610 43 2 0 8 1 4 0 1750 1750 1 262 6120 1023 5 255 100 86400 255 54 65535\r\n"
     );
     assert!(r.request("gvlvy 11\n").starts_with("gvlvy 11 "));
     for bad in ["gvlvy 12\n", "gvlvy\n", "gvlvy 1 2\n", "gvlvy x\n"] {

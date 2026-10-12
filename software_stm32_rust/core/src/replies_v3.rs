@@ -27,10 +27,13 @@ pub struct ValveExtV3Reply {
     pub retry_s: u32,
     /// automatic retries since the fault began
     pub retries: u8,
+    /// learned coast of an opening / closing step in pulses, 0 = not learned (coast)
+    pub coast_open: u16,
+    pub coast_close: u16,
 }
 
-/// "gvlvy" + 25 numbers of up to 11 characters, separated by spaces.
-pub const VALVE_EXT_V3_REPLY_MAX_LEN: usize = 5 + 25 * 12;
+/// "gvlvy" + 27 numbers of up to 11 characters, separated by spaces.
+pub const VALVE_EXT_V3_REPLY_MAX_LEN: usize = 5 + 27 * 12;
 
 pub fn format_valve_ext_v3<B: Storage>(out: &mut BufWriter<B>, r: &ValveExtV3Reply) -> bool {
     let mut line = ReplyLine::new(out, b"gvlvy");
@@ -41,6 +44,8 @@ pub fn format_valve_ext_v3<B: Storage>(out: &mut BufWriter<B>, r: &ValveExtV3Rep
         .u(u32::from(r.drive))
         .u(r.retry_s)
         .u(u32::from(r.retries))
+        .u(u32::from(r.coast_open))
+        .u(u32::from(r.coast_close))
         .done()
 }
 

@@ -77,6 +77,8 @@ impl Default for App {
                 drive: 0,
                 retry_s: 0,
                 retries: 0,
+                coast_open: 0,
+                coast_close: 0,
             },
         }
     }

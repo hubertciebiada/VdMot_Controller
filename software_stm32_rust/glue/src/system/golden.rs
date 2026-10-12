@@ -2,7 +2,11 @@
 //! written by `tools/rust/stm/golden` (recorder.cpp holds the format), and the transcript the
 //! Rust bench records in the same shape. A system test compares its whole transcript with the
 //! C++ one: every byte both UARTs carried, at the same millisecond, the EEPROM and the no-init
-//! cells at the end of every boot.
+//! cells at the end of every boot. A gvlvy reply is compared on its first 25 values: protocol 3
+//! adds values at the end (PROTOCOL_V2.md, extension rule), the C++ goldens carry 25.
+//!
+//! `VDM_GOLDEN_RECORD=1` makes a system test write its transcript as its golden instead of
+//! comparing it (GLUE-DESIGN-STM §7.4 names the goldens written so).
 
 use std::fmt::Write as _;
 use std::format;
@@ -185,11 +189,57 @@ pub fn parse(text: &str) -> Transcript {
     t
 }
 
+fn path(slug: &str) -> String {
+    format!("{}/tests/golden/{slug}.txt", env!("CARGO_MANIFEST_DIR"))
+}
+
 /// The golden of a case by its slug (`tools/rust/stm/golden/recorder.cpp` slug()).
 pub fn load(slug: &str) -> Transcript {
-    let path = format!("{}/tests/golden/{slug}.txt", env!("CARGO_MANIFEST_DIR"));
+    let path = path(slug);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     parse(&text)
+}
+
+/// The transcript in the format of the recorder.
+pub fn render(t: &Transcript) -> String {
+    let mut s = format!("case {}\n", t.case);
+    for b in &t.boots {
+        let _ = writeln!(s, "boot {} {}", b.index, b.reset.name());
+        for e in &b.events {
+            let _ = writeln!(s, "{}", show(e));
+        }
+        let _ = writeln!(s, "end {}", b.end);
+        for row in eeprom_rows(&b.eeprom) {
+            let _ = writeln!(s, "{row}");
+        }
+        let _ = writeln!(s, "noinit {}", escape_hex(&b.noinit));
+    }
+    s
+}
+
+/// Writes the transcript as the golden of a case (`VDM_GOLDEN_RECORD`).
+pub fn store(slug: &str, t: &Transcript) {
+    let path = path(slug);
+    std::fs::write(&path, render(t)).unwrap_or_else(|e| panic!("{path}: {e}"));
+}
+
+/// The values of a gvlvy reply the goldens compare.
+const GVLVY_COMPARED: usize = 25;
+
+/// An event as the goldens compare it: a gvlvy reply line cut to its first 25 values.
+fn compared(e: &Event) -> Event {
+    let one_line =
+        e.bytes.ends_with(b"\r\n") && e.bytes.iter().filter(|&&b| b == b'\n').count() == 1;
+    if e.dir != Dir::Tx || !e.bytes.starts_with(b"gvlvy ") || !one_line {
+        return e.clone();
+    }
+    let text = String::from_utf8_lossy(&e.bytes[..e.bytes.len() - 2]).into_owned();
+    let cut: Vec<&str> = text.split(' ').take(1 + GVLVY_COMPARED).collect();
+    Event {
+        ms: e.ms,
+        dir: e.dir,
+        bytes: format!("{}\r\n", cut.join(" ")).into_bytes(),
+    }
 }
 
 fn show(e: &Event) -> String {
@@ -228,7 +278,7 @@ pub fn diff(golden: &Transcript, rust: &Transcript) -> Option<String> {
             ));
         }
         for (k, (ge, re)) in g.events.iter().zip(&r.events).enumerate() {
-            if ge != re {
+            if compared(ge) != compared(re) {
                 let before: Vec<String> =
                     g.events[k.saturating_sub(3)..k].iter().map(show).collect();
                 return Some(format!(
@@ -330,4 +380,62 @@ fn golden_escape_and_parse_round_trip() {
     let mut other = t.clone();
     other.boots[0].events[0].ms = 3012;
     assert!(diff(&t, &other).unwrap().contains("event 0"));
+}
+
+#[test]
+fn golden_render_writes_every_golden_as_the_recorder() {
+    let dir = format!("{}/tests/golden", env!("CARGO_MANIFEST_DIR"));
+    let mut n = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(render(&parse(&text)), text, "{}", path.display());
+        n += 1;
+    }
+    assert_eq!(n, 27);
+}
+
+fn tx(bytes: &[u8]) -> Event {
+    Event {
+        ms: 7,
+        dir: Dir::Tx,
+        bytes: bytes.to_vec(),
+    }
+}
+
+#[test]
+fn golden_a_gvlvy_reply_is_compared_on_its_first_25_values() {
+    let v25 = "gvlvy 0 1 30 30 20 3600 3600 0 0 0 0 0 0 0 0 0 0 0 0 32 0 50 30 0 0";
+    let g = tx(format!("{v25}\r\n").as_bytes());
+    // values 26 and 27 of protocol 3
+    assert_eq!(compared(&tx(format!("{v25} 54 61\r\n").as_bytes())), g);
+    assert_eq!(compared(&g), g);
+    // value 25 differs
+    assert_ne!(compared(&tx(format!("{v25}1 54 61\r\n").as_bytes())), g);
+    // only a gvlvy reply of one line on USART1
+    for other in [
+        tx(format!("gvlvx{} 54\r\n", &v25[5..]).as_bytes()),
+        tx(format!("{v25} 54\r\n{v25} 54\r\n").as_bytes()),
+        tx(format!("{v25} 54").as_bytes()),
+        Event {
+            dir: Dir::Dbg,
+            ..tx(format!("{v25} 54\r\n").as_bytes())
+        },
+    ] {
+        assert_eq!(compared(&other), other);
+    }
+    let mut t = Transcript::default();
+    t.boots.push(boot_end(
+        0,
+        Reset::PowerOn,
+        std::vec![g],
+        "case",
+        &[],
+        &[0; NOINIT_SIZE],
+    ));
+    let mut longer = t.clone();
+    longer.boots[0].events[0] = tx(format!("{v25} 54 61\r\n").as_bytes());
+    assert_eq!(diff(&t, &longer), None);
 }

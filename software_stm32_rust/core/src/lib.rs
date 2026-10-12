@@ -15,6 +15,7 @@ extern crate std;
 pub mod arg_parser;
 pub mod buf_writer;
 pub mod calibration;
+pub mod coast;
 pub mod config_blocks;
 pub mod config_store;
 pub mod eeprom_layout;
