@@ -1343,11 +1343,15 @@ where
 
     /// A valve sensor or a published sensor segment changed after the last run (the STM
     /// reports assignments only after its first 1-Wire read): another automatic run, through
-    /// the gate like the one after a connect.
+    /// the gate like the one after a connect. Only settled inputs are compared: a short
+    /// degraded link (the STM's daily 1-Wire re-scan) clears `sensors_settled` for a second,
+    /// and the inputs of that second must not start a run; the revision stays unchecked until
+    /// the inputs settle again.
     fn check_discovery_inputs(&mut self, now: u32) {
         if self.run.running()
             || self.cfg.mqtt.mode != MqttMode::MqttHa
             || !self.cfg.mqtt.ha_discovery_on_connect
+            || !self.snap.sensors_settled
             || self.disc_key_revision == self.snap_revision
         {
             return;

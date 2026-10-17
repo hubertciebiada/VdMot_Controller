@@ -107,6 +107,42 @@ fn gate_inputs_that_change_and_change_back_during_a_run_start_no_other() {
 }
 
 #[test]
+fn gate_inputs_seen_while_the_stm_is_not_settled_start_no_run_until_it_settles() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    use_ha(&rig);
+    link_up(&rig);
+    rig.snap(|s| s.sensors_settled = true);
+    rig.publish_snap();
+    c.begin();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 1);
+    // the STM's daily 1-Wire re-scan: one degraded second, the valve sensors are not settled
+    rig.snap(|s| s.sensors_settled = false);
+    rig.publish_snap();
+    rig.run(&mut c, PASSES_PER_SECOND);
+    rig.snap(|s| s.sensors_settled = true);
+    rig.publish_snap();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 1);
+    // an STM restart: the assignments change while not settled, one run once they settled
+    rig.snap(|s| s.sensors_settled = false);
+    rig.publish_snap();
+    rig.run(&mut c, PASSES_PER_SECOND);
+    rig.snap(|s| s.valves[0].temp1 = 215);
+    rig.publish_snap();
+    rig.run(&mut c, 5 * PASSES_PER_SECOND);
+    assert!(!rig.shared.status().discovery_running);
+    assert_eq!(runs(&rig), 1);
+    rig.snap(|s| s.sensors_settled = true);
+    rig.publish_snap();
+    rig.run(&mut c, 1);
+    assert!(rig.shared.status().discovery_running);
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 2);
+}
+
+#[test]
 fn gate_without_a_settling_stm_the_run_starts_120_s_after_the_connect() {
     let rig = Rig::new();
     let mut c = rig.client();
