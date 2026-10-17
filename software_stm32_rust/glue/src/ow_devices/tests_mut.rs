@@ -75,30 +75,47 @@ fn temperature_loop_a_cycle_without_ds2438_ends_after_the_last_temperature() {
 }
 
 #[test]
-fn temperature_loop_a_search_takes_three_calls_after_the_idle_one_counts_are_0_meanwhile() {
+fn temperature_loop_a_search_takes_one_search_pass_per_call_the_sensors_change_at_its_end() {
     let mut r = Rig::new();
     r.bus.add_one_wire(0x28, 1, 0);
     r.bus.add_one_wire(0x26, 2, 0);
     r.setup();
-    assert_eq!(r.ow.sensors.no_of_ds18_devices, 1);
-    assert_eq!(r.ow.sensors.no_of_ds2438_devices, 1);
+    r.ow.sensors.tempsensors[0].temperature = 215;
+    let before = r.ow.sensors;
+    assert_eq!(before.no_of_ds18_devices, 1);
+    assert_eq!(before.no_of_ds2438_devices, 1);
+    r.bus.devices.remove(0);
+    r.bus.add_one_wire(0x28, 3, 0);
+    r.bus.add_one_wire(0x28, 4, 0);
     // T_INIT
     r.step();
     r.temp_command(TEMP_CMD_NEWSEARCH);
     r.clear_calls();
-    // T_IDLE -> T_SEARCH
+    // T_IDLE -> T_SEARCH, the start of begin
     r.step();
-    // begin
     r.step();
-    assert_eq!(r.ow.sensors.no_of_ds18_devices, 0);
-    assert_eq!(r.ow.sensors.no_of_ds2438_devices, 0);
-    // device count
-    r.step();
-    assert!(r.calls_of("app_match_sensors").is_empty());
-    // enumeration
-    r.step();
+    assert_eq!(r.bus.begins, 2);
+    // begin: 3 devices and the pass that ends it, then the addresses: 3 and the end; the ESP
+    // reads the sensors of the last search until the last call
+    let searches = r.bus.searches;
+    for i in 1..=8 {
+        assert!(r.calls_of("app_match_sensors").is_empty(), "call {i}");
+        assert_eq!(r.ow.sensors, before, "call {i}");
+        r.step();
+        assert_eq!(r.bus.searches, searches + i, "call {i}");
+    }
     assert_eq!(r.calls_of("app_match_sensors").len(), 1);
-    assert_eq!(r.ow.sensors.no_of_ds18_devices, 1);
+    assert_eq!(r.ow.sensors.no_of_devices, 3);
+    assert_eq!(r.ow.sensors.no_of_ds18_devices, 2);
+    assert_eq!(r.ow.sensors.no_of_ds2438_devices, 1);
+    assert_eq!(r.ow.sensors.tempsensors[0].address, r.bus.devices[1].rom);
+    assert_eq!(r.ow.sensors.tempsensors[0].temperature, TEMP_UNKNOWN);
+    assert_eq!(r.ow.sensors.voltsensors[0].address, r.bus.devices[0].rom);
+    assert_eq!(r.scan_age(), 0);
+    // the cycle follows
+    r.step();
+    r.step();
+    assert_eq!(r.bus.requests, 1);
 }
 
 #[test]
@@ -138,15 +155,18 @@ fn the_device_count_of_a_search_is_the_one_of_the_library() {
     r.setup();
     r.temp_command(TEMP_CMD_NEWSEARCH);
     r.bus.add_one_wire(0x01, 9, 0);
-    // Init, Idle -> Search, begin, count
-    for _ in 0..4 {
+    // Init, Idle -> Search, the start, begin (2 devices, the end), 2 addresses
+    for _ in 0..8 {
         r.step();
     }
-    assert_eq!(r.ow.sensors.no_of_devices, 2);
+    assert_eq!(r.bus.device_count, 2);
+    assert_eq!(r.ow.sensors.no_of_devices, 1);
     // a second search command while one waits is dropped; lock and unlock are not commands
     r.temp_command(TEMP_CMD_NEWSEARCH);
     r.temp_command(7);
+    // the end of the addresses
     r.step();
+    assert_eq!(r.ow.sensors.no_of_devices, 2);
     assert_eq!(r.ow.temp_cmd, TEMP_CMD_NONE);
     r.temp_command(7);
     assert_eq!(r.ow.temp_cmd, 7);

@@ -150,7 +150,7 @@ fn one_wire_search_in_list_order_crc_of_lib_core_dallas_temperature_on_the_bus()
     let gone = bus.add_one_wire(0x28, 3, 0);
     bus.devices[gone].present = false;
     bus.sensors_begin();
-    assert_eq!(bus.sensors_device_count(), 2);
+    assert_eq!(bus.device_count, 2);
     assert_eq!(bus.sensors_resolution(), 12);
     assert_eq!(
         DallasTemperature::millis_to_wait_for_conversion(bus.sensors_resolution()),
@@ -179,7 +179,7 @@ fn one_wire_search_in_list_order_crc_of_lib_core_dallas_temperature_on_the_bus()
     // a device with a bad CRC is not counted
     bus.devices[t].rom[7] ^= 1;
     bus.sensors_begin();
-    assert_eq!(bus.sensors_device_count(), 1);
+    assert_eq!(bus.device_count, 1);
 }
 
 #[test]

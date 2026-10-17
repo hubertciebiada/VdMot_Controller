@@ -98,6 +98,18 @@ impl Rig {
         self.log.borrow_mut().clear();
     }
 
+    /// runs the loop until a search has matched the sensors, at most n calls; the number of
+    /// calls
+    pub fn search(&mut self, n: u32) -> u32 {
+        for i in 1..=n {
+            self.step();
+            if !self.calls_of("app_match_sensors").is_empty() {
+                return i;
+            }
+        }
+        0
+    }
+
     /// runs the loop until the cycle reports its end, at most n calls; the number of calls
     pub fn cycle(&mut self, n: u32) -> u32 {
         for i in 1..=n {
@@ -200,9 +212,8 @@ fn temperature_loop_no_request_while_locked_a_search_re_enumerates_and_matches_t
     r.temp_command(TEMP_CMD_NEWSEARCH);
     r.clear_calls();
     assert_ne!(r.cycle(200), 0);
-    for _ in 0..4 {
-        r.step();
-    }
+    // Idle -> Search, the start, begin and the addresses: one device per call and the end
+    assert_eq!(r.search(20), 2 + 3 + 3);
     assert_eq!(r.ow.sensors.no_of_ds18_devices, 2);
     assert_eq!(r.calls_of("app_match_sensors").len(), 1);
     assert_eq!(r.scan_age(), 0);

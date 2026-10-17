@@ -159,6 +159,63 @@ fn begin_stops_after_64_search_passes() {
     assert_eq!(DALLAS_MAX_SEARCH_PASSES, 64);
 }
 
+/// Search passes on the bus: SEARCH ROM right after a reset.
+fn search_passes(ow: &mut OneWire<OneWireSim>) -> usize {
+    ow.line()
+        .events
+        .windows(2)
+        .filter(|w| matches!(w, [Event::Reset(_), Event::Write(0xF0)]))
+        .count()
+}
+
+#[test]
+fn begin_in_steps_one_search_pass_per_call_the_result_of_begin() {
+    let devices = || {
+        vec![
+            with_config(SimDevice::ds18b20(1, 0), TEMP_10_BIT),
+            SimDevice::ds2438(2, 0),
+            with_config(SimDevice::ds18b20(3, 0), TEMP_11_BIT),
+        ]
+    };
+    let mut once = bus(devices());
+    let mut at_once = DallasTemperature::default();
+    at_once.begin(&mut once);
+    let mut ow = bus(devices());
+    let mut dallas = DallasTemperature::default();
+    dallas.begin_start(&mut ow);
+    assert_eq!(search_passes(&mut ow), 0);
+    for i in 1..=3 {
+        assert!(dallas.begin_step(&mut ow), "step {i}");
+        assert_eq!(search_passes(&mut ow), i);
+        assert_eq!(usize::from(dallas.get_device_count()), i);
+    }
+    // the call after the last device ends it without a search
+    assert!(!dallas.begin_step(&mut ow));
+    assert_eq!(search_passes(&mut ow), 3);
+    assert_eq!(dallas, at_once);
+    assert_eq!(dallas.get_resolution(), 11);
+    // a new start counts from 0 again
+    dallas.begin_start(&mut ow);
+    assert_eq!(dallas.get_device_count(), 0);
+    assert!(dallas.begin_step(&mut ow));
+    assert_eq!(dallas.get_device_count(), 1);
+}
+
+#[test]
+fn begin_in_steps_stops_after_64_search_passes() {
+    let devices: Vec<SimDevice> = (0..70u8).map(|i| SimDevice::ds18b20(i, 0)).collect();
+    let mut ow = bus(devices);
+    let mut dallas = DallasTemperature::default();
+    dallas.begin_start(&mut ow);
+    let mut steps = 0;
+    while dallas.begin_step(&mut ow) {
+        steps += 1;
+    }
+    assert_eq!(steps, 64);
+    assert_eq!(search_passes(&mut ow), 64);
+    assert_eq!(dallas.get_device_count(), 64);
+}
+
 // ---------------------------------------------------------------- resolution, families, waits
 
 #[test]

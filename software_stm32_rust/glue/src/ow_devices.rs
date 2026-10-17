@@ -1,7 +1,8 @@
 //! The 1-Wire devices (`software_stm32/src/owDevices.cpp`, `include/owDevices.h`): enumeration of
 //! the DS18x20 temperature sensors and DS2438 monitors in search order, the temperature state
 //! machine of the main loop (one step per call of the 10 ms branch), the re-scan 24 h after the
-//! last enumeration, the sensor JSON of the debug terminal.
+//! last enumeration, the sensor JSON of the debug terminal. Unlike the C++, the search of the
+//! state machine walks the bus one device per call and changes the sensors only at its end.
 
 use crate::dallas::{DallasTemperature, DEVICE_DISCONNECTED_RAW};
 use crate::ds2438::{Ds2438, DS2438_BEGIN_RETRIES};
@@ -80,9 +81,14 @@ pub trait OwBus {
     /// `oneWire.search(addr)` (normal search)
     fn search(&mut self, addr: &mut DeviceAddress) -> bool;
     /// `sensors.begin()`
-    fn sensors_begin(&mut self);
-    /// `sensors.getDeviceCount()`
-    fn sensors_device_count(&self) -> u8;
+    fn sensors_begin(&mut self) {
+        self.sensors_begin_start();
+        while self.sensors_begin_step() {}
+    }
+    /// `sensors.begin()` in steps: the enumeration starts over
+    fn sensors_begin_start(&mut self);
+    /// one search pass of `sensors.begin()`; false when it has ended
+    fn sensors_begin_step(&mut self) -> bool;
     /// `sensors.setWaitForConversion(flag)`
     fn sensors_set_wait_for_conversion(&mut self, flag: bool);
     /// `sensors.requestTemperatures()`
@@ -127,12 +133,12 @@ impl<L: OneWireLine, C: Clock> OwBus for LineBus<L, C> {
         self.ow.search(addr, true)
     }
 
-    fn sensors_begin(&mut self) {
-        self.sensors.begin(&mut self.ow);
+    fn sensors_begin_start(&mut self) {
+        self.sensors.begin_start(&mut self.ow);
     }
 
-    fn sensors_device_count(&self) -> u8 {
-        self.sensors.get_device_count()
+    fn sensors_begin_step(&mut self) -> bool {
+        self.sensors.begin_step(&mut self.ow)
     }
 
     fn sensors_set_wait_for_conversion(&mut self, flag: bool) {
@@ -176,6 +182,32 @@ pub trait OwDevicesEnv {
     fn set_temp_lock(&mut self, locked: bool);
 }
 
+/// An enumeration in steps (`setDeviceAddress` one search pass per call): the devices found
+/// so far; the sensors keep the last enumeration until it ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Scan {
+    ds18: [DeviceAddress; MAXONEWIRECNT],
+    ds2438: [DeviceAddress; MAXDS2438CNT],
+    /// every device with a valid ROM CRC
+    devices: u8,
+    ds18_count: u8,
+    ds2438_count: u8,
+    passes: u8,
+}
+
+impl Default for Scan {
+    fn default() -> Self {
+        Scan {
+            ds18: [[0; 8]; MAXONEWIRECNT],
+            ds2438: [[0; 8]; MAXDS2438CNT],
+            devices: 0,
+            ds18_count: 0,
+            ds2438_count: 0,
+            passes: 0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum TState {
     #[default]
@@ -196,6 +228,8 @@ pub struct OwDevices {
     temp_cmd: i32,
     /// failed reads and the last good value of each sensor (core filter_temperature)
     temptrack: [TempTrack; MAXONEWIRECNT],
+    /// the enumeration of a search in progress
+    scan: Scan,
     /// seconds since the last enumeration
     scan_age_s: u32,
     /// millis() of the last second counted in scan_age_s
@@ -213,6 +247,7 @@ impl Default for OwDevices {
             sensors: OwSensors::default(),
             temp_cmd: TEMP_CMD_NONE,
             temptrack: [TempTrack::default(); MAXONEWIRECNT],
+            scan: Scan::default(),
             scan_age_s: 0,
             scan_second_ms: 0,
             tempstate: TState::Init,
@@ -245,51 +280,84 @@ impl OwDevices {
     /// voltsensors (DS2438) in search order; devices beyond the array sizes are ignored, at
     /// most MAX_ONEWIRE_SEARCH search passes.
     pub fn set_device_address(&mut self, bus: &mut impl OwBus, clock: &impl Clock) {
-        let mut addr: DeviceAddress = [0; 8];
-        let mut devices: u8 = 0;
-        let mut ds18: usize = 0;
-        let mut ds2438: usize = 0;
+        self.scan_start(bus);
+        while self.scan_step(bus) {}
+        self.scan_finish(clock);
+    }
 
+    /// `setDeviceAddress` in steps: the enumeration starts from the first device.
+    fn scan_start(&mut self, bus: &mut impl OwBus) {
         bus.reset_search();
-        for _ in 0..MAX_ONEWIRE_SEARCH {
-            if !bus.search(&mut addr) {
-                break;
+        self.scan = Scan::default();
+    }
+
+    /// One search pass of `setDeviceAddress` (~14 ms on the bus); false when the enumeration
+    /// has ended.
+    fn scan_step(&mut self, bus: &mut impl OwBus) -> bool {
+        let scan = &mut self.scan;
+        if scan.passes >= MAX_ONEWIRE_SEARCH {
+            return false;
+        }
+        scan.passes += 1;
+        let mut addr: DeviceAddress = [0; 8];
+        if !bus.search(&mut addr) {
+            return false;
+        }
+        if crc8(&addr[..7]) != addr[7] {
+            return true;
+        }
+        scan.devices += 1;
+        if addr[0] == DS2438_FAMILY {
+            if let Some(a) = scan.ds2438.get_mut(usize::from(scan.ds2438_count)) {
+                *a = addr;
+                scan.ds2438_count += 1;
             }
-            if crc8(&addr[..7]) != addr[7] {
-                continue;
+        } else if DallasTemperature::valid_family(&addr) {
+            if let Some(a) = scan.ds18.get_mut(usize::from(scan.ds18_count)) {
+                *a = addr;
+                scan.ds18_count += 1;
             }
-            devices += 1;
-            if addr[0] == DS2438_FAMILY {
-                if let Some(v) = self.sensors.voltsensors.get_mut(ds2438) {
-                    v.address = addr;
-                    ds2438 += 1;
-                }
-            } else if DallasTemperature::valid_family(&addr) {
-                if let Some(t) = self.sensors.tempsensors.get_mut(ds18) {
-                    // a different sensor at this index must not inherit the old temperature
-                    if t.address != addr {
-                        t.address = addr;
-                        t.temperature = TEMP_UNKNOWN;
-                        self.temptrack[ds18] = TempTrack::default();
-                    }
-                    ds18 += 1;
-                }
+        }
+        true
+    }
+
+    /// The end of `setDeviceAddress`: the devices found replace the sensors.
+    fn scan_finish(&mut self, clock: &impl Clock) {
+        let OwDevices {
+            sensors,
+            scan,
+            temptrack,
+            ..
+        } = self;
+        let ds18 = usize::from(scan.ds18_count);
+        let ds2438 = usize::from(scan.ds2438_count);
+        let temps = sensors.tempsensors.iter_mut().zip(temptrack.iter_mut());
+        for ((t, track), &addr) in temps.zip(scan.ds18.iter()).take(ds18) {
+            // a different sensor at this index must not inherit the old temperature
+            if t.address != addr {
+                t.address = addr;
+                t.temperature = TEMP_UNKNOWN;
+                *track = TempTrack::default();
             }
+        }
+        let volts = sensors.voltsensors.iter_mut().zip(scan.ds2438.iter());
+        for (v, &addr) in volts.take(ds2438) {
+            v.address = addr;
         }
 
         // forget sensors that are no longer present
-        for t in self.sensors.tempsensors.iter_mut().skip(ds18) {
+        for t in sensors.tempsensors.iter_mut().skip(ds18) {
             t.address = [0; 8];
             t.temperature = TEMP_UNKNOWN;
         }
-        for v in self.sensors.voltsensors.iter_mut().skip(ds2438) {
+        for v in sensors.voltsensors.iter_mut().skip(ds2438) {
             v.address = [0; 8];
             v.vad = 0;
         }
 
-        self.sensors.no_of_devices = devices;
-        self.sensors.no_of_ds18_devices = ds18 as u8;
-        self.sensors.no_of_ds2438_devices = ds2438 as u8;
+        sensors.no_of_devices = scan.devices;
+        sensors.no_of_ds18_devices = scan.ds18_count;
+        sensors.no_of_ds2438_devices = scan.ds2438_count;
         self.scan_age_s = 0;
         self.scan_second_ms = clock.millis();
     }
@@ -309,7 +377,10 @@ impl OwDevices {
     /// `temperature_loop`: one step of the temperature cycle: request the conversion, wait
     /// for it (CONV_WAIT_STEPS + conversion time / 10 calls), read one sensor per call (a
     /// failed read is repeated once), then one DS2438 per call; a search replaces the cycle
-    /// when requested (stons) or 24 h after the last one, never while the lock holds.
+    /// when requested (stons) or 24 h after the last one (that one never while the lock
+    /// holds). The search takes one device per call, first of `sensors.begin()`, then of
+    /// `setDeviceAddress` (C++: both in one call each, up to ~0.8 s with 15 sensors, which
+    /// the ESP saw as a timeout once a day); the sensors change at its end.
     pub fn loop_(&mut self, bus: &mut impl OwBus, clock: &impl Clock, env: &mut impl OwDevicesEnv) {
         match self.tempstate {
             // C++ also sets the timer to CONV_INTERVALL / 10 here: the request sets it before
@@ -390,24 +461,25 @@ impl OwDevices {
             TState::Search => match self.substate {
                 // start a new search
                 0 => {
-                    bus.sensors_begin();
+                    bus.sensors_begin_start();
                     self.substate = 1;
-                    self.sensors.no_of_ds18_devices = 0;
-                    self.sensors.no_of_ds2438_devices = 0;
                 }
-                // read the device count
+                // the library's enumeration, one device per call
                 1 => {
-                    self.sensors.no_of_devices = bus.sensors_device_count();
-                    self.devcnt = 0;
-                    self.substate = 2;
+                    if !bus.sensors_begin_step() {
+                        self.scan_start(bus);
+                        self.substate = 2;
+                    }
                 }
-                // the addresses of all devices
+                // the addresses, one device per call, then the sensors change at once
                 _ => {
-                    self.set_device_address(bus, clock);
-                    // sensor indexes of the valves refer to the new search order
-                    env.app_match_sensors();
-                    self.temp_cmd = TEMP_CMD_NONE;
-                    self.tempstate = TState::Idle;
+                    if !self.scan_step(bus) {
+                        self.scan_finish(clock);
+                        // sensor indexes of the valves refer to the new search order
+                        env.app_match_sensors();
+                        self.temp_cmd = TEMP_CMD_NONE;
+                        self.tempstate = TState::Idle;
+                    }
                 }
             },
         }

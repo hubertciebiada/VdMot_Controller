@@ -53,6 +53,8 @@ pub struct DallasTemperature {
     parasite: bool,
     bit_resolution: u8,
     wait_for_conversion: bool,
+    /// search passes of the enumeration begun by begin_start()
+    begin_passes: u8,
 }
 
 impl Default for DallasTemperature {
@@ -63,6 +65,7 @@ impl Default for DallasTemperature {
             parasite: false,
             bit_resolution: 9,
             wait_for_conversion: true,
+            begin_passes: 0,
         }
     }
 }
@@ -72,16 +75,31 @@ impl DallasTemperature {
     /// the highest resolution of the DS18 family devices. At most DALLAS_MAX_SEARCH_PASSES
     /// passes (a disturbed bus can keep the search returning devices).
     pub fn begin<L: OneWireLine>(&mut self, ow: &mut OneWire<L>) {
-        let mut address: DeviceAddress = [0; 8];
+        self.begin_start(ow);
+        while self.begin_step(ow) {}
+    }
+
+    /// begin() in steps (not in the library): the enumeration starts from the first device,
+    /// [`begin_step`](Self::begin_step) does one search pass per call, so the main loop of
+    /// the STM answers the ESP between two devices.
+    pub fn begin_start<L: OneWireLine>(&mut self, ow: &mut OneWire<L>) {
         ow.reset_search();
         self.devices = 0;
-        for _ in 0..DALLAS_MAX_SEARCH_PASSES {
-            if !ow.search(&mut address, true) {
-                break;
-            }
-            if !Self::valid_address(&address) {
-                continue;
-            }
+        self.begin_passes = 0;
+    }
+
+    /// One search pass of begin() and the reads of the device it finds (power supply,
+    /// resolution: ~34 ms on the bus for a DS18B20); false when the enumeration has ended.
+    pub fn begin_step<L: OneWireLine>(&mut self, ow: &mut OneWire<L>) -> bool {
+        if self.begin_passes >= DALLAS_MAX_SEARCH_PASSES {
+            return false;
+        }
+        self.begin_passes += 1;
+        let mut address: DeviceAddress = [0; 8];
+        if !ow.search(&mut address, true) {
+            return false;
+        }
+        if Self::valid_address(&address) {
             self.devices += 1;
             if Self::valid_family(&address) {
                 if !self.parasite && Self::read_power_supply(ow, &address) {
@@ -91,6 +109,7 @@ impl DallasTemperature {
                 self.bit_resolution = self.bit_resolution.max(b);
             }
         }
+        true
     }
 
     /// devices found by the last begin()

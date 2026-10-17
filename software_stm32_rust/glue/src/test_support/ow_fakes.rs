@@ -115,28 +115,27 @@ impl OwBus for FakeOwBus {
 
     /// enumerates like the library: every valid address counts, the DS18 family sets the
     /// resolution
-    fn sensors_begin(&mut self) {
+    fn sensors_begin_start(&mut self) {
         self.begins += 1;
         self.device_count = 0;
-        let mut a = [0u8; 8];
         self.reset_search();
-        while self.search(&mut a) {
-            if !DallasTemperature::valid_address(&a) {
-                continue;
-            }
-            self.device_count += 1;
-            if !DallasTemperature::valid_family(&a) {
-                continue;
-            }
-            let bits = self.find(&a).map_or(0, |d| d.resolution);
-            if bits > self.bit_resolution {
-                self.bit_resolution = bits;
-            }
-        }
     }
 
-    fn sensors_device_count(&self) -> u8 {
-        self.device_count
+    fn sensors_begin_step(&mut self) -> bool {
+        let mut a = [0u8; 8];
+        if !self.search(&mut a) {
+            return false;
+        }
+        if DallasTemperature::valid_address(&a) {
+            self.device_count += 1;
+            if DallasTemperature::valid_family(&a) {
+                let bits = self.find(&a).map_or(0, |d| d.resolution);
+                if bits > self.bit_resolution {
+                    self.bit_resolution = bits;
+                }
+            }
+        }
+        true
     }
 
     fn sensors_set_wait_for_conversion(&mut self, flag: bool) {

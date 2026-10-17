@@ -83,7 +83,6 @@ fn setup_enumerates_the_bus_in_rom_search_order() {
     // the library counted the devices and does not wait for conversions
     assert_eq!(r.bus.sensors.get_device_count(), 4);
     assert!(!r.bus.sensors.get_wait_for_conversion());
-    assert_eq!(r.bus.sensors_device_count(), 4);
     assert_eq!(r.bus.sensors_resolution(), 12);
     // DS2438 begin took the first device of the bus
     assert_eq!(*r.bus.bm.address(), roms[1]);
@@ -113,8 +112,10 @@ fn a_new_search_finds_a_device_added_on_the_bus() {
     r.ow.setup(&mut r.bus, &r.board);
     r.sim().devices.push(SimDevice::ds18b20(5, 160));
     r.ow.temp_command(TEMP_CMD_NEWSEARCH, &mut r.env);
-    // Init, Idle -> Search, begin, count, enumeration
-    for _ in 0..5 {
+    // Init, Idle -> Search, the start, begin and the addresses: 5 devices and the end each
+    for _ in 0..3 + 6 + 6 {
+        assert!(r.env.log.borrow().calls_of("app_match_sensors").is_empty());
+        assert_eq!(r.ow.sensors.no_of_devices, 4);
         r.step();
     }
     assert_eq!(r.ow.sensors.no_of_devices, 5);
@@ -180,5 +181,5 @@ fn line_bus_search_and_reset_search_pass_through() {
     assert_eq!(*r.bus.bm.address(), monitor);
     assert_eq!(r.bus.bm_read_vad(), 4.5);
     r.bus.sensors_begin();
-    assert_eq!(r.bus.sensors_device_count(), 4);
+    assert_eq!(r.bus.sensors.get_device_count(), 4);
 }

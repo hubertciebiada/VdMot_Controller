@@ -114,9 +114,8 @@ fn the_bus_is_enumerated_again_24_h_after_the_last_enumeration_not_while_locked(
     assert_eq!(r.ow.sensors.no_of_ds18_devices, 1);
     r.temp_command(TEMP_CMD_UNLOCK);
     r.clear_calls();
-    for _ in 0..4 {
-        r.step();
-    }
+    // Idle -> Search, the start, 2 devices and the end of begin, 2 and the end of the addresses
+    assert_eq!(r.search(20), 2 + 3 + 3);
     assert_eq!(r.bus.begins, 2);
     assert_eq!(r.ow.sensors.no_of_ds18_devices, 2);
     assert_eq!(r.calls_of("app_match_sensors").len(), 1);
@@ -137,9 +136,8 @@ fn stons_searches_at_once_also_while_the_temperature_machine_is_locked() {
     r.temp_command(TEMP_CMD_NEWSEARCH);
     r.temp_command(TEMP_CMD_LOCK);
     assert!(r.temp_locked());
-    for _ in 0..5 {
-        r.step();
-    }
+    // Init, Idle -> Search, the start, one device and the end of begin and of the addresses
+    assert_eq!(r.search(20), 3 + 2 + 2);
     assert_eq!(r.bus.begins, 2);
     assert_eq!(r.scan_age(), 0);
     for _ in 0..20 {
