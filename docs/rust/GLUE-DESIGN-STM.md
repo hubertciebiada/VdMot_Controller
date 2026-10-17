@@ -774,7 +774,7 @@ A C++ STM flash takes 26-30 s for 70 KB through the ESP; a 128 KiB image takes a
 | `test_main.cpp`, `__mut` | 10 + 2 | start-up order, `setup_system` order, branch periods, LED and button ticks, watchdog feed | `main_loop/` |
 | `test_motor.cpp` (+ C1 wiring), `__mut`, `_v3` | 7 + 42 + 22 | safe pins, full calibration, partial move, open circuit, presence test; clamping, early checks, service move, PSU and lock timing, retries, motor machine, `TimerHandler0`; partial end stops, keep-status and reference moves, `sstop`, short, inrush, temperature gap | `motor/` (C1 and C2 as `BoardRev` values in one binary) |
 | `test_otasupport.cpp` | 6 | 8E1 set-up and 10 ms drop, window length 3001, LED period, `BEEFIT` and jump, block rule, last tick | `vdm-stm-boot` `window/` |
-| `test_owDevices.cpp`, `__mut`, `_s7` | 5 + 8 + 6 | enumeration, cycle, lock and search, JSON; retries, held values, 85.0 °C rule, 24 h re-scan | `ow_devices/` |
+| `test_owDevices.cpp`, `__mut`, `_s7` | 5 + 8 + 6 | enumeration, cycle, lock and search, JSON; retries, held values, 85.0 °C rule, 24 h re-scan; since 2.2.6 the search of the loop takes one device per call and changes the sensors at its end (`__mut` line 84 renamed) | `ow_devices/` |
 | `test_sysstat.cpp` | 11 | boot reason from CSR, reset counter in `.noinit`, uptime across the wrap, safe mode | `vdm-stm-boot` `capture/`, glue `sysstat/` |
 | `test_system_boot`, `_calib`, `_config`, `_io`, `_motion`, `_proto3` | 3 + 3 + 5 + 2 + 8 + 6 | the whole glue with the valve sim over the UART across resets and power cycles | `glue/src/system/tests_*.rs` |
 | `test_terminal.cpp`, `__mut` | 12 + 12 | commands, outputs, `sena` limits, read budget, argument ranges | `terminal/` |

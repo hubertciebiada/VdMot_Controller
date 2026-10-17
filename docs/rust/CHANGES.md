@@ -8,6 +8,39 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.6-revamped
+
+STM32 and ESP32 release: the daily 1-Wire re-scan of the STM no longer stalls its link to the
+ESP, and the ESP no longer re-sends the Home Assistant discovery for it. Flash both; either MCU
+can be updated first.
+
+### STM32: the 1-Wire search in steps
+
+- The search of `stons` and the re-scan 24 h after the last enumeration walk the bus one device
+  per pass of the 10 ms loop: one ROM search pass, for a DS18 sensor also the reads of its power
+  supply and resolution, at most about 35 ms. 2.1.7 walked the bus twice in two passes, the
+  first one 0.4 to 0.8 s long with 12 to 15 sensors. The ESP waits 400 ms for a reply, so every
+  re-scan cost a timeout, a resent request, a stray reply and a degraded link for one second:
+  `link_degraded` and `link_up` in the event log once a day, at the time of day the STM started.
+  The sensors (`gonec`, `goned`, `gowvc`, `gowvd`, the sensor indexes of the valves) keep the
+  last enumeration until the search ends and change at once then; 2.1.7 reported 0 sensors for
+  one pass in between. A search takes 2 x (devices + 1) + 1 passes, about 1 s with 15 sensors.
+  It still starts only when no valve moves (the re-scan) or at once (`stons`), and runs to its
+  end once started, like a temperature cycle. The enumeration at the start of the STM stays one
+  walk, before the link starts
+  ([ow_devices.rs](../../software_stm32_rust/glue/src/ow_devices.rs)).
+
+### ESP32: no discovery run for an unsettled second
+
+- An automatic Home Assistant discovery run after a change of the discovery inputs compares only
+  settled STM inputs (`sensorsSettled`: link up, re-sync done, sensor grace over). The degraded
+  second of the daily re-scan cleared them, the valve sensors left the inputs for that second,
+  and a full run (142 to 161 retained configs on the installed controllers) followed on about
+  one day in three. A change while the STM is not settled (a restart of the STM, `stons`) still
+  starts one run once the inputs settled; an STM that never settles gets only the run after a
+  connect (at most 120 s later), as before
+  ([DESIGN.md](../revamped/DESIGN.md#11-ha-discovery)).
+
 ## 2.2.5-revamped
 
 STM32 release: only the closing coast is learned. The ESP32 firmware is the one of 2.2.4 with the version

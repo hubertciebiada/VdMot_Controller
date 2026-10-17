@@ -821,6 +821,11 @@ of 20, the two coast sensors after the calibration state.
   once per step of the STM start-up. The last of those runs had the settled
   inputs, so the set published is the same. Manual runs and the HA birth
   start at once and answer a waiting automatic run.
+- An input change is compared only while the STM inputs are settled (Rust
+  2.2.6): a degraded second of the link (the STM's daily 1-Wire re-scan up to
+  2.2.5) cleared `sensorsSettled`, dropped the valve sensors from the key and
+  started a full run once the link was up again. Changes made while not
+  settled are compared at the first settled snapshot.
 - Memory: the `DiscoveryContext` (3.4 KB) and the 2 KB payload buffer are
   one heap block for the duration of a run (no memory: the run stays
   requested and the next pass tries again).

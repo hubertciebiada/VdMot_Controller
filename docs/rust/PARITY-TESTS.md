@@ -3412,7 +3412,7 @@ Rust tests in `glue/src/ow_devices/tests_mut.rs` unless a path is given.
 | 49 | temperature_setup again: the known sensors start over without a temperature | exact | `temperature_setup_again_the_known_sensors_start_over_without_a_temperature` |
 | 61 | setDeviceAddress: at most 8 DS2438, a vanished one is cleared | exact | `set_device_address_at_most_8_ds2438_a_vanished_one_is_cleared` |
 | 75 | temperature_loop: a cycle without DS2438 ends after the last temperature | exact | `temperature_loop_a_cycle_without_ds2438_ends_after_the_last_temperature` |
-| 84 | temperature_loop: a search takes three calls after the idle one, counts are 0 meanwhile | exact | `temperature_loop_a_search_takes_three_calls_after_the_idle_one_counts_are_0_meanwhile` |
+| 84 | temperature_loop: a search takes three calls after the idle one, counts are 0 meanwhile | manual | `temperature_loop_a_search_takes_one_search_pass_per_call_the_sensors_change_at_its_end` (2.2.6: the search in steps, [CHANGES.md](CHANGES.md#226-revamped)) |
 | 105 | print_sensordata: one sensor is a list of one | exact | `print_sensordata_one_sensor_is_a_list_of_one` |
 
 ## software_stm32/test/native/glue/test_owDevices_s7.cpp (6)

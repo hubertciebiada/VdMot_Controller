@@ -218,7 +218,8 @@ a start with BOOT0; only the bench proves the ROM (§5.9).
 - The main loop reloads only when `valve_loop_ticks` advanced and the stall detector (5 min in
   one busy state) is clear; `setup_system` reloads between the long steps; every blocking step
   stays below 1 s (EEPROM load <= 0.8 s, 1-Wire search ~1 s per call, `reset` 200 ms), far below
-  the 5.4 s of the fastest LSI.
+  the 5.4 s of the fastest LSI. Since 2.2.6 only `setup_system` walks the 1-Wire bus in one
+  call; the search of the loop takes one device per call (at most ~35 ms).
 - Unbounded waits of `embassy_stm32::init` (HSERDY after the probe, PLL lock) run under the IWDG.
 - Faults, unexpected interrupts and panics: ENA0..5 and the PSU off by BSRR, `FaultRecord`, IWDG
   start key, spin. Panics in the 1 ms and 10 ms handlers and a nested motor lock end there too.
