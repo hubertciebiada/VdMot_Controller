@@ -20,7 +20,8 @@ otherwise.
 - The health flags `earlyStop` and `cmdRejected` (`/api/valves` `health`, MQTT, the dashboard)
   compare `earlyStops` and `cmdRejected` with a baseline. 2.2.6 took it at the start of the ESP
   and after a restart of the STM, so a flag stayed until the next restart of the ESP (the
-  installed west controller: valves 4 and 5 for five days, across successful calibrations). A
+  installed west controller: valves 4 and 5 for two days, across the successful calibration
+  that followed their early stops within minutes). A
   calibration that ends at idle (the event `calib_ok`) now moves both baselines to the current
   counts as well; a calibration that fails keeps them. The counts themselves (`earlyStops`,
   `cmdRejected`, MQTT `diag/valves/<V>/...`) do not change; the STM clears its calState bit 2
