@@ -284,5 +284,8 @@ The steps of sections 3.2, 3.3 and 4.2 with the files of the new release:
    when that slot held the C++ 2.1.7 image (the fallback of the first Rust image), the C++ image
    is gone from the controller, and the way back to it is its upload (section 3.6).
 2. STM32: upload the new STM image under a short name (`stm226.bin` for 2.2.6) and flash it,
-   mode normal; keep `stm217.bin` in the list. The release notes say when the STM firmware did
-   not change and the flash only keeps the versions of the two MCUs equal.
+   mode normal; keep `stm217.bin` in the list. With three images stored, an ESP from 2.2.7 on
+   removes one when the upload completes: the release image with the lowest version, never the
+   lowest of all (`stm217`) nor the running one ([CHANGES.md](CHANGES.md#227-revamped)). The
+   release notes say when the STM firmware did not change and the flash only keeps the versions
+   of the two MCUs equal.

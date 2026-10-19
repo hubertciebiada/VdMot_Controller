@@ -8,6 +8,41 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.7-revamped
+
+ESP32 release: a health warning about early stops ends with a successful calibration, and a new
+STM image no longer needs a manual delete first. The STM32 firmware is the one of 2.2.6 with the
+version 2.2.7-revamped: flash it to keep the versions of both MCUs equal; it needs no update
+otherwise.
+
+### ESP32: the health flags of the counters
+
+- The health flags `earlyStop` and `cmdRejected` (`/api/valves` `health`, MQTT, the dashboard)
+  compare `earlyStops` and `cmdRejected` with a baseline. 2.2.6 took it at the start of the ESP
+  and after a restart of the STM, so a flag stayed until the next restart of the ESP (the
+  installed west controller: valves 4 and 5 for five days, across successful calibrations). A
+  calibration that ends at idle (the event `calib_ok`) now moves both baselines to the current
+  counts as well; a calibration that fails keeps them. The counts themselves (`earlyStops`,
+  `cmdRejected`, MQTT `diag/valves/<V>/...`) do not change; the STM clears its calState bit 2
+  (`calEarlyStop`) at the same moment
+  ([valve_model.rs](../../software_esp32_rust/core/src/valve_model.rs),
+  [DESIGN.md](../revamped/DESIGN.md)).
+
+### ESP32: a full STM image store makes room
+
+- `POST /api/stm/images` of a new name into a store with 3 uploaded images (besides
+  `last_good`) removes one of them once the upload has completed, instead of `507`
+  `too_many_images`: of the images with a version, the one with the lowest version except the
+  lowest of all, which stays as the long-term fallback (on the installed controllers the C++
+  2.1.7 image `stm217` beside the Rust releases); never the image `last_good` holds (the running
+  one, same CRC and size) or one a `last_good` copy reads; of equal versions the one listed
+  first counts as the lower. The answer `201` names it in `evicted` (null when nothing was removed), the
+  dashboard says so. `507` `too_many_images` stays when no image can be removed: an image
+  without a version string is never removed and never the fallback, and nothing is judged while
+  an image is not scanned yet (seconds after the start of the ESP or a new `last_good`). A failed
+  upload removes nothing ([images.rs](../../software_esp32_rust/glue/src/storage/images.rs),
+  [API.md](../revamped/API.md)).
+
 ## 2.2.6-revamped
 
 STM32 and ESP32 release: the daily 1-Wire re-scan of the STM no longer stalls its link to the

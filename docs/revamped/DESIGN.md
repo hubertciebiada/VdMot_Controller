@@ -435,8 +435,8 @@ Health flags (`HealthFlag`), recomputed on every update:
 | Failed | status 4 |
 | NoValve | status 6 and valve active |
 | CalibRetries | `calibRetries > 0` |
-| EarlyStop | v2 `earlyStops` > value at ESP boot / last STM reboot |
-| CmdRejected | v2 `cmdRejected` > baseline |
+| EarlyStop | v2 `earlyStops` > baseline: the value at ESP boot, after an STM reboot or at the end of the last successful calibration (Rust 2.2.7) |
+| CmdRejected | v2 `cmdRejected` > baseline (the same three moments) |
 | Stale | active and no `gvlvd`/`gvlvx`/`gvlvy` for 60 s |
 | TargetUnconfirmed | sync Failed |
 | TempFailed | an assigned sensor (`temp1`/`temp2` != -500) reports -1270, 850 or out of range |

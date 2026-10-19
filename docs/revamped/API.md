@@ -267,7 +267,7 @@ curl -X POST http://vdmot/api/config \
 | Method | Path | Body | Response |
 |---|---|---|---|
 | GET | `/api/stm/images` | – | stored images `[{"name","size","crc32","version","check","hw"}]`; `check` = validation result (`none` = ok, null while not checked yet), `hw` = board marker `C1`/`C2` or null |
-| POST | `/api/stm/images` | multipart, one `.bin` file, <= 512 KiB | `201` image info; `413`; `507` no space or too many images; `409` while flashing |
+| POST | `/api/stm/images` | multipart, one `.bin` file, <= 512 KiB | `201` image info and `evicted`: the image removed to make room or null; `413`; `507` no space, or 3 images and none can be removed; `409` while flashing |
 | DELETE | `/api/stm/images/{name}` | – | `204`; `404`; `409` |
 | POST | `/api/stm/flash` | `{"image":"<name>","mode":"normal"\|"blank","force":false,"board":"C1"\|"C2"}` | 202; `400 invalid_image` with the validation error; `409 board_mismatch` / `board_required`; `409` busy or restart pending |
 | POST | `/api/stm/flash/abort` | – | 202 |
