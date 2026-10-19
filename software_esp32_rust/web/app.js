@@ -573,9 +573,9 @@ const HEALTH = { blocked: ["blocked", "err", STATE_TIP.blocked], failed: ["faile
   noValve: ["no valve", "warn", STATE_TIP.novalve],
   calibRetries: ["calibration retries", "warn", "A calibration needed repeated passes because a stroke came out " +
     "shorter than minCounts (see Retries). Too many short passes mark the valve blocked."],
-  earlyStop: ["early stop", "warn", "Since the ESP started, a move hit an end stop well before the expected travel " +
+  earlyStop: ["early stop", "warn", "Since the ESP or the STM started or the last successful calibration, a move hit an end stop well before the expected travel " +
     "(see Early stops). Two early stops in a row start a calibration."],
-  cmdRejected: ["commands rejected", "warn", "Since the ESP started, the STM did not execute target changes " +
+  cmdRejected: ["commands rejected", "warn", "Since the ESP or the STM started or the last successful calibration, the STM did not execute target changes " +
     "because the valve was failed or blocked (see Rejected)."],
   stale: ["no fresh data", "warn", "No data from the STM for this valve for over 60 s: the values shown may be old."],
   targetUnconfirmed: ["target not confirmed", "warn", SYNC_TIP.failed],

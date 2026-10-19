@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::event_log::{format_event_message, Severity};
-use crate::stm_codec::{StopReason, CAL_FLAG_EARLY_STOP, CAL_STATE_RUNNING};
+use crate::stm_codec::{StopReason, CAL_FLAG_EARLY_STOP, CAL_FLAG_LAST_FAILED, CAL_STATE_RUNNING};
 use crate::test_support::assert_text;
 use crate::valve_model::{HEALTH_CALIB_RETRIES, HEALTH_EARLY_STOP, HEALTH_TEMP_FAILED};
 use std::vec::Vec;

@@ -7,18 +7,15 @@ use crate::common::{elapsed_ms, NO_VALVE, TEMP_SLOT_COUNT, VALVE_COUNT};
 use crate::event_log::{event_default_severity, make_event, Event, EventCode};
 use crate::failsafe::FAILSAFE_HOLD;
 use crate::link_policy::LinkState;
-use crate::stm_codec::{
-    StmStatus, ValveStatus, CAL_FLAG_LAST_FAILED, STM_FLAG_FS_BLOCKED, STM_SYS_PROTECT_SUSPENDED,
-};
+use crate::stm_codec::{StmStatus, ValveStatus, STM_FLAG_FS_BLOCKED, STM_SYS_PROTECT_SUSPENDED};
 use crate::valve_model::{
-    TargetSource, ValveModelParams, ValveState, HEALTH_STALE, HEALTH_STROKE_SHORT,
-    HEALTH_TARGET_UNCONFIRMED,
+    calibration_end, CalibrationEnd, TargetSource, ValveModelParams, ValveState, HEALTH_STALE,
+    HEALTH_STROKE_SHORT, HEALTH_TARGET_UNCONFIRMED,
 };
 
 /// Maximum events one call may produce (callers size their arrays with it).
 pub const MAX_EVENTS_PER_UPDATE: usize = 8;
 
-const STATUS_IDLE: u8 = ValveStatus::Idle as u8;
 const STATUS_FAILED: u8 = ValveStatus::Failed as u8;
 const STATUS_NO_VALVE: u8 = ValveStatus::NoValve as u8;
 const STATUS_BLOCKED: u8 = ValveStatus::Blocked as u8;
@@ -134,27 +131,29 @@ fn add_transitions(
     if !before.calibrating && after.calibrating {
         let arg = if after.auto_retry { 2 } else { 0 };
         sink.add(EventCode::CalibStarted, valve, arg, 0);
-    } else if before.calibrating && !after.calibrating {
+    } else {
         // v2 reports the outcome itself (calState bit 3); 1.x only by the status.
-        let failed = after.status == STATUS_BLOCKED
-            || (after.has_extended && (after.cal_flags & CAL_FLAG_LAST_FAILED) != 0);
-        if failed {
-            sink.add(
-                EventCode::CalibFailed,
-                valve,
-                i32::from(after.calib_retries),
-                blocked_position(after),
-            );
-            calib_failed = true;
-        } else if after.status == STATUS_IDLE {
-            // The C++ static_cast<int32_t> of the uint32_t counts.
-            sink.add(
-                EventCode::CalibOk,
-                valve,
-                after.open_count as i32,
-                after.close_count as i32,
-            );
-            calib_ok = true;
+        match calibration_end(before, after) {
+            CalibrationEnd::Failed => {
+                sink.add(
+                    EventCode::CalibFailed,
+                    valve,
+                    i32::from(after.calib_retries),
+                    blocked_position(after),
+                );
+                calib_failed = true;
+            }
+            CalibrationEnd::Ok => {
+                // The C++ static_cast<int32_t> of the uint32_t counts.
+                sink.add(
+                    EventCode::CalibOk,
+                    valve,
+                    after.open_count as i32,
+                    after.close_count as i32,
+                );
+                calib_ok = true;
+            }
+            CalibrationEnd::None | CalibrationEnd::Other => {}
         }
     }
     if (before.calibrating || after.calibrating)

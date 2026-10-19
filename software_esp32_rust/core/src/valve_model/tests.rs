@@ -932,6 +932,80 @@ fn on_stm_rebooted_re_pushes_desired_targets_and_forgets_stm_targets() {
 }
 
 #[test]
+fn a_successful_calibration_moves_the_counter_baselines_a_failed_one_does_not() {
+    let both = HEALTH_EARLY_STOP | HEALTH_CMD_REJECTED;
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x001);
+    let mut e = ex(0, 25, 3, 4);
+    m.apply_valve_ex(&e, 10);
+    // an early stop and a rejected target after the ESP start
+    e.early_stops = 5;
+    e.cmd_rejected = 6;
+    m.apply_valve_ex(&e, 20);
+    assert_eq!(m.valve(0).health & both, both);
+    // calibrations that end marked failed, blocked or at another status keep the baselines
+    for (flags, status) in [(CAL_FLAG_LAST_FAILED, 1), (0, 9), (0, 5)] {
+        e.calibrating = true;
+        e.status = 1;
+        m.apply_valve_ex(&e, 30);
+        e.calibrating = false;
+        e.cal_flags = flags;
+        e.status = status;
+        m.apply_valve_ex(&e, 40);
+        assert_eq!(m.valve(0).early_stops_at_boot, 3, "status {status}");
+        assert_eq!(m.valve(0).cmd_rejected_at_boot, 4, "status {status}");
+        assert_eq!(m.valve(0).health & both, both, "status {status}");
+    }
+    // a successful one: the counters become the baselines, the flags clear
+    e.calibrating = true;
+    e.cal_flags = 0;
+    e.status = 1;
+    m.apply_valve_ex(&e, 50);
+    let rev = m.valve(0).revision;
+    e.calibrating = false;
+    m.apply_valve_ex(&e, 60);
+    assert_eq!(m.valve(0).early_stops_at_boot, 5);
+    assert_eq!(m.valve(0).cmd_rejected_at_boot, 6);
+    assert_eq!(m.valve(0).health & both, 0);
+    assert_eq!(m.valve(0).revision, rev + 1);
+    // the next early stop raises its flag again
+    e.early_stops = 6;
+    m.apply_valve_ex(&e, 70);
+    assert_eq!(m.valve(0).health & both, HEALTH_EARLY_STOP);
+    // counters below the new baselines are still an STM reboot
+    e.early_stops = 1;
+    e.cmd_rejected = 0;
+    m.apply_valve_ex(&e, 80);
+    assert_eq!(m.valve(0).early_stops_at_boot, 1);
+    assert_eq!(m.valve(0).cmd_rejected_at_boot, 0);
+    assert_eq!(m.valve(0).health & both, 0);
+}
+
+#[test]
+fn calibration_end_from_two_states() {
+    let mut before = ValveState::EMPTY;
+    let mut after = ValveState::EMPTY;
+    after.status = 1;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::None);
+    before.calibrating = true;
+    after.calibrating = true;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::None);
+    after.calibrating = false;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::Ok);
+    // calState bit 3 counts only with the v2 data
+    after.cal_flags = CAL_FLAG_LAST_FAILED;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::Ok);
+    after.has_extended = true;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::Failed);
+    after.cal_flags = CAL_FLAG_EARLY_STOP;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::Ok);
+    after.status = 9;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::Failed);
+    after.status = 4;
+    assert_eq!(calibration_end(&before, &after), CalibrationEnd::Other);
+}
+
+#[test]
 fn apply_valve_data_copies_every_field_and_ignores_bad_indices() {
     let mut m = ValveModel::default();
     m.set_active_mask(0x001);

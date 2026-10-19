@@ -11,7 +11,7 @@ use crate::failsafe::{FailsafeKind, FAILSAFE_HOLD};
 use crate::stm_codec::{
     resolve_temp_slot, Cmd, MoveDir, MoveResult, OneWireList, RequestLine, StopReason, TargetReply,
     TempData, ValveData, ValveEx, ValveSensors, ValveStates, ValveStatus, VoltData,
-    STM_FLAG_ASSEMBLY, STM_FLAG_FS_BLOCKED, STM_FLAG_FS_LEASE,
+    CAL_FLAG_LAST_FAILED, STM_FLAG_ASSEMBLY, STM_FLAG_FS_BLOCKED, STM_FLAG_FS_LEASE,
 };
 
 /// Valves (the arrays of the model).
@@ -42,6 +42,7 @@ const STATUS_KEY: [&str; 10] = [
     "blocked",
 ];
 
+const STATUS_IDLE: u8 = ValveStatus::Idle as u8;
 const STATUS_OPENING: u8 = ValveStatus::Opening as u8;
 const STATUS_CLOSING: u8 = ValveStatus::Closing as u8;
 const STATUS_FAILED: u8 = ValveStatus::Failed as u8;
@@ -165,9 +166,9 @@ pub const HEALTH_FAILED: u16 = 0x0002;
 pub const HEALTH_NO_VALVE: u16 = 0x0004;
 /// calib_retries > 0 (last calibration needed retries)
 pub const HEALTH_CALIB_RETRIES: u16 = 0x0008;
-/// early_stops increased since ESP boot (v2)
+/// early_stops increased since ESP boot, STM reboot or the last successful calibration (v2)
 pub const HEALTH_EARLY_STOP: u16 = 0x0010;
-/// cmd_rejected increased since ESP boot (v2)
+/// cmd_rejected increased since ESP boot, STM reboot or the last successful calibration (v2)
 pub const HEALTH_CMD_REJECTED: u16 = 0x0020;
 /// active valve: no data for stale_ms
 pub const HEALTH_STALE: u16 = 0x0040;
@@ -209,7 +210,8 @@ pub struct ValveState {
     pub cal_flags: u8,
     pub early_stops: u32,
     pub cmd_rejected: u32,
-    /// first value seen after ESP boot / STM reboot
+    /// first value seen after ESP boot / STM reboot, the value at the end of a successful
+    /// calibration
     pub early_stops_at_boot: u32,
     pub cmd_rejected_at_boot: u32,
     pub last_move: MoveResult,
@@ -457,6 +459,36 @@ pub fn valve_at_failsafe(v: &ValveState) -> bool {
     failsafe_kind(v) == FailsafeKind::Lease
 }
 
+/// How a calibration ended between two states of a valve (the events `calib_ok` and
+/// `calib_failed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalibrationEnd {
+    /// No calibration ended.
+    None,
+    /// Ended at idle.
+    Ok,
+    /// Ended blocked, or the STM marked it failed (v2 calState bit 3).
+    Failed,
+    /// Ended with another status.
+    Other,
+}
+
+/// The end of a calibration from `before` to `after`.
+pub fn calibration_end(before: &ValveState, after: &ValveState) -> CalibrationEnd {
+    if !before.calibrating || after.calibrating {
+        return CalibrationEnd::None;
+    }
+    if after.status == STATUS_BLOCKED
+        || (after.has_extended && (after.cal_flags & CAL_FLAG_LAST_FAILED) != 0)
+    {
+        CalibrationEnd::Failed
+    } else if after.status == STATUS_IDLE {
+        CalibrationEnd::Ok
+    } else {
+        CalibrationEnd::Other
+    }
+}
+
 /// Calibration stroke close to the minimum: min_counts, open_count and close_count known (> 0)
 /// and min(open_count, close_count) < 1.2 x min_counts.
 pub fn stroke_near_minimum(open_count: u32, close_count: u32, min_counts: u16) -> bool {
@@ -589,8 +621,15 @@ impl ValveModel {
         (self.active >> i) & 1 != 0
     }
 
-    /// Recomputes the health of valve `i` and counts the revisions (C++ `commit`).
+    /// Recomputes the health of valve `i` and counts the revisions (C++ `commit`). A successful
+    /// calibration moves the baselines of the v2 counters to their values: the early stops and
+    /// rejected targets before it no longer raise a flag.
     fn commit(&mut self, i: usize, before: &ValveState) {
+        let v = &mut self.v[i];
+        if calibration_end(before, v) == CalibrationEnd::Ok {
+            v.early_stops_at_boot = v.early_stops;
+            v.cmd_rejected_at_boot = v.cmd_rejected;
+        }
         self.update_health(i);
         let v = &mut self.v[i];
         if before.desired_valid != v.desired_valid
