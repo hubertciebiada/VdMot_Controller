@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of tools/mock_api.py: the mock answers like the firmware (rows M1-M24).
+"""Tests of tools/mock_api.py: the mock answers like the firmware (rows M1-M25).
 
     python3 tools/test_mock_api.py
 
@@ -464,6 +464,34 @@ class RestartRules(unittest.TestCase):  # M24
         self.assertIsNone(mock_api.round_target(-0.4))
         self.assertIsNone(mock_api.round_target(True))
         self.assertIsNone(mock_api.round_target("5"))
+
+
+class ImageEviction(unittest.TestCase):  # M25
+    def test_a_full_store_loses_the_lowest_version_but_the_lowest_of_all(self):
+        d = device()
+
+        def image(v):
+            return b"\x00\x40\x00\x20\x09\x00\x00\x08DEADBEEF BEEFIT\x00" + v.encode() + b"\x00" * 64
+
+        for n, v in (("stm217", "2.1.7-revamped"), ("stm226", "2.2.6-revamped"), ("stm225", "2.2.5-revamped")):
+            d.add_image(n, image(v), scanned_at=0)
+        d.add_image("last_good", image("2.2.6-revamped"), scanned_at=0)
+
+        def upload(name, v):
+            return req("POST", "/api/stm/images", raw=b"--b\r\nContent-Disposition: form-data; name=\"image\"; "
+                       b"filename=\"" + name.encode() + b".bin\"\r\n\r\n" + image(v) + b"\r\n--b--\r\n",
+                       ctype="multipart/form-data; boundary=b")
+
+        r = upload("stm227", "2.2.7-revamped")
+        self.assertEqual(r.status, 201)
+        self.assertEqual(r.json["evicted"], "stm225")
+        self.assertEqual(sorted(d.images), ["last_good", "stm217", "stm226", "stm227"])
+        # stm227 is not scanned yet
+        r = upload("stm228", "2.2.8-revamped")
+        self.assertEqual((r.status, r.json["detail"]), (507, "too_many_images"))
+        d.images["stm227"]["scanned_at"] = 0
+        self.assertEqual(upload("stm228", "2.2.8-revamped").json["evicted"], "stm227")
+        self.assertIsNone(upload("stm226", "2.2.6-revamped").json["evicted"])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ use super::rig::*;
 use super::*;
 use crate::port::Fs;
 use crate::testkit::Device;
+use vdm_esp_core::common::Text;
 use vdm_esp_core::config::crc32;
 use vdm_esp_core::stm_flasher::{FlashError, FlashImage};
 
@@ -99,7 +100,7 @@ fn images_a_31_character_name_is_indexed_uploaded_and_copied_to_last_good() {
     );
     let data = pattern(10);
     assert_eq!(st.image_upload_write(&data), ImageResult::Ok);
-    let info = st.image_upload_end().unwrap();
+    let (info, _) = st.image_upload_end().unwrap();
     assert_eq!(info.name.as_slice(), up.as_bytes());
     assert_eq!(file(&rig.dev, &format!("/stm/{up}.bin")).unwrap(), data);
     st.request_last_good_copy(up.as_bytes());
@@ -357,7 +358,7 @@ fn upload_a_one_byte_image_is_written_an_empty_one_is_refused() {
     mount(&st);
     assert_eq!(st.image_upload_begin(b"one", 1), ImageResult::Ok);
     assert_eq!(st.image_upload_write(b"z"), ImageResult::Ok);
-    assert_eq!(st.image_upload_end().unwrap().size, 1);
+    assert_eq!(st.image_upload_end().unwrap().0.size, 1);
     assert_eq!(file(&rig.dev, "/stm/one.bin").unwrap(), b"z");
     assert_eq!(st.image_upload_begin(b"none", 1), ImageResult::Ok);
     assert_eq!(st.image_upload_write(b""), ImageResult::Ok);
@@ -551,7 +552,7 @@ fn upload_a_name_is_read_as_a_c_string() {
     mount(&st);
     assert_eq!(st.image_upload_begin(b"fw\0junk", 1), ImageResult::Ok);
     assert_eq!(st.image_upload_write(b"1"), ImageResult::Ok);
-    assert_eq!(st.image_upload_end().unwrap().name.as_slice(), b"fw");
+    assert_eq!(st.image_upload_end().unwrap().0.name.as_slice(), b"fw");
     assert!(st.find_image(b"fw\0x").is_some());
     assert_eq!(st.delete_image(b"fw\0y"), ImageResult::Ok);
 }
@@ -566,7 +567,7 @@ fn upload_the_crc_runs_over_every_write() {
     for part in data.chunks(1460) {
         assert_eq!(st.image_upload_write(part), ImageResult::Ok);
     }
-    let info = st.image_upload_end().unwrap();
+    let (info, _) = st.image_upload_end().unwrap();
     assert_eq!(info.crc, crc32(&data, 0));
     assert_eq!(info.size, 3000);
     assert_eq!(st.find_image(b"c").unwrap().size, 3000);
@@ -574,7 +575,8 @@ fn upload_the_crc_runs_over_every_write() {
 
 #[test]
 fn upload_end_without_an_index_slot_removes_the_image() {
-    // C++ "cannot happen": a remount during the upload fills the index
+    // a remount during the upload fills the index with images not scanned yet: none of them can
+    // be removed (C++ "cannot happen")
     let rig = Rig::new();
     for n in ["a", "b", "last_good"] {
         rig.dev.fs.put(&format!("/stm/{n}.bin"), b"x");
@@ -676,4 +678,221 @@ fn file_image_a_second_open_closes_the_first_file() {
     assert!(!img.open(b"missing"));
     assert_eq!(img.size(), 0);
     assert_eq!(rig.dev.fs.open_handles(), 0);
+}
+
+// ---------------------------------------------------------------- eviction (Rust)
+
+/// A 4 KiB STM image with the handshake strings and the version string `version` ("" none).
+fn versioned(version: &str) -> Vec<u8> {
+    let mut s = vec![0x80u8; 4096];
+    put32(&mut s, 0, 0x2002_0000);
+    put32(&mut s, 4, 0x0800_0101);
+    let h = format!("\x01DEADBEEF\0\x01BEEFIT\0\x01{version}\0");
+    s[3000..3000 + h.len()].copy_from_slice(h.as_bytes());
+    s
+}
+
+/// The images `(name, version)` and a last_good with the bytes of `running`, all scanned.
+fn full_store<'a>(rig: &'a Rig, images: &[(&str, &str)], running: &str) -> TestStorage<'a> {
+    for &(n, v) in images {
+        rig.dev.fs.put(&format!("/stm/{n}.bin"), &versioned(v));
+    }
+    rig.dev.fs.put(LAST_GOOD, &versioned(running));
+    let st = rig.storage();
+    mount(&st);
+    for _ in 0..IMAGE_SLOTS {
+        st.service();
+    }
+    st
+}
+
+fn upload(
+    st: &TestStorage<'_>,
+    name: &str,
+    version: &str,
+) -> Result<(ImageEntry, Text<IMAGE_NAME_MAX>), ImageResult> {
+    let data = versioned(version);
+    let r = st.image_upload_begin(name.as_bytes(), data.len());
+    if r != ImageResult::Ok {
+        return Err(r);
+    }
+    assert_eq!(st.image_upload_write(&data), ImageResult::Ok);
+    st.image_upload_end()
+}
+
+fn sorted_names(st: &TestStorage<'_>) -> Vec<Vec<u8>> {
+    let mut n = names(st);
+    n.sort();
+    n
+}
+
+const RELEASES: [(&str, &str); 3] = [
+    ("stm217", "2.1.7-revamped"),
+    ("stm226", "2.2.6-revamped"),
+    ("stm225", "2.2.5-revamped"),
+];
+
+#[test]
+fn eviction_a_full_store_loses_the_lowest_version_but_the_lowest_of_all() {
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.6-revamped");
+    assert!(scanned(&st, b"last_good"));
+    let e = st.find_image(b"stm217").unwrap();
+    assert_eq!(e.version.as_slice(), b"2.1.7-revamped");
+    let (info, evicted) = upload(&st, "stm227", "2.2.7-revamped").unwrap();
+    assert_eq!(info.name.as_slice(), b"stm227");
+    assert_eq!(evicted.as_slice(), b"stm225");
+    assert!(!has_file(&rig.dev, "/stm/stm225.bin"));
+    assert!(has_file(&rig.dev, "/stm/stm227.bin"));
+    assert_eq!(
+        sorted_names(&st),
+        vec![
+            b"last_good".to_vec(),
+            b"stm217".to_vec(),
+            b"stm226".to_vec(),
+            b"stm227".to_vec()
+        ]
+    );
+    // stm227 is not scanned yet: nothing can be judged
+    assert_eq!(
+        upload(&st, "stm228", "2.2.8-revamped"),
+        Err(ImageResult::TooMany)
+    );
+    st.service();
+    // still running stm226: stm227 (never flashed) goes
+    let (_, evicted) = upload(&st, "stm228", "2.2.8-revamped").unwrap();
+    assert_eq!(evicted.as_slice(), b"stm227");
+    // a replacement removes nothing
+    st.service();
+    let (_, evicted) = upload(&st, "stm226", "2.2.6-revamped").unwrap();
+    assert!(evicted.is_empty());
+    assert_eq!(names(&st).len(), IMAGE_SLOTS);
+}
+
+#[test]
+fn eviction_the_running_image_and_the_source_of_a_last_good_copy_stay() {
+    // after a rollback to stm225 the newer stm226 goes
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.5-revamped");
+    let (_, evicted) = upload(&st, "stm227", "2.2.7-revamped").unwrap();
+    assert_eq!(evicted.as_slice(), b"stm226");
+
+    // a flash of stm225 asked for its copy: stm225 is read, stm226 runs, nothing can go
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.6-revamped");
+    st.request_last_good_copy(b"stm225");
+    assert_eq!(
+        upload(&st, "stm227", "2.2.7-revamped"),
+        Err(ImageResult::TooMany)
+    );
+    // the copy runs (the first 8 KiB end it, last_good is new and not scanned yet)
+    st.service();
+    assert!(!scanned(&st, b"last_good"));
+    assert_eq!(
+        upload(&st, "stm227", "2.2.7-revamped"),
+        Err(ImageResult::TooMany)
+    );
+    // scanned: last_good holds stm225, stm226 goes
+    st.service();
+    let (_, evicted) = upload(&st, "stm227", "2.2.7-revamped").unwrap();
+    assert_eq!(evicted.as_slice(), b"stm226");
+}
+
+#[test]
+fn eviction_ties_go_to_index_order_images_without_a_version_stay() {
+    // a and b share the lowest version: a, first in the index, stays
+    let rig = Rig::new();
+    let st = full_store(
+        &rig,
+        &[("a", "2.2.5"), ("b", "2.2.5"), ("c", "2.2.6")],
+        "2.2.6",
+    );
+    let (_, evicted) = upload(&st, "d", "2.2.7").unwrap();
+    assert_eq!(evicted.as_slice(), b"b");
+
+    // only one image with a version: it is the fallback, nothing else can go
+    let rig = Rig::new();
+    let st = full_store(&rig, &[("x", ""), ("y", ""), ("z", "2.2.5")], "2.2.9");
+    assert_eq!(upload(&st, "d", "2.2.7"), Err(ImageResult::TooMany));
+
+    // without last_good the lowest of the rest goes
+    let rig = Rig::new();
+    for (n, v) in [("p", "2.2.7"), ("q", "2.2.6"), ("r", "2.2.5")] {
+        rig.dev.fs.put(&format!("/stm/{n}.bin"), &versioned(v));
+    }
+    let st = rig.storage();
+    mount(&st);
+    for _ in 0..3 {
+        st.service();
+    }
+    let (_, evicted) = upload(&st, "s", "2.2.8").unwrap();
+    assert_eq!(evicted.as_slice(), b"q");
+}
+
+#[test]
+fn eviction_happens_at_the_end_a_failed_upload_removes_nothing() {
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.6-revamped");
+    assert_eq!(st.image_upload_begin(b"stm227", 10), ImageResult::Ok);
+    assert_eq!(st.image_upload_write(b"x"), ImageResult::Ok);
+    st.image_upload_abort();
+    assert_eq!(names(&st).len(), IMAGE_SLOTS);
+    assert!(has_file(&rig.dev, "/stm/stm225.bin"));
+
+    // the image to remove cannot be removed: the upload fails, its part is gone
+    assert_eq!(st.image_upload_begin(b"stm227", 10), ImageResult::Ok);
+    assert_eq!(st.image_upload_write(b"x"), ImageResult::Ok);
+    rig.dev.fs.fail("remove", "/stm/stm225.bin", 1);
+    assert_eq!(st.image_upload_end(), Err(ImageResult::Io));
+    assert!(has_file(&rig.dev, "/stm/stm225.bin"));
+    assert!(st.find_image(b"stm225").is_some());
+    assert!(!has_file(&rig.dev, "/stm/stm227.bin"));
+    assert!(!has_file(&rig.dev, "/stm/stm227.bin.part"));
+    assert!(!st.image_upload_active());
+
+    // a copy requested during the upload protects the image: nothing left to remove
+    assert_eq!(st.image_upload_begin(b"stm227", 10), ImageResult::Ok);
+    assert_eq!(st.image_upload_write(b"x"), ImageResult::Ok);
+    st.request_last_good_copy(b"stm225");
+    assert_eq!(st.image_upload_end(), Err(ImageResult::TooMany));
+    assert!(has_file(&rig.dev, "/stm/stm225.bin"));
+    assert!(!has_file(&rig.dev, "/stm/stm227.bin"));
+
+    // an image deleted during the upload makes room: nothing else goes
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.6-revamped");
+    assert_eq!(st.image_upload_begin(b"stm227", 10), ImageResult::Ok);
+    assert_eq!(st.image_upload_write(b"x"), ImageResult::Ok);
+    assert_eq!(st.delete_image(b"stm217"), ImageResult::Ok);
+    let (_, evicted) = st.image_upload_end().unwrap();
+    assert!(evicted.is_empty());
+    assert!(st.find_image(b"stm225").is_some());
+}
+
+#[test]
+fn eviction_last_good_is_never_the_fallback_a_finished_copy_protects_nothing() {
+    // last_good of an image deleted since: its lower version does not make stm217 removable
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.0.0-revamped");
+    let (_, evicted) = upload(&st, "stm227", "2.2.7-revamped").unwrap();
+    assert_eq!(evicted.as_slice(), b"stm225");
+
+    // a copy of stm225 that could not start leaves its name behind, not its protection
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.6-revamped");
+    st.request_last_good_copy(b"stm225");
+    rig.dev.fs.fail("open", "/stm/stm225.bin", 1);
+    st.service();
+    let (_, evicted) = upload(&st, "stm227", "2.2.7-revamped").unwrap();
+    assert_eq!(evicted.as_slice(), b"stm225");
+}
+
+#[test]
+fn eviction_an_image_file_gone_from_the_disk_leaves_the_index() {
+    let rig = Rig::new();
+    let st = full_store(&rig, &RELEASES, "2.2.6-revamped");
+    assert!(rig.dev.fs.remove("/stm/stm225.bin"));
+    let (_, evicted) = upload(&st, "stm227", "2.2.7-revamped").unwrap();
+    assert_eq!(evicted.as_slice(), b"stm225");
+    assert!(st.find_image(b"stm225").is_none());
 }

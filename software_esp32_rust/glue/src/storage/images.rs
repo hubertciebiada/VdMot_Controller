@@ -5,11 +5,15 @@
 //! Images live in `/stm/<name>.bin`. Names follow the `{name}` rule of core `matchApiRoute`,
 //! `[A-Za-z0-9._-]{1,31}` without a leading '.', and exclude the ".bin" suffix. "last_good"
 //! holds a copy of the last successfully flashed image and cannot be uploaded.
+//!
+//! Unlike the C++, an upload into a full store removes one uploaded image when it completes
+//! (see [`ImageState::eviction`]); the C++ refused it with `too_many_images`.
 
 use vdm_esp_core::common::{c_str, copy_string, Text, TextBuf, NO_VALVE};
 use vdm_esp_core::config::crc32;
 use vdm_esp_core::event_log::EventCode;
 use vdm_esp_core::stm_flasher::{validate_image, FlashError, FlashImage, ImageInfo};
+use vdm_esp_core::version::{compare_version, parse_version, Version};
 
 pub use vdm_esp_core::image_store::{image_path, normalize_image_name, IMAGE_NAME_MAX};
 
@@ -74,7 +78,7 @@ pub enum ImageResult {
     TooLarge = 2,
     /// The image and [`FS_RESERVE`] do not fit.
     NoSpace = 3,
-    /// [`MAX_UPLOADED_IMAGES`] already.
+    /// [`MAX_UPLOADED_IMAGES`] already, and none of them can be removed.
     TooMany = 4,
     /// Another upload runs, or the last_good copy reads the image.
     Busy = 5,
@@ -129,6 +133,8 @@ pub(super) struct Upload<T> {
     pub(super) name: Text<IMAGE_NAME_MAX>,
     written: u32,
     crc: u32,
+    /// The image the upload removed to make room ("" none).
+    evicted: Text<IMAGE_NAME_MAX>,
 }
 
 /// The last_good copy as the other tasks see it.
@@ -162,6 +168,7 @@ impl<T> Default for ImageState<T> {
                 name: Text::new(),
                 written: 0,
                 crc: 0,
+                evicted: Text::new(),
             },
             copy: CopyFlags::default(),
         }
@@ -210,6 +217,43 @@ impl<T> ImageState<T> {
             .count()
     }
 
+    /// The uploaded image an upload of `except` into a full store removes: of the images with a
+    /// valid version, the one with the lowest version except the lowest of all, which stays as
+    /// the long-term fallback (the C++ 2.1.7 image beside the Rust releases); ties go to index
+    /// order. Never last_good, the image last_good holds (the running one, by CRC and size) or
+    /// the one a last_good copy is about to read or reads. None while an image is not scanned
+    /// yet (after an ESP start, a new last_good), or when no image is left to remove.
+    fn eviction(&self, except: &[u8]) -> Option<usize> {
+        let other = |e: &ImageEntry| !e.name.is_empty() && e.name.as_slice() != except;
+        if self.entries.iter().any(|e| other(e) && !e.scanned) {
+            return None;
+        }
+        let uploaded = |e: &ImageEntry| other(e) && e.name.as_slice() != LAST_GOOD_NAME.as_bytes();
+        let versioned = || {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|&(_, e)| uploaded(e))
+                .filter_map(|(i, e)| {
+                    let v = parse_version(&e.version);
+                    v.valid.then_some((i, v))
+                })
+        };
+        let (fallback, _) = lowest_version(versioned())?;
+        let running = self
+            .find(LAST_GOOD_NAME.as_bytes())
+            .and_then(|i| self.entries.get(i));
+        let copy = self.copy.pending || self.copy.running;
+        let kept = |i: usize| {
+            self.entries.get(i).is_none_or(|e| {
+                i == fallback
+                    || running.is_some_and(|lg| lg.crc == e.crc && lg.size == e.size)
+                    || (copy && self.copy.name == e.name)
+            })
+        };
+        lowest_version(versioned().filter(|&(i, _)| !kept(i))).map(|(i, _)| i)
+    }
+
     /// The upload of `name` runs.
     fn uploading(&self, name: &[u8]) -> bool {
         self.upload.file.is_some() && self.upload.name.as_slice() == name
@@ -223,6 +267,17 @@ impl<T> ImageState<T> {
             && ImagePath::new(&self.upload.name, true).is_some_and(|p| p.bytes() == path);
         upload || (self.copy.running && LAST_GOOD_PART.as_bytes() == path)
     }
+}
+
+/// The entry with the lowest version, the first of equal ones.
+fn lowest_version(it: impl Iterator<Item = (usize, Version)>) -> Option<(usize, Version)> {
+    it.reduce(|low, x| {
+        if compare_version(&x.1, &low.1) < 0 {
+            x
+        } else {
+            low
+        }
+    })
 }
 
 impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
@@ -309,8 +364,9 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
             return ImageResult::Busy;
         }
         // At most 3 uploaded images besides the one being replaced; with last_good that never
-        // exceeds IMAGE_SLOTS index entries.
-        if st.uploaded_count(clean) >= MAX_UPLOADED_IMAGES {
+        // exceeds IMAGE_SLOTS index entries. A full store needs an image the end of the upload
+        // can remove.
+        if st.uploaded_count(clean) >= MAX_UPLOADED_IMAGES && st.eviction(clean).is_none() {
             return ImageResult::TooMany;
         }
         if self.fs_free() < announced.wrapping_add(FS_RESERVE) {
@@ -323,6 +379,7 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
         copy_string(&mut st.upload.name, clean);
         st.upload.written = 0;
         st.upload.crc = 0;
+        st.upload.evicted.clear();
         ImageResult::Ok
     }
 
@@ -360,19 +417,21 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
         ImageResult::Ok
     }
 
-    /// Ends the upload: the part file becomes the image (replacing an old one) and is indexed.
-    /// The entry carries the name, the size and the CRC of the bytes.
-    pub fn image_upload_end(&self) -> Result<ImageEntry, ImageResult> {
+    /// Ends the upload: the part file becomes the image (replacing an old one) and is indexed;
+    /// in a full store an image is removed first ([`ImageState::eviction`]). The entry carries
+    /// the name, the size and the CRC of the bytes; with it the name of the removed image ("" none).
+    pub fn image_upload_end(&self) -> Result<(ImageEntry, Text<IMAGE_NAME_MAX>), ImageResult> {
         let mut st = lock(&self.images);
         self.finish_upload(&mut st)?;
         let mut info = ImageEntry::default();
         info.name.clone_from(&st.upload.name);
         info.size = st.upload.written;
         info.crc = st.upload.crc;
-        Ok(info)
+        Ok((info, st.upload.evicted.clone()))
     }
 
-    /// Closes the part file, renames it over the image and indexes the image.
+    /// Closes the part file, makes room in a full store, renames the part over the image and
+    /// indexes the image.
     fn finish_upload(&self, st: &mut ImageState<F::File>) -> Result<(), ImageResult> {
         if st.upload.file.is_none() {
             return Err(ImageResult::Io);
@@ -383,6 +442,12 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
         }
         st.upload.file = None;
         let name = st.upload.name.clone();
+        if st.uploaded_count(&name) >= MAX_UPLOADED_IMAGES {
+            if let Err(r) = self.evict(st, &name) {
+                self.abort_upload(st);
+                return Err(r);
+            }
+        }
         if !self.rename_part(&name) {
             // the old file is gone as well
             st.forget(&name);
@@ -396,6 +461,23 @@ impl<N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'_, N, F, G, H> {
             }
             return Err(ImageResult::TooMany);
         }
+        Ok(())
+    }
+
+    /// Removes the image [`ImageState::eviction`] picks for the upload of `name`: TooMany when
+    /// there is none (the store changed during the upload), Io when its file stays.
+    fn evict(&self, st: &mut ImageState<F::File>, name: &[u8]) -> Result<(), ImageResult> {
+        let victim = st
+            .eviction(name)
+            .and_then(|i| st.entries.get(i))
+            .map(|e| e.name.clone())
+            .ok_or(ImageResult::TooMany)?;
+        let path = ImagePath::new(&victim, false).ok_or(ImageResult::Io)?;
+        if !self.fs.remove(path.as_str()) && self.fs.exists(path.as_str()) {
+            return Err(ImageResult::Io);
+        }
+        st.forget(&victim);
+        st.upload.evicted = victim;
         Ok(())
     }
 

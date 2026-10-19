@@ -10,15 +10,15 @@
 //! gets no answer. The loop sleeps one tick per chunk, so the idle task of core 0 runs during
 //! long flash writes.
 
-use super::views::write_image;
+use super::views::write_image_fields;
 use super::*;
 use crate::http_parse::{Event as Part, FILENAME_MAX, VALUE_MAX};
-use crate::storage::{image_result_name, ImageEntry};
+use crate::storage::{image_result_name, ImageEntry, IMAGE_NAME_MAX};
 
 /// Bytes of an MD5 value that are read (32 hex digits are valid; longer values stay invalid).
 const MD5_MAX: usize = 64;
-/// The answer of a stored image (C++ a 160-byte buffer): a longer one is `{}`.
-const IMAGE_ANSWER_SIZE: usize = 160;
+/// The answer of a stored image (C++ a 160-byte buffer, without `evicted`): a longer one is `{}`.
+const IMAGE_ANSWER_SIZE: usize = 192;
 
 /// Where an upload goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +44,8 @@ struct Upload {
     failure: Option<(u16, &'static str)>,
     /// The stored image (STM).
     info: ImageEntry,
+    /// The image the upload removed from the full store ("" none).
+    evicted: Text<IMAGE_NAME_MAX>,
     /// The current file part delivered data.
     part_data: bool,
     /// The filename of the current file part.
@@ -63,6 +65,7 @@ impl Upload {
             done: false,
             failure: None,
             info: ImageEntry::default(),
+            evicted: Text::new(),
             part_data: false,
             filename: heapless::Vec::new(),
             md5_field: None,
@@ -276,8 +279,9 @@ where
         up.open = false;
         match up.kind {
             Kind::StmImage => match self.storage.image_upload_end() {
-                Ok(info) => {
+                Ok((info, evicted)) => {
                     up.info = info;
+                    up.evicted = evicted;
                     up.done = true;
                 }
                 Err(r) => self.fail(up, image_http_code(r), image_result_name(r)),
@@ -327,7 +331,15 @@ where
         }
         let mut buf = [0u8; IMAGE_ANSWER_SIZE];
         let mut jw = JsonWriter::new(&mut buf);
-        write_image(&mut jw, &up.info, true);
+        jw.begin_object();
+        write_image_fields(&mut jw, &up.info, true);
+        jw.key("evicted");
+        if up.evicted.is_empty() {
+            jw.null_value();
+        } else {
+            jw.value(up.evicted.as_slice());
+        }
+        jw.end_object();
         let body: &[u8] = if jw.complete() { jw.as_bytes() } else { b"{}" };
         send(req, 201, JSON, body);
     }

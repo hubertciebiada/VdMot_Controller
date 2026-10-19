@@ -198,7 +198,7 @@ fn image_upload_the_part_file_becomes_the_image_and_is_indexed() {
     assert!(has_file(&rig.dev, "/stm/fw.bin.part"));
     let data = [b'd'; 300];
     assert_eq!(st.image_upload_write(&data), ImageResult::Ok);
-    let info = st.image_upload_end().unwrap();
+    let (info, _) = st.image_upload_end().unwrap();
     assert_eq!(info.name.as_slice(), b"fw");
     assert_eq!(info.size, 300);
     assert_eq!(info.crc, crc32(&data, 0));

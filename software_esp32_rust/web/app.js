@@ -103,7 +103,7 @@ function apiMessage(status, d) {
   if (status === 409 && code === "stm_unsupported") return detail;
   if (status === 501) return "Not supported by this firmware";
   if (status === 503) return MSG_503[code] || "The device is busy; try again";
-  if (status === 507) return detail === "too_many_images" ? "Only 3 STM images can be stored; delete one first" :
+  if (status === 507) return detail === "too_many_images" ? "Only 3 STM images can be stored and none can be removed now; delete one first" :
     "Not enough space on the device" + (isNum(fsFree) ? " (" + fmtBytes(fsFree) + " free)" : "");
   if (status === 413) return "Too large for the device";
   let m = code ? code.replace(/_/g, " ") : "HTTP " + status;
@@ -1944,8 +1944,8 @@ $("stm-up-go").addEventListener("click", async (e) => {
   prog.value = 0;
   await busy(e.currentTarget, async () => {
     try {
-      await upload("/api/stm/images", "image", stmUp.file, stmUp.name, (x) => { prog.value = Math.round(x * 100); });
-      toast("Image " + stmUp.name + " stored");
+      const d = await upload("/api/stm/images", "image", stmUp.file, stmUp.name, (x) => { prog.value = Math.round(x * 100); });
+      toast("Image " + stmUp.name + " stored" + (d && d.evicted ? "; " + d.evicted + " removed to make room" : ""));
       $("stm-file").value = "";
       $("stm-file-info").textContent = "";
       stmUp.file = null;

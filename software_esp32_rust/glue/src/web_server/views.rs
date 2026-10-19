@@ -39,11 +39,16 @@ const CONFIG_EXPORT: &str = "attachment; filename=\"vdmot-config.json\"";
 /// The download name of the log.
 const LOG_DOWNLOAD: &str = "attachment; filename=\"vdmot-events.log\"";
 
-/// One image of GET /api/stm/images and of an upload's answer (C++ `writeImage`): the CRC only
-/// when known, version and check only once the image was scanned, the board tag when it has
-/// one.
+/// One image of GET /api/stm/images (C++ `writeImage`).
 pub(super) fn write_image(jw: &mut JsonWriter<'_>, e: &ImageEntry, crc_known: bool) {
     jw.begin_object();
+    write_image_fields(jw, e, crc_known);
+    jw.end_object();
+}
+
+/// The fields of an image, also of an upload's answer: the CRC only when known, version and
+/// check only once the image was scanned, the board tag when it has one.
+pub(super) fn write_image_fields(jw: &mut JsonWriter<'_>, e: &ImageEntry, crc_known: bool) {
     jw.kv("name", c_str(&e.name));
     jw.kv("size", e.size);
     jw.key("crc32");
@@ -74,7 +79,6 @@ pub(super) fn write_image(jw: &mut JsonWriter<'_>, e: &ImageEntry, crc_known: bo
     } else {
         jw.value(hw);
     }
-    jw.end_object();
 }
 
 /// A reading is valid when seen, of a valid value, and not older than [`SENSOR_STALE_MS`].

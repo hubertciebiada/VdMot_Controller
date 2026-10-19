@@ -174,7 +174,7 @@ def fs_path_valid(p) -> bool:
             and not p.endswith("/") and all(seg not in (".", "..") for seg in p.split("/")[1:])
             and all(ord(c) >= 0x20 and ord(c) != 0x7F for c in p))
 LAST_GOOD = "last_good"
-MAX_IMAGES = 3  # uploaded images besides last_good (storage::kMaxUploadedImages)
+MAX_IMAGES = 3  # uploaded images besides last_good (storage MAX_UPLOADED_IMAGES)
 
 
 def image_name(raw: str):
@@ -550,6 +550,29 @@ class Device:
         with self.lock:
             self.images[name] = img
         return img
+
+    def eviction(self, keep):
+        """The image an upload of `keep` into a full store removes (storage ImageState::eviction,
+        without the last_good copy): of the images with a version the lowest but the lowest of
+        all, never the one last_good holds; None while one is not scanned yet."""
+        now = time.time()
+        with self.lock:
+            others = {n: i for n, i in self.images.items() if n != keep}
+
+        def ver(n):
+            m = re.match(r"(\d+)\.(\d+)\.(\d+)", others[n]["version"])
+            return tuple(int(x) for x in m.groups()) if m else None
+
+        if any(i["scanned_at"] > now for i in others.values()):
+            return None
+        up = [n for n in others if n != LAST_GOOD and ver(n) is not None]
+        if not up:
+            return None
+        fallback = min(up, key=ver)
+        lg = others.get(LAST_GOOD)
+        rest = [n for n in up if n != fallback and not (
+            lg and lg["crc32"] == others[n]["crc32"] and lg["size"] == others[n]["size"])]
+        return min(rest, key=ver) if rest else None
 
     @staticmethod
     def image_check(data: bytes) -> str:
@@ -1558,16 +1581,23 @@ class Handler(BaseHTTPRequestHandler):
         name = image_name(raw_name)
         if name is None or name == LAST_GOOD:
             return self.error(400, "upload_failed", "bad_name")
+        evicted = None
         if name not in d.images and sum(1 for n in d.images if n != LAST_GOOD) >= MAX_IMAGES:
-            return self.error(507, "upload_failed", "too_many_images")
+            evicted = d.eviction(name)
+            if evicted is None:
+                return self.error(507, "upload_failed", "too_many_images")
         if not data:
             return self.error(400, "upload_failed", "empty")
         if len(data) > STM_IMAGE_MAX:
             return self.error(413, "upload_failed", "too_large")
+        if evicted is not None:
+            with d.lock:
+                d.images.pop(evicted, None)
         img = d.add_image(name, data)
         # like the device: CRC known at once, version and check after the background scan
         return self.send_json(201, {"name": img["name"], "size": img["size"], "crc32": img["crc32"],
-                                    "version": None, "check": None, "hw": img["hw"]})
+                                    "version": None, "check": None, "hw": img["hw"],
+                                    "evicted": evicted})
 
     def esp_upload(self, q):
         d = self.dev

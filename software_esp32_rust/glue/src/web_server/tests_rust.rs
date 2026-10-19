@@ -729,3 +729,54 @@ fn a_build_epoch_is_read_from_its_decimal_text() {
     assert_eq!(parse_epoch(b"17x"), 0);
     assert_eq!(parse_epoch(b"4294967295"), u32::MAX);
 }
+
+#[test]
+fn upload_into_a_full_store_names_the_image_it_removed() {
+    let rig = Rig::started();
+    let image = |version: &str| {
+        let mut s = vec![0x80u8; 4096];
+        s[0..4].copy_from_slice(&0x2002_0000u32.to_le_bytes());
+        s[4..8].copy_from_slice(&0x0800_0101u32.to_le_bytes());
+        let h = format!("\x01DEADBEEF\0\x01BEEFIT\0\x01{version}\0");
+        s[3000..3000 + h.len()].copy_from_slice(h.as_bytes());
+        s
+    };
+    let fallback = "f".repeat(31);
+    let old = "o".repeat(31);
+    rig.dev
+        .fs
+        .put(&format!("/stm/{fallback}.bin"), &image("2.1.7-revamped"));
+    rig.dev
+        .fs
+        .put(&format!("/stm/{old}.bin"), &image("2.2.5-revamped"));
+    rig.dev.fs.put("/stm/stm226.bin", &image("2.2.6-revamped"));
+    rig.dev
+        .fs
+        .put("/stm/last_good.bin", &image("2.2.6-revamped"));
+    let st = rig.storage();
+    for _ in 0..4 {
+        st.service();
+    }
+    let mut web = rig.web(&st);
+    let data = image("2.2.7-revamped");
+    let name = "n".repeat(31);
+    let r = perform(
+        &mut web,
+        api_upload("/api/stm/images", &format!("{name}.bin"), &data),
+    );
+    assert_eq!(r.status, 201);
+    assert_eq!(
+        text(&r),
+        format!(
+            "{{\"name\":\"{name}\",\"size\":4096,\"crc32\":\"0x{:08x}\",\"version\":null,\
+             \"check\":null,\"hw\":null,\"evicted\":\"{old}\"}}",
+            vdm_esp_core::config::crc32(&data, 0)
+        )
+    );
+    assert!(st.find_image(old.as_bytes()).is_none());
+    assert!(st.find_image(fallback.as_bytes()).is_some());
+    // nothing left to remove: 507 as before
+    let r = perform(&mut web, api_upload("/api/stm/images", "x.bin", &data));
+    assert_eq!(r.status, 507);
+    assert_eq!(text(&r), error_body("upload_failed", "too_many_images"));
+}

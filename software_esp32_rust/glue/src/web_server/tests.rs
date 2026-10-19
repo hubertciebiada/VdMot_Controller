@@ -250,7 +250,7 @@ fn upload_an_stm_image_is_stored_and_described() {
     assert_eq!(
         text(&r),
         format!(
-            "{{\"name\":\"fw\",\"size\":3,\"crc32\":\"0x{:08x}\",\"version\":null,\"check\":null,\"hw\":null}}",
+            "{{\"name\":\"fw\",\"size\":3,\"crc32\":\"0x{:08x}\",\"version\":null,\"check\":null,\"hw\":null,\"evicted\":null}}",
             crc32(b"abc", 0)
         )
     );

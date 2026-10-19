@@ -639,7 +639,8 @@ fn upload_a_client_gone_mid_upload_aborts_it() {
 #[test]
 fn upload_the_answer_of_the_longest_name_and_size_is_whole() {
     // C++ "the image answer fits 159 bytes, a longer one is {}": the answer of a fresh upload
-    // is never scanned, so it stays far below 160 bytes
+    // is never scanned, so it stays far below 160 bytes (with a removed image of 31 characters
+    // at most 159)
     let rig = Rig::started();
     let st = rig.storage();
     let mut web = rig.web(&st);
@@ -654,7 +655,7 @@ fn upload_the_answer_of_the_longest_name_and_size_is_whole() {
         text(&r),
         format!(
             "{{\"name\":\"{name}\",\"size\":{MAX_IMAGE_SIZE},\"crc32\":\"0x{:08x}\",\
-             \"version\":null,\"check\":null,\"hw\":null}}",
+             \"version\":null,\"check\":null,\"hw\":null,\"evicted\":null}}",
             vdm_esp_core::config::crc32(&data, 0)
         )
     );
