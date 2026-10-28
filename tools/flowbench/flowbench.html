@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>flowbench</title>
+<style>
+/* one column on a phone at the manifold: status bar, rotameter + reading, chart, queue */
+:root {
+  --bg: #f4f6f5; --panel: #ffffff; --fg: #17201c; --muted: #5f6b66; --line: #d7dedb;
+  --accent: #0f6e6a; --accent-fg: #ffffff; --danger: #b42318; --warn: #9a5b00; --ok: #1f7a4d;
+  --tube: #e9f2f6; --float: #d8572a; --s1: #0f6e6a; --s2: #c2571a; --s3: #6b4fbf;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101513; --panel: #182019; --fg: #e5ece8; --muted: #9aa8a2; --line: #2c3833;
+    --accent: #3fb8b0; --accent-fg: #06201e; --danger: #f0705f; --warn: #e7a73a; --ok: #5cc58c;
+    --tube: #1d2c33; --float: #f08a5d; --s1: #3fb8b0; --s2: #f08a5d; --s3: #a99bf0;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font);
+  padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right));
+  padding-bottom: 40px; }
+h1 { font-size: 18px; margin: 14px 0 6px; letter-spacing: .01em; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 10px 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button { font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+  border-radius: 9px; padding: 11px 14px; min-height: 46px; cursor: pointer; }
+button.pri { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.stop { background: var(--danger); color: #fff; border-color: var(--danger); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+input, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+input[type=number] { width: 90px; }
+textarea { width: 100%; min-height: 64px; }
+label { display: inline-flex; gap: 6px; align-items: center; }
+.bar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--line);
+  display: flex; gap: 8px; align-items: center; }
+.bar .what { flex: 1; min-width: 0; font-size: 13px; }
+.bar .what b { font-size: 15px; }
+.msg { font-weight: 600; }
+.msg.err { color: var(--danger); }
+.read { display: grid; grid-template-columns: 132px 1fr; gap: 12px; align-items: start; }
+.read svg.rot { width: 132px; height: auto; touch-action: none; user-select: none; display: block; }
+.value { font: 700 40px/1.1 var(--font); font-variant-numeric: tabular-nums; }
+.value small { font-size: 16px; font-weight: 600; color: var(--muted); }
+.side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.side .row button { flex: 1; }
+.timer { font-size: 13px; font-variant-numeric: tabular-nums; }
+.timer.wait { color: var(--warn); font-weight: 600; }
+.timer.ok { color: var(--ok); font-weight: 600; }
+.chart { width: 100%; height: auto; display: block; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; border: 1px solid var(--line); }
+.pill.trwa { border-color: var(--accent); color: var(--accent); }
+.pill.gotowa { border-color: var(--ok); color: var(--ok); }
+.pill.pominięta { color: var(--muted); }
+.warnbox { border-left: 4px solid var(--warn); padding: 8px 10px; background: var(--panel); border-radius: 6px; }
+.log { font: 12px/1.4 var(--mono); white-space: pre-wrap; max-height: 220px; overflow: auto; }
+.vl label { display: flex; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.vl label span.st { margin-left: auto; font-size: 12px; }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="what" id="what"><b>flowbench</b> <span class="muted">pomiar przepływu pętli</span></div>
+  <button id="pause" hidden>Pauza</button>
+  <button class="stop" id="stop" hidden>STOP</button>
+</div>
+
+<!-- ═════ setup ═════ -->
+<section id="setup">
+  <h1>Nowy pomiar</h1>
+  <div class="warnbox small">
+    Przed startem wyłącz automatykę zaworów w HA (regulator pokoju). Pompę ustaw w trybie i na wysokości
+    podnoszenia, przy której ma pracować regulator. Aplikacja zamknie wszystkie zawory na obu rozdzielaczach
+    i otwiera po jednej pętli.
+  </div>
+  <div id="ctrls"></div>
+  <div class="panel">
+    <h2>Warunki pomiaru</h2>
+    <textarea id="notes" placeholder="np. pompa: stałe ciśnienie 7,5 m; przepływomierze otwarte do oporu; zasilanie 35 °C"></textarea>
+    <div class="row small" style="margin-top:8px">
+      <label>Czekaj po ruchu <input type="number" id="settle" value="30" min="0" max="240"> s</label>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Skala rotametru</h2>
+    <div class="row small">
+      <label>Koniec skali <input type="number" id="smax" value="2.5" step="0.1" min="0.5"> l/min</label>
+      <label>Opis co <input type="number" id="smajor" value="0.5" step="0.1" min="0.1"></label>
+      <label>Kreska co <input type="number" id="sminor" value="0.1" step="0.05" min="0.05"></label>
+    </div>
+  </div>
+  <div class="row"><button class="pri" id="start">Start pomiaru</button><span class="msg err" id="setupErr"></span></div>
+</section>
+
+<!-- ═════ run ═════ -->
+<section id="run" hidden>
+  <p class="msg" id="msg"></p>
+  <div class="warnbox small" id="notice" hidden></div>
+
+  <div class="panel" id="endPanel" hidden>
+    <div class="row">
+      <button class="pri" id="restore" hidden>Przywróć cele sprzed pomiaru</button>
+      <a href="/export.csv"><button>Pobierz CSV</button></a>
+      <button id="again">Nowy pomiar</button>
+    </div>
+    <p class="small muted" id="sessionPath"></p>
+  </div>
+
+  <div class="panel" id="decidePanel" hidden>
+    <p class="small" id="rule"></p>
+    <div class="row"><button class="pri" id="enough">Wystarczy, następna pętla</button><button id="more">Jeszcze jeden przebieg</button></div>
+  </div>
+  <div class="panel" id="readPanel">
+    <div class="read">
+      <svg class="rot" id="rot" viewBox="0 0 132 560" role="img" aria-label="Model rotametru: dotknij miejsca, w którym widzisz pływak"></svg>
+      <div class="side">
+        <div class="value" id="val">– <small>l/min</small></div>
+        <div class="small muted">Dotknij skali tam, gdzie widzisz krawędź pływaka. Przesuń palcem, żeby poprawić.</div>
+        <div class="row"><button id="minus" aria-label="mniej o 0,02">−0,02</button><button id="plus" aria-label="więcej o 0,02">+0,02</button></div>
+        <div class="row"><button id="zero">Nie płynie</button><button id="over">Powyżej skali</button></div>
+        <button class="pri" id="ok" disabled>Zatwierdź odczyt</button>
+        <div class="timer" id="settleT"></div>
+        <div class="timer muted" id="holdT"></div>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="panel">
+    <h2 id="chartTitle">Pętla</h2>
+    <svg class="chart" id="chart" viewBox="0 0 600 300" role="img" aria-label="Przepływ od pozycji zaworu"></svg>
+    <div class="small muted" id="legend"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between"><h2>Kolejka pętli</h2><button id="skip">Pomiń tę pętlę</button></div>
+    <table><thead><tr><th>Pętla</th><th>Stan</th><th>Przebiegi</th><th>Rozrzut</th></tr></thead><tbody id="queue"></tbody></table>
+  </div>
+
+  <details class="panel"><summary>Dziennik</summary><div class="log" id="log"></div></details>
+</section>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+let S = null;          // last state from the server
+let mark = null;       // current float reading [l/min]
+let markKey = null;    // the point the mark belongs to
+const fmt = x => x.toFixed(2).replace(".", ",");
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+const send = b => api("/api/input", b).catch(e => alertMsg(e.message));
+function alertMsg(t) { $("msg").textContent = t; $("msg").className = "msg err"; }
+
+// ── setup ──
+async function loadSetup() {
+  const d = await api("/api/setup");
+  const box = $("ctrls"); box.textContent = "";
+  for (const c of d.controllers) {
+    const p = document.createElement("div"); p.className = "panel";
+    const h = document.createElement("h2"); h.textContent = `${c.name} · ${c.base}`; p.append(h);
+    if (c.error) { const e = document.createElement("p"); e.className = "msg err"; e.textContent = c.error; p.append(e); box.append(p); continue; }
+    const list = document.createElement("div"); list.className = "vl";
+    for (const v of c.valves) {
+      const l = document.createElement("label");
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = true;
+      cb.id = `v_${c.name}_${v.idx}`; cb.dataset.ctrl = c.name; cb.dataset.idx = v.idx;
+      const t = document.createElement("span"); t.textContent = `${v.idx} · ${v.name}`;
+      const st = document.createElement("span"); st.className = "st muted";
+      const warn = [];
+      if (v.target) warn.push(`cel ${v.target} %`);
+      if (v.state !== "idle") warn.push(v.state);
+      if (v.flags && v.flags.length) warn.push(v.flags.join(","));
+      st.textContent = `poz. ${v.pos} %` + (warn.length ? " · " + warn.join(" · ") : "");
+      l.append(cb, t, st); list.append(l);
+    }
+    p.append(list); box.append(p);
+  }
+}
+$("start").onclick = async () => {
+  const loops = [...document.querySelectorAll("#ctrls input[type=checkbox]")].filter(c => c.checked)
+    .map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
+  if (!loops.length) { $("setupErr").textContent = "Zaznacz przynajmniej jedną pętlę."; return; }
+  const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value };
+  try { await api("/api/start", { loops, scale, notes: $("notes").value, settle_s: +$("settle").value }); $("setupErr").textContent = ""; }
+  catch (e) { $("setupErr").textContent = e.message; }
+};
+
+// ── rotameter model ──
+const ROT = { top: 46, bottom: 512, x: 64, w: 40 };   // scale from bottom (0) to top (max)
+function yOf(q) { return ROT.bottom - (q / S.scale.max) * (ROT.bottom - ROT.top); }
+function qOf(y) { return Math.max(0, Math.min(S.scale.max, (ROT.bottom - y) / (ROT.bottom - ROT.top) * S.scale.max)); }
+function el(tag, attrs, text) { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; }
+function drawRot() {
+  const svg = $("rot"); svg.textContent = "";
+  const cs = getComputedStyle(document.documentElement);
+  const c = n => cs.getPropertyValue(n).trim();
+  svg.append(el("rect", { x: ROT.x, y: ROT.top - 26, width: ROT.w, height: ROT.bottom - ROT.top + 52, rx: 10, fill: c("--tube"), stroke: c("--line"), "stroke-width": 2 }));
+  const { max, major, minor } = S.scale;
+  for (let q = 0; q <= max + 1e-9; q += minor) {
+    const y = yOf(q), isMajor = Math.abs(q / major - Math.round(q / major)) < 1e-6;
+    svg.append(el("line", { x1: ROT.x - (isMajor ? 16 : 8), x2: ROT.x, y1: y, y2: y, stroke: c("--fg"), "stroke-width": isMajor ? 2 : 1 }));
+    if (isMajor) svg.append(el("text", { x: ROT.x - 20, y: y + 5, "text-anchor": "end", "font-size": 15, fill: c("--fg"), "font-family": "system-ui" }, fmt(q).replace(/0$/, "").replace(/,$/, "")));
+  }
+  svg.append(el("text", { x: ROT.x + ROT.w / 2, y: ROT.top - 32, "text-anchor": "middle", "font-size": 12, fill: c("--muted"), "font-family": "system-ui" }, "l/min"));
+  if (mark != null) {
+    const y = yOf(mark);
+    svg.append(el("path", { d: `M${ROT.x + 4},${y} h${ROT.w - 8} l-6,22 h${-(ROT.w - 20)} z`, fill: c("--float") }));
+    svg.append(el("line", { x1: ROT.x - 18, x2: ROT.x + ROT.w + 14, y1: y, y2: y, stroke: c("--float"), "stroke-width": 2 }));
+  }
+}
+function setMark(q) { mark = Math.round(q * 100) / 100; drawRot(); $("val").innerHTML = `${fmt(mark)} <small>l/min</small>`; $("ok").disabled = !(S && S.phase === "reading"); }
+function pointerY(ev) { const svg = $("rot"); const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()).y; }
+let dragging = false;
+$("rot").addEventListener("pointerdown", ev => { if (!S || S.phase !== "reading") return; dragging = true; $("rot").setPointerCapture(ev.pointerId); setMark(qOf(pointerY(ev))); });
+$("rot").addEventListener("pointermove", ev => { if (dragging) setMark(qOf(pointerY(ev))); });
+$("rot").addEventListener("pointerup", () => { dragging = false; });
+$("minus").onclick = () => mark != null && setMark(Math.max(0, mark - 0.02));
+$("plus").onclick = () => mark != null && setMark(Math.min(S.scale.max, mark + 0.02));
+$("ok").onclick = () => { if (mark == null) return; send({ kind: "value", value: mark, frac: +(mark / S.scale.max).toFixed(4) }); $("ok").disabled = true; };
+$("zero").onclick = () => send({ kind: "zero" });
+$("over").onclick = () => send({ kind: "over" });
+
+// ── commands ──
+$("stop").onclick = () => send({ cmd: "stop" });
+$("pause").onclick = () => send({ cmd: S && S.paused ? "resume" : "pause" });
+$("enough").onclick = () => send({ cmd: "enough" });
+$("more").onclick = () => send({ cmd: "more" });
+$("skip").onclick = () => send({ cmd: "skip" });
+$("restore").onclick = () => api("/api/restore", {}).catch(e => alertMsg(e.message));
+$("again").onclick = () => { $("run").hidden = true; $("setup").hidden = false; loadSetup(); };
+
+// ── chart of the current loop ──
+function drawChart() {
+  const svg = $("chart"); svg.textContent = "";
+  const cs = getComputedStyle(document.documentElement); const c = n => cs.getPropertyValue(n).trim();
+  const pts = (S.points || []).filter(p => p.kind !== "void");
+  const L = 62, R = 566, T = 16, B = 244, qmax = S.scale.max;
+  const xmax = Math.max(1000, Math.ceil(Math.max(0, ...pts.map(p => p.pos)) / 200) * 200);
+  const X = x => L + x / xmax * (R - L), Y = q => B - q / qmax * (B - T);
+  const xs = xmax > 1200 ? 400 : 200;
+  for (let x = 0; x <= xmax; x += xs) {
+    svg.append(el("line", { x1: X(x), x2: X(x), y1: T, y2: B, stroke: c("--line") }));
+    svg.append(el("text", { x: X(x), y: B + 24, "text-anchor": "middle", "font-size": 19, fill: c("--muted"), "font-family": "system-ui" }, x));
+  }
+  for (let q = 0; q <= qmax + 1e-9; q += S.scale.major) {
+    svg.append(el("line", { x1: L, x2: R, y1: Y(q), y2: Y(q), stroke: c("--line") }));
+    svg.append(el("text", { x: L - 6, y: Y(q) + 6, "text-anchor": "end", "font-size": 19, fill: c("--muted"), "font-family": "system-ui" }, fmt(q)));
+  }
+  svg.append(el("text", { x: (L + R) / 2, y: B + 50, "text-anchor": "middle", "font-size": 18, fill: c("--muted"), "font-family": "system-ui" }, "impulsy od zamkniętej krańcówki"));
+  const colors = [c("--s1"), c("--s2"), c("--s3")];
+  const sweeps = [...new Set(pts.map(p => p.sweep))];
+  for (const k of sweeps) {
+    const sp = pts.filter(p => p.sweep === k).sort((a, b) => a.pos - b.pos);
+    const col = colors[(k - 1) % 3];
+    svg.append(el("polyline", { points: sp.map(p => `${X(p.pos)},${Y(p.flow)}`).join(" "), fill: "none", stroke: col, "stroke-width": 3 }));
+    for (const p of sp) svg.append(el("circle", { cx: X(p.pos), cy: Y(p.flow), r: p.kind === "over" ? 7 : 5, fill: p.kind === "over" ? "none" : col, stroke: col, "stroke-width": 2 }));
+  }
+  $("legend").textContent = sweeps.length ? sweeps.map(k => `przebieg ${k}: ${pts.filter(p => p.sweep === k).length} pkt`).join(" · ") + " · pusty okrąg = powyżej skali" : "Brak punktów.";
+}
+
+// ── render loop ──
+function mmss(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+function render() {
+  const running = !["setup"].includes(S.phase);
+  if (running && $("run").hidden && S.phase !== "setup") { $("setup").hidden = true; $("run").hidden = false; }
+  const live = ["prepare", "moving", "reading", "decide"].includes(S.phase);
+  $("stop").hidden = !live; $("pause").hidden = !live; $("pause").textContent = S.paused ? "Wznów" : "Pauza";
+  const cur = S.current;
+  $("what").innerHTML = cur ? `<b>${cur.ctrl} · ${cur.idx} ${escapeHtml(cur.name || "")}</b><br>przebieg ${cur.sweep} · punkt ${cur.point} · ${cur.pos} imp` : `<b>flowbench</b> <span class="muted">pomiar przepływu pętli</span>`;
+  $("msg").textContent = S.error ? S.error : (S.paused ? "Pauza" : S.msg); $("msg").className = "msg" + (S.error ? " err" : "");
+  $("notice").hidden = !S.notice; $("notice").textContent = S.notice || "";
+  const key = cur ?`${cur.ctrl}/${cur.idx}/${cur.sweep}/${cur.point}` : null;
+  if (key !== markKey) { markKey = key; mark = null; $("val").innerHTML = `– <small>l/min</small>`; }
+  const reading = S.phase === "reading";
+  for (const id of ["zero", "over", "minus", "plus"]) $(id).disabled = !reading;
+  $("ok").disabled = !reading || mark == null;
+  $("readPanel").style.opacity = reading ? 1 : .55;
+  if (reading) {
+    const left = S.settle_until - S.now;
+    $("settleT").textContent = left > 0 ? `Pływak się uspokaja: jeszcze ${Math.ceil(left)} s` : "Możesz odczytać.";
+    $("settleT").className = "timer " + (left > 0 ? "wait" : "ok");
+    $("holdT").textContent = `Zawór trzyma pozycję jeszcze ${mmss(S.hold_until - S.now)}`;
+  } else { $("settleT").textContent = ""; $("holdT").textContent = ""; }
+  $("decidePanel").hidden = S.phase !== "decide"; $("rule").textContent = S.rule || "";
+  const ended = ["done", "stopped", "error"].includes(S.phase);
+  $("endPanel").hidden = !ended; $("readPanel").hidden = ended; $("restore").hidden = !S.restorable;
+  $("sessionPath").textContent = S.session ? `Plik sesji: ${S.session}` : "";
+  $("skip").disabled = !live;
+  $("chartTitle").textContent = cur ? `Pętla ${cur.ctrl} · ${cur.idx} ${cur.name || ""}` : "Pętla";
+  const q = $("queue"); q.textContent = "";
+  for (const lp of S.loops) {
+    const tr = document.createElement("tr");
+    const st = `<span class="pill ${lp.status}">${lp.status}</span>`;
+    tr.innerHTML = `<td>${lp.ctrl} · ${lp.idx}</td><td>${st}</td><td>${(lp.sweeps || []).join(" + ") || "–"}</td><td>${lp.spread == null ? "–" : fmt(lp.spread) + " l/min"}</td>`;
+    q.append(tr);
+  }
+  $("log").textContent = (S.log || []).join("\n");
+  drawRot(); drawChart();
+}
+function escapeHtml(s) { return s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]); }
+
+async function poll() {
+  try { S = await api("/api/state"); render(); } catch (e) { $("msg").textContent = "Brak połączenia z aplikacją na PC."; }
+  setTimeout(poll, 700);
+}
+loadSetup().catch(e => { $("setupErr").textContent = "Nie mogę pobrać zaworów: " + e.message; });
+poll();
+</script>
+</body>
+</html>
