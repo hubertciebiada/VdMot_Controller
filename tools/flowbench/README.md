@@ -47,8 +47,10 @@ Per loop, per sweep:
 2. Service opens only (30 mA bound). The first one goes 200 pulses into the free travel, then
    60-pulse steps while nothing flows, then steps sized for about 0.15 l/min each (15 to 150
    pulses) from the slope of the last two points.
-3. After each step the page waits for the reading: "Nie płynie" (0), a tap on the scale, or
-   "Powyżej skali". The settle timer is advice only.
+3. After each step the page waits for the reading: "Nie płynie" (0), a tap on the scale at the
+   height of the float disc, or "Powyżej skali". The settle timer is advice only. The scale
+   end, the labelled and the plain marks, and the direction (0 at the top, as on the manifold
+   flow meters, or at the bottom) are set before the start.
 4. The sweep ends at the top of the scale, after 3 steps with less than 0.05 l/min gain, at
    2600 pulses, or when a move stops early. A counted service close back to the end stop
    follows; up and down counts go into the session file.

@@ -102,6 +102,7 @@ th { color: var(--muted); font-weight: 600; }
       <label>Koniec skali <input type="number" id="smax" value="2.5" step="0.1" min="0.5"> l/min</label>
       <label>Opis co <input type="number" id="smajor" value="0.5" step="0.1" min="0.1"></label>
       <label>Kreska co <input type="number" id="sminor" value="0.1" step="0.05" min="0.05"></label>
+      <label><input type="checkbox" id="szero" checked> 0 na górze skali</label>
     </div>
   </div>
   <div class="row"><button class="pri" id="start">Start pomiaru</button><span class="msg err" id="setupErr"></span></div>
@@ -130,7 +131,7 @@ th { color: var(--muted); font-weight: 600; }
       <svg class="rot" id="rot" viewBox="0 0 132 560" role="img" aria-label="Model rotametru: dotknij miejsca, w którym widzisz pływak"></svg>
       <div class="side">
         <div class="value" id="val">– <small>l/min</small></div>
-        <div class="small muted">Dotknij skali tam, gdzie widzisz krawędź pływaka. Przesuń palcem, żeby poprawić.</div>
+        <div class="small muted">Dotknij skali na wysokości dysku pływaka. Przesuń palcem, żeby poprawić.</div>
         <div class="row"><button id="minus" aria-label="mniej o 0,02">−0,02</button><button id="plus" aria-label="więcej o 0,02">+0,02</button></div>
         <div class="row"><button id="zero">Nie płynie</button><button id="over">Powyżej skali</button></div>
         <button class="pri" id="ok" disabled>Zatwierdź odczyt</button>
@@ -203,15 +204,17 @@ $("start").onclick = async () => {
   const loops = [...document.querySelectorAll("#ctrls input[type=checkbox]")].filter(c => c.checked)
     .map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
   if (!loops.length) { $("setupErr").textContent = "Zaznacz przynajmniej jedną pętlę."; return; }
-  const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value };
+  const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value, zeroTop: $("szero").checked };
   try { await api("/api/start", { loops, scale, notes: $("notes").value, settle_s: +$("settle").value }); $("setupErr").textContent = ""; }
   catch (e) { $("setupErr").textContent = e.message; }
 };
 
 // ── rotameter model ──
 const ROT = { top: 46, bottom: 512, x: 64, w: 40 };   // scale from bottom (0) to top (max)
-function yOf(q) { return ROT.bottom - (q / S.scale.max) * (ROT.bottom - ROT.top); }
-function qOf(y) { return Math.max(0, Math.min(S.scale.max, (ROT.bottom - y) / (ROT.bottom - ROT.top) * S.scale.max)); }
+// the float of the manifold flow meter sits at the top at 0 l/min and goes down with the flow
+const zeroTop = () => S.scale.zeroTop !== false;
+function yOf(q) { const f = q / S.scale.max * (ROT.bottom - ROT.top); return zeroTop() ? ROT.top + f : ROT.bottom - f; }
+function qOf(y) { const f = (zeroTop() ? y - ROT.top : ROT.bottom - y) / (ROT.bottom - ROT.top); return Math.max(0, Math.min(S.scale.max, f * S.scale.max)); }
 function el(tag, attrs, text) { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; }
 function drawRot() {
   const svg = $("rot"); svg.textContent = "";
@@ -227,8 +230,9 @@ function drawRot() {
   svg.append(el("text", { x: ROT.x + ROT.w / 2, y: ROT.top - 32, "text-anchor": "middle", "font-size": 12, fill: c("--muted"), "font-family": "system-ui" }, "l/min"));
   if (mark != null) {
     const y = yOf(mark);
-    svg.append(el("path", { d: `M${ROT.x + 4},${y} h${ROT.w - 8} l-6,22 h${-(ROT.w - 20)} z`, fill: c("--float") }));
-    svg.append(el("line", { x1: ROT.x - 18, x2: ROT.x + ROT.w + 14, y1: y, y2: y, stroke: c("--float"), "stroke-width": 2 }));
+    svg.append(el("rect", { x: ROT.x + 3, y: y - 1.5, width: ROT.w - 6, height: 3, fill: c("--float") }));
+    svg.append(el("path", { d: `M${ROT.x + ROT.w + 4},${y} l10,-7 v14 z`, fill: c("--float") }));
+    svg.append(el("line", { x1: ROT.x - 16, x2: ROT.x, y1: y, y2: y, stroke: c("--float"), "stroke-width": 1.5 }));
   }
 }
 function setMark(q) { mark = Math.round(q * 100) / 100; drawRot(); $("val").innerHTML = `${fmt(mark)} <small>l/min</small>`; $("ok").disabled = !(S && S.phase === "reading"); }
