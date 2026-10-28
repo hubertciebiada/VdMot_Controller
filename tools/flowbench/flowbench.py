@@ -180,7 +180,7 @@ class Engine:
         self.rows = []  # every recorded point of the session
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.state = {"phase": "setup", "msg": "", "log": [], "loops": [], "current": None,
-                      "points": [], "scale": {"max": 2.5, "major": 0.5, "minor": 0.1},
+                      "points": [], "scale": {"max": 2.5, "major": 0.5, "minor": 0.25},
                       "settle_s": 30, "settle_until": 0, "hold_until": 0, "rule": "",
                       "session": None, "error": None, "restorable": False, "notice": ""}
 

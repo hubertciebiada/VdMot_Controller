@@ -101,7 +101,7 @@ th { color: var(--muted); font-weight: 600; }
     <div class="row small">
       <label>Koniec skali <input type="number" id="smax" value="2.5" step="0.1" min="0.5"> l/min</label>
       <label>Opis co <input type="number" id="smajor" value="0.5" step="0.1" min="0.1"></label>
-      <label>Kreska co <input type="number" id="sminor" value="0.1" step="0.05" min="0.05"></label>
+      <label>Kreska co <input type="number" id="sminor" value="0.25" step="0.05" min="0.05"></label>
       <label><input type="checkbox" id="szero" checked> 0 na górze skali</label>
     </div>
   </div>
@@ -224,15 +224,15 @@ function drawRot() {
   const { max, major, minor } = S.scale;
   for (let q = 0; q <= max + 1e-9; q += minor) {
     const y = yOf(q), isMajor = Math.abs(q / major - Math.round(q / major)) < 1e-6;
-    svg.append(el("line", { x1: ROT.x - (isMajor ? 16 : 8), x2: ROT.x, y1: y, y2: y, stroke: c("--fg"), "stroke-width": isMajor ? 2 : 1 }));
+    svg.append(el("line", { x1: ROT.x - (isMajor ? 18 : 11), x2: ROT.x, y1: y, y2: y, stroke: c("--fg"), "stroke-width": isMajor ? 4 : 3 }));
     if (isMajor) svg.append(el("text", { x: ROT.x - 20, y: y + 5, "text-anchor": "end", "font-size": 15, fill: c("--fg"), "font-family": "system-ui" }, fmt(q).replace(/0$/, "").replace(/,$/, "")));
   }
   svg.append(el("text", { x: ROT.x + ROT.w / 2, y: ROT.top - 32, "text-anchor": "middle", "font-size": 12, fill: c("--muted"), "font-family": "system-ui" }, "l/min"));
   if (mark != null) {
     const y = yOf(mark);
-    svg.append(el("rect", { x: ROT.x + 3, y: y - 1.5, width: ROT.w - 6, height: 3, fill: c("--float") }));
+    svg.append(el("rect", { x: ROT.x + 3, y: y - 2.5, width: ROT.w - 6, height: 5, fill: c("--float") }));
     svg.append(el("path", { d: `M${ROT.x + ROT.w + 4},${y} l10,-7 v14 z`, fill: c("--float") }));
-    svg.append(el("line", { x1: ROT.x - 16, x2: ROT.x, y1: y, y2: y, stroke: c("--float"), "stroke-width": 1.5 }));
+    svg.append(el("line", { x1: ROT.x - 16, x2: ROT.x, y1: y, y2: y, stroke: c("--float"), "stroke-width": 2 }));
   }
 }
 function setMark(q) { mark = Math.round(q * 100) / 100; drawRot(); $("val").innerHTML = `${fmt(mark)} <small>l/min</small>`; $("ok").disabled = !(S && S.phase === "reading"); }
