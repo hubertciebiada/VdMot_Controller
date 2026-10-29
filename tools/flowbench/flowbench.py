@@ -15,6 +15,7 @@ Then open http://<this PC>:4680 on the phone. README.md next to this file explai
 """
 import argparse
 import csv
+import os
 import io
 import json
 import math
@@ -144,6 +145,24 @@ class EngineError(Exception):
     pass
 
 
+# ───────────────────────────── pump power ─────────────────────────────
+
+class HaPower:
+    """The state of one Home Assistant power sensor, read over the REST API."""
+
+    def __init__(self, url, token, entity):
+        self.url = url.rstrip("/") + "/api/states/" + entity
+        self.token = token
+
+    def read(self):
+        r = urllib.request.Request(self.url, headers={"Authorization": "Bearer " + self.token})
+        try:
+            with urllib.request.urlopen(r, timeout=3) as f:
+                return float(json.loads(f.read())["state"])
+        except (OSError, ValueError, KeyError):
+            return None  # a missing power value never stops a measurement
+
+
 # ───────────────────────────── controller client ─────────────────────────────
 
 class Esp:
@@ -223,7 +242,18 @@ def sweep_spread(a, b, top):
     return math.sqrt(sum(r * r for r in res) / len(res)) if len(res) >= 2 else None
 
 
-def next_step(points, top):
+def onset_below(points):
+    """The position of the last zero reading before the flow starts, or 0."""
+    last = 0
+    for p in points:
+        if p["kind"] == "zero" or (p["kind"] == "value" and p["flow"] <= 0):
+            last = p.get("pos_est", p["pos"])
+        else:
+            break
+    return last
+
+
+def next_step(points, top, dq=DQ_TARGET):
     """Pulses of the next opening step, or (None, reason) when the sweep is complete."""
     last = points[-1]
     if last["kind"] == "over" or (last["kind"] == "value" and last["flow"] >= top - 1e-6):
@@ -233,8 +263,9 @@ def next_step(points, top):
     flowing = [p for p in points if p["kind"] == "value" and p["flow"] > 0]
     if not flowing:
         return COARSE_STEP, None
+    # with FLAT_N points or fewer both slices are the same list and every gain would be 0
     gains = [b["flow"] - a["flow"] for a, b in zip(points[-FLAT_N - 1:], points[-FLAT_N:])]
-    if len(gains) == FLAT_N and last["flow"] > 0.3 and all(g < FLAT_EPS for g in gains):
+    if len(points) > FLAT_N and last["flow"] > 0.3 and all(g < FLAT_EPS for g in gains):
         return None, "flat"
     if len(points) < 2:
         return COARSE_STEP, None
@@ -243,7 +274,7 @@ def next_step(points, top):
     if b["pos"] == a["pos"]:
         return COARSE_STEP, None
     slope = (b["flow"] - a["flow"]) / (b["pos"] - a["pos"])
-    step = STEP_MAX if slope <= 0 else DQ_TARGET / slope
+    step = STEP_MAX if slope <= 0 else dq / slope
     return int(max(STEP_MIN, min(STEP_MAX, step))), None
 
 
@@ -310,6 +341,9 @@ MIGRATIONS = [
     -- the position a single move from the closed end stop would count, set at the sweep end
     ALTER TABLE points ADD COLUMN pos_est INTEGER;
     """,
+    """
+    ALTER TABLE points ADD COLUMN power_w REAL;  -- pump power at the reading (--ha-power)
+    """,
 ]
 
 
@@ -361,13 +395,13 @@ class Store:
             temps = [x.get("temp") for x in r.get("temps") or []] + [None, None]
             self.exec("INSERT INTO points (session_id, ctrl, valve, name, sweep, point, "
                       "pos_counted, pos_requested, step, step_counted, stop, kind, flow_lpm, "
-                      "tap_frac, waited_s, t_1, t_2, t, direction) VALUES "
-                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      "tap_frac, waited_s, t_1, t_2, t, direction, power_w) VALUES "
+                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (sid, r["ctrl"], r["idx"], r["name"], r["sweep"], r["point"], r["pos"],
                        r["pos_req"], r["step"], r["cnt"], r["stop"],
                        r["kind"], r["flow"], num(r.get("tap")),
                        r["waited_s"], num(temps[0]), num(temps[1]), iso(r["t"]),
-                       r.get("dir", "open")))
+                       r.get("dir", "open"), num(r.get("power"))))
         elif "pos_est" in rec:
             c = rec["pos_est"]
             for point, pos in c["pos"].items():
@@ -422,6 +456,8 @@ class Engine:
         self.sid = None  # the id of the running session in the store
         self.rows = []  # every recorded point of the session
         self.close_sweep = False  # one closing sweep per loop after the opening sweeps
+        self.dq = DQ_TARGET  # wanted flow change per step of this session
+        self.power = None  # reads the pump power (HaPower), or None
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
         self.head_rows = []  # readings of a pump head test
@@ -622,6 +658,9 @@ class Engine:
                     problems.append(f"{esp.name} {lp['idx']}: flagi {sorted(flags & BAD_FLAGS)}")
         return problems
 
+    def power_w(self):
+        return self.power.read() if self.power else None
+
     def temps(self, esp, idx):
         v = esp.valve(idx)
         return [{"name": s.get("name"), "temp": s.get("temp")} for s in v.get("sensors", [])]
@@ -632,6 +671,7 @@ class Engine:
             self.store = Store(self.outdir / "flowbench.db")
         self.rows, self.head_rows = [], []
         self.close_sweep = bool(cfg.get("close_sweep"))
+        self.dq = float(cfg.get("dq") or DQ_TARGET)
         loops = cfg.get("loops", [])
         self.set(loops=[dict(lp, status="czeka", sweeps=[], spread=None) for lp in loops])
         try:
@@ -646,7 +686,7 @@ class Engine:
                                           "cc": v.get("cc")} for v in esp.valves()}}
                 self.snapshot[esp.name] = {v["idx"]: v.get("target") for v in esp.valves()}
             meta["cfg"] = {k: cfg.get(k) for k in ("read", "others_pct", "pump_s",
-                                                   "margin_pct", "dt", "close_sweep")}
+                                                   "margin_pct", "dt", "close_sweep", "dq")}
             self.sid = self.store.begin(cfg.get("mode", "loops"), cfg.get("pump_head"),
                                         cfg.get("notes", ""), meta)
             self.set(session=f"{self.store.path} #{self.sid}", restorable=True)
@@ -711,12 +751,14 @@ class Engine:
             k = 0
             while True:
                 k += 1
-                offset = 0
+                offset, base = 0, START_PULSES
                 if sweeps:
                     steps = [b["pos"] - a["pos"] for a, b in zip(sweeps[0], sweeps[0][1:])]
                     steps = sorted(s for s in steps if s > 0)
                     offset = steps[len(steps) // 2] // 2 if steps else COARSE_STEP // 2
-                pts = self.sweep(esp, idx, name, n, k, START_PULSES + offset, top)
+                    # the first sweep found the onset: start one coarse step below its last zero
+                    base = max(START_PULSES, onset_below(sweeps[0]) - COARSE_STEP)
+                pts = self.sweep(esp, idx, name, n, k, base + offset, top)
                 sweeps.append(pts)
                 spread = sweep_spread(sweeps[0], pts, top) if k > 1 else None
                 self.set_loop(n, sweeps=[len(s) for s in sweeps], spread=spread)
@@ -802,7 +844,7 @@ class Engine:
                    "cnt": -cnt if pts else cnt, "stop": stop, "kind": item["kind"], "flow": flow,
                    "tap": item.get("frac"),
                    "waited_s": round(time.time() - hold_until + HOLD_S, 1), "late": late,
-                   "temps": self.temps(esp, idx), "dir": "close"}
+                   "temps": self.temps(esp, idx), "dir": "close", "power": self.power_w()}
             self.write({"point": row})
             self.rows.append(row)
             if late:
@@ -880,7 +922,7 @@ class Engine:
                    "point": len(pts) + 1, "pos": pos_cnt, "pos_req": pos_req, "step": step,
                    "cnt": cnt, "stop": stop, "kind": item["kind"], "flow": flow,
                    "tap": item.get("frac"), "waited_s": round(time.time() - hold_until + HOLD_S, 1),
-                   "late": late, "temps": self.temps(esp, idx)}
+                   "late": late, "temps": self.temps(esp, idx), "power": self.power_w()}
             self.write({"point": row})
             if late:
                 # the STM has returned the valve to its target: this reading is not at pos_cnt,
@@ -897,7 +939,7 @@ class Engine:
             pts.append(row)
             self.set(notice="")
             self.set(points=[p for p in self.rows if p["ctrl"] == esp.name and p["idx"] == idx])
-            nxt, reason = next_step(pts, top)
+            nxt, reason = next_step(pts, top, self.dq)
             if stop not in ("target",) and nxt is not None:
                 nxt, reason = None, f"stop {stop}"
             if nxt is None:
@@ -957,6 +999,8 @@ class Engine:
                 self.set(notice="Wpisz ciśnienie pompy w metrach.")
                 continue
             power = item.get("power")
+            if power is None:
+                power = self.power_w()
             if self.on_head:
                 self.on_head(head)
             self.set(phase="pump", notice="", settle_until=time.time() + pump_s,
@@ -1046,7 +1090,7 @@ class Engine:
         w = csv.writer(out, delimiter=";")
         w.writerow(["ctrl", "valve", "name", "sweep", "point", "pos_counted", "pos_requested",
                     "step", "step_counted", "stop", "kind", "flow_lpm", "tap_frac", "waited_s",
-                    "t_1", "t_2", "time", "direction", "pos_est"])
+                    "t_1", "t_2", "time", "direction", "pos_est", "power_w"])
         for r in self.rows:
             ts = r.get("temps") or []
             t = [x.get("temp") for x in ts] + [None, None]
@@ -1054,7 +1098,7 @@ class Engine:
                         r["pos_req"], r["step"], r["cnt"], r["stop"], r["kind"],
                         str(r["flow"]).replace(".", ","), r.get("tap"), r["waited_s"],
                         t[0], t[1], datetime.fromtimestamp(r["t"]).isoformat(timespec="seconds"),
-                        r.get("dir", "open"), r.get("pos_est")])
+                        r.get("dir", "open"), r.get("pos_est"), r.get("power")])
         if self.head_rows:
             w.writerow([])
             w.writerow(["ctrl", "valve", "name", "head_m", "power_w", "target_pct", "kind",
@@ -1371,6 +1415,9 @@ def main():
     ap.add_argument("--loops", type=Path, default=None,
                     help="length and heat of every loop for the pump head calculator "
                          "(default ~/flowbench/loops.json, with --sim loops.example.json)")
+    ap.add_argument("--ha-power", metavar="ENTITY",
+                    help="a Home Assistant power sensor of the pump, stored with every reading; "
+                         "needs HA_URL and HA_TOKEN in the environment")
     a = ap.parse_args()
 
     esps, devices = [], {}
@@ -1394,6 +1441,12 @@ def main():
     engine.store = Store(out / "flowbench.db")  # a schema error stops the tool here, not mid-session
     default_loops = HERE / "loops.example.json" if a.sim else Path.home() / "flowbench" / "loops.json"
     engine.loops_cfg = load_loops(a.loops or default_loops)
+    if a.ha_power:
+        url, token = os.environ.get("HA_URL"), os.environ.get("HA_TOKEN")
+        if not (url and token):
+            ap.error("--ha-power needs HA_URL and HA_TOKEN in the environment")
+        engine.power = HaPower(url, token, a.ha_power)
+        print(f"pump power: {a.ha_power} = {engine.power.read()} W")
     if a.sim:
         engine.on_head = lambda h: [setattr(d, "head", h) for d in devices.values()]
     if a.sim and a.sim_speed != 1:

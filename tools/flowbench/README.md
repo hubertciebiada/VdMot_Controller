@@ -26,6 +26,11 @@ uv run tools/flowbench/flowbench.py --sim                       # two simulated 
 uv run tools/flowbench/flowbench.py --sim --sim-auto --sim-speed 20   # also a simulated reader
 ```
 
+The pump power can come from a Home Assistant power sensor (for example a smart plug). With
+`--ha-power sensor.pump_power` and `HA_URL` / `HA_TOKEN` (a long-lived access token) in the
+environment, every reading stores the power at that moment. A failed read stores no power and
+does not stop the measurement.
+
 ## Before you start
 
 - Stop every automation that sets valve targets (the room controller in Home Assistant). A
@@ -79,7 +84,8 @@ Per loop, per sweep:
    reference.
 2. Service opens only (30 mA bound). The first one goes 200 pulses into the free travel, then
    60-pulse steps while nothing flows, then steps sized for about 0.15 l/min each (15 to 150
-   pulses) from the slope of the last two points.
+   pulses) from the slope of the last two points. The start request can change the flow per
+   step (`"dq": 0.25` gives fewer points per sweep).
 3. After each step the page waits for the reading: "Nie płynie" (0), a tap on the scale at the
    height of the float disc, or "Powyżej skali". The settle timer is advice only. The scale
    end, the labelled and the plain marks, and the direction (0 at the top, as on the manifold
@@ -87,7 +93,9 @@ Per loop, per sweep:
 4. The sweep ends at the top of the scale, after 3 steps with less than 0.05 l/min gain, at
    2600 pulses, or when a move stops early. A counted service close back to the end stop
    follows; up and down counts go into the `sweeps` table.
-5. The second sweep starts half a median step later, so the points of both sweeps interleave.
+5. The second sweep starts one 60-pulse step below the last zero reading of the first sweep,
+   so it does not walk through the free travel again. It is also half a median step later than
+   the first sweep, so the points of both sweeps interleave.
    A third sweep runs when the two disagree by more than 0.12 l/min (rms). The page can end a
    loop early or ask for one more sweep.
 
@@ -118,9 +126,9 @@ ones). The tool writes each reading as it comes, so a stopped or crashed session
 | Table | One row per |
 |---|---|
 | `sessions` | session: start, end, `status` (running, done, stopped, error), `mode`, `pump_head_m`, notes, `meta` (JSON: scale, controller versions, `oc`/`cc` of every valve, head test settings) |
-| `points` | loop reading: controller, valve, sweep, `direction` (open, close), counted and requested position, `pos_est` (corrected for the coast, set at the sweep end), step, stop reason, `kind` (value, zero, over, void), flow, tap position, both temperature sensors |
+| `points` | loop reading: controller, valve, sweep, `direction` (open, close), counted and requested position, `pos_est` (corrected for the coast, set at the sweep end), step, stop reason, `kind` (value, zero, over, void), flow, tap position, both temperature sensors, `power_w` (pump power, with `--ha-power`) |
 | `sweeps` | end of a sweep: reason, pulses up, counted pulses back to the end stop |
-| `head_points` | pump head reading: head, socket power, valve target, flow, design flow |
+| `head_points` | pump head reading: head, socket power (typed, else from `--ha-power`), valve target, flow, design flow |
 | `head_steps` | pump head step: passed or not, the flows, the recommendation |
 | `events` | log line or void sweep |
 
