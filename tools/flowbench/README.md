@@ -196,8 +196,12 @@ python tools/flowbench/endstop_test.py --summary --out endstops.jsonl
 | steps | 2 × (one opening move of N, close), 2 × (N in 5 moves, close) | the pulses the counter misses per opening move: (way back after 5 moves − way back after 1 move) / 4 |
 | open | open to the open end stop, then 5 × (close 300, open to the end stop) | the repeatability of the open end stop |
 | zero | 2 × (0 %, the target back, 0 %, close at 34 mA) | how far the normal 0 % of the STM lies above the 34 mA stop |
+| ruler | 5 × (close at 34 mA, open to the open end stop) | the spread of the counted stroke: does the 34 mA stop repeat (the first move after `--cold-s` idle: the cold motor) |
+| top | open to the end stop, then 5 × (close K, open to the end stop), K = stroke − the position of 1.0 l/min | the same point reached from above: does it repeat better than from the closed stop |
 
-At the end the valve gets 0 % and then its target again. Every move is a JSON line in `--out`.
+`--phases` picks the phases (default `closed,steps,open,zero`); `top` needs `--pos`
+(`{"west 1": 810, ...}`, the pulses of 1.0 l/min). At the end the valve gets 0 % and then its
+target again. Every move is a JSON line in `--out`.
 
 ## Checking the curves on the flow layer (`flowcheck.py`)
 

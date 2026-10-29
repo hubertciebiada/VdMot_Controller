@@ -11,6 +11,13 @@ Per valve, one after the other on each controller (the controllers run in parall
           normal 0 % stands above the 34 mA stop
   restore target 0 %, then the target the valve had
 
+Two more phases (--phases ruler,top), for the stop the flow layer measures from:
+
+  ruler   5 x (close at 34 mA, open to the open end stop): the spread of the counted stroke says
+          whether the 34 mA stop repeats (the first after --cold-s idle: the cold motor)
+  top     open to the end stop, then 5 x (close K, open to the end stop), K = stroke - the
+          position of 1.0 l/min (--pos): the same point reached from above
+
 Every move goes to a JSON line in --out. The loops keep flowing on their targets; only the valve
 under test moves.
 
@@ -33,11 +40,13 @@ STEP_PULSES = 300
 STEPS_K = 5
 N_DEFAULT = 900  # about 1.5 l/min on the measured loops
 REFUSED_WAIT_S = 60  # a calibration in the queue refuses service moves; wait and try again
+PHASES_DEFAULT = ("closed", "steps", "open", "zero")
 
 
 class Run:
-    def __init__(self, esp, out, lock, n_by_valve):
+    def __init__(self, esp, out, lock, n_by_valve, phases=PHASES_DEFAULT, pos_by_valve=None):
         self.esp, self.out, self.lock, self.n_by_valve = esp, out, lock, n_by_valve
+        self.phases, self.pos_by_valve = phases, pos_by_valve or {}
 
     def write(self, **rec):
         rec = {"t": round(time.time(), 1), "ctrl": self.esp.name, **rec}
@@ -121,21 +130,41 @@ class Run:
         n = self.n_by_valve.get(idx, N_DEFAULT)
         self.write(idx=idx, phase="start", pos=v.get("pos"), target=back_to, oc=oc, n=n)
         span = int((v.get("pos", 0) + 5) * oc / 100)
-        self.close_ref(idx, span, "closed")
-        for _ in range(REPEATS):
-            self.move(idx, "open", STEP_PULSES, OPEN_MA, "closed")
-            self.close_ref(idx, STEP_PULSES, "closed")
-        for k in (1, 1, STEPS_K, STEPS_K):
-            for j in range(k):
-                part = n // k + (1 if j < n % k else 0)
-                self.move(idx, "open", part, OPEN_MA, f"steps{k}")
-            self.close_ref(idx, n, f"steps{k}")
-        self.open_end(idx, "open")
-        for _ in range(REPEATS):
-            self.move(idx, "close", STEP_PULSES, CLOSE_MA, "open")
+        ph = self.phases
+        if "closed" in ph:
+            self.close_ref(idx, span, "closed")
+            for _ in range(REPEATS):
+                self.move(idx, "open", STEP_PULSES, OPEN_MA, "closed")
+                self.close_ref(idx, STEP_PULSES, "closed")
+        if "steps" in ph:
+            for k in (1, 1, STEPS_K, STEPS_K):
+                for j in range(k):
+                    part = n // k + (1 if j < n % k else 0)
+                    self.move(idx, "open", part, OPEN_MA, f"steps{k}")
+                self.close_ref(idx, n, f"steps{k}")
+        if "open" in ph:
             self.open_end(idx, "open")
-        self.close_ref(idx, oc, "open")
-        self.zero(idx, back_to)
+            for _ in range(REPEATS):
+                self.move(idx, "close", STEP_PULSES, CLOSE_MA, "open")
+                self.open_end(idx, "open")
+            self.close_ref(idx, oc, "open")
+        stroke = oc
+        if "ruler" in ph:
+            self.close_ref(idx, span, "ruler")
+            strokes = []
+            for _ in range(REPEATS):
+                strokes.append(self.open_end(idx, "ruler"))
+                self.close_ref(idx, oc, "ruler")
+            stroke = statistics.mean(strokes)
+        if "top" in ph and idx in self.pos_by_valve:
+            k = int(round(stroke - self.pos_by_valve[idx]))
+            self.write(idx=idx, phase="top", k=k, stroke=round(stroke), pos10=self.pos_by_valve[idx])
+            self.open_end(idx, "top")
+            for _ in range(REPEATS):
+                self.move(idx, "close", k, CLOSE_MA, "top")
+                self.open_end(idx, "top")
+        if "zero" in ph:
+            self.zero(idx, back_to)
         self.target(idx, 0, "restore")
         self.target(idx, back_to, "restore")
 
@@ -203,6 +232,11 @@ def summary(path):
         up5 = [r["cnt"] for r in moves if r["phase"] == f"steps{STEPS_K}" and r["dir"] == "open"]
         op = [r["cnt"] for r in moves if r["phase"] == "open" and r["dir"] == "open"][1:]
         zero = closes("zero")
+        ru = [r["cnt"] for r in moves if r["phase"] == "ruler" and r["dir"] == "open"]
+        top_k = [r for r in last if r["phase"] == "top" and "k" in r]
+        # the first open of the top phase starts at the 34 mA stop, the others after a close of K
+        tp = [r["cnt"] for r in moves if r["phase"] == "top" and r["dir"] == "open"][1:]
+        tk = [r["cnt"] for r in moves if r["phase"] == "top" and r["dir"] == "close"]
         row = {"ctrl": c, "idx": i,
                "close34": cl, "close34_sd": round(statistics.pstdev(cl), 1) if len(cl) > 1 else None,
                "open_end": op, "open_end_sd": round(statistics.pstdev(op), 1) if len(op) > 1 else None,
@@ -211,6 +245,10 @@ def summary(path):
                                          - (sum(s1) - sum(up1)) / max(1, len(s1))) / (STEPS_K - 1), 1)
                if s1 and s5 else None,
                "zero_offset": zero,
+               "ruler": ru, "ruler_sd": round(statistics.pstdev(ru[1:]), 1) if len(ru) > 2 else None,
+               "ruler_close": closes("ruler"),
+               "top_k": top_k[0]["k"] if top_k else None, "top_close": tk, "top": tp,
+               "top_sd": round(statistics.pstdev(tp), 1) if len(tp) > 1 else None,
                "errors": [r["error"] for r in last if r["phase"] == "error"]}
         rows.append(row)
     return rows
@@ -227,6 +265,10 @@ def main():
     ap.add_argument("--n", type=Path, help='JSON {"NAME IDX": pulses} for the steps phase')
     ap.add_argument("--summary", action="store_true", help="only print the summary of --out")
     ap.add_argument("--zero-only", action="store_true", help="only the zero phase")
+    ap.add_argument("--phases", default=",".join(PHASES_DEFAULT),
+                    help="closed,steps,open,ruler,top,zero (default: the first test)")
+    ap.add_argument("--pos", type=Path, help='JSON {"NAME IDX": pulses of 1.0 l/min} for the top phase')
+    ap.add_argument("--cold-s", type=int, default=0, help="wait before the first valve (cold motors)")
     a = ap.parse_args()
     if a.summary:
         for row in summary(a.out):
@@ -245,12 +287,18 @@ def main():
         name, _, idxs = part.partition(":")
         only[name] = {int(x) for x in idxs.split(",") if x}
     n_cfg = json.loads(a.n.read_text(encoding="utf-8")) if a.n else {}
+    pos_cfg = json.loads(a.pos.read_text(encoding="utf-8")) if a.pos else {}
+    phases = tuple(x for x in a.phases.split(",") if x)
+    if a.cold_s:
+        print(f"waiting {a.cold_s} s for cold motors", flush=True)
+        time.sleep(a.cold_s)
     lock = threading.Lock()
     threads = []
     for esp in esps:
-        n_by_valve = {int(k.split()[-1]): int(v) for k, v in n_cfg.items()
-                      if k.rsplit(" ", 1)[0] == esp.name}
-        run = Run(esp, a.out, lock, n_by_valve)
+        def per_valve(cfg):
+            return {int(k.split()[-1]): int(v) for k, v in cfg.items()
+                    if k.rsplit(" ", 1)[0] == esp.name}
+        run = Run(esp, a.out, lock, per_valve(n_cfg), phases, per_valve(pos_cfg))
         t = threading.Thread(target=run.run, args=(only.get(esp.name, set()), a.zero_only))
         t.start()
         threads.append(t)
