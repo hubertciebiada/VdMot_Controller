@@ -553,7 +553,7 @@ class Engine:
         seq0 = v0.get("ext", {}).get("moveSeq")
         esp.post(f"/api/valves/{idx}/service-move",
                  {"dir": direction, "counts": int(counts), "maxmA": int(ma)})
-        t0, started = time.time(), False
+        t0, started, resent = time.time(), False, False
         while True:
             time.sleep(0.4)
             for e in esp.events(idx):
@@ -571,6 +571,13 @@ class Engine:
                 lm = ext.get("lastMove") or {}
                 return int(lm.get("cnt", 0)), lm.get("stop", "?")
             el = time.time() - t0
+            # a short move can get lost without any event (seen once on 2.2.7); send it again once
+            if not started and el > 12 and not resent:
+                self.log(f"{esp.name} {idx}: ruch serwisowy nie ruszył, wysyłam ponownie")
+                esp.post(f"/api/valves/{idx}/service-move",
+                         {"dir": direction, "counts": int(counts), "maxmA": int(ma)})
+                t0, resent = time.time(), True
+                continue
             if not started and el > 12:
                 raise EngineError(f"{esp.name} {idx}: ruch serwisowy nie ruszył w 12 s")
             if el > 120:
