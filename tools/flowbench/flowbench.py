@@ -1378,8 +1378,12 @@ class SimDevice:
                 if direction == "open":
                     windup = rnd.randint(44, 98) if v.at_stop else 0
                     coast = rnd.randint(2, 14)
-                    v.true = min(v.true + counts - windup + coast, v.oc)
-                    v.at_stop, cnt, stop = False, counts, "target"
+                    if v.true + counts - windup + coast >= v.oc:  # reaches the open end stop
+                        cnt = int(v.oc - v.true) + windup + rnd.randint(0, 6)
+                        v.true, v.at_stop, stop = float(v.oc), False, "endstop"
+                    else:
+                        v.true = v.true + counts - windup + coast
+                        v.at_stop, cnt, stop = False, counts, "target"
                 else:
                     coast = rnd.randint(50, 80) if v.true > v.onset - 100 else rnd.randint(5, 20)
                     if counts >= v.true:  # reaches the closed end stop

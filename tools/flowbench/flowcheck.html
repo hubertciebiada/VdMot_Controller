@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>flowcheck</title>
+<style>
+/* one column on a phone at the manifold: status bar, one card per valve, the session buttons */
+:root {
+  --bg: #f4f6f5; --panel: #ffffff; --fg: #17201c; --muted: #5f6b66; --line: #d7dedb;
+  --accent: #0f6e6a; --accent-fg: #ffffff; --danger: #b42318; --warn: #9a5b00; --ok: #1f7a4d;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101513; --panel: #182019; --fg: #e5ece8; --muted: #9aa8a2; --line: #2c3833;
+    --accent: #3fb8b0; --accent-fg: #06201e; --danger: #f0705f; --warn: #e7a73a; --ok: #5cc58c;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font);
+  padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right));
+  padding-bottom: 40px; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 10px 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button { font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+  border-radius: 9px; padding: 11px 14px; min-height: 48px; cursor: pointer; }
+button.pri { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.stop { background: var(--danger); color: #fff; border-color: var(--danger); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.bar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--line);
+  display: flex; gap: 8px; align-items: center; }
+.bar .what { flex: 1; min-width: 0; font-size: 13px; }
+.bar .what b { font-size: 15px; }
+.msg { font-weight: 600; }
+.msg.err { color: var(--danger); }
+.cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.card { background: var(--panel); border: 2px solid var(--line); border-radius: 12px; padding: 12px; }
+.card.ask { border-color: var(--accent); }
+.card.done { opacity: .6; }
+.card .name { font-weight: 700; font-size: 16px; }
+.card .exp { font: 700 28px/1.2 var(--font); font-variant-numeric: tabular-nums; margin: 4px 0 8px; }
+.card .exp small { font-size: 14px; color: var(--muted); font-weight: 600; }
+.card .ans { font-size: 13px; color: var(--muted); min-height: 18px; }
+.btns3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.btns3 button.ok { background: var(--ok); color: #fff; border-color: var(--ok); }
+.val { display: grid; grid-template-columns: 56px 1fr 56px; gap: 6px; margin-top: 8px; align-items: center; }
+.val .v { text-align: center; font: 700 24px/1 var(--font); font-variant-numeric: tabular-nums; }
+.val2 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 6px; }
+.confirm { width: 100%; font-size: 17px; margin: 8px 0; }
+.log { font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="what"><b id="title">flowcheck</b><br><span id="msg" class="msg"></span></div>
+  <button id="stopBtn" class="stop" hidden>STOP</button>
+</div>
+
+<button id="confirmBtn" class="pri confirm" hidden>Wszystkie karty nadal OK — dalej</button>
+<div id="cards" class="cards"></div>
+
+<div id="fits" class="panel" hidden>
+  <h2>Dopasowanie krzywych (offset + wzmocnienie)</h2>
+  <table id="fitTable"></table>
+</div>
+
+<div id="setup" class="panel">
+  <h2>Nowa sesja</h2>
+  <div class="small muted">Zawory ustawia sterownik (warstwa przepływu). Ty tylko odczytujesz.</div>
+  <div class="row" style="margin-top:8px">
+    <label class="small">Przystanki
+      <select id="mode"></select></label>
+  </div>
+  <div id="groups" class="row" style="margin-top:8px"></div>
+  <div class="row" style="margin-top:8px">
+    <button id="houseBtn">Cały dom na 1,0 l/min</button>
+    <button id="repeatBtn">Powtarzalność (zaznaczone)</button>
+  </div>
+  <div id="loopPick" class="row small" style="margin-top:8px"></div>
+</div>
+
+<div class="panel"><h2>Dziennik</h2><div id="log" class="log"></div></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fix2 = (q) => q.toFixed(2).replace(".", ",");
+const fmt = (q) => q == null ? "–" : (Math.round(q * 100) / 100).toString().replace(".", ",");
+let S = null, presets = null, local = {}, lastSig = "";  // local: per card the value being typed
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+
+function say(e) { $("msg").textContent = String(e.message || e); $("msg").className = "msg err"; }
+
+async function answer(key, a, value) {
+  try { await api("/api/answer", {key, answer: a, value}); delete local[key]; poll(); } catch (e) { say(e); }
+}
+
+function cardEl(c) {
+  const el = document.createElement("div");
+  const given = S.answered && S.answered[c.key];
+  el.className = "card" + (c.ask && !given ? " ask" : " done");
+  const v = local[c.key] ?? (c.expect ?? 1.0);
+  local[c.key] = v;
+  const exp = c.expect == null ? "Odczytaj" : `${fmt(c.expect)} <small>l/min?</small>`;
+  const word = (x) => ({ok: "OK", more: "za dużo", less: "za mało", value: fmt(x.value) + " l/min"}[x.answer]);
+  const last = given ? `twoja odpowiedź: ${word(given)} (możesz zmienić)` : c.last ? `ostatnio: ${word(c.last)}` : "";
+  el.innerHTML = `<div class="name">${c.name} <span class="small muted">${c.key} · ${c.counts} imp</span></div>
+    <div class="exp">${exp}</div><div class="ans">${last}</div>`;
+  // while the group is confirmed every card can still be changed
+  if (!c.ask && !S.confirm) return el;
+  if (c.expect != null) {
+    const b3 = document.createElement("div"); b3.className = "btns3";
+    for (const [a, label, cls] of [["more", "Za dużo", ""], ["ok", "OK", "ok"], ["less", "Za mało", ""]]) {
+      const b = document.createElement("button"); b.textContent = label; if (cls) b.className = cls;
+      b.onclick = () => answer(c.key, a); b3.appendChild(b);
+    }
+    el.appendChild(b3);
+  }
+  const val = document.createElement("div"); val.className = "val";
+  const minus = document.createElement("button"); minus.textContent = "−0,05";
+  const out = document.createElement("div"); out.className = "v"; out.textContent = fix2(v);
+  const plus = document.createElement("button"); plus.textContent = "+0,05";
+  const step = (d) => { local[c.key] = Math.max(0, Math.round((local[c.key] + d) * 100) / 100); out.textContent = fix2(local[c.key]); };
+  minus.onclick = () => step(-0.05); plus.onclick = () => step(0.05);
+  val.append(minus, out, plus); el.appendChild(val);
+  const v2 = document.createElement("div"); v2.className = "val2";
+  for (const [label, f] of [["Nie płynie", () => answer(c.key, "value", 0)],
+                            ["Zapisz odczyt", () => answer(c.key, "value", local[c.key])],
+                            ["Powyżej skali", () => answer(c.key, "value", 2.7)]]) {
+    const b = document.createElement("button"); b.textContent = label; b.onclick = f;
+    if (label === "Zapisz odczyt") b.className = "pri";
+    v2.appendChild(b);
+  }
+  el.appendChild(v2);
+  return el;
+}
+
+function render() {
+  if (!S) return;
+  const st = S.stop ? ` · przystanek ${S.stop.no}/${S.stop.of}` + (S.stop.q != null ? ` (${fmt(S.stop.q)} l/min)` : "") : "";
+  $("title").textContent = `flowcheck · ${S.kind || "—"} · ${S.phase}${st}`;
+  $("msg").textContent = S.error || S.msg || ""; $("msg").className = "msg" + (S.error ? " err" : "");
+  const running = ["moving", "reading"].includes(S.phase);
+  $("stopBtn").hidden = !running;
+  $("setup").hidden = running;
+  $("confirmBtn").hidden = !(S.phase === "reading" && S.confirm);
+  // the cards are drawn again only when they change, so a tap never hits a card being replaced
+  const sig = JSON.stringify([S.phase, S.confirm, S.cards, S.answered]);
+  if (sig !== lastSig) {
+    lastSig = sig;
+    const box = $("cards"); box.innerHTML = "";
+    if (running) for (const c of S.cards || []) box.appendChild(cardEl(c));
+  }
+  $("log").textContent = (S.log || []).slice().reverse().join("\n");
+  const fits = S.fits || [];
+  $("fits").hidden = !fits.length;
+  $("fitTable").innerHTML = "<tr><th>pętla</th><th>offset</th><th>wzm.</th><th>n</th><th></th></tr>" +
+    fits.map((f) => `<tr><td>${f.name}<br><span class="muted">${f.key}</span></td><td>${f.offset} <span class="muted">(${f.was.offset})</span></td>
+      <td>${f.gain} <span class="muted">(${f.was.gain})</span></td><td>${f.n}</td>
+      <td><button data-k="${f.key}">Zapisz</button></td></tr>`).join("");
+  for (const b of $("fitTable").querySelectorAll("button"))
+    b.onclick = async () => { try { await api("/api/apply-fit", {key: b.dataset.k}); b.disabled = true; } catch (e) { say(e); } };
+}
+
+async function poll() {
+  try { S = await api("/api/state"); render(); } catch (e) { say(e); }
+}
+
+async function setup() {
+  try { presets = await api("/api/presets"); } catch (e) { say(e); return; }
+  $("mode").innerHTML = presets.stops.map((m) => `<option>${m}</option>`).join("");
+  const g = $("groups"); g.innerHTML = "";
+  for (const grp of presets.groups) {
+    const b = document.createElement("button"); b.className = "pri"; b.textContent = `Sprawdź ${grp.label}`;
+    b.onclick = () => start({kind: "check", loops: grp.loops, mode: $("mode").value}); g.appendChild(b);
+  }
+  const all = presets.groups.flatMap((x) => x.loops);
+  $("loopPick").innerHTML = all.map((k) => `<label><input type="checkbox" value="${k}"> ${k}</label>`).join(" ");
+  $("houseBtn").onclick = () => start({kind: "house", loops: all, q: 1.0});
+  $("repeatBtn").onclick = () => {
+    const pick = [...$("loopPick").querySelectorAll("input:checked")].map((i) => i.value);
+    if (!pick.length) return say(new Error("zaznacz pętle do powtarzalności"));
+    start({kind: "repeat", loops: pick, q: 1.0, repeats: 5});
+  };
+}
+
+async function start(cfg) {
+  try { local = {}; await api("/api/start", cfg); poll(); } catch (e) { say(e); }
+}
+
+$("stopBtn").onclick = () => api("/api/stop", {}).then(poll, say);
+$("confirmBtn").onclick = () => api("/api/answer", {confirm: true}).then(poll, say);
+setup(); poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>

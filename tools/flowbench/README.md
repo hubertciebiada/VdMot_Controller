@@ -178,3 +178,53 @@ exports the points of the current session as CSV (`;`, decimal comma).
 
 STOP stops every valve at once and ends the session; "Przywróć cele sprzed pomiaru" sets the
 targets back to what they were at the start. A finished session restores them by itself.
+
+## End stops without a reader (`endstop_test.py`)
+
+Pulse counts only, no rotameter: per valve, one after the other on each controller (the
+controllers run in parallel), the other loops stay on their targets.
+
+```sh
+python tools/flowbench/endstop_test.py --controller west=192.168.1.51 --out endstops.jsonl \
+    --n positions.json            # {"west 1": 900, ...}: the pulses of the steps phase
+python tools/flowbench/endstop_test.py --summary --out endstops.jsonl
+```
+
+| phase | moves | result |
+|---|---|---|
+| closed | close at 34 mA, then 5 × (open 300, close at 34 mA) | the pulses of each close: the repeatability of the closed end stop (the first close counts more) |
+| steps | 2 × (one opening move of N, close), 2 × (N in 5 moves, close) | the pulses the counter misses per opening move: (way back after 5 moves − way back after 1 move) / 4 |
+| open | open to the open end stop, then 5 × (close 300, open to the end stop) | the repeatability of the open end stop |
+| zero | 2 × (0 %, the target back, 0 %, close at 34 mA) | how far the normal 0 % of the STM lies above the 34 mA stop |
+
+At the end the valve gets 0 % and then its target again. Every move is a JSON line in `--out`.
+
+## Checking the curves on the flow layer (`flowcheck.py`)
+
+Needs firmware 2.2.8 with the flow layer (`/api/valves/{n}/flow`): the controller positions each
+valve itself (a close to the closed end stop at `refmA`, one opening move, the hold kept with
+`skeep`), the tool only asks. Its own page (Polish), port 4681, data in `~/flowbench/flowcheck.db`.
+
+```sh
+python tools/flowbench/flowcheck.py --controller west=192.168.1.51 upload curves.json   # points, layer off
+python tools/flowbench/flowcheck.py --controller west=192.168.1.51 --controller east=192.168.1.52
+python tools/flowbench/flowcheck.py --sim --sim-auto                                    # no hardware
+```
+
+Sessions (buttons on the page):
+
+- **repeat**: the marked loops 5 times closed, then the counts of 1.0 l/min; the reader types what
+  the float shows (no expected value on the card).
+- **house**: every loop on 1.0 l/min at once, one reading each: how the loops pull on each other.
+- **check**: one group of a manifold (3–4 loops) through a list of stops (`mixed`: 0.25 / 0.5 /
+  1 / 1.5 / 2 l/min, each twice and never twice in a row; also `up`, `down`, `zigzag`). Each
+  card shows the expected flow with `OK` (within 0.1 l/min), `Za dużo`, `Za mało` and a typed
+  reading (`Nie płynie`, `Powyżej skali`). Too much / too little moves the valve by 0.1 l/min of
+  the local slope (1.5 × after the same answer twice); a typed reading moves it by the secant of
+  the curve. Only the corrected cards are asked again; when a stop had corrections, the group is
+  confirmed once in its last setting, because one valve changes the flow of the others.
+
+After a check session the tool fits per loop `counts = offset + gain × (counts of the curve)` from
+the OK and typed readings (least squares; the offset only with fewer than 3 points or a narrow
+range) and shows it on the page; `Zapisz` writes it into the controller. A loop whose layer was off
+gets it on for the session only.
