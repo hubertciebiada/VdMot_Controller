@@ -91,10 +91,20 @@ Per loop, per sweep:
    A third sweep runs when the two disagree by more than 0.12 l/min (rms). The page can end a
    loop early or ask for one more sweep.
 
-Opening steps only: an opening move stops within a few pulses against the insert spring, a
-closing move coasts 50..80 pulses that the STM does not count (`software_stm32_rust/core/src/coast.rs`).
-The first opening after the end stop also turns 44..98 pulses against the hard stop before the
-spindle moves; it is one offset per sweep, the same for every point of that sweep.
+Opening steps only: an opening move coasts a few pulses past its count against the insert
+spring, a closing move coasts 50..80 pulses (`software_stm32_rust/core/src/coast.rs`). The STM
+counts neither. After j opening steps the spindle is about j coasts further than the count; the
+counted way back to the end stop holds the sum, so at the sweep end every point gets
+`pos_est` = counted position + j × (way back − way up) / steps. `pos_est` is the count that one
+move from the closed end stop shows for the same spindle position, which is how a valve later
+goes to a position. The first opening after the end stop also turns 44..98 pulses against the
+hard stop before the spindle moves; one move from the end stop has the same offset.
+
+"Przebieg zamykający (histereza)" adds one closing sweep per loop after the opening sweeps: one
+move from the end stop to where the last opening sweep reached the top of the scale, then
+closing steps of 40 requested pulses with a reading after each, until the flow stops. The
+counted way back to the end stop gives the sum of the closing coasts; each step gets an equal
+part in `pos_est`. Opening and closing curves on `pos_est` show the hysteresis of the valve.
 
 The STM keeps a service position for about 5.5 minutes, then returns the valve to its target
 (0). A reading after that is void and the sweep starts again; the page shows the time left.
@@ -108,7 +118,7 @@ ones). The tool writes each reading as it comes, so a stopped or crashed session
 | Table | One row per |
 |---|---|
 | `sessions` | session: start, end, `status` (running, done, stopped, error), `mode`, `pump_head_m`, notes, `meta` (JSON: scale, controller versions, `oc`/`cc` of every valve, head test settings) |
-| `points` | loop reading: controller, valve, sweep, counted and requested position, step, stop reason, `kind` (value, zero, over, void), flow, tap position, both temperature sensors |
+| `points` | loop reading: controller, valve, sweep, `direction` (open, close), counted and requested position, `pos_est` (corrected for the coast, set at the sweep end), step, stop reason, `kind` (value, zero, over, void), flow, tap position, both temperature sensors |
 | `sweeps` | end of a sweep: reason, pulses up, counted pulses back to the end stop |
 | `head_points` | pump head reading: head, socket power, valve target, flow, design flow |
 | `head_steps` | pump head step: passed or not, the flows, the recommendation |
@@ -121,15 +131,15 @@ the head.
 The latest characteristic of one loop:
 
 ```sql
-SELECT p.pos_counted, p.flow_lpm, p.kind, p.sweep
+SELECT p.pos_est, p.flow_lpm, p.kind, p.sweep, p.direction
 FROM points p JOIN sessions s ON s.id = p.session_id
 WHERE p.ctrl = 'west' AND p.valve = 3 AND p.kind <> 'void'
   AND s.id = (SELECT max(session_id) FROM points WHERE ctrl = 'west' AND valve = 3)
-ORDER BY p.pos_counted;
+ORDER BY p.direction, p.pos_est;
 ```
 
 The schema version is `PRAGMA user_version`. A newer tool brings an older file up to its schema
-on start (`MIGRATIONS` in `flowbench.py`); an older tool refuses a newer file. The page also
+on start (`MIGRATIONS` in `flowbench.py`); an older tool refuses a newer file and stops. The page also
 exports the points of the current session as CSV (`;`, decimal comma).
 
 STOP stops every valve at once and ends the session; "Przywróć cele sprzed pomiaru" sets the

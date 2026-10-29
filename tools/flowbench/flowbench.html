@@ -114,6 +114,7 @@ th { color: var(--muted); font-weight: 600; }
     <div class="row small" style="margin-top:8px">
       <label data-mode="loops">Ciśnienie na pompie <input type="number" id="pumpHead" step="0.1" min="0.5" max="10"> m</label>
       <label>Czekaj po ruchu <input type="number" id="settle" value="30" min="0" max="240"> s</label>
+      <label data-mode="loops"><input type="checkbox" id="closeSweep"> przebieg zamykający (histereza)</label>
     </div>
   </div>
   <div class="panel">
@@ -274,7 +275,7 @@ $("start").onclick = async () => {
   const loops = checked.map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
   if (!loops.length) { $("setupErr").textContent = "Zaznacz przynajmniej jedną pętlę."; return; }
   const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value, zeroTop: $("szero").checked };
-  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value, pump_head: parseFloat($("pumpHead").value) };
+  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value, pump_head: parseFloat($("pumpHead").value), close_sweep: $("closeSweep").checked };
   if (mode() === "loops" && !(cfg.pump_head > 0)) { $("setupErr").textContent = "Wpisz ciśnienie ustawione na pompie: charakterystyka pętli zależy od niego."; return; }
   if (mode() === "head") {
     const read = loops.map(l => ({ ...l, design: parseFloat($(`d_${l.ctrl}_${l.idx}`).value) }));
@@ -368,7 +369,8 @@ function drawChart() {
   if (S.mode === "head") return drawHeadChart();
   const svg = $("chart"); svg.textContent = "";
   const cs = getComputedStyle(document.documentElement); const c = n => cs.getPropertyValue(n).trim();
-  const pts = (S.points || []).filter(p => p.kind !== "void");
+  // after a sweep ends the positions are corrected for the uncounted coast (pos_est)
+  const pts = (S.points || []).filter(p => p.kind !== "void").map(p => ({ ...p, pos: p.pos_est ?? p.pos }));
   const L = 62, R = 566, T = 16, B = 244, qmax = S.scale.max;
   const xmax = Math.max(1000, Math.ceil(Math.max(0, ...pts.map(p => p.pos)) / 200) * 200);
   const X = x => L + x / xmax * (R - L), Y = q => B - q / qmax * (B - T);
@@ -386,11 +388,11 @@ function drawChart() {
   const sweeps = [...new Set(pts.map(p => p.sweep))];
   for (const k of sweeps) {
     const sp = pts.filter(p => p.sweep === k).sort((a, b) => a.pos - b.pos);
-    const col = colors[(k - 1) % 3];
-    svg.append(el("polyline", { points: sp.map(p => `${X(p.pos)},${Y(p.flow)}`).join(" "), fill: "none", stroke: col, "stroke-width": 3 }));
+    const col = colors[(k - 1) % 3], closing = sp.some(p => p.dir === "close");
+    svg.append(el("polyline", { points: sp.map(p => `${X(p.pos)},${Y(p.flow)}`).join(" "), fill: "none", stroke: col, "stroke-width": 3, "stroke-dasharray": closing ? "10 6" : "none" }));
     for (const p of sp) svg.append(el("circle", { cx: X(p.pos), cy: Y(p.flow), r: p.kind === "over" ? 7 : 5, fill: p.kind === "over" ? "none" : col, stroke: col, "stroke-width": 2 }));
   }
-  $("legend").textContent = sweeps.length ? sweeps.map(k => `przebieg ${k}: ${pts.filter(p => p.sweep === k).length} pkt`).join(" · ") + " · pusty okrąg = powyżej skali" : "Brak punktów.";
+  $("legend").textContent = sweeps.length ? sweeps.map(k => `przebieg ${k}${pts.some(p => p.sweep === k && p.dir === "close") ? " (zamykanie, przerywana)" : ""}: ${pts.filter(p => p.sweep === k).length} pkt`).join(" · ") + " · pusty okrąg = powyżej skali" : "Brak punktów.";
 }
 
 // ── render loop ──

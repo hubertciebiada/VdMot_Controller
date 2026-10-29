@@ -50,6 +50,7 @@ CAP_PULSES = 2600  # never further than this from the closed end stop
 FLAT_N, FLAT_EPS = 3, 0.05  # saturation: this many steps in a row with less flow gain
 SPREAD_OK = 0.12  # sweeps agree when the rms difference is below this [l/min]
 SWEEPS_MIN, SWEEPS_MAX = 2, 3
+CLOSE_STEP = 40  # requested pulses of a closing step; the valve also coasts 50..80 more
 
 
 # ───────────────────────────── hydraulics of one loop ─────────────────────────────
@@ -303,6 +304,11 @@ MIGRATIONS = [
         t TEXT NOT NULL
     );
     """,
+    """
+    ALTER TABLE points ADD COLUMN direction TEXT NOT NULL DEFAULT 'open';  -- open, close
+    -- the position a single move from the closed end stop would count, set at the sweep end
+    ALTER TABLE points ADD COLUMN pos_est INTEGER;
+    """,
 ]
 
 
@@ -354,12 +360,19 @@ class Store:
             temps = [x.get("temp") for x in r.get("temps") or []] + [None, None]
             self.exec("INSERT INTO points (session_id, ctrl, valve, name, sweep, point, "
                       "pos_counted, pos_requested, step, step_counted, stop, kind, flow_lpm, "
-                      "tap_frac, waited_s, t_1, t_2, t) VALUES "
-                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      "tap_frac, waited_s, t_1, t_2, t, direction) VALUES "
+                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (sid, r["ctrl"], r["idx"], r["name"], r["sweep"], r["point"], r["pos"],
                        r["pos_req"], r["step"], r["cnt"], r["stop"],
                        r["kind"], r["flow"], num(r.get("tap")),
-                       r["waited_s"], num(temps[0]), num(temps[1]), iso(r["t"])))
+                       r["waited_s"], num(temps[0]), num(temps[1]), iso(r["t"]),
+                       r.get("dir", "open")))
+        elif "pos_est" in rec:
+            c = rec["pos_est"]
+            for point, pos in c["pos"].items():
+                self.exec("UPDATE points SET pos_est = ? WHERE session_id = ? AND ctrl = ? "
+                          "AND valve = ? AND sweep = ? AND point = ?",
+                          (pos, sid, c["ctrl"], c["idx"], c["sweep"], int(point)))
         elif "void" in rec:
             v = rec["void"]
             # the STM returned the valve to its target: no point of this sweep has a reference
@@ -407,6 +420,7 @@ class Engine:
         self.store = None  # opened on the first session
         self.sid = None  # the id of the running session in the store
         self.rows = []  # every recorded point of the session
+        self.close_sweep = False  # one closing sweep per loop after the opening sweeps
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
         self.head_rows = []  # readings of a pump head test
@@ -615,6 +629,7 @@ class Engine:
             self.outdir.mkdir(parents=True, exist_ok=True)
             self.store = Store(self.outdir / "flowbench.db")
         self.rows, self.head_rows = [], []
+        self.close_sweep = bool(cfg.get("close_sweep"))
         loops = cfg.get("loops", [])
         self.set(loops=[dict(lp, status="czeka", sweeps=[], spread=None) for lp in loops])
         try:
@@ -629,7 +644,7 @@ class Engine:
                                           "cc": v.get("cc")} for v in esp.valves()}}
                 self.snapshot[esp.name] = {v["idx"]: v.get("target") for v in esp.valves()}
             meta["cfg"] = {k: cfg.get(k) for k in ("read", "others_pct", "pump_s",
-                                                   "margin_pct", "dt")}
+                                                   "margin_pct", "dt", "close_sweep")}
             self.sid = self.store.begin(cfg.get("mode", "loops"), cfg.get("pump_head"),
                                         cfg.get("notes", ""), meta)
             self.set(session=f"{self.store.path} #{self.sid}", restorable=True)
@@ -715,6 +730,9 @@ class Engine:
                     more = False
                 if not more:
                     break
+            if self.close_sweep:
+                self.close_run(esp, idx, name, k + 1, sweeps[-1], top)
+                self.set_loop(n, sweeps=[len(s) for s in sweeps] + ["zam."])
             self.set_loop(n, status="gotowa")
         except Skip:
             self.set_loop(n, status="pominięta")
@@ -738,6 +756,84 @@ class Engine:
                 continue
             if item.get("kind") in ("value", "zero", "over"):
                 return item
+
+    def close_run(self, esp, idx, name, k, opening, top):
+        """One closing sweep for the hysteresis: from the end stop open in one move to where the
+        opening sweep reached the top, then close in CLOSE_STEP steps with a reading after each.
+        A closing move coasts pulses that the STM does not count; the counted way back to the
+        end stop gives their sum, and every step gets an equal part of it."""
+        cur = {"ctrl": esp.name, "idx": idx, "name": name, "sweep": k, "point": 0, "pos": 0}
+        self.set(current=cur, rule="przebieg zamykający (histereza)")
+        self.set(phase="moving", msg="Zamykam do krańcówki (odniesienie)")
+        v = esp.valve(idx)
+        cnt, stop = self.service_move(esp, idx, "close",
+                                      min(10000, int((v.get("pos", 0) + 5) * v.get("oc", 5000) / 100)
+                                          + 400), CLOSE_MA)
+        if stop not in ("endstop", "early_endstop"):
+            raise EngineError(f"{esp.name} {idx}: zamykanie nie doszło do krańcówki ({stop})")
+        over = [p["pos"] for p in opening if p["kind"] == "over"]
+        top_pos = min(over) if over else max(p["pos"] for p in opening)
+        self.set(phase="moving", msg=f"Otwieram do {top_pos} imp")
+        up, stop = self.service_move(esp, idx, "open", top_pos, OPEN_MA)
+        pts, pos, steps, step, cnt = [], up, [], 0, up
+        while True:
+            foreign = self.foreign_target()
+            if foreign:
+                raise EngineError(f"Ktoś inny ustawia cele: {foreign}. Wyłącz automatykę w HA "
+                                  "i zacznij pomiar od nowa.")
+            hold_until = time.time() + HOLD_S
+            cur.update(point=len(pts) + 1, pos=pos, step=step, cnt=cnt, stop=stop)
+            self.set(current=cur, phase="reading", hold_until=hold_until,
+                     settle_until=time.time() + self.state["settle_s"],
+                     msg="Zamykanie: poczekaj, aż pływak się uspokoi, i zaznacz go na skali.")
+            item = self.await_reading(esp, idx)
+            late = time.time() > hold_until
+            flow = 0.0 if item["kind"] == "zero" else (top if item["kind"] == "over"
+                                                       else round(float(item["value"]), 3))
+            row = {"t": time.time(), "ctrl": esp.name, "idx": idx, "name": name, "sweep": k,
+                   "point": len(pts) + 1, "pos": pos, "pos_req": top_pos - CLOSE_STEP * len(steps), "step": -step,
+                   "cnt": -cnt if pts else cnt, "stop": stop, "kind": item["kind"], "flow": flow,
+                   "tap": item.get("frac"),
+                   "waited_s": round(time.time() - hold_until + HOLD_S, 1), "late": late,
+                   "temps": self.temps(esp, idx), "dir": "close"}
+            self.write({"point": row})
+            self.rows.append(row)
+            if late:
+                self.log(f"{esp.name} {idx}: odczyt po końcu blokady pozycji - zamykanie od nowa")
+                self.set(notice="Odczyt przyszedł po końcu trzymania pozycji: zawór wrócił do "
+                                "zera. Zaczynam przebieg zamykający od nowa.")
+                for p in pts + [row]:
+                    p["kind"] = "void"
+                self.write({"void": {"ctrl": esp.name, "idx": idx, "sweep": k}})
+                return self.close_run(esp, idx, name, k, opening, top)
+            pts.append(row)
+            self.set(notice="", points=[p for p in self.rows
+                                        if p["ctrl"] == esp.name and p["idx"] == idx])
+            if item["kind"] == "zero" or stop in ("endstop", "early_endstop") or pos <= 0:
+                break
+            self.set(phase="moving", msg=f"Zamykam o {CLOSE_STEP} imp")
+            step = CLOSE_STEP
+            cnt, stop = self.service_move(esp, idx, "close", step, CLOSE_MA)
+            steps.append(cnt)
+            pos = max(0, pos - cnt)
+        self.set(phase="moving", msg="Zamykam i liczę drogę powrotną")
+        back, bstop = (0, stop) if stop in ("endstop", "early_endstop") else \
+            self.service_move(esp, idx, "close", min(10000, pos + 600), CLOSE_MA)
+        moved = [c for c in steps]
+        coast = max(0, up - sum(moved) - back) / len(moved) if moved else 0
+        fixed, done = {}, 0
+        for j, p in enumerate(pts):
+            if j:
+                done += moved[j - 1] + coast
+            p["pos_est"] = max(0, round(up - done))
+            fixed[p["point"]] = p["pos_est"]
+        self.write({"pos_est": {"ctrl": esp.name, "idx": idx, "sweep": k, "pos": fixed}})
+        self.set(points=[p for p in self.rows if p["ctrl"] == esp.name and p["idx"] == idx])
+        self.write({"sweep_end": {"ctrl": esp.name, "idx": idx, "sweep": k, "reason": "close",
+                                  "pos_cnt": up, "pos_req": top_pos, "back_cnt": back,
+                                  "back_stop": bstop}})
+        self.log(f"{esp.name} {idx} przebieg {k} (zamykanie): w górę {up} imp, {len(moved)} "
+                 f"kroków po {CLOSE_STEP} imp, dobieg {coast:.0f} imp na krok, reszta {back} imp")
 
     def sweep(self, esp, idx, name, n, k, start, top):
         cur = {"ctrl": esp.name, "idx": idx, "name": name, "sweep": k, "point": 0, "pos": 0}
@@ -802,11 +898,23 @@ class Engine:
             step = nxt
         self.set(phase="moving", msg="Zamykam i liczę drogę powrotną")
         back, bstop = self.service_move(esp, idx, "close", min(10000, pos_cnt + 600), CLOSE_MA)
+        # Every opening move coasts a few pulses that the STM does not count, so after j moves
+        # the spindle is about j coasts further than the count. The counted way back to the
+        # end stop holds their sum; each move gets an equal part. pos_est is the count that one
+        # move from the end stop would show for the same spindle position.
+        coast = max(0.0, (back - pos_cnt) / len(pts)) if pts and bstop in (
+            "endstop", "early_endstop") else 0.0
+        fixed = {}
+        for j, p in enumerate(pts):
+            p["pos_est"] = round(p["pos"] + j * coast)
+            fixed[p["point"]] = p["pos_est"]
+        self.write({"pos_est": {"ctrl": esp.name, "idx": idx, "sweep": k, "pos": fixed}})
+        self.set(points=[p for p in self.rows if p["ctrl"] == esp.name and p["idx"] == idx])
         self.write({"sweep_end": {"ctrl": esp.name, "idx": idx, "sweep": k, "reason": reason,
                                   "pos_cnt": pos_cnt, "pos_req": pos_req, "back_cnt": back,
                                   "back_stop": bstop}})
         self.log(f"{esp.name} {idx} przebieg {k}: koniec ({reason}), w górę {pos_cnt} imp, "
-                 f"w dół {back} imp ({bstop})")
+                 f"w dół {back} imp ({bstop}), dobieg {coast:.0f} imp na krok")
         return pts
 
     # pump head test
@@ -931,14 +1039,15 @@ class Engine:
         w = csv.writer(out, delimiter=";")
         w.writerow(["ctrl", "valve", "name", "sweep", "point", "pos_counted", "pos_requested",
                     "step", "step_counted", "stop", "kind", "flow_lpm", "tap_frac", "waited_s",
-                    "t_1", "t_2", "time"])
+                    "t_1", "t_2", "time", "direction", "pos_est"])
         for r in self.rows:
             ts = r.get("temps") or []
             t = [x.get("temp") for x in ts] + [None, None]
             w.writerow([r["ctrl"], r["idx"], r["name"], r["sweep"], r["point"], r["pos"],
                         r["pos_req"], r["step"], r["cnt"], r["stop"], r["kind"],
                         str(r["flow"]).replace(".", ","), r.get("tap"), r["waited_s"],
-                        t[0], t[1], datetime.fromtimestamp(r["t"]).isoformat(timespec="seconds")])
+                        t[0], t[1], datetime.fromtimestamp(r["t"]).isoformat(timespec="seconds"),
+                        r.get("dir", "open"), r.get("pos_est")])
         if self.head_rows:
             w.writerow([])
             w.writerow(["ctrl", "valve", "name", "head_m", "power_w", "target_pct", "kind",
@@ -968,6 +1077,8 @@ class SimValve:
         self.k = rnd.randint(450, 800)
         self.qmax = rnd.uniform(2.9, 3.6)
         self.true = 0.0  # true spindle position [pulses from the closed end stop]
+        self.hyst = rnd.randint(20, 60)  # the pin lags this far behind a closing spindle
+        self.closing = False
         self.at_stop = True  # pressed against the closed end stop
         self.pos, self.target = 0, 0
         self.state, self.seq = "idle", 0
@@ -976,7 +1087,7 @@ class SimValve:
         self.flags = []
 
     def flow(self, head=5.7):
-        x = self.true - self.onset
+        x = self.true - self.onset + (self.hyst if self.closing else 0)
         q = 0.0 if x <= 0 else self.qmax * (1 - math.exp(-x / self.k))
         return q * math.sqrt(head / 5.7)  # the simulated curves are made at 5.7 m
 
@@ -1016,6 +1127,7 @@ class SimDevice:
         def done():
             time.sleep(dur)
             with self.lock:
+                v.closing = direction == "close"
                 if direction == "open":
                     windup = rnd.randint(44, 98) if v.at_stop else 0
                     coast = rnd.randint(2, 14)
@@ -1271,6 +1383,8 @@ def main():
 
     out = a.out or Path.home() / "flowbench" / ("sim" if a.sim else "")
     engine = Engine(esps, out)
+    out.mkdir(parents=True, exist_ok=True)
+    engine.store = Store(out / "flowbench.db")  # a schema error stops the tool here, not mid-session
     default_loops = HERE / "loops.example.json" if a.sim else Path.home() / "flowbench" / "loops.json"
     engine.loops_cfg = load_loops(a.loops or default_loops)
     if a.sim:
