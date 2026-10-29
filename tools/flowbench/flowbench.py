@@ -519,7 +519,7 @@ class Engine:
         self.close_sweep = False  # one closing sweep per loop after the opening sweeps
         self.dq = DQ_TARGET  # wanted flow change per step of this session
         self.onsets = []  # last zero positions of the loops measured in this session
-        self.fill = []
+        self.fill, self.fill_pos = [], []
         self.power = None  # reads the pump power (HaPower), or None
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
@@ -762,6 +762,7 @@ class Engine:
         self.sweeps_min = int(cfg.get("sweeps") or SWEEPS_MIN)  # 1: one sweep per loop
         self.decide_s = int(cfg.get("decide_s") or 20)
         self.fill = [float(q) for q in cfg.get("fill") or []]  # flows to set from the last curve
+        self.fill_pos = [int(x) for x in cfg.get("fill_pos") or []]  # or positions, pulses
         self.onsets = []
         loops = cfg.get("loops", [])
         self.set(loops=[dict(lp, status="czeka", sweeps=[], spread=None) for lp in loops])
@@ -839,7 +840,7 @@ class Engine:
         sweeps = []
         try:
             self.prepare_closed()
-            if self.fill:
+            if self.fill or self.fill_pos:
                 self.fill_run(esp, idx, name, top)
                 self.set_loop(n, status="gotowa")
                 return
@@ -919,11 +920,16 @@ class Engine:
                 if q0 < q <= q1:
                     wants.append((q, round(p0 + (q - q0) * (p1 - p0) / (q1 - q0))))
                     break
+        for want in self.fill_pos:
+            # a chosen position: the expected flow from the curve, if it reaches there
+            q = next((q0 + (want - p0) * (q1 - q0) / (p1 - p0)
+                      for (p0, q0), (p1, q1) in zip(curve, curve[1:]) if p0 <= want <= p1), None)
+            wants.append((None if q is None else round(q, 2), want))
         if not wants:
             self.log(f"{esp.name} {idx}: brak krzywej z pos_est w bazie, dogrywka pominięta")
             return
-        self.log(f"{esp.name} {idx}: dogrywka " + ", ".join(f"{q:g} l/min przy {p} imp"
-                                                            for q, p in wants))
+        self.log(f"{esp.name} {idx}: dogrywka " + ", ".join(
+            f"{'?' if q is None else f'{q:g}'} l/min przy {p} imp" for q, p in wants))
         cur = {"ctrl": esp.name, "idx": idx, "name": name, "sweep": 1, "point": 0, "pos": 0}
         v = esp.valve(idx)
         span = int((v.get("pos", 0) + 5) * v.get("oc", 5000) / 100)
@@ -937,8 +943,9 @@ class Engine:
             cur.update(point=j, pos=cnt, step=want, cnt=cnt, stop=stop, expect=q)
             self.set(current=cur, phase="reading", hold_until=hold_until,
                      settle_until=time.time() + self.state["settle_s"],
-                     msg=f"Oczekuję ok. {f'{q:g}'.replace('.', ',')} l/min. Jest? Zatwierdź "
-                         "albo przesuń dysk.")
+                     msg="Odczytaj pływak." if q is None else
+                     f"Oczekuję ok. {f'{q:g}'.replace('.', ',')} l/min. Jest? Zatwierdź "
+                     "albo przesuń dysk.")
             item = self.await_reading(esp, idx, keep=True)
             flow = 0.0 if item["kind"] == "zero" else (top if item["kind"] == "over"
                                                        else round(float(item["value"]), 3))

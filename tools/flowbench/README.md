@@ -125,7 +125,7 @@ part in `pos_est`. Opening and closing curves on `pos_est` show the hysteresis o
 
 A session started through `POST /api/start` (for example with a JSON file and a small script)
 can also set `"sweeps": 1` (one sweep per loop, no repeat), `"decide_s"` (the wait after a
-sweep) and `"fill": [0.15, 0.35, 0.6]`. A fill session measures no sweep: for each flow it takes
+sweep) and `"fill": [0.15, 0.35, 0.6]` (flows) or `"fill_pos": [525, 600]` (pulses). A fill session measures no sweep: for each flow it takes
 the position from the latest curve of the loop in the database (`pos_est`, a sweep without a
 zero starts from the end stop), sets it with one move from the closed end stop and puts the
 disc on the expected flow; the reader confirms it or moves the disc. Fill points are where the
