@@ -23,6 +23,7 @@ import socket
 import sqlite3
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -601,8 +602,9 @@ class Engine:
         problems = []
         for esp in self.esps.values():
             st = esp.get("/api/status")
-            lease = st.get("lease") or (st.get("stm", {}).get("status") or {}).get("lease") or {}
-            if lease and lease.get("regulator") not in (None, "alive"):
+            # firmware 2.2.7: stm.lease is the object, stm.status.lease only its state name
+            lease = st.get("lease") or (st.get("stm") or {}).get("lease") or {}
+            if isinstance(lease, dict) and lease.get("regulator") not in (None, "alive"):
                 problems.append(f"{esp.name}: regulator {lease.get('regulator')} "
                                 f"- failsafe może ruszyć zawory")
             vs = {v["idx"]: v for v in esp.valves()}
@@ -673,6 +675,11 @@ class Engine:
         except EngineError as e:
             self.set(phase="error", error=str(e), msg=str(e), notice="")
             self.log("Błąd: " + str(e))
+        except Exception as e:  # a bug must reach the page, not end the thread in silence
+            traceback.print_exc()
+            msg = f"Błąd programu: {type(e).__name__}: {e}. Zawory stoją, jak stały."
+            self.set(phase="error", error=msg, msg=msg, notice="")
+            self.log(msg)
         finally:
             if self.sid is not None:
                 status = {"done": "done", "stopped": "stopped"}.get(self.state["phase"], "error")
@@ -1171,8 +1178,8 @@ class SimDevice:
                 return {"valves": [self.valve_doc(v) for v in self.valves]}
             if method == "GET" and p == "/api/status":
                 return {"station": self.name, "esp": {"version": "sim"},
-                        "stm": {"version": "sim", "status": {}},
-                        "lease": {"regulator": "alive"}}
+                        "stm": {"version": "sim", "status": {"lease": "running"},
+                                "lease": {"state": "running", "regulator": "alive"}}}
             if method == "GET" and p == "/api/events":
                 since = int(q.get("since", 0))
                 ev = [e for e in self.events if e["seq"] > since
