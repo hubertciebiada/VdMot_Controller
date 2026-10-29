@@ -1,0 +1,20 @@
+{
+  "_comment": "Copy to ~/flowbench/loops.json. ctrl = the NAME of --controller NAME=HOST, idx = valve number. heat_w = design heat of the floor area the loop covers (EN 12831), length_m = pipe length from manifold to manifold. The --sim controllers are sim-west and sim-east.",
+  "pipe_id_mm": 12,
+  "water_c": 35,
+  "loops": [
+    {"ctrl": "sim-west", "idx": 1, "name": "Loop 1", "length_m": 34, "heat_w": 60},
+    {"ctrl": "sim-west", "idx": 2, "name": "Loop 2", "length_m": 124, "heat_w": 800},
+    {"ctrl": "sim-west", "idx": 3, "name": "Loop 3", "length_m": 135, "heat_w": 780},
+    {"ctrl": "sim-west", "idx": 4, "name": "Loop 4", "length_m": 43, "heat_w": 190},
+    {"ctrl": "sim-west", "idx": 5, "name": "Loop 5", "length_m": 67, "heat_w": 400},
+    {"ctrl": "sim-west", "idx": 6, "name": "Loop 6", "length_m": 71, "heat_w": 490},
+    {"ctrl": "sim-east", "idx": 1, "name": "Loop 7", "length_m": 42, "heat_w": 260},
+    {"ctrl": "sim-east", "idx": 2, "name": "Loop 8", "length_m": 74, "heat_w": 390},
+    {"ctrl": "sim-east", "idx": 3, "name": "Loop 9", "length_m": 82, "heat_w": 300},
+    {"ctrl": "sim-east", "idx": 4, "name": "Loop 10", "length_m": 52, "heat_w": 320},
+    {"ctrl": "sim-east", "idx": 5, "name": "Loop 11", "length_m": 95, "heat_w": 300},
+    {"ctrl": "sim-east", "idx": 6, "name": "Loop 12", "length_m": 57, "heat_w": 180},
+    {"ctrl": "sim-east", "idx": 7, "name": "Loop 13", "length_m": 73, "heat_w": 470}
+  ]
+}

@@ -83,10 +83,29 @@ th { color: var(--muted); font-weight: 600; }
 <!-- ═════ setup ═════ -->
 <section id="setup">
   <h1>Nowy pomiar</h1>
-  <div class="warnbox small">
-    Przed startem wyłącz automatykę zaworów w HA (regulator pokoju). Pompę ustaw w trybie i na wysokości
-    podnoszenia, przy której ma pracować regulator. Aplikacja zamknie wszystkie zawory na obu rozdzielaczach
-    i otwiera po jednej pętli.
+  <div class="panel row">
+    <label><input type="radio" name="mode" id="mLoops" value="loops" checked> Charakterystyka pętli</label>
+    <label><input type="radio" name="mode" id="mHead" value="head"> Dobór ciśnienia pompy</label>
+  </div>
+  <div class="warnbox small" data-mode="loops">
+    Przed startem wyłącz automatykę zaworów w HA (regulator pokoju) i automatykę, która odcina pompę
+    obiegową przy zamkniętych zaworach. Pompę ustaw w trybie i na wysokości podnoszenia, przy której ma
+    pracować regulator. Aplikacja zamknie wszystkie zawory na obu rozdzielaczach i otwiera po jednej pętli.
+  </div>
+  <div class="warnbox small" data-mode="head" hidden>
+    Przed startem wyłącz automatykę zaworów w HA i automatykę, która odcina pompę obiegową. Zaznaczone
+    pętle (najtrudniejsze) idą na 100 %, wszystkie pozostałe na stałe otwarcie. Potem Ty zmieniasz
+    ciśnienie na pompie, a aplikacja prosi o odczyt rotametrów zaznaczonych pętli.
+  </div>
+  <div class="panel" id="headSetup" hidden>
+    <h2>Przepływ projektowy</h2>
+    <div class="row small">
+      <label>ΔT zasilanie–powrót <input type="number" id="dt" value="5" step="0.5" min="2" max="10"> K</label>
+      <label>Pozostałe pętle na <input type="number" id="others" value="15" min="0" max="100"> %</label>
+      <label>Czekaj po zmianie ciśnienia <input type="number" id="pumpS" value="60" min="10" max="600"> s</label>
+      <label>Zapas przepływu <input type="number" id="margin" value="10" min="0" max="50"> %</label>
+    </div>
+    <div id="designBox" class="small" style="margin-top:8px;overflow-x:auto"></div>
   </div>
   <div id="ctrls"></div>
   <div class="panel">
@@ -122,6 +141,16 @@ th { color: var(--muted); font-weight: 600; }
     <p class="small muted" id="sessionPath"></p>
   </div>
 
+  <div class="panel" id="headPanel" hidden>
+    <h2>Ciśnienie pompy</h2>
+    <div class="row small">
+      <label>Ustawione na pompie <input type="number" id="headIn" step="0.1" min="0.5" max="10"> m</label>
+      <label>Moc z gniazdka <input type="number" id="powIn" min="0" max="300"> W</label>
+    </div>
+    <label class="small" style="margin:8px 0"><input type="checkbox" id="allIn"> odczytaj przy tym ciśnieniu też wszystkie pozostałe pętle</label>
+    <div class="row"><button class="pri" id="headOk">Gotowe, ustawione</button><button id="headEnd">Koniec testu</button></div>
+  </div>
+
   <div class="panel" id="decidePanel" hidden>
     <p class="small" id="rule"></p>
     <div class="row"><button class="pri" id="enough">Wystarczy, następna pętla</button><button id="more">Jeszcze jeden przebieg</button></div>
@@ -142,13 +171,19 @@ th { color: var(--muted); font-weight: 600; }
   </div>
 
 
+  <div class="panel" id="headRes" hidden>
+    <h2>Wyniki</h2>
+    <p class="small" id="recommend"></p>
+    <div style="overflow-x:auto"><table><thead id="hrHead"></thead><tbody id="hrBody"></tbody></table></div>
+  </div>
+
   <div class="panel">
     <h2 id="chartTitle">Pętla</h2>
     <svg class="chart" id="chart" viewBox="0 0 600 300" role="img" aria-label="Przepływ od pozycji zaworu"></svg>
     <div class="small muted" id="legend"></div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="queuePanel">
     <div class="row" style="justify-content:space-between"><h2>Kolejka pętli</h2><button id="skip">Pomiń tę pętlę</button></div>
     <table><thead><tr><th>Pętla</th><th>Stan</th><th>Przebiegi</th><th>Rozrzut</th></tr></thead><tbody id="queue"></tbody></table>
   </div>
@@ -163,6 +198,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 let S = null;          // last state from the server
 let mark = null;       // current float reading [l/min]
 let markKey = null;    // the point the mark belongs to
+let lastPhase = null;
 const fmt = x => x.toFixed(2).replace(".", ",");
 
 async function api(path, body) {
@@ -195,17 +231,56 @@ async function loadSetup() {
       if (v.state !== "idle") warn.push(v.state);
       if (v.flags && v.flags.length) warn.push(v.flags.join(","));
       st.textContent = `poz. ${v.pos} %` + (warn.length ? " · " + warn.join(" · ") : "");
-      l.append(cb, t, st); list.append(l);
+      const des = document.createElement("input"); des.type = "number"; des.step = "0.05"; des.min = "0";
+      des.className = "des"; des.id = `d_${c.name}_${v.idx}`; des.title = "przepływ projektowy l/min";
+      des.style.width = "78px"; des.hidden = mode() !== "head";
+      l.append(cb, t, st, des); list.append(l);
     }
     p.append(list); box.append(p);
   }
 }
+function mode() { return $("mHead").checked ? "head" : "loops"; }
+let design = null;
+async function loadDesign() {
+  design = await api(`/api/design?dt=${encodeURIComponent($("dt").value)}`);
+  const box = $("designBox");
+  if (!design.available) { box.innerHTML = '<p class="muted">Brak pliku loops.json z długościami i mocą pętli. Wpisz przepływ projektowy przy zaznaczonych pętlach.</p>'; return; }
+  const idx = new Set(design.index.map(k => k.join("/")));
+  const top = +$("smax").value;
+  let h = `<table><thead><tr><th>Pętla</th><th>m</th><th>W</th><th>Q l/min</th><th>Δp pętli m</th></tr></thead><tbody>`;
+  for (const r of design.rows) {
+    const b = idx.has(`${r.ctrl}/${r.idx}`);
+    h += `<tr${b ? ' style="font-weight:650"' : ""}><td>${escapeHtml(r.ctrl)} ${r.idx} ${escapeHtml(r.name || "")}</td><td>${r.length_m}</td><td>${r.heat_w}</td><td>${fmt(r.q)}${r.q > top ? " ↑" : ""}</td><td>${fmt(r.dp_total)}</td></tr>`;
+  }
+  h += `</tbody></table><p>Suma przepływu ${String(design.total_q).replace(".", ",")} l/min. Najtrudniejsza pętla potrzebuje ${fmt(design.need_m)} m na samą pętlę (rura, przepływomierz, zawór). Do tego dochodzą rury od bufora i belki rozdzielacza: tę część mierzy test.</p>`;
+  if (design.rows.some(r => idx.has(`${r.ctrl}/${r.idx}`) && r.q > top)) h += `<p class="msg err">Przepływ projektowy jest powyżej skali rotametru (↑): wtedy kryterium to „Powyżej skali”. Większe ΔT obniża przepływ projektowy.</p>`;
+  box.innerHTML = h;
+  for (const r of design.rows) { const d = $(`d_${r.ctrl}_${r.idx}`); if (d) d.value = r.q.toFixed(2); }
+  for (const cb of document.querySelectorAll("#ctrls input[type=checkbox]")) cb.checked = idx.has(`${cb.dataset.ctrl}/${cb.dataset.idx}`);
+}
+function applyMode() {
+  const m = mode();
+  for (const e of document.querySelectorAll("[data-mode]")) e.hidden = e.dataset.mode !== m;
+  $("headSetup").hidden = m !== "head";
+  for (const d of document.querySelectorAll("#ctrls .des")) d.hidden = m !== "head";
+  if (m === "head") loadDesign().catch(e => { $("designBox").textContent = e.message; });
+  else for (const cb of document.querySelectorAll("#ctrls input[type=checkbox]")) cb.checked = true;
+}
+$("mLoops").onchange = applyMode; $("mHead").onchange = applyMode;
+$("dt").onchange = () => loadDesign().catch(e => { $("designBox").textContent = e.message; });
 $("start").onclick = async () => {
-  const loops = [...document.querySelectorAll("#ctrls input[type=checkbox]")].filter(c => c.checked)
-    .map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
+  const checked = [...document.querySelectorAll("#ctrls input[type=checkbox]")].filter(c => c.checked);
+  const loops = checked.map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
   if (!loops.length) { $("setupErr").textContent = "Zaznacz przynajmniej jedną pętlę."; return; }
   const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value, zeroTop: $("szero").checked };
-  try { await api("/api/start", { loops, scale, notes: $("notes").value, settle_s: +$("settle").value }); $("setupErr").textContent = ""; }
+  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value };
+  if (mode() === "head") {
+    const read = loops.map(l => ({ ...l, design: parseFloat($(`d_${l.ctrl}_${l.idx}`).value) }));
+    if (read.some(r => !(r.design > 0))) { $("setupErr").textContent = "Wpisz przepływ projektowy przy każdej zaznaczonej pętli."; return; }
+    cfg = { mode: "head", read, scale, notes: $("notes").value, settle_s: 0, dt: +$("dt").value,
+            others_pct: +$("others").value, pump_s: +$("pumpS").value, margin_pct: +$("margin").value };
+  }
+  try { await api("/api/start", cfg); $("setupErr").textContent = ""; }
   catch (e) { $("setupErr").textContent = e.message; }
 };
 
@@ -253,11 +328,42 @@ $("pause").onclick = () => send({ cmd: S && S.paused ? "resume" : "pause" });
 $("enough").onclick = () => send({ cmd: "enough" });
 $("more").onclick = () => send({ cmd: "more" });
 $("skip").onclick = () => send({ cmd: "skip" });
+$("headOk").onclick = () => {
+  const head = parseFloat(String($("headIn").value).replace(",", "."));
+  if (!(head > 0)) { alertMsg("Wpisz ciśnienie ustawione na pompie."); return; }
+  const pw = parseFloat($("powIn").value);
+  send({ cmd: "head", head, power: isNaN(pw) ? null : pw, all: $("allIn").checked });
+  $("allIn").checked = false;
+};
+$("headEnd").onclick = () => send({ cmd: "finish" });
 $("restore").onclick = () => api("/api/restore", {}).catch(e => alertMsg(e.message));
 $("again").onclick = () => { $("run").hidden = true; $("setup").hidden = false; loadSetup(); };
 
 // ── chart of the current loop ──
+function drawHeadChart() {
+  const svg = $("chart"); svg.textContent = "";
+  const cs = getComputedStyle(document.documentElement); const c = n => cs.getPropertyValue(n).trim();
+  const res = S.head_results || [], reads = S.head_reads || [];
+  const L = 62, R = 566, T = 16, B = 244, qmax = S.scale.max;
+  const hs = res.map(x => x.head);
+  const h0 = Math.max(0, Math.floor(Math.min(3, ...hs) - 0.5)), h1 = Math.ceil(Math.max(6, ...hs) + 0.5);
+  const X = h => L + (h - h0) / (h1 - h0) * (R - L), Y = q => B - Math.min(q, qmax) / qmax * (B - T);
+  const txt = (x, y, t, a) => svg.append(el("text", { x, y, "text-anchor": a, "font-size": 19, fill: c("--muted"), "font-family": "system-ui" }, t));
+  for (let h = h0; h <= h1; h += 1) { svg.append(el("line", { x1: X(h), x2: X(h), y1: T, y2: B, stroke: c("--line") })); txt(X(h), B + 24, `${h}`, "middle"); }
+  for (let q = 0; q <= qmax + 1e-9; q += S.scale.major) { svg.append(el("line", { x1: L, x2: R, y1: Y(q), y2: Y(q), stroke: c("--line") })); txt(L - 6, Y(q) + 6, fmt(q), "end"); }
+  txt((L + R) / 2, B + 50, "ciśnienie pompy [m]", "middle");
+  const colors = [c("--s1"), c("--s2"), c("--s3")];
+  reads.forEach((r, n) => {
+    const col = colors[n % 3], key = `${r.ctrl} ${r.idx}`;
+    if (r.design) svg.append(el("line", { x1: L, x2: R, y1: Y(r.design), y2: Y(r.design), stroke: col, "stroke-width": 2, "stroke-dasharray": "6 5" }));
+    const pts = res.filter(x => x.flows[key]).map(x => ({ h: x.head, ...x.flows[key] })).sort((a, b) => a.h - b.h);
+    svg.append(el("polyline", { points: pts.map(p => `${X(p.h)},${Y(p.flow)}`).join(" "), fill: "none", stroke: col, "stroke-width": 3 }));
+    for (const p of pts) svg.append(el("circle", { cx: X(p.h), cy: Y(p.flow), r: p.kind === "over" ? 7 : 5, fill: p.kind === "over" ? "none" : col, stroke: col, "stroke-width": 2 }));
+  });
+  $("legend").textContent = reads.map(r => `${r.ctrl} ${r.idx} ${r.name}: projekt ${fmt(r.design || 0)} l/min (linia przerywana)`).join(" · ") + " · pusty okrąg = powyżej skali";
+}
 function drawChart() {
+  if (S.mode === "head") return drawHeadChart();
   const svg = $("chart"); svg.textContent = "";
   const cs = getComputedStyle(document.documentElement); const c = n => cs.getPropertyValue(n).trim();
   const pts = (S.points || []).filter(p => p.kind !== "void");
@@ -290,10 +396,10 @@ function mmss(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}
 function render() {
   const running = !["setup"].includes(S.phase);
   if (running && $("run").hidden && S.phase !== "setup") { $("setup").hidden = true; $("run").hidden = false; }
-  const live = ["prepare", "moving", "reading", "decide"].includes(S.phase);
+  const live = ["prepare", "moving", "reading", "decide", "head", "pump"].includes(S.phase);
   $("stop").hidden = !live; $("pause").hidden = !live; $("pause").textContent = S.paused ? "Wznów" : "Pauza";
   const cur = S.current;
-  $("what").innerHTML = cur ? `<b>${cur.ctrl} · ${cur.idx} ${escapeHtml(cur.name || "")}</b><br>przebieg ${cur.sweep} · punkt ${cur.point} · ${cur.pos} imp` : `<b>flowbench</b> <span class="muted">pomiar przepływu pętli</span>`;
+  $("what").innerHTML = cur ? `<b>${cur.ctrl} · ${cur.idx} ${escapeHtml(cur.name || "")}</b><br>` + (S.mode === "head" ? `ciśnienie ${String(cur.head).replace(".", ",")} m · zawór ${cur.pos} %` : `przebieg ${cur.sweep} · punkt ${cur.point} · ${cur.pos} imp`) : `<b>flowbench</b> <span class="muted">pomiar przepływu pętli</span>`;
   $("msg").textContent = S.error ? S.error : (S.paused ? "Pauza" : S.msg); $("msg").className = "msg" + (S.error ? " err" : "");
   $("notice").hidden = !S.notice; $("notice").textContent = S.notice || "";
   const key = cur ?`${cur.ctrl}/${cur.idx}/${cur.sweep}/${cur.point}` : null;
@@ -302,7 +408,7 @@ function render() {
   for (const id of ["zero", "over", "minus", "plus"]) $(id).disabled = !reading;
   $("ok").disabled = !reading || mark == null;
   $("readPanel").style.opacity = reading ? 1 : .55;
-  if (reading) {
+  if (reading && S.mode !== "head") {
     const left = S.settle_until - S.now;
     $("settleT").textContent = left > 0 ? `Pływak się uspokaja: jeszcze ${Math.ceil(left)} s` : "Możesz odczytać.";
     $("settleT").className = "timer " + (left > 0 ? "wait" : "ok");
@@ -321,6 +427,23 @@ function render() {
     tr.innerHTML = `<td>${lp.ctrl} · ${lp.idx}</td><td>${st}</td><td>${(lp.sweeps || []).join(" + ") || "–"}</td><td>${lp.spread == null ? "–" : fmt(lp.spread) + " l/min"}</td>`;
     q.append(tr);
   }
+  const head = S.mode === "head";
+  $("queuePanel").hidden = head;
+  $("headPanel").hidden = !(head && S.phase === "head");
+  if (head && S.phase === "head" && lastPhase !== "head") {
+    const done = (S.head_results || []).map(x => x.head);
+    $("headIn").value = done.length ? (done[done.length - 1] - 0.5).toFixed(1) : "";
+  }
+  if (head) $("readPanel").hidden = S.phase !== "reading";
+  if (head && S.phase === "pump") $("msg").textContent = `${S.msg} Zostało ${Math.max(0, Math.ceil(S.settle_until - S.now))} s.`;
+  $("headRes").hidden = !(head && (S.head_results || []).length);
+  if (head) {
+    const reads = S.head_reads || [];
+    $("hrHead").innerHTML = `<tr><th>m</th><th>W</th>${reads.map(r => `<th>${escapeHtml(r.name)}</th>`).join("")}<th></th></tr>`;
+    $("hrBody").innerHTML = (S.head_results || []).map(x => `<tr><td>${String(x.head).replace(".", ",")}</td><td>${x.power ?? "–"}</td>${reads.map(r => { const f = x.flows[`${r.ctrl} ${r.idx}`]; return `<td>${!f ? "–" : f.kind === "over" ? "&gt; " + fmt(S.scale.max) : fmt(f.flow)}</td>`; }).join("")}<td>${x.ok ? "✓ wystarcza" : "✗ za mało"}</td></tr>`).join("");
+    $("recommend").textContent = S.recommend || "";
+  }
+  lastPhase = S.phase;
   $("log").textContent = (S.log || []).join("\n");
   drawRot(); drawChart();
 }

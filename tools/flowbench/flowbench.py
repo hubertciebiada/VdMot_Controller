@@ -51,6 +51,84 @@ SPREAD_OK = 0.12  # sweeps agree when the rms difference is below this [l/min]
 SWEEPS_MIN, SWEEPS_MAX = 2, 3
 
 
+# ───────────────────────────── hydraulics of one loop ─────────────────────────────
+
+WATER_NU = [(20, 1.004e-6), (25, 0.893e-6), (30, 0.801e-6), (35, 0.724e-6), (40, 0.658e-6),
+            (45, 0.602e-6)]  # kinematic viscosity of water [m²/s]
+KV_METER = 1.1  # KAN-therm InoxFlow flow meter, Kvs [m³/h at 1 bar]
+KV_VALVE = 2.4  # M30x1.5 valve insert, Kvs
+FITTINGS = 1.10  # bends of the loop: +10 % on the straight pipe
+
+
+def water_nu(t):
+    t = max(WATER_NU[0][0], min(WATER_NU[-1][0], t))
+    for (t0, n0), (t1, n1) in zip(WATER_NU, WATER_NU[1:]):
+        if t0 <= t <= t1:
+            return n0 + (n1 - n0) * (t - t0) / (t1 - t0)
+    return WATER_NU[-1][1]
+
+
+def loop_dp(q_lpm, length_m, pipe_id_mm=12.0, water_c=35.0):
+    """Pressure drop [m of water] of a loop at q: pipe (Darcy, laminar 64/Re, turbulent Blasius,
+    linear between Re 2300 and 4000), flow meter and fully open valve (Kv)."""
+    d = pipe_id_mm / 1000
+    v = q_lpm / 60000 / (math.pi * d * d / 4)
+    re = v * d / water_nu(water_c)
+    lam, turb = 64 / 2300, 0.316 / 4000 ** 0.25
+    if re <= 0:
+        f = 0.0
+    elif re < 2300:
+        f = 64 / re
+    elif re > 4000:
+        f = 0.316 / re ** 0.25
+    else:
+        f = lam + (turb - lam) * (re - 2300) / 1700
+    g = 9.81
+    pipe = f * length_m / d * v * v / 2 / g * FITTINGS
+    qh = q_lpm * 0.06
+    meter = (qh / KV_METER) ** 2 * 10.2  # 1 bar = 10.2 m
+    valve = (qh / KV_VALVE) ** 2 * 10.2
+    return {"re": round(re), "pipe": pipe, "meter": meter, "valve": valve,
+            "total": pipe + meter + valve}
+
+
+def pl(x):
+    """A number with one decimal and a decimal comma, for the page."""
+    return f"{x:.1f}".replace(".", ",")
+
+
+def design_flow(heat_w, dt_k):
+    """Flow [l/min] that carries heat_w at a supply/return difference dt_k."""
+    return heat_w / (4180 * dt_k) / 0.994 * 60
+
+
+def load_loops(path):
+    if not path or not Path(path).is_file():
+        return None
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def design_table(loops_cfg, dt_k):
+    if not loops_cfg:
+        return {"available": False}
+    pid = float(loops_cfg.get("pipe_id_mm", 12))
+    wc = float(loops_cfg.get("water_c", 35))
+    rows = []
+    for lp in loops_cfg.get("loops", []):
+        q = design_flow(float(lp["heat_w"]), dt_k)
+        dp = loop_dp(q, float(lp["length_m"]), pid, wc)
+        rows.append({"ctrl": lp["ctrl"], "idx": lp["idx"], "name": lp.get("name"),
+                     "length_m": lp["length_m"], "heat_w": lp["heat_w"], "q": round(q, 2),
+                     "re": dp["re"], "dp_pipe": round(dp["pipe"], 2),
+                     "dp_meter": round(dp["meter"], 2), "dp_valve": round(dp["valve"], 2),
+                     "dp_total": round(dp["total"], 2)})
+    rows.sort(key=lambda r: -r["dp_total"])
+    return {"available": True, "pipe_id_mm": pid, "water_c": wc, "dt": dt_k, "rows": rows,
+            "total_q": round(sum(r["q"] for r in rows), 1),
+            "need_m": rows[0]["dp_total"] if rows else None,
+            "index": [[r["ctrl"], r["idx"]] for r in rows[:2]]}
+
+
 class Stop(Exception):
     """The user pressed STOP."""
 
@@ -179,10 +257,15 @@ class Engine:
         self.file = None
         self.rows = []  # every recorded point of the session
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
+        self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
+        self.head_rows = []  # readings of a pump head test
+        self.on_head = None  # the simulator follows the pump head the user enters
+        self.loops_cfg = None  # loops.json: length and heat of every loop
         self.state = {"phase": "setup", "msg": "", "log": [], "loops": [], "current": None,
                       "points": [], "scale": {"max": 2.5, "major": 0.5, "minor": 0.25},
                       "settle_s": 30, "settle_until": 0, "hold_until": 0, "rule": "",
-                      "session": None, "error": None, "restorable": False, "notice": ""}
+                      "session": None, "error": None, "restorable": False, "notice": "",
+                      "mode": "loops", "head_results": [], "head_reads": [], "recommend": ""}
 
     # page side
     def view(self):
@@ -210,7 +293,8 @@ class Engine:
                 raise EngineError("Pomiar już trwa.")
             self.stop_flag, self.paused, self.inbox = False, False, None
             self.state.update(phase="prepare", error=None, msg="Start", points=[], loops=[],
-                              restorable=False)
+                              restorable=False, mode=cfg.get("mode", "loops"), head_results=[],
+                              head_reads=[], recommend="", current=None, notice="")
             self.state["scale"] = cfg.get("scale") or self.state["scale"]
             self.state["settle_s"] = int(cfg.get("settle_s", 30))
         self.thread = threading.Thread(target=self.run, args=(cfg,), daemon=True)
@@ -294,12 +378,46 @@ class Engine:
         """A valve whose target the app did not set (HA or a schedule still drives the valves)."""
         for esp in self.esps.values():
             for v in esp.valves():
-                if v.get("target") not in (0, None):
+                want = self.expected.get((esp.name, v["idx"]), 0)
+                if v.get("target") not in (want, None):
                     return f"{esp.name} {v['idx']} ({v.get('name')}) ma cel {v.get('target')} %"
         return None
 
+    def set_targets(self, targets):
+        """targets: {(ctrl, idx): pct}. Waits until every valve stands at its target."""
+        self.expected = dict(targets)
+        for (c, i), t in targets.items():
+            self.esps[c].post(f"/api/valves/{i}/target", {"target": t})
+        t0, resent = time.time(), False
+        while True:
+            self.sleep(2)
+            off = []
+            for esp in self.esps.values():
+                for v in esp.valves():
+                    t = targets.get((esp.name, v["idx"]))
+                    if t is not None and (v.get("stateKey") != "idle"
+                                          or abs((v.get("pos") or 0) - t) > 1):
+                        off.append((esp, v, t))
+            if not off:
+                return
+            self.set(msg="Czekam na zawory: " + ", ".join(
+                f"{e.name} {v['idx']} {v.get('pos')}→{t} %" for e, v, t in off[:5]))
+            el = time.time() - t0
+            if el > 150 and not resent:
+                # an opening from 0 % may stop early (sticky pin); one more request
+                resent = True
+                for e, v, t in off:
+                    if v.get("stateKey") == "idle":
+                        e.post(f"/api/valves/{v['idx']}/target", {"target": t})
+                        self.log(f"{e.name} {v['idx']}: cel {t} % wysłany drugi raz")
+            if el > 300:
+                raise EngineError("Zawory nie doszły do celu w 5 min: " + ", ".join(
+                    f"{e.name} {v['idx']} ({v.get('name')}) {v.get('pos')} % zamiast {t} %"
+                    for e, v, t in off))
+
     def prepare_closed(self):
         """Every active valve on every controller to target 0, then wait until all are at 0."""
+        self.expected = {}
         self.set(phase="prepare", msg="Zamykam wszystkie zawory")
         for esp in self.esps.values():
             for v in esp.valves():
@@ -347,8 +465,8 @@ class Engine:
         self.outdir.mkdir(parents=True, exist_ok=True)
         path = self.outdir / f"flowbench-{stamp}.jsonl"
         self.file = path.open("w", encoding="utf-8")
-        self.rows = []
-        loops = cfg["loops"]
+        self.rows, self.head_rows = [], []
+        loops = cfg.get("loops", [])
         self.set(session=str(path), loops=[dict(lp, status="czeka", sweeps=[], spread=None)
                                            for lp in loops])
         try:
@@ -364,13 +482,22 @@ class Engine:
                     "valves": {v["idx"]: {"name": v.get("name"), "oc": v.get("oc"),
                                           "cc": v.get("cc")} for v in esp.valves()}}
                 self.snapshot[esp.name] = {v["idx"]: v.get("target") for v in esp.valves()}
+            meta["meta"]["mode"] = cfg.get("mode", "loops")
+            meta["meta"]["cfg"] = {k: cfg.get(k) for k in ("read", "others_pct", "pump_s",
+                                                            "margin_pct", "dt")}
             self.write(meta)
             self.set(restorable=True)
-            problems = self.precheck(loops)
+            head = cfg.get("mode") == "head"
+            every = [{"ctrl": e.name, "idx": v["idx"]} for e in self.esps.values()
+                     for v in e.valves()]
+            problems = self.precheck(every if head else loops)
             if problems:
                 raise EngineError("Nie zaczynam: " + "; ".join(problems))
-            for n, lp in enumerate(loops):
-                self.measure_loop(n, lp)
+            if head:
+                self.head_test(cfg)
+            else:
+                for n, lp in enumerate(loops):
+                    self.measure_loop(n, lp)
             self.set(phase="done", msg="Pomiar skończony", current=None, notice="")
             self.log("Pomiar skończony")
             self.restore()
@@ -534,6 +661,123 @@ class Engine:
                  f"w dół {back} imp ({bstop})")
         return pts
 
+    # pump head test
+
+    def head_test(self, cfg):
+        """The loops in cfg["read"] at 100 %, every other loop at others_pct; for each pump head
+        the user sets on the pump, the user reads the rotameters of the read loops."""
+        reads = cfg["read"]
+        others = int(cfg.get("others_pct", 15))
+        pump_s = int(cfg.get("pump_s", 60))
+        top = float(self.state["scale"]["max"])
+        rkeys = {(r["ctrl"], r["idx"]) for r in reads}
+        targets = {(e.name, v["idx"]): 100 if (e.name, v["idx"]) in rkeys else others
+                   for e in self.esps.values() for v in e.valves()}
+        self.set(phase="prepare", msg=f"Ustawiam zawory: czytane 100 %, pozostałe {others} %")
+        self.set_targets(targets)
+        names = {(e.name, v["idx"]): v.get("name") or str(v["idx"])
+                 for e in self.esps.values() for v in e.valves()}
+        reads = [dict(r, name=names[(r["ctrl"], r["idx"])]) for r in reads]
+        results = []
+        self.set(head_reads=reads, head_results=results, recommend="")
+        while True:
+            self.set(phase="head", current=None, msg="Ustaw ciśnienie na pompie, wpisz je i "
+                                                     "naciśnij „Gotowe”.")
+            item = self.wait_input()
+            if item.get("cmd") == "finish":
+                break
+            if item.get("cmd") != "head":
+                continue
+            try:
+                head = round(float(item["head"]), 2)
+            except (KeyError, TypeError, ValueError):
+                self.set(notice="Wpisz ciśnienie pompy w metrach.")
+                continue
+            power = item.get("power")
+            if self.on_head:
+                self.on_head(head)
+            self.set(phase="pump", notice="", settle_until=time.time() + pump_s,
+                     msg=f"Pompa na {head} m: czekam {pump_s} s, aż przepływ się ustali.")
+            self.sleep(pump_s)
+            foreign = self.foreign_target()
+            if foreign:
+                raise EngineError(f"Ktoś inny ustawia cele: {foreign}. Wyłącz automatykę w HA.")
+            which = list(reads)
+            if item.get("all"):
+                which += [{"ctrl": c, "idx": i, "name": names[(c, i)]}
+                          for (c, i) in targets if (c, i) not in rkeys]
+            flows = {}
+            for r in which:
+                key = (r["ctrl"], r["idx"])
+                esp = self.esps[r["ctrl"]]
+                cur = {"ctrl": r["ctrl"], "idx": r["idx"], "name": r["name"], "sweep": 0,
+                       "point": len(self.head_rows) + 1, "pos": targets[key], "head": head}
+                self.set(current=cur, phase="reading", settle_until=0, hold_until=0,
+                         msg=f"Odczytaj rotametr pętli {r['ctrl']} {r['idx']} {r['name']}.")
+                try:
+                    it = self.await_reading(esp, r["idx"])
+                except Skip:
+                    continue
+                kind = it["kind"]
+                flow = 0.0 if kind == "zero" else (top if kind == "over"
+                                                   else round(float(it["value"]), 3))
+                row = {"t": time.time(), "ctrl": r["ctrl"], "idx": r["idx"], "name": r["name"],
+                       "head": head, "power": power, "target": targets[key], "kind": kind,
+                       "flow": flow, "tap": it.get("frac"), "design": r.get("design"),
+                       "temps": self.temps(esp, r["idx"])}
+                self.write({"head_point": row})
+                self.head_rows.append(row)
+                flows[f"{r['ctrl']} {r['idx']}"] = {"flow": flow, "kind": kind}
+            ok = all(self.reaches(r, flows.get(f"{r['ctrl']} {r['idx']}")) for r in reads)
+            results.append({"head": head, "power": power, "flows": flows, "ok": ok})
+            rec = self.recommend(results, reads, cfg)
+            self.set(head_results=results, recommend=rec, current=None)
+            self.log(f"ciśnienie {head} m: {'wystarcza' if ok else 'za mało'}")
+            self.write({"head_step": results[-1], "recommend": rec})
+
+    @staticmethod
+    def reaches(r, f):
+        if not f:
+            return False
+        return f["kind"] == "over" or (r.get("design") is not None and f["flow"] >= r["design"])
+
+    def recommend(self, results, reads, cfg):
+        margin = float(cfg.get("margin_pct", 10)) / 100
+        good = sorted(x["head"] for x in results if x["ok"])
+        bad = sorted(x["head"] for x in results if not x["ok"])
+        if not good:
+            return (f"Żadne sprawdzone ciśnienie nie daje przepływu projektowego "
+                    f"(najwyższe: {pl(max(bad))} m). Sprawdź wyższe.")
+        low = good[0]
+        # turbulent flow: the head grows with the square of the flow
+        with_margin = round(low * (1 + margin) ** 2, 1)
+        txt = (f"Najniższe ciśnienie z przepływem projektowym w czytanych pętlach: {pl(low)} m. "
+               f"Z zapasem {round(margin * 100)} % przepływu: około {pl(with_margin)} m.")
+        if not any(b < low for b in bad):
+            txt += " Niżej jeszcze nie sprawdzone: spróbuj mniejszego ciśnienia, żeby znaleźć granicę."
+        res = self.residual(results, reads, low)
+        if res:
+            txt += " " + res
+        return txt
+
+    def residual(self, results, reads, head):
+        """Head lost outside the loop (pipes buffer-manifold, manifold) at the given head."""
+        if not self.loops_cfg:
+            return ""
+        lengths = {(lp["ctrl"], lp["idx"]): lp["length_m"] for lp in self.loops_cfg["loops"]}
+        step = next(x for x in results if x["head"] == head)
+        out = []
+        for r in reads:
+            f = step["flows"].get(f"{r['ctrl']} {r['idx']}")
+            L = lengths.get((r["ctrl"], r["idx"]))
+            if f and f["kind"] == "value" and L:
+                dp = loop_dp(f["flow"], L, self.loops_cfg.get("pipe_id_mm", 12),
+                             self.loops_cfg.get("water_c", 35))["total"]
+                out.append(f"{r['name']}: pętla {pl(dp)} m z {pl(head)} m, "
+                           f"reszta {pl(head - dp)} m")
+        return ("Straty poza pętlą (rury od bufora, belki rozdzielacza), z obliczenia: "
+                + "; ".join(out) + ".") if out else ""
+
     def csv_text(self):
         out = io.StringIO()
         w = csv.writer(out, delimiter=";")
@@ -547,6 +791,18 @@ class Engine:
                         r["pos_req"], r["step"], r["cnt"], r["stop"], r["kind"],
                         str(r["flow"]).replace(".", ","), r.get("tap"), r["waited_s"],
                         t[0], t[1], datetime.fromtimestamp(r["t"]).isoformat(timespec="seconds")])
+        if self.head_rows:
+            w.writerow([])
+            w.writerow(["ctrl", "valve", "name", "head_m", "power_w", "target_pct", "kind",
+                        "flow_lpm", "design_lpm", "tap_frac", "t_1", "t_2", "time"])
+            for r in self.head_rows:
+                t = [x.get("temp") for x in r.get("temps") or []] + [None, None]
+                w.writerow([r["ctrl"], r["idx"], r["name"], str(r["head"]).replace(".", ","),
+                            r.get("power"), r["target"], r["kind"],
+                            str(r["flow"]).replace(".", ","),
+                            "" if r.get("design") is None else str(r["design"]).replace(".", ","),
+                            r.get("tap"), t[0], t[1],
+                            datetime.fromtimestamp(r["t"]).isoformat(timespec="seconds")])
         return out.getvalue()
 
 
@@ -571,9 +827,10 @@ class SimValve:
         self.hold_until = 0
         self.flags = []
 
-    def flow(self):
+    def flow(self, head=5.7):
         x = self.true - self.onset
-        return 0.0 if x <= 0 else self.qmax * (1 - math.exp(-x / self.k))
+        q = 0.0 if x <= 0 else self.qmax * (1 - math.exp(-x / self.k))
+        return q * math.sqrt(head / 5.7)  # the simulated curves are made at 5.7 m
 
 
 class SimDevice:
@@ -581,6 +838,7 @@ class SimDevice:
 
     def __init__(self, name, names, seed, speed):
         self.name, self.speed = name, speed
+        self.head = 5.7  # pump head the simulated loops see [m]
         self.rnd = random.Random(seed)
         self.valves = [SimValve(i + 1, n, self.rnd) for i, n in enumerate(names)]
         self.events, self.seq = [], 0
@@ -626,7 +884,8 @@ class SimDevice:
                 v.state = "idle"
                 v.last = {"dir": direction, "req": counts, "cnt": cnt, "stop": stop,
                           "peak": 15.0, "ms": int(dur * 1000)}
-                v.pos = max(0, min(100, round(v.true * 100 / v.oc)))
+                # the STM believes a target move reached its target; a service move follows its count
+                v.pos = max(0, min(100, round(v.true * 100 / v.oc))) if service else v.target
                 if service:
                     v.hold_until, v.flags = time.time() + SIM_HOLD_S / self.speed, ["svcHold"]
                     self.event(414, v.idx, cnt, STOPS.index(stop), "service move done")
@@ -640,6 +899,8 @@ class SimDevice:
         elif abs(want - v.true) > v.oc / 200:
             d = "open" if want > v.true else "close"
             self.run_move(v, d, int(abs(want - v.true)), 30, False)
+        else:
+            v.pos = v.target
 
     def handle(self, method, path, body):
         u = urllib.parse.urlparse(path)
@@ -722,6 +983,14 @@ def sim_reader(engine, devices):
         s = engine.view()
         if s["phase"] == "decide":
             continue
+        if s["phase"] == "head":
+            done = [x["head"] for x in s.get("head_results", [])]
+            nxt = round((done[-1] if done else 6.0) - 0.5, 1)
+            fails = [x for x in s.get("head_results", []) if not x["ok"]]
+            engine.post({"cmd": "finish"} if fails or nxt < 1.5 else
+                        {"cmd": "head", "head": nxt, "power": 40})
+            time.sleep(0.5)
+            continue
         cur = s.get("current")
         if s["phase"] != "reading" or not cur:
             continue
@@ -730,7 +999,7 @@ def sim_reader(engine, devices):
             continue
         seen = key
         v = devices[cur["ctrl"]].valves[cur["idx"] - 1]
-        q, top = v.flow(), s["scale"]["max"]
+        q, top = v.flow(devices[cur["ctrl"]].head), s["scale"]["max"]
         if q > top:
             engine.post({"kind": "over"})
         elif q < 0.05:
@@ -779,6 +1048,9 @@ def make_handler(engine, page):
                     except EngineError as e:
                         ctrls.append({"name": esp.name, "base": esp.base, "error": str(e)})
                 return self.js({"controllers": ctrls})
+            if p == "/api/design":
+                q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
+                return self.js(design_table(engine.loops_cfg, float(q.get("dt", 5))))
             if p == "/export.csv":
                 return self.send(200, engine.csv_text(), "text/csv; charset=utf-8",
                                  {"Content-Disposition": "attachment; filename=flowbench.csv"})
@@ -829,6 +1101,9 @@ def main():
     ap.add_argument("--sim", action="store_true", help="two simulated controllers, no hardware")
     ap.add_argument("--sim-auto", action="store_true", help="with --sim: a simulated reader")
     ap.add_argument("--sim-speed", type=float, default=1.0, help="with --sim: time factor")
+    ap.add_argument("--loops", type=Path, default=None,
+                    help="length and heat of every loop for the pump head calculator "
+                         "(default ~/flowbench/loops.json, with --sim loops.example.json)")
     a = ap.parse_args()
 
     esps, devices = [], {}
@@ -847,6 +1122,10 @@ def main():
         ap.error("give --controller NAME=HOST (or --sim)")
 
     engine = Engine(esps, a.out)
+    default_loops = HERE / "loops.example.json" if a.sim else Path.home() / "flowbench" / "loops.json"
+    engine.loops_cfg = load_loops(a.loops or default_loops)
+    if a.sim:
+        engine.on_head = lambda h: [setattr(d, "head", h) for d in devices.values()]
     if a.sim and a.sim_speed != 1:
         global HOLD_S
         HOLD_S = HOLD_S / a.sim_speed

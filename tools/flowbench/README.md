@@ -37,6 +37,38 @@ uv run tools/flowbench/flowbench.py --sim --sim-auto --sim-speed 20   # also a s
   loop at a time. Write the pump setting and the flow meter settings into the notes.
 - Every valve must be calibrated and idle. A scheduled calibration inside the session stops the
   service moves (`calib.dayMask`, `calib.hour` in the settings).
+- Stop every automation that switches the circulation pump off (for example a smart socket that
+  cuts the pump when all valves are closed). The tool closes all valves between loops.
+
+The page has two modes: "Charakterystyka pętli" (the method below) and "Dobór ciśnienia pompy".
+
+## Loops file
+
+`~/flowbench/loops.json` (`--loops` changes it; `--sim` uses `loops.example.json`) gives each
+loop its pipe length and the design heat of the floor it covers. The page uses it for the design
+flow (Φ / (c·ρ·ΔT)) and the calculated head of each loop (Darcy–Weisbach in the pipe, laminar
+64/Re, Blasius above Re 4000, linear between; the rotameter at Kvs 1.1 and the return valve at
+Kvs 2.4). Without the file the design flows are typed on the page. The file holds room names;
+keep it out of the repository.
+
+## Pump head
+
+The tool sets the read loops (by default the two with the highest calculated head) to 100 % and
+every other loop to a part opening (15 %), so the pump works against a load near the design case.
+Then, for each head:
+
+1. Set the head on the pump, type it (and the socket power, if known) and press "Gotowe, ustawione".
+2. The page waits 60 s, then asks for the rotameter of each read loop ("odczytaj przy tym
+   ciśnieniu też wszystkie pozostałe pętle" adds the other loops).
+3. A head passes when every read loop reaches its design flow or goes above the scale.
+
+Start high and step down until a head fails. The result is the lowest passing head, the same
+head with a flow margin (head × (1 + margin)², since the head grows with the square of the flow
+in turbulent flow) and the head lost outside the loops (pump head minus the calculated loop
+head at the measured flow): the pipes from the buffer and the manifold beams.
+
+A higher head than needed narrows the valve band where the flow changes, so the loop
+characteristic must be measured at the head the room controller will use.
 
 ## Method
 
