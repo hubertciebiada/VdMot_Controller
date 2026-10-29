@@ -115,7 +115,10 @@ counted way back to the end stop gives the sum of the closing coasts; each step 
 part in `pos_est`. Opening and closing curves on `pos_est` show the hysteresis of the valve.
 
 The STM keeps a service position for about 5.5 minutes, then returns the valve to its target
-(0). A reading after that is void and the sweep starts again; the page shows the time left.
+(0). While a reading is due, the tool sends a valve stop every 2 minutes; the STM stop leaves a
+stopped valve where it is and restarts the hold, so a reading can take as long as it needs. If
+the hold still runs out (a stop failed), the reading is void and the sweep starts again; the page
+shows the time left.
 
 ## Data
 

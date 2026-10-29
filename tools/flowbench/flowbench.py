@@ -39,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 CLOSE_MA = 34  # the closing bound of a calibration: floor 20 mA x factor 1.7
 OPEN_MA = 30  # above the load inside the band (~15 mA), at the opening end-stop bound (~29 mA)
 HOLD_S = 320  # the STM keeps a service position for about 5.5 min, then returns to its target
+KEEP_S = 120  # while a reading is due, a valve stop this often restarts the hold (sstop)
 STOPS = ["none", "target", "endstop", "early_endstop", "timeout", "undercurrent",
          "safety_overcurrent", "aborted"]
 BAD_FLAGS = {"uncalibrated", "needsRef", "recal", "fsBlocked", "retry"}
@@ -792,10 +793,20 @@ class Engine:
             except EngineError as e:
                 self.log(str(e))
 
-    def await_reading(self, esp, idx):
-        """Waits for the float reading; returns the item or raises Skip. Restarts nothing itself."""
+    def await_reading(self, esp, idx, keep=False):
+        """Waits for the float reading; returns the item or raises Skip. Restarts nothing itself.
+        With keep, a stop of the valve every KEEP_S seconds restarts its service hold (the STM
+        sstop leaves a stopped valve where it is for another hold), so a reading can take as long
+        as the reader needs; state["hold_until"] follows each restart."""
         while True:
-            item = self.wait_input()
+            item = self.wait_input(timeout=KEEP_S if keep else None)
+            if item is None:
+                try:
+                    esp.post(f"/api/valves/{idx}/stop")
+                    self.set(hold_until=time.time() + HOLD_S)
+                except EngineError as e:
+                    self.log(f"{esp.name} {idx}: pozycji nie przedłużyłem ({e})")
+                continue
             cmd = item.get("cmd")
             if cmd == "skip":
                 raise Skip()
@@ -835,8 +846,8 @@ class Engine:
             self.set(current=cur, phase="reading", hold_until=hold_until,
                      settle_until=time.time() + self.state["settle_s"],
                      msg="Zamykanie: poczekaj, aż pływak się uspokoi, i zaznacz go na skali.")
-            item = self.await_reading(esp, idx)
-            late = time.time() > hold_until
+            item = self.await_reading(esp, idx, keep=True)
+            late = time.time() > self.state["hold_until"]
             flow = 0.0 if item["kind"] == "zero" else (top if item["kind"] == "over"
                                                        else round(float(item["value"]), 3))
             row = {"t": time.time(), "ctrl": esp.name, "idx": idx, "name": name, "sweep": k,
@@ -914,8 +925,8 @@ class Engine:
                      msg="Poczekaj, aż pływak się uspokoi, i zaznacz go na skali.")
             if stop not in ("target",):
                 self.log(f"{esp.name} {idx}: ruch zatrzymany ({stop}) przy {pos_cnt} imp")
-            item = self.await_reading(esp, idx)
-            late = time.time() > hold_until
+            item = self.await_reading(esp, idx, keep=True)
+            late = time.time() > self.state["hold_until"]
             flow = 0.0 if item["kind"] == "zero" else (top if item["kind"] == "over"
                                                        else round(float(item["value"]), 3))
             row = {"t": time.time(), "ctrl": esp.name, "idx": idx, "name": name, "sweep": k,
@@ -1234,6 +1245,10 @@ class SimDevice:
             parts = p.split("/")
             if method == "POST" and len(parts) == 5 and parts[2] == "valves":
                 v = self.valves[int(parts[3]) - 1]
+                if parts[4] == "stop":
+                    if v.state == "idle" and v.hold_until:
+                        v.hold_until = time.time() + SIM_HOLD_S / self.speed
+                    return {"result": "queued"}
                 if parts[4] == "target":
                     v.target, v.hold_until, v.flags = int(body["target"]), 0, []
                     if v.state == "idle":
@@ -1450,8 +1465,9 @@ def main():
     if a.sim:
         engine.on_head = lambda h: [setattr(d, "head", h) for d in devices.values()]
     if a.sim and a.sim_speed != 1:
-        global HOLD_S
+        global HOLD_S, KEEP_S
         HOLD_S = HOLD_S / a.sim_speed
+        KEEP_S = KEEP_S / a.sim_speed
     page = (HERE / "flowbench.html").read_text(encoding="utf-8")
     srv = ThreadingHTTPServer((a.bind, a.port), make_handler(engine, page))
     print(f"flowbench: http://{lan_ip()}:{a.port}  (on this PC: http://localhost:{a.port})")
