@@ -17,7 +17,7 @@ uv run tools/flowbench/flowbench.py --controller west=192.168.1.51 --controller 
 ```
 
 Open the printed address (`http://<PC>:4680`) on a phone in the same network and take the phone
-to the manifold. Session files go to `~/flowbench` (`--out` changes it).
+to the manifold. Sessions go to `~/flowbench/flowbench.db` (see Data).
 
 Try it without hardware first:
 
@@ -34,7 +34,8 @@ uv run tools/flowbench/flowbench.py --sim --sim-auto --sim-speed 20   # also a s
   failsafe after its timeout.
 - Set the pump to the mode and head that the room controller will use. The flow of one loop
   changes when other loops open, so the tool closes every valve on every controller and opens one
-  loop at a time. Write the pump setting and the flow meter settings into the notes.
+  loop at a time. Type the pump head into "Ciśnienie na pompie" and the pump mode and
+  the flow meter settings into the notes.
 - Every valve must be calibrated and idle. A scheduled calibration inside the session stops the
   service moves (`calib.dayMask`, `calib.hour` in the settings).
 - Stop every automation that switches the circulation pump off (for example a smart socket that
@@ -100,10 +101,36 @@ The STM keeps a service position for about 5.5 minutes, then returns the valve t
 
 ## Data
 
-`flowbench-<date>-<time>.jsonl`, one JSON object per line: `meta` (notes, scale, controller
-versions, `oc`/`cc` of every valve), `point` (controller, valve, sweep, counted and requested
-position, step, stop reason, reading kind, flow, tap position, both temperature sensors of the
-valve), `sweep_end`, `void`, `log`. The page exports the points as CSV (`;`, decimal comma).
+Every session goes into one SQLite file, `~/flowbench/flowbench.db` (`--out` changes the
+folder; `--sim` writes to `~/flowbench/sim`, so simulated sessions never mix with measured
+ones). The tool writes each reading as it comes, so a stopped or crashed session keeps its rows.
+
+| Table | One row per |
+|---|---|
+| `sessions` | session: start, end, `status` (running, done, stopped, error), `mode`, `pump_head_m`, notes, `meta` (JSON: scale, controller versions, `oc`/`cc` of every valve, head test settings) |
+| `points` | loop reading: controller, valve, sweep, counted and requested position, step, stop reason, `kind` (value, zero, over, void), flow, tap position, both temperature sensors |
+| `sweeps` | end of a sweep: reason, pulses up, counted pulses back to the end stop |
+| `head_points` | pump head reading: head, socket power, valve target, flow, design flow |
+| `head_steps` | pump head step: passed or not, the flows, the recommendation |
+| `events` | log line or void sweep |
+
+A late reading voids its whole sweep: those points get `kind = 'void'` and the sweep runs again.
+`pump_head_m` is required for a loop characteristic, since the flow at a position depends on
+the head.
+
+The latest characteristic of one loop:
+
+```sql
+SELECT p.pos_counted, p.flow_lpm, p.kind, p.sweep
+FROM points p JOIN sessions s ON s.id = p.session_id
+WHERE p.ctrl = 'west' AND p.valve = 3 AND p.kind <> 'void'
+  AND s.id = (SELECT max(session_id) FROM points WHERE ctrl = 'west' AND valve = 3)
+ORDER BY p.pos_counted;
+```
+
+The schema version is `PRAGMA user_version`. A newer tool brings an older file up to its schema
+on start (`MIGRATIONS` in `flowbench.py`); an older tool refuses a newer file. The page also
+exports the points of the current session as CSV (`;`, decimal comma).
 
 STOP stops every valve at once and ends the session; "Przywróć cele sprzed pomiaru" sets the
 targets back to what they were at the start. A finished session restores them by itself.

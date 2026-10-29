@@ -20,6 +20,7 @@ import json
 import math
 import random
 import socket
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -244,6 +245,155 @@ def next_step(points, top):
     return int(max(STEP_MIN, min(STEP_MAX, step))), None
 
 
+# ───────────────────────────── session store ─────────────────────────────
+
+# Each entry moves the schema one version up (PRAGMA user_version). A new version of the tool
+# appends to this list and never edits an entry that a database file may already have.
+MIGRATIONS = [
+    """
+    CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY,
+        started TEXT NOT NULL,
+        ended TEXT,
+        status TEXT NOT NULL,          -- running, done, stopped, error
+        mode TEXT NOT NULL,            -- loops, head
+        pump_head_m REAL,              -- the pump head of a loop characteristic
+        notes TEXT,
+        meta TEXT                      -- JSON: scale, controllers with oc/cc, head test settings
+    );
+    CREATE TABLE points (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES sessions(id),
+        ctrl TEXT NOT NULL, valve INTEGER NOT NULL, name TEXT,
+        sweep INTEGER, point INTEGER,
+        pos_counted INTEGER, pos_requested INTEGER, step INTEGER, step_counted INTEGER,
+        stop TEXT,
+        kind TEXT,                     -- value, zero, over, void
+        flow_lpm REAL, tap_frac REAL, waited_s REAL, t_1 REAL, t_2 REAL,
+        t TEXT NOT NULL
+    );
+    CREATE INDEX points_loop ON points (ctrl, valve, session_id);
+    CREATE TABLE sweeps (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES sessions(id),
+        ctrl TEXT NOT NULL, valve INTEGER NOT NULL, sweep INTEGER,
+        reason TEXT, pos_counted INTEGER, pos_requested INTEGER,
+        back_counted INTEGER, back_stop TEXT,
+        t TEXT NOT NULL
+    );
+    CREATE TABLE head_points (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES sessions(id),
+        ctrl TEXT NOT NULL, valve INTEGER NOT NULL, name TEXT,
+        head_m REAL, power_w REAL, target_pct INTEGER,
+        kind TEXT, flow_lpm REAL, design_lpm REAL, tap_frac REAL, t_1 REAL, t_2 REAL,
+        t TEXT NOT NULL
+    );
+    CREATE TABLE head_steps (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES sessions(id),
+        head_m REAL, power_w REAL, ok INTEGER, flows TEXT, recommend TEXT,
+        t TEXT NOT NULL
+    );
+    CREATE TABLE events (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES sessions(id),
+        kind TEXT NOT NULL,            -- log, void
+        text TEXT,
+        t TEXT NOT NULL
+    );
+    """,
+]
+
+
+def iso(t=None):
+    return datetime.fromtimestamp(time.time() if t is None else t).isoformat(timespec="seconds")
+
+
+def num(x):
+    try:
+        return None if x is None or x == "" else float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+class Store:
+    """flowbench.db: every session, one row per reading. The file stays when the tool changes;
+    open() brings an older file to the current schema."""
+
+    def __init__(self, path):
+        self.path = path
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.execute("PRAGMA foreign_keys = ON")
+        self.lock = threading.Lock()
+        have = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if have > len(MIGRATIONS):
+            raise SystemExit(f"{path}: schema {have} is newer than this flowbench "
+                             f"({len(MIGRATIONS)}); update the tool")
+        for n in range(have, len(MIGRATIONS)):
+            self.db.executescript("BEGIN;" + MIGRATIONS[n] + f"PRAGMA user_version = {n + 1};"
+                                  "COMMIT;")
+
+    def exec(self, sql, args=()):
+        with self.lock, self.db:
+            return self.db.execute(sql, args).lastrowid
+
+    def begin(self, mode, pump_head, notes, meta):
+        return self.exec("INSERT INTO sessions (started, status, mode, pump_head_m, notes, meta) "
+                         "VALUES (?, 'running', ?, ?, ?, ?)",
+                         (iso(), mode, num(pump_head), notes,
+                          json.dumps(meta, ensure_ascii=False)))
+
+    def end(self, sid, status):
+        self.exec("UPDATE sessions SET ended = ?, status = ? WHERE id = ?", (iso(), status, sid))
+
+    def record(self, sid, rec):
+        t = iso(rec.get("t"))
+        if "point" in rec:
+            r = rec["point"]
+            temps = [x.get("temp") for x in r.get("temps") or []] + [None, None]
+            self.exec("INSERT INTO points (session_id, ctrl, valve, name, sweep, point, "
+                      "pos_counted, pos_requested, step, step_counted, stop, kind, flow_lpm, "
+                      "tap_frac, waited_s, t_1, t_2, t) VALUES "
+                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (sid, r["ctrl"], r["idx"], r["name"], r["sweep"], r["point"], r["pos"],
+                       r["pos_req"], r["step"], r["cnt"], r["stop"],
+                       r["kind"], r["flow"], num(r.get("tap")),
+                       r["waited_s"], num(temps[0]), num(temps[1]), iso(r["t"])))
+        elif "void" in rec:
+            v = rec["void"]
+            # the STM returned the valve to its target: no point of this sweep has a reference
+            self.exec("UPDATE points SET kind = 'void' WHERE session_id = ? AND ctrl = ? "
+                      "AND valve = ? AND sweep = ?", (sid, v["ctrl"], v["idx"], v["sweep"]))
+            self.exec("INSERT INTO events (session_id, kind, text, t) VALUES (?, 'void', ?, ?)",
+                      (sid, json.dumps(v, ensure_ascii=False), t))
+        elif "sweep_end" in rec:
+            e = rec["sweep_end"]
+            self.exec("INSERT INTO sweeps (session_id, ctrl, valve, sweep, reason, pos_counted, "
+                      "pos_requested, back_counted, back_stop, t) VALUES "
+                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (sid, e["ctrl"], e["idx"], e["sweep"], e["reason"], e["pos_cnt"],
+                       e["pos_req"], e["back_cnt"], e["back_stop"], t))
+        elif "head_point" in rec:
+            r = rec["head_point"]
+            temps = [x.get("temp") for x in r.get("temps") or []] + [None, None]
+            self.exec("INSERT INTO head_points (session_id, ctrl, valve, name, head_m, power_w, "
+                      "target_pct, kind, flow_lpm, design_lpm, tap_frac, t_1, t_2, t) VALUES "
+                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (sid, r["ctrl"], r["idx"], r["name"], r["head"], num(r.get("power")),
+                       r["target"], r["kind"], r["flow"], num(r.get("design")),
+                       num(r.get("tap")), num(temps[0]), num(temps[1]), iso(r["t"])))
+        elif "head_step" in rec:
+            h = rec["head_step"]
+            self.exec("INSERT INTO head_steps (session_id, head_m, power_w, ok, flows, recommend, "
+                      "t) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (sid, h["head"], num(h.get("power")), int(bool(h["ok"])),
+                       json.dumps(h["flows"], ensure_ascii=False), rec.get("recommend"), t))
+        elif "log" in rec:
+            self.exec("INSERT INTO events (session_id, kind, text, t) VALUES (?, 'log', ?, ?)",
+                      (sid, rec["log"], t))
+
+
 class Engine:
     def __init__(self, esps, outdir):
         self.esps = {e.name: e for e in esps}
@@ -254,7 +404,8 @@ class Engine:
         self.stop_flag = False
         self.paused = False
         self.snapshot = {}
-        self.file = None
+        self.store = None  # opened on the first session
+        self.sid = None  # the id of the running session in the store
         self.rows = []  # every recorded point of the session
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
@@ -312,9 +463,8 @@ class Engine:
         self.write({"t": time.time(), "log": text})
 
     def write(self, rec):
-        if self.file:
-            self.file.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            self.file.flush()
+        if self.sid is not None:
+            self.store.record(self.sid, rec)
 
     def check(self):
         with self.lock:
@@ -461,32 +611,28 @@ class Engine:
         return [{"name": s.get("name"), "temp": s.get("temp")} for s in v.get("sensors", [])]
 
     def run(self, cfg):
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.outdir.mkdir(parents=True, exist_ok=True)
-        path = self.outdir / f"flowbench-{stamp}.jsonl"
-        self.file = path.open("w", encoding="utf-8")
+        if self.store is None:
+            self.outdir.mkdir(parents=True, exist_ok=True)
+            self.store = Store(self.outdir / "flowbench.db")
         self.rows, self.head_rows = [], []
         loops = cfg.get("loops", [])
-        self.set(session=str(path), loops=[dict(lp, status="czeka", sweeps=[], spread=None)
-                                           for lp in loops])
+        self.set(loops=[dict(lp, status="czeka", sweeps=[], spread=None) for lp in loops])
         try:
-            meta = {"t": time.time(), "meta": {"notes": cfg.get("notes", ""),
-                                               "scale": self.state["scale"],
-                                               "settle_s": self.state["settle_s"],
-                                               "controllers": {}}}
+            meta = {"scale": self.state["scale"], "settle_s": self.state["settle_s"],
+                    "controllers": {}}
             for esp in self.esps.values():
                 st = esp.get("/api/status")
-                meta["meta"]["controllers"][esp.name] = {
+                meta["controllers"][esp.name] = {
                     "base": esp.base, "esp": st.get("esp", {}).get("version"),
                     "stm": st.get("stm", {}).get("version"),
                     "valves": {v["idx"]: {"name": v.get("name"), "oc": v.get("oc"),
                                           "cc": v.get("cc")} for v in esp.valves()}}
                 self.snapshot[esp.name] = {v["idx"]: v.get("target") for v in esp.valves()}
-            meta["meta"]["mode"] = cfg.get("mode", "loops")
-            meta["meta"]["cfg"] = {k: cfg.get(k) for k in ("read", "others_pct", "pump_s",
-                                                            "margin_pct", "dt")}
-            self.write(meta)
-            self.set(restorable=True)
+            meta["cfg"] = {k: cfg.get(k) for k in ("read", "others_pct", "pump_s",
+                                                   "margin_pct", "dt")}
+            self.sid = self.store.begin(cfg.get("mode", "loops"), cfg.get("pump_head"),
+                                        cfg.get("notes", ""), meta)
+            self.set(session=f"{self.store.path} #{self.sid}", restorable=True)
             head = cfg.get("mode") == "head"
             every = [{"ctrl": e.name, "idx": v["idx"]} for e in self.esps.values()
                      for v in e.valves()]
@@ -513,8 +659,10 @@ class Engine:
             self.set(phase="error", error=str(e), msg=str(e), notice="")
             self.log("Błąd: " + str(e))
         finally:
-            self.file.close()
-            self.file = None
+            if self.sid is not None:
+                status = {"done": "done", "stopped": "stopped"}.get(self.state["phase"], "error")
+                self.store.end(self.sid, status)
+                self.sid = None
 
     def restore(self):
         for name, targets in self.snapshot.items():
@@ -1096,8 +1244,8 @@ def main():
                     help="a VdMot controller, e.g. west=192.168.1.51 (repeat for each)")
     ap.add_argument("--port", type=int, default=4680)
     ap.add_argument("--bind", default="0.0.0.0", help="address of the page (default: all)")
-    ap.add_argument("--out", type=Path, default=Path.home() / "flowbench",
-                    help="folder for the session files (default ~/flowbench)")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="folder of flowbench.db (default ~/flowbench, with --sim ~/flowbench/sim)")
     ap.add_argument("--sim", action="store_true", help="two simulated controllers, no hardware")
     ap.add_argument("--sim-auto", action="store_true", help="with --sim: a simulated reader")
     ap.add_argument("--sim-speed", type=float, default=1.0, help="with --sim: time factor")
@@ -1121,7 +1269,8 @@ def main():
     if not esps:
         ap.error("give --controller NAME=HOST (or --sim)")
 
-    engine = Engine(esps, a.out)
+    out = a.out or Path.home() / "flowbench" / ("sim" if a.sim else "")
+    engine = Engine(esps, out)
     default_loops = HERE / "loops.example.json" if a.sim else Path.home() / "flowbench" / "loops.json"
     engine.loops_cfg = load_loops(a.loops or default_loops)
     if a.sim:
@@ -1132,7 +1281,7 @@ def main():
     page = (HERE / "flowbench.html").read_text(encoding="utf-8")
     srv = ThreadingHTTPServer((a.bind, a.port), make_handler(engine, page))
     print(f"flowbench: http://{lan_ip()}:{a.port}  (on this PC: http://localhost:{a.port})")
-    print(f"sessions: {a.out}")
+    print(f"sessions: {out / 'flowbench.db'}")
     if a.sim_auto:
         engine.decide_s = 1
         threading.Thread(target=sim_reader, args=(engine, devices), daemon=True).start()

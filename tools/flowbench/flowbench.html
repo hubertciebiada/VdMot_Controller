@@ -112,6 +112,7 @@ th { color: var(--muted); font-weight: 600; }
     <h2>Warunki pomiaru</h2>
     <textarea id="notes" placeholder="np. pompa: stałe ciśnienie 7,5 m; przepływomierze otwarte do oporu; zasilanie 35 °C"></textarea>
     <div class="row small" style="margin-top:8px">
+      <label data-mode="loops">Ciśnienie na pompie <input type="number" id="pumpHead" step="0.1" min="0.5" max="10"> m</label>
       <label>Czekaj po ruchu <input type="number" id="settle" value="30" min="0" max="240"> s</label>
     </div>
   </div>
@@ -273,7 +274,8 @@ $("start").onclick = async () => {
   const loops = checked.map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
   if (!loops.length) { $("setupErr").textContent = "Zaznacz przynajmniej jedną pętlę."; return; }
   const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value, zeroTop: $("szero").checked };
-  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value };
+  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value, pump_head: parseFloat($("pumpHead").value) };
+  if (mode() === "loops" && !(cfg.pump_head > 0)) { $("setupErr").textContent = "Wpisz ciśnienie ustawione na pompie: charakterystyka pętli zależy od niego."; return; }
   if (mode() === "head") {
     const read = loops.map(l => ({ ...l, design: parseFloat($(`d_${l.ctrl}_${l.idx}`).value) }));
     if (read.some(r => !(r.design > 0))) { $("setupErr").textContent = "Wpisz przepływ projektowy przy każdej zaznaczonej pętli."; return; }
@@ -417,7 +419,7 @@ function render() {
   $("decidePanel").hidden = S.phase !== "decide"; $("rule").textContent = S.rule || "";
   const ended = ["done", "stopped", "error"].includes(S.phase);
   $("endPanel").hidden = !ended; $("readPanel").hidden = ended; $("restore").hidden = !S.restorable;
-  $("sessionPath").textContent = S.session ? `Plik sesji: ${S.session}` : "";
+  $("sessionPath").textContent = S.session ? `Sesja w bazie: ${S.session}` : "";
   $("skip").disabled = !live;
   $("chartTitle").textContent = cur ? `Pętla ${cur.ctrl} · ${cur.idx} ${cur.name || ""}` : "Pętla";
   const q = $("queue"); q.textContent = "";
