@@ -87,16 +87,19 @@ Per loop, per sweep:
    latest session of the same loop, else the median of the loops measured in this session).
    While nothing flows the step grows by half from 60 pulses (60, 90, 135, 150), then steps
    are sized for "Przyrost na krok" each (0.25 l/min on the page, 15 to 150 pulses) from the
-   slope of the last two points.
+   slope of the last two points; below 0.75 l/min they aim at 0.1 l/min.
 3. After each step the page waits for the reading: "Nie płynie" (0), the float disc dragged to
    the value, or "Powyżej skali". The disc snaps to 0.1 l/min ("co 0,025" for 0.025) and stays
    on the last reading, so the next one is a short drag and "Zatwierdź odczyt". The page sends
-   one reading per point. The settle timer is advice only. The scale
+   one reading per point. The settle timer is advice only. After a sweep the panel below the
+   scale offers the next sweep as the main button while the tool wants one, so a tap meant
+   for "Zatwierdź odczyt" does not end the loop. The scale
    end, the labelled and the plain marks, and the direction (0 at the top, as on the manifold
    flow meters, or at the bottom) are set before the start.
 4. The sweep ends at the top of the scale, after 3 steps with less than 0.05 l/min gain, at
    2600 pulses, or when a move stops early. A counted service close back to the end stop
-   follows; up and down counts go into the `sweeps` table.
+   follows (room for 100 coast pulses per step, and up to two more closes if it ends on its
+   count); up and down counts go into the `sweeps` table.
 5. The second sweep starts at the last zero reading of the first sweep, so it does not walk
    through the free travel again, and steps half the gap between that zero and the first flow
    of sweep 1 while nothing flows. A third sweep starts half such a step lower, so its points
@@ -116,8 +119,23 @@ hard stop before the spindle moves; one move from the end stop has the same offs
 "Przebieg zamykający (histereza)" adds one closing sweep per loop after the opening sweeps: one
 move from the end stop to where the last opening sweep reached the top of the scale, then
 closing steps of 40 requested pulses with a reading after each, until the flow stops. The
+one move goes to the `pos_est` of that point, since a single move has no summed coasts. The
 counted way back to the end stop gives the sum of the closing coasts; each step gets an equal
 part in `pos_est`. Opening and closing curves on `pos_est` show the hysteresis of the valve.
+
+A session started through `POST /api/start` (for example with a JSON file and a small script)
+can also set `"sweeps": 1` (one sweep per loop, no repeat), `"decide_s"` (the wait after a
+sweep) and `"fill": [0.15, 0.35, 0.6]`. A fill session measures no sweep: for each flow it takes
+the position from the latest curve of the loop in the database (`pos_est`, a sweep without a
+zero starts from the end stop), sets it with one move from the closed end stop and puts the
+disc on the expected flow; the reader confirms it or moves the disc. Fill points are where the
+curve is steepest and a stepped sweep jumps: near the onset 100 pulses can add 1 l/min.
+
+Firmware 2.2.7: the ESP reports a service move (`moveSeq`, `service_move_done`) only when the
+last-move record of the STM differs from the one before, so two equal moves in a row look like
+one. The tool asks one pulse more for a move equal to the last one, and takes the end of a move
+from the record (direction and pulses asked), not from the event, which the ESP logs a second
+later and can belong to the move before.
 
 The STM keeps a service position for about 5.5 minutes, then returns the valve to its target
 (0). While a reading is due, the tool sends a valve stop every 2 minutes; the STM stop leaves a

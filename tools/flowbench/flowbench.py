@@ -48,6 +48,7 @@ BAD_FLAGS = {"uncalibrated", "needsRef", "recal", "fsBlocked", "retry"}
 START_PULSES = 200  # first move from the closed end stop, inside the free travel
 COARSE_STEP = 60  # step while the float stays at 0
 DQ_TARGET = 0.15  # wanted flow change per step [l/min]
+LOW_Q, DQ_LOW = 0.75, 0.1  # below this flow the steps aim at this change: the low range matters most
 STEP_MIN, STEP_MAX = 15, 150
 CAP_PULSES = 2600  # never further than this from the closed end stop
 FLAT_N, FLAT_EPS = 3, 0.05  # saturation: this many steps in a row with less flow gain
@@ -294,6 +295,8 @@ def next_step(points, top, dq=DQ_TARGET, zero_step=None):
     if b["pos"] == a["pos"]:
         return COARSE_STEP, None
     slope = (b["flow"] - a["flow"]) / (b["pos"] - a["pos"])
+    if last["flow"] < LOW_Q:
+        dq = min(dq, DQ_LOW)
     step = STEP_MAX if slope <= 0 else dq / slope
     return int(max(STEP_MIN, min(STEP_MAX, step))), None
 
@@ -461,6 +464,25 @@ class Store:
             self.exec("INSERT INTO events (session_id, kind, text, t) VALUES (?, 'log', ?, ?)",
                       (sid, rec["log"], t))
 
+    def latest_curve(self, ctrl, idx, now_sid=None):
+        """(pos_est, flow) of the opening points of the latest other session with pos_est for this
+        loop, by position, the flow made non-decreasing; [] when there is none."""
+        q = ("FROM points WHERE ctrl = ? AND valve = ? AND direction = 'open' AND kind != 'void' "
+             "AND pos_est IS NOT NULL")
+        with self.lock:
+            sid = self.db.execute(f"SELECT max(session_id) {q} AND session_id != ?",
+                                  (ctrl, idx, -1 if now_sid is None else now_sid)).fetchone()[0]
+            if sid is None:
+                return []
+            rows = self.db.execute(f"SELECT pos_est, flow_lpm {q} AND session_id = ? "
+                                   "ORDER BY pos_est", (ctrl, idx, sid)).fetchall()
+        # a sweep that started above the onset has no zero: the closed end stop is one
+        curve, top = ([(0, 0.0)] if rows and (rows[0][1] or 0) > 0 else []), 0.0
+        for pos, flow in rows:
+            top = max(top, flow or 0.0)
+            curve.append((pos, top))
+        return curve
+
     def prior_onset(self, ctrl, idx, now_sid=None):
         """The last zero before the flow in the opening sweeps of the latest other session that
         found the flow of this loop (the lowest over its sweeps), or None."""
@@ -497,6 +519,7 @@ class Engine:
         self.close_sweep = False  # one closing sweep per loop after the opening sweeps
         self.dq = DQ_TARGET  # wanted flow change per step of this session
         self.onsets = []  # last zero positions of the loops measured in this session
+        self.fill = []
         self.power = None  # reads the pump power (HaPower), or None
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
@@ -589,36 +612,39 @@ class Engine:
         self.check()
         esp.events(idx)  # drop old events
         v0 = esp.valve(idx)
-        seq0 = v0.get("ext", {}).get("moveSeq")
+        ext0 = v0.get("ext", {})
+        seq0, last0 = ext0.get("moveSeq"), ext0.get("lastMove") or {}
+        # The ESP counts a move (moveSeq, service_move_done) only when the last-move record of the
+        # STM differs from the one before. A move equal to the last one (the same steps near the
+        # onset) runs, but nothing reports it; one pulse more makes the record differ.
+        counts = int(counts)
+        if last0.get("dir") == direction and last0.get("req") == counts:
+            counts += 1 if counts < 10000 else -1
         esp.post(f"/api/valves/{idx}/service-move",
-                 {"dir": direction, "counts": int(counts), "maxmA": int(ma)})
-        t0, started, resent = time.time(), False, False
+                 {"dir": direction, "counts": counts, "maxmA": int(ma)})
+        t0, started = time.time(), False
         while True:
             time.sleep(0.4)
             for e in esp.events(idx):
-                if e.get("code") == 414:
-                    a2 = e.get("a2", 0)
-                    return int(e.get("a1", 0)), STOPS[a2] if 0 <= a2 < len(STOPS) else str(a2)
-                if e.get("code") == 411:
+                # A service_move_done can belong to the move before: the ESP logs it on its next
+                # one-second tick. Only a refusal (411, or 414 with a negative count) is taken here.
+                if e.get("code") == 411 or (e.get("code") == 414 and e.get("a1", 0) < 0):
                     raise EngineError(f"{esp.name} {idx}: STM odrzucił ruch serwisowy "
                                       f"(kalibracja w kolejce albo zawór zajęty): {e.get('msg')}")
             v = esp.valve(idx)
             ext = v.get("ext", {})
+            lm = ext.get("lastMove") or {}
             if v.get("stateKey") in ("opening", "closing"):
                 started = True
-            if ext.get("moveSeq") != seq0 and v.get("stateKey") == "idle":
-                lm = ext.get("lastMove") or {}
+            # this move ended: the ESP shows its record, with the direction and the pulses asked
+            if v.get("stateKey") == "idle" and ext.get("moveSeq") != seq0 \
+                    and lm.get("dir") == direction and lm.get("req") == counts:
                 return int(lm.get("cnt", 0)), lm.get("stop", "?")
             el = time.time() - t0
-            # a short move can get lost without any event (seen once on 2.2.7); send it again once
-            if not started and el > 12 and not resent:
-                self.log(f"{esp.name} {idx}: ruch serwisowy nie ruszył, wysyłam ponownie")
-                esp.post(f"/api/valves/{idx}/service-move",
-                         {"dir": direction, "counts": int(counts), "maxmA": int(ma)})
-                t0, resent = time.time(), True
-                continue
+            # no resend: a move that ran unseen would run twice
             if not started and el > 12:
-                raise EngineError(f"{esp.name} {idx}: ruch serwisowy nie ruszył w 12 s")
+                raise EngineError(f"{esp.name} {idx}: brak potwierdzenia ruchu serwisowego w 12 s "
+                                  f"(ostatni ruch wg ESP: {ext.get('lastMove')})")
             if el > 120:
                 raise EngineError(f"{esp.name} {idx}: ruch serwisowy trwa ponad 120 s")
 
@@ -733,6 +759,9 @@ class Engine:
         self.rows, self.head_rows = [], []
         self.close_sweep = bool(cfg.get("close_sweep"))
         self.dq = float(cfg.get("dq") or DQ_TARGET)
+        self.sweeps_min = int(cfg.get("sweeps") or SWEEPS_MIN)  # 1: one sweep per loop
+        self.decide_s = int(cfg.get("decide_s") or 20)
+        self.fill = [float(q) for q in cfg.get("fill") or []]  # flows to set from the last curve
         self.onsets = []
         loops = cfg.get("loops", [])
         self.set(loops=[dict(lp, status="czeka", sweeps=[], spread=None) for lp in loops])
@@ -810,6 +839,10 @@ class Engine:
         sweeps = []
         try:
             self.prepare_closed()
+            if self.fill:
+                self.fill_run(esp, idx, name, top)
+                self.set_loop(n, status="gotowa")
+                return
             prior = self.store.prior_onset(esp.name, idx, self.sid) if self.store else None
             if prior is None and self.onsets:
                 prior = sorted(self.onsets)[len(self.onsets) // 2]
@@ -833,12 +866,12 @@ class Engine:
                 sweeps.append(pts)
                 spread = sweep_spread(sweeps[0], pts, top) if k > 1 else None
                 self.set_loop(n, sweeps=[len(s) for s in sweeps], spread=spread)
-                more = k < SWEEPS_MIN or (spread is not None and spread > SPREAD_OK
-                                          and k < SWEEPS_MAX)
+                more = k < self.sweeps_min or (self.sweeps_min > 1 and spread is not None
+                                               and spread > SPREAD_OK and k < SWEEPS_MAX)
                 rule = (f"przebieg {k}, punkty {len(pts)}"
                         + ("" if spread is None else f", rozrzut przebiegów {spread:.2f} l/min")
                         + (" - robię jeszcze jeden" if more else " - wystarczy"))
-                self.set(rule=rule, phase="decide",
+                self.set(rule=rule, phase="decide", more=more,
                          msg="Pętla gotowa? Wybierz albo poczekaj 20 s." if not more
                          else "Następny przebieg za 20 s.")
                 self.log(f"{esp.name} {idx}: {rule}")
@@ -864,6 +897,62 @@ class Engine:
                 esp.post(f"/api/valves/{idx}/target", {"target": 0})
             except EngineError as e:
                 self.log(str(e))
+
+    def close_to_stop(self, esp, idx, span):
+        """A service close to the closed end stop from about span pulses above it."""
+        _, stop = self.service_move(esp, idx, "close", min(10000, span + 500), CLOSE_MA)
+        for _ in range(2):
+            if stop in ("endstop", "early_endstop"):
+                return
+            _, stop = self.service_move(esp, idx, "close", 800, CLOSE_MA)
+        if stop not in ("endstop", "early_endstop"):
+            raise EngineError(f"{esp.name} {idx}: zamykanie nie doszło do krańcówki ({stop})")
+
+    def fill_run(self, esp, idx, name, top):
+        """The flows of self.fill from the latest curve of the loop, each set with one move from
+        the closed end stop (the move pos_est stands for). The page puts the disc on the expected
+        flow; the reader confirms it or moves the disc."""
+        curve = self.store.latest_curve(esp.name, idx, self.sid) if self.store else []
+        wants = []
+        for q in self.fill:
+            for (p0, q0), (p1, q1) in zip(curve, curve[1:]):
+                if q0 < q <= q1:
+                    wants.append((q, round(p0 + (q - q0) * (p1 - p0) / (q1 - q0))))
+                    break
+        if not wants:
+            self.log(f"{esp.name} {idx}: brak krzywej z pos_est w bazie, dogrywka pominięta")
+            return
+        self.log(f"{esp.name} {idx}: dogrywka " + ", ".join(f"{q:g} l/min przy {p} imp"
+                                                            for q, p in wants))
+        cur = {"ctrl": esp.name, "idx": idx, "name": name, "sweep": 1, "point": 0, "pos": 0}
+        v = esp.valve(idx)
+        span = int((v.get("pos", 0) + 5) * v.get("oc", 5000) / 100)
+        for j, (q, want) in enumerate(wants, 1):
+            self.set(current=cur, phase="moving", msg="Zamykam do krańcówki")
+            self.close_to_stop(esp, idx, span)
+            self.set(phase="moving", msg=f"Otwieram jednym ruchem o {want} imp")
+            cnt, stop = self.service_move(esp, idx, "open", want, OPEN_MA)
+            span = cnt + 100
+            hold_until = time.time() + HOLD_S
+            cur.update(point=j, pos=cnt, step=want, cnt=cnt, stop=stop, expect=q)
+            self.set(current=cur, phase="reading", hold_until=hold_until,
+                     settle_until=time.time() + self.state["settle_s"],
+                     msg=f"Oczekuję ok. {f'{q:g}'.replace('.', ',')} l/min. Jest? Zatwierdź "
+                         "albo przesuń dysk.")
+            item = self.await_reading(esp, idx, keep=True)
+            flow = 0.0 if item["kind"] == "zero" else (top if item["kind"] == "over"
+                                                       else round(float(item["value"]), 3))
+            row = {"t": time.time(), "ctrl": esp.name, "idx": idx, "name": name, "sweep": 1,
+                   "point": j, "pos": cnt, "pos_req": want, "step": want, "cnt": cnt,
+                   "stop": stop, "kind": item["kind"], "flow": flow, "tap": item.get("frac"),
+                   "waited_s": round(time.time() - hold_until + HOLD_S, 1), "late": False,
+                   "temps": self.temps(esp, idx), "power": self.power_w(), "pos_est": cnt}
+            self.write({"point": row})
+            self.write({"pos_est": {"ctrl": esp.name, "idx": idx, "sweep": 1, "pos": {j: cnt}}})
+            self.rows.append(row)
+            self.set(points=[p for p in self.rows if p["ctrl"] == esp.name and p["idx"] == idx])
+        self.set(phase="moving", msg="Zamykam do krańcówki")
+        self.close_to_stop(esp, idx, span)
 
     def await_reading(self, esp, idx, keep=False):
         """Waits for the float reading; returns the item or raises Skip. Restarts nothing itself.
@@ -903,8 +992,11 @@ class Engine:
                                           + 400), CLOSE_MA)
         if stop not in ("endstop", "early_endstop"):
             raise EngineError(f"{esp.name} {idx}: zamykanie nie doszło do krańcówki ({stop})")
-        over = [p["pos"] for p in opening if p["kind"] == "over"]
-        top_pos = min(over) if over else max(p["pos"] for p in opening)
+        # pos_est is the count of one move from the end stop to the same spindle position;
+        # the counted position of a stepped sweep lies short of it by the coasts
+        est = [(p.get("pos_est") or p["pos"], p["kind"]) for p in opening]
+        over = [e for e, kind in est if kind == "over"]
+        top_pos = min(over) if over else max(e for e, _ in est)
         self.set(phase="moving", msg=f"Otwieram do {top_pos} imp")
         up, stop = self.service_move(esp, idx, "open", top_pos, OPEN_MA)
         pts, pos, steps, step, cnt = [], up, [], 0, up
@@ -976,6 +1068,12 @@ class Engine:
         cnt, stop = self.service_move(esp, idx, "close",
                                       min(10000, int((v.get("pos", 0) + 5) * v.get("oc", 5000) / 100)
                                           + 400), CLOSE_MA)
+        # the STM 0 % can lie further above the end stop than the estimate: close on
+        for _ in range(2):
+            if stop in ("endstop", "early_endstop"):
+                break
+            more, stop = self.service_move(esp, idx, "close", 800, CLOSE_MA)
+            cnt += more
         self.log(f"{esp.name} {idx} przebieg {k}: odniesienie, {cnt} imp, {stop}")
         if stop not in ("endstop", "early_endstop"):
             raise EngineError(f"{esp.name} {idx}: zamykanie nie doszło do krańcówki ({stop})")
@@ -1029,7 +1127,15 @@ class Engine:
                 break
             step = nxt
         self.set(phase="moving", msg="Zamykam i liczę drogę powrotną")
-        back, bstop = self.service_move(esp, idx, "close", min(10000, pos_cnt + 600), CLOSE_MA)
+        # every opening move coasts up to ~80 uncounted pulses: room for them, else the close
+        # ends on its count before the end stop
+        back, bstop = self.service_move(esp, idx, "close",
+                                        min(10000, pos_cnt + 100 * len(pts) + 400), CLOSE_MA)
+        for _ in range(2):
+            if bstop in ("endstop", "early_endstop"):
+                break
+            more, bstop = self.service_move(esp, idx, "close", 800, CLOSE_MA)
+            back += more
         # Every opening move coasts a few pulses that the STM does not count, so after j moves
         # the spindle is about j coasts further than the count. The counted way back to the
         # end stop holds their sum; each move gets an equal part. pos_est is the count that one
@@ -1274,15 +1380,18 @@ class SimDevice:
                         v.true, v.at_stop, stop = 0.0, True, "endstop"
                     else:
                         v.true, cnt, stop = max(0.0, v.true - counts - coast), counts, "target"
-                v.seq += 1
+                last = {"dir": direction, "req": counts, "cnt": cnt, "stop": stop,
+                        "peak": 15.0, "ms": int(dur * 1000)}
+                # as the ESP: a move counts (moveSeq, event) only when its record differs
+                seen, v.last = last != v.last, last
+                v.seq += seen
                 v.state = "idle"
-                v.last = {"dir": direction, "req": counts, "cnt": cnt, "stop": stop,
-                          "peak": 15.0, "ms": int(dur * 1000)}
                 # the STM believes a target move reached its target; a service move follows its count
                 v.pos = max(0, min(100, round(v.true * 100 / v.oc))) if service else v.target
                 if service:
                     v.hold_until, v.flags = time.time() + SIM_HOLD_S / self.speed, ["svcHold"]
-                    self.event(414, v.idx, cnt, STOPS.index(stop), "service move done")
+                    if seen:
+                        self.event(414, v.idx, cnt, STOPS.index(stop), "service move done")
 
         threading.Thread(target=done, daemon=True).start()
 

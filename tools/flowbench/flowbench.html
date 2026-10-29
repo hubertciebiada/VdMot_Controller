@@ -154,10 +154,6 @@ th { color: var(--muted); font-weight: 600; }
     <div class="row"><button class="pri" id="headOk">Gotowe, ustawione</button><button id="headEnd">Koniec testu</button></div>
   </div>
 
-  <div class="panel" id="decidePanel" hidden>
-    <p class="small" id="rule"></p>
-    <div class="row"><button class="pri" id="enough">Wystarczy, następna pętla</button><button id="more">Jeszcze jeden przebieg</button></div>
-  </div>
   <div class="panel" id="readPanel">
     <div class="read">
       <svg class="rot" id="rot" viewBox="0 0 132 560" role="img" aria-label="Model rotametru: dotknij miejsca, w którym widzisz pływak"></svg>
@@ -172,6 +168,11 @@ th { color: var(--muted); font-weight: 600; }
         <div class="timer muted" id="holdT"></div>
       </div>
     </div>
+  </div>
+  <!-- below the reading panel: a tap meant for "Zatwierdź odczyt" must not end the loop -->
+  <div class="panel" id="decidePanel" hidden>
+    <p class="small" id="rule"></p>
+    <div class="row"><button id="enough">Wystarczy, następna pętla</button><button id="more">Jeszcze jeden przebieg</button></div>
   </div>
 
 
@@ -432,7 +433,8 @@ function render() {
   // settle_until is set once per reading prompt, so a restarted sweep gets a new key too
   const key = cur ? `${cur.ctrl}/${cur.idx}/${cur.sweep}/${cur.point}/${cur.head ?? ""}/${S.settle_until}` : null;
   // the mark stays on the last reading: the next one is usually a short move away
-  if (key !== markKey) { markKey = key; showMark(); }
+  // a fill point puts the disc on the flow the tool expects: confirm it or move it
+  if (key !== markKey) { markKey = key; if (cur && cur.expect != null && S.phase === "reading") setMark(cur.expect); else showMark(); }
   const reading = S.phase === "reading";
   for (const id of ["minus", "plus"]) $(id).disabled = !reading;
   for (const id of ["zero", "over"]) $(id).disabled = !canSend();
@@ -445,6 +447,10 @@ function render() {
     $("holdT").textContent = `Zawór trzyma pozycję jeszcze ${mmss(S.hold_until - S.now)}`;
   } else { $("settleT").textContent = ""; $("holdT").textContent = ""; }
   $("decidePanel").hidden = S.phase !== "decide"; $("rule").textContent = S.rule || "";
+  // while the tool wants another sweep, going on is the main button and ending is the side one
+  $("more").className = S.more ? "pri" : ""; $("enough").className = S.more ? "" : "pri";
+  $("more").textContent = S.more ? "Następny przebieg teraz" : "Jeszcze jeden przebieg";
+  $("enough").textContent = S.more ? "Zakończ pętlę mimo to" : "Wystarczy, następna pętla";
   const ended = ["done", "stopped", "error"].includes(S.phase);
   $("endPanel").hidden = !ended; $("readPanel").hidden = ended; $("restore").hidden = !S.restorable;
   $("sessionPath").textContent = S.session ? `Sesja w bazie: ${S.session}` : "";
