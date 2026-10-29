@@ -82,20 +82,25 @@ Per loop, per sweep:
 
 1. A service close to the closed end stop (34 mA, the calibration closing bound) is the
    reference.
-2. Service opens only (30 mA bound). The first one goes 200 pulses into the free travel, then
-   60-pulse steps while nothing flows, then steps sized for about 0.15 l/min each (15 to 150
-   pulses) from the slope of the last two points. The start request can change the flow per
-   step (`"dq": 0.25` gives fewer points per sweep).
-3. After each step the page waits for the reading: "Nie płynie" (0), a tap on the scale at the
-   height of the float disc, or "Powyżej skali". The settle timer is advice only. The scale
+2. Service opens only (30 mA bound). The first one goes 200 pulses into the free travel, or to
+   two 60-pulse steps below the onset known from before (the last zero before the flow in the
+   latest session of the same loop, else the median of the loops measured in this session).
+   While nothing flows the step grows by half from 60 pulses (60, 90, 135, 150), then steps
+   are sized for "Przyrost na krok" each (0.25 l/min on the page, 15 to 150 pulses) from the
+   slope of the last two points.
+3. After each step the page waits for the reading: "Nie płynie" (0), the float disc dragged to
+   the value, or "Powyżej skali". The disc snaps to 0.1 l/min ("co 0,025" for 0.025) and stays
+   on the last reading, so the next one is a short drag and "Zatwierdź odczyt". The page sends
+   one reading per point. The settle timer is advice only. The scale
    end, the labelled and the plain marks, and the direction (0 at the top, as on the manifold
    flow meters, or at the bottom) are set before the start.
 4. The sweep ends at the top of the scale, after 3 steps with less than 0.05 l/min gain, at
    2600 pulses, or when a move stops early. A counted service close back to the end stop
    follows; up and down counts go into the `sweeps` table.
-5. The second sweep starts one 60-pulse step below the last zero reading of the first sweep,
-   so it does not walk through the free travel again. It is also half a median step later than
-   the first sweep, so the points of both sweeps interleave.
+5. The second sweep starts at the last zero reading of the first sweep, so it does not walk
+   through the free travel again, and steps half the gap between that zero and the first flow
+   of sweep 1 while nothing flows. A third sweep starts half such a step lower, so its points
+   fall between those of the second.
    A third sweep runs when the two disagree by more than 0.12 l/min (rms). The page can end a
    loop early or ask for one more sweep.
 

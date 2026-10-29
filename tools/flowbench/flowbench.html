@@ -113,14 +113,15 @@ th { color: var(--muted); font-weight: 600; }
     <textarea id="notes" placeholder="np. pompa: stałe ciśnienie 7,5 m; przepływomierze otwarte do oporu; zasilanie 35 °C"></textarea>
     <div class="row small" style="margin-top:8px">
       <label data-mode="loops">Ciśnienie na pompie <input type="number" id="pumpHead" step="0.1" min="0.5" max="10"> m</label>
-      <label>Czekaj po ruchu <input type="number" id="settle" value="30" min="0" max="240"> s</label>
+      <label>Czekaj po ruchu <input type="number" id="settle" value="15" min="0" max="240"> s</label>
+      <label data-mode="loops">Przyrost na krok <input type="number" id="dq" value="0.25" step="0.05" min="0.05" max="1"> l/min</label>
       <label data-mode="loops"><input type="checkbox" id="closeSweep"> przebieg zamykający (histereza)</label>
     </div>
   </div>
   <div class="panel">
     <h2>Skala rotametru</h2>
     <div class="row small">
-      <label>Koniec skali <input type="number" id="smax" value="2.5" step="0.1" min="0.5"> l/min</label>
+      <label>Koniec skali <input type="number" id="smax" value="2.7" step="0.1" min="0.5"> l/min</label>
       <label>Opis co <input type="number" id="smajor" value="0.5" step="0.1" min="0.1"></label>
       <label>Kreska co <input type="number" id="sminor" value="0.25" step="0.05" min="0.05"></label>
       <label><input type="checkbox" id="szero" checked> 0 na górze skali</label>
@@ -162,8 +163,9 @@ th { color: var(--muted); font-weight: 600; }
       <svg class="rot" id="rot" viewBox="0 0 132 560" role="img" aria-label="Model rotametru: dotknij miejsca, w którym widzisz pływak"></svg>
       <div class="side">
         <div class="value" id="val">– <small>l/min</small></div>
-        <div class="small muted">Dotknij skali na wysokości dysku pływaka. Przesuń palcem, żeby poprawić.</div>
-        <div class="row"><button id="minus" aria-label="mniej o 0,02">−0,02</button><button id="plus" aria-label="więcej o 0,02">+0,02</button></div>
+        <div class="small muted">Przeciągnij dysk na wartość z rotametru. Dysk zostaje na ostatnim odczycie: przesuń i zatwierdź.</div>
+        <label class="small"><input type="checkbox" id="fine"> co 0,025 (bez tego co 0,1)</label>
+        <div class="row"><button id="minus">−0,1</button><button id="plus">+0,1</button></div>
         <div class="row"><button id="zero">Nie płynie</button><button id="over">Powyżej skali</button></div>
         <button class="pri" id="ok" disabled>Zatwierdź odczyt</button>
         <div class="timer" id="settleT"></div>
@@ -199,7 +201,8 @@ const $ = id => document.getElementById(id);
 const SVGNS = "http://www.w3.org/2000/svg";
 let S = null;          // last state from the server
 let mark = null;       // current float reading [l/min]
-let markKey = null;    // the point the mark belongs to
+let markKey = null;    // the point the page shows now
+let sentKey = null;    // the point whose reading the page sent (one reading per point)
 let lastPhase = null;
 const fmt = x => x.toFixed(2).replace(".", ",");
 
@@ -275,7 +278,7 @@ $("start").onclick = async () => {
   const loops = checked.map(c => ({ ctrl: c.dataset.ctrl, idx: +c.dataset.idx }));
   if (!loops.length) { $("setupErr").textContent = "Zaznacz przynajmniej jedną pętlę."; return; }
   const scale = { max: +$("smax").value, major: +$("smajor").value, minor: +$("sminor").value, zeroTop: $("szero").checked };
-  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value, pump_head: parseFloat($("pumpHead").value), close_sweep: $("closeSweep").checked };
+  let cfg = { loops, scale, notes: $("notes").value, settle_s: +$("settle").value, pump_head: parseFloat($("pumpHead").value), close_sweep: $("closeSweep").checked, dq: +$("dq").value };
   if (mode() === "loops" && !(cfg.pump_head > 0)) { $("setupErr").textContent = "Wpisz ciśnienie ustawione na pompie: charakterystyka pętli zależy od niego."; return; }
   if (mode() === "head") {
     const read = loops.map(l => ({ ...l, design: parseFloat($(`d_${l.ctrl}_${l.idx}`).value) }));
@@ -313,17 +316,37 @@ function drawRot() {
     svg.append(el("line", { x1: ROT.x - 16, x2: ROT.x, y1: y, y2: y, stroke: c("--float"), "stroke-width": 2 }));
   }
 }
-function setMark(q) { mark = Math.round(q * 100) / 100; drawRot(); $("val").innerHTML = `${fmt(mark)} <small>l/min</small>`; $("ok").disabled = !(S && S.phase === "reading"); }
+// the reading snaps to 0.1 l/min (the reader's precision), to 0.025 with "fine"
+const snap = () => $("fine").checked ? 0.025 : 0.1;
+const fmtQ = q => q.toFixed($("fine").checked ? 3 : 1).replace(/(\.\d+?)0+$/, "$1").replace(".", ",");
+function setMark(q) {
+  const s = snap();
+  mark = Math.max(0, Math.min(S.scale.max, Math.round(q / s) * s));
+  mark = Math.round(mark * 1000) / 1000;
+  drawRot(); showMark();
+}
+function showMark() { $("val").innerHTML = mark == null ? `– <small>l/min</small>` : `${fmtQ(mark)} <small>l/min</small>`; }
+function canSend() { return S && S.phase === "reading" && sentKey !== markKey; }
+function sendReading(b) {
+  if (!canSend()) return;
+  sentKey = markKey;
+  api("/api/input", b).catch(e => { sentKey = null; alertMsg(e.message); });
+  render();
+}
 function pointerY(ev) { const svg = $("rot"); const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()).y; }
 let dragging = false;
 $("rot").addEventListener("pointerdown", ev => { if (!S || S.phase !== "reading") return; dragging = true; $("rot").setPointerCapture(ev.pointerId); setMark(qOf(pointerY(ev))); });
 $("rot").addEventListener("pointermove", ev => { if (dragging) setMark(qOf(pointerY(ev))); });
 $("rot").addEventListener("pointerup", () => { dragging = false; });
-$("minus").onclick = () => mark != null && setMark(Math.max(0, mark - 0.02));
-$("plus").onclick = () => mark != null && setMark(Math.min(S.scale.max, mark + 0.02));
-$("ok").onclick = () => { if (mark == null) return; send({ kind: "value", value: mark, frac: +(mark / S.scale.max).toFixed(4) }); $("ok").disabled = true; };
-$("zero").onclick = () => send({ kind: "zero" });
-$("over").onclick = () => send({ kind: "over" });
+$("minus").onclick = () => setMark((mark ?? 0) - snap());
+$("plus").onclick = () => setMark((mark ?? 0) + snap());
+$("fine").onchange = () => { const s = `${$("fine").checked ? "0,025" : "0,1"}`; $("minus").textContent = `−${s}`; $("plus").textContent = `+${s}`; if (mark != null) setMark(mark); };
+$("ok").onclick = () => {
+  if (mark == null) return;
+  sendReading(mark > 0 ? { kind: "value", value: mark, frac: +(mark / S.scale.max).toFixed(4) } : { kind: "zero" });
+};
+$("zero").onclick = () => { sendReading({ kind: "zero" }); if (sentKey === markKey) { mark = 0; showMark(); } };
+$("over").onclick = () => sendReading({ kind: "over" });
 
 // ── commands ──
 $("stop").onclick = () => send({ cmd: "stop" });
@@ -406,11 +429,14 @@ function render() {
   $("what").innerHTML = cur ? `<b>${cur.ctrl} · ${cur.idx} ${escapeHtml(cur.name || "")}</b><br>` + (S.mode === "head" ? `ciśnienie ${String(cur.head).replace(".", ",")} m · zawór ${cur.pos} %` : `przebieg ${cur.sweep} · punkt ${cur.point} · ${cur.pos} imp`) : `<b>flowbench</b> <span class="muted">pomiar przepływu pętli</span>`;
   $("msg").textContent = S.error ? S.error : (S.paused ? "Pauza" : S.msg); $("msg").className = "msg" + (S.error ? " err" : "");
   $("notice").hidden = !S.notice; $("notice").textContent = S.notice || "";
-  const key = cur ?`${cur.ctrl}/${cur.idx}/${cur.sweep}/${cur.point}` : null;
-  if (key !== markKey) { markKey = key; mark = null; $("val").innerHTML = `– <small>l/min</small>`; }
+  // settle_until is set once per reading prompt, so a restarted sweep gets a new key too
+  const key = cur ? `${cur.ctrl}/${cur.idx}/${cur.sweep}/${cur.point}/${cur.head ?? ""}/${S.settle_until}` : null;
+  // the mark stays on the last reading: the next one is usually a short move away
+  if (key !== markKey) { markKey = key; showMark(); }
   const reading = S.phase === "reading";
-  for (const id of ["zero", "over", "minus", "plus"]) $(id).disabled = !reading;
-  $("ok").disabled = !reading || mark == null;
+  for (const id of ["minus", "plus"]) $(id).disabled = !reading;
+  for (const id of ["zero", "over"]) $(id).disabled = !canSend();
+  $("ok").disabled = !canSend() || mark == null;
   $("readPanel").style.opacity = reading ? 1 : .55;
   if (reading && S.mode !== "head") {
     const left = S.settle_until - S.now;

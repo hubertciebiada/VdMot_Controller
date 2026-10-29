@@ -220,6 +220,13 @@ class Esp:
         return [] if first else d.get("events", [])
 
 
+class Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second server bind a port in use, and requests then go to
+    # either of them; without it a second start fails with "address in use".
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+
 # ───────────────────────────── measurement engine ─────────────────────────────
 
 def interp(points, x):
@@ -243,6 +250,14 @@ def sweep_spread(a, b, top):
     return math.sqrt(sum(r * r for r in res) / len(res)) if len(res) >= 2 else None
 
 
+def onset_above(points):
+    """The position of the first reading with flow, or None."""
+    for p in points:
+        if p["kind"] == "over" or (p["kind"] == "value" and p["flow"] > 0):
+            return p.get("pos_est", p["pos"])
+    return None
+
+
 def onset_below(points):
     """The position of the last zero reading before the flow starts, or 0."""
     last = 0
@@ -254,8 +269,10 @@ def onset_below(points):
     return last
 
 
-def next_step(points, top, dq=DQ_TARGET):
-    """Pulses of the next opening step, or (None, reason) when the sweep is complete."""
+def next_step(points, top, dq=DQ_TARGET, zero_step=None):
+    """Pulses of the next opening step, or (None, reason) when the sweep is complete.
+    While the float stays at 0 the step is zero_step (a later sweep near the known onset), else
+    it grows from COARSE_STEP by half each zero, so a long dead zone takes few readings."""
     last = points[-1]
     if last["kind"] == "over" or (last["kind"] == "value" and last["flow"] >= top - 1e-6):
         return None, "top"
@@ -263,7 +280,9 @@ def next_step(points, top, dq=DQ_TARGET):
         return None, "cap"
     flowing = [p for p in points if p["kind"] == "value" and p["flow"] > 0]
     if not flowing:
-        return COARSE_STEP, None
+        if zero_step:
+            return int(zero_step), None
+        return int(min(STEP_MAX, COARSE_STEP * 1.5 ** (len(points) - 1))), None
     # with FLAT_N points or fewer both slices are the same list and every gain would be 0
     gains = [b["flow"] - a["flow"] for a, b in zip(points[-FLAT_N - 1:], points[-FLAT_N:])]
     if len(points) > FLAT_N and last["flow"] > 0.3 and all(g < FLAT_EPS for g in gains):
@@ -442,6 +461,25 @@ class Store:
             self.exec("INSERT INTO events (session_id, kind, text, t) VALUES (?, 'log', ?, ?)",
                       (sid, rec["log"], t))
 
+    def prior_onset(self, ctrl, idx, now_sid=None):
+        """The last zero before the flow in the opening sweeps of the latest other session that
+        found the flow of this loop (the lowest over its sweeps), or None."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT session_id, sweep, kind, flow_lpm, COALESCE(pos_est, pos_counted) "
+                "FROM points WHERE ctrl = ? AND valve = ? AND direction = 'open' "
+                "AND kind != 'void' AND session_id != ? ORDER BY session_id DESC, sweep, point",
+                (ctrl, idx, -1 if now_sid is None else now_sid)).fetchall()
+        by = {}
+        for sid, sweep, kind, flow, pos in rows:
+            by.setdefault(sid, {}).setdefault(sweep, []).append(
+                {"kind": kind, "flow": flow or 0.0, "pos": pos or 0})
+        for sid in sorted(by, reverse=True):
+            found = [onset_below(pts) for pts in by[sid].values() if onset_above(pts) is not None]
+            if found:
+                return min(found)
+        return None
+
 
 class Engine:
     def __init__(self, esps, outdir):
@@ -458,6 +496,7 @@ class Engine:
         self.rows = []  # every recorded point of the session
         self.close_sweep = False  # one closing sweep per loop after the opening sweeps
         self.dq = DQ_TARGET  # wanted flow change per step of this session
+        self.onsets = []  # last zero positions of the loops measured in this session
         self.power = None  # reads the pump power (HaPower), or None
         self.decide_s = 20  # the page can answer "enough" / "one more" this long after a sweep
         self.expected = {}  # (ctrl, idx) -> the target the app set; absent = 0
@@ -631,13 +670,27 @@ class Engine:
         for esp in self.esps.values():
             for v in esp.valves():
                 esp.post(f"/api/valves/{v['idx']}/target", {"target": 0})
-        t0 = time.time()
+        t0, pushed = time.time(), set()
         while True:
             self.sleep(2)
             open_ = [f"{esp.name} {v['idx']}" for esp in self.esps.values() for v in esp.valves()
                      if v.get("pos") != 0 or v.get("stateKey") != "idle"]
             if not open_:
                 return
+            # a service move leaves a valve between the ends with the target 0 it already had,
+            # and the unchanged target does not move it: a service move closes it to the end stop
+            if time.time() - t0 > 20:
+                for esp in self.esps.values():
+                    for v in esp.valves():
+                        key = (esp.name, v["idx"])
+                        if v.get("stateKey") == "idle" and v.get("pos") and key not in pushed:
+                            pushed.add(key)
+                            counts = min(10000, int((v["pos"] + 5) * (v.get("oc") or 5000) / 100)
+                                         + 400)
+                            esp.post(f"/api/valves/{v['idx']}/service-move",
+                                     {"dir": "close", "counts": counts, "maxmA": CLOSE_MA})
+                            self.log(f"{esp.name} {v['idx']}: stoi na {v['pos']} % przy celu 0, "
+                                     "zamykam do krańcówki")
             self.set(msg="Czekam na zamknięcie: " + ", ".join(open_[:6]))
             if time.time() - t0 > 240:
                 raise EngineError("Zawory nie zamknęły się w 4 min: " + ", ".join(open_))
@@ -680,6 +733,7 @@ class Engine:
         self.rows, self.head_rows = [], []
         self.close_sweep = bool(cfg.get("close_sweep"))
         self.dq = float(cfg.get("dq") or DQ_TARGET)
+        self.onsets = []
         loops = cfg.get("loops", [])
         self.set(loops=[dict(lp, status="czeka", sweeps=[], spread=None) for lp in loops])
         try:
@@ -756,17 +810,26 @@ class Engine:
         sweeps = []
         try:
             self.prepare_closed()
+            prior = self.store.prior_onset(esp.name, idx, self.sid) if self.store else None
+            if prior is None and self.onsets:
+                prior = sorted(self.onsets)[len(self.onsets) // 2]
+            if prior:
+                self.log(f"{esp.name} {idx}: przepływ wcześniej od ok. {prior} imp")
             k = 0
             while True:
                 k += 1
-                offset, base = 0, START_PULSES
+                start, zero_step = START_PULSES, None
+                if not sweeps and prior:
+                    # two coarse steps below the onset known from before
+                    start = max(START_PULSES, prior - 2 * COARSE_STEP)
                 if sweeps:
-                    steps = [b["pos"] - a["pos"] for a, b in zip(sweeps[0], sweeps[0][1:])]
-                    steps = sorted(s for s in steps if s > 0)
-                    offset = steps[len(steps) // 2] // 2 if steps else COARSE_STEP // 2
-                    # the first sweep found the onset: start one coarse step below its last zero
-                    base = max(START_PULSES, onset_below(sweeps[0]) - COARSE_STEP)
-                pts = self.sweep(esp, idx, name, n, k, base + offset, top)
+                    low, high = onset_below(sweeps[0]), onset_above(sweeps[0])
+                    if low and high:
+                        # the onset lies between the last zero and the first flow of sweep 1:
+                        # start at that zero (sweep 3 half a step lower) and close in on it
+                        zero_step = max(STEP_MIN, (high - low) // 2)
+                        start = max(START_PULSES, low - (k - 2) * zero_step // 2)
+                pts = self.sweep(esp, idx, name, n, k, start, top, zero_step)
                 sweeps.append(pts)
                 spread = sweep_spread(sweeps[0], pts, top) if k > 1 else None
                 self.set_loop(n, sweeps=[len(s) for s in sweeps], spread=spread)
@@ -787,6 +850,8 @@ class Engine:
                     more = False
                 if not more:
                     break
+            if onset_above(sweeps[0]) is not None and onset_below(sweeps[0]):
+                self.onsets.append(onset_below(sweeps[0]))
             if self.close_sweep:
                 self.close_run(esp, idx, name, k + 1, sweeps[-1], top)
                 self.set_loop(n, sweeps=[len(s) for s in sweeps] + ["zam."])
@@ -902,7 +967,7 @@ class Engine:
         self.log(f"{esp.name} {idx} przebieg {k} (zamykanie): w górę {up} imp, {len(moved)} "
                  f"kroków po {CLOSE_STEP} imp, dobieg {coast:.0f} imp na krok, reszta {back} imp")
 
-    def sweep(self, esp, idx, name, n, k, start, top):
+    def sweep(self, esp, idx, name, n, k, start, top, zero_step=None):
         cur = {"ctrl": esp.name, "idx": idx, "name": name, "sweep": k, "point": 0, "pos": 0}
         self.set(current=cur, points=[p for p in self.rows if p["ctrl"] == esp.name
                                       and p["idx"] == idx])
@@ -952,12 +1017,12 @@ class Engine:
                     p["kind"] = "void"
                 self.rows.append(row)
                 self.write({"void": {"ctrl": esp.name, "idx": idx, "sweep": k}})
-                return self.sweep(esp, idx, name, n, k, start, top)
+                return self.sweep(esp, idx, name, n, k, start, top, zero_step)
             self.rows.append(row)
             pts.append(row)
             self.set(notice="")
             self.set(points=[p for p in self.rows if p["ctrl"] == esp.name and p["idx"] == idx])
-            nxt, reason = next_step(pts, top, self.dq)
+            nxt, reason = next_step(pts, top, self.dq, zero_step)
             if stop not in ("target",) and nxt is not None:
                 nxt, reason = None, f"stop {stop}"
             if nxt is None:
@@ -1476,7 +1541,7 @@ def main():
         HOLD_S = HOLD_S / a.sim_speed
         KEEP_S = KEEP_S / a.sim_speed
     page = (HERE / "flowbench.html").read_text(encoding="utf-8")
-    srv = ThreadingHTTPServer((a.bind, a.port), make_handler(engine, page))
+    srv = Server((a.bind, a.port), make_handler(engine, page))
     print(f"flowbench: http://{lan_ip()}:{a.port}  (on this PC: http://localhost:{a.port})")
     print(f"sessions: {out / 'flowbench.db'}")
     if a.sim_auto:
