@@ -217,6 +217,8 @@ def summary(path):
 
 
 def main():
+    # the controller names can be Polish words; a Windows console has another code page
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--controller", action="append", default=[], metavar="NAME=HOST")
     ap.add_argument("--sim", action="store_true")

@@ -480,6 +480,35 @@ fn the_usart1_rx_path_counts_errors_and_still_stores_the_bytes() {
 }
 
 #[test]
+fn skeep_one_valve_or_all_through_app_keep_bad_arguments_or_a_refusal_are_an_error() {
+    let mut r = Rig::begin();
+    let e = r.exchange("skeep 3 1\n");
+    assert_eq!(e.reply, "skeep 3 ok\r\n");
+    assert_eq!(e.calls, vec!["app_keep(3, true)"]);
+    let e = r.exchange("skeep 255 0\n");
+    assert_eq!(e.reply, "skeep 255 ok\r\n");
+    assert_eq!(e.calls, vec!["app_keep(255, false)"]);
+    assert_eq!(r.exchange("skeep 11 0\n").reply, "skeep 11 ok\r\n");
+    for bad in [
+        "skeep 12 1\n",
+        "skeep 254 1\n",
+        "skeep 3 2\n",
+        "skeep 3\n",
+        "skeep\n",
+        "skeep 3 1 1\n",
+        "skeep x 1\n",
+    ] {
+        let e = r.exchange(bad);
+        assert_eq!(e.reply, "skeep -1 err 1\r\n", "{bad}");
+        assert!(e.calls.is_empty(), "{bad}");
+    }
+    r.stubs.app.keep = -1;
+    let e = r.exchange("skeep 3 1\n");
+    assert_eq!(e.reply, "skeep -1 err 1\r\n");
+    assert_eq!(e.calls, vec!["app_keep(3, true)"]);
+}
+
+#[test]
 fn sstop_one_valve_or_all_through_app_stop_an_invalid_index_or_a_refusal_is_an_error() {
     let mut r = Rig::begin();
     let e = r.exchange("sstop 3\n");

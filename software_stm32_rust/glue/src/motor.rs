@@ -1726,6 +1726,7 @@ impl MotorShared {
                 self.record_refused_move(v);
                 // nothing moved: app_loop may correct the position again
                 self.valves[v].svc_hold = 0;
+                self.valves[v].svc_keep = false;
                 self.valvestate = AState::Idle;
             }
         }

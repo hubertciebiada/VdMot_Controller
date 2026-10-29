@@ -501,6 +501,10 @@ impl<P: Platform> CommunicationEnv for Ctx<'_, P> {
             .lock(|m| self.app.app_stop(m, &mut app_ctx!(self), valve))
     }
 
+    fn app_keep(&mut self, valve: u16, on: bool) -> i16 {
+        self.motor.lock(|m| self.app.app_keep(m, valve, on))
+    }
+
     fn app_get_learntime(&mut self) -> u32 {
         self.app.app_get_learntime()
     }

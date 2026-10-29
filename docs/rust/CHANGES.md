@@ -8,6 +8,20 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.8-revamped (unreleased)
+
+### STM32: a service hold that does not run out
+
+- New protocol-3 request `skeep <idx|255> <0|1>`: 1 keeps the service hold of a valve (the
+  position a `svmov` or `sstop` left) until something ends it, instead of about 5.5 minutes;
+  0 lets it run out again. Everything that ends a hold today ends the keep too (`stgtp`, also with
+  an unchanged target, `staop`, `staln`, `stdet 255`, a calibration start, a refused start of the
+  service move), and an expired lease ends it so that the failsafe applies when the remaining
+  hold has run out. `gvlvy` flag bit 10 `svcKeep`. The keep lives in RAM: an STM reset ends it.
+  A valve positioned in pulses (`svmov`) stays there without the periodic `sstop`, which also
+  cancels the requested calibrations of the valve
+  ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md), [app.rs](../../software_stm32_rust/glue/src/app.rs)).
+
 ## 2.2.7-revamped
 
 ESP32 release: a health warning about early stops ends with a successful calibration, and a new

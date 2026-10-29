@@ -61,10 +61,10 @@ Protocol 2:
 | `gmotx` | – | `gmotx lowMin lowMax highMin highMax sopMin sopMax minCntMin minCntMax retrMin retrMax` |
 
 Protocol 3 (section "Protocol 3 commands"): `slhbt`, `slcfg`, `sfspo`,
-`glcfg`, `gvlvy`, `gstax`, `sstop`, `gtlnt`, `ssafe`.
+`glcfg`, `gvlvy`, `gstax`, `sstop`, `gtlnt`, `ssafe`, `skeep` (2.2.8).
 
 `idx` is always the 0-based valve index 0..11. A request for another index
-gets no reply (except `svmov`, `sfspo` and `sstop`).
+gets no reply (except `svmov`, `sfspo`, `sstop` and `skeep`).
 
 ### `gproto` – protocol version
 
@@ -154,7 +154,8 @@ After the move the believed position follows the counted pulses (converted
 with the learned scaler), and the STM leaves the valve there (service hold,
 `gvlvy` flag `svcHold`) until the next `stgtp`, `staop` or `staln` for it, a
 calibration of it, or for about 5.5 minutes, then it returns to its drive
-target. A failed, blocked, open-circuit or pending-calibration status is kept
+target; `skeep idx 1` (2.2.8) keeps the hold until one of the others ends
+it. A failed, blocked, open-circuit or pending-calibration status is kept
 (only a calibration clears it); an idle valve becomes open circuit after an
 undercurrent (and needs a full calibration, flag `recal`), and failed after a
 timeout (fault 1) or an enforced inrush trip (fault 5).
@@ -224,6 +225,7 @@ arguments (`glcfg`, `gstax`, `gtlnt`) ignore extra arguments.
 | `gvlvy` | `gvlvy <idx>` | 27 values, below (25 up to 2.2.3) | none for an invalid idx (as `gvlvx`) | read; values 1..19 equal `gvlvx` of the same instant |
 | `gstax` | `gstax` | 23 values, below | – | read; values 1..6 equal `gstat` |
 | `sstop` | `sstop <idx\|255>` | `sstop <idx> ok` (also when nothing ran) | `sstop -1 err 1` | stops the running move, calibration or service move of idx (255: whatever runs), cancels the requested calibrations of idx (255: all), leaves the valve where it stopped (service hold) |
+| `skeep` | `skeep <idx\|255> <0\|1>` (2.2.8) | `skeep <idx> ok` (`skeep 255 ok` for all) | `skeep -1 err 1` (idx or value missing or invalid, extra arguments) | 1: the service hold of the valve does not run out (flag `svcKeep`); 0: it runs out again. Everything that ends a hold ends the keep too (`stgtp`, `staop`, `staln`, `stdet 255`, a calibration start, a refused service-move start); an expired lease ends it and the remaining hold runs out. RAM only. A firmware before 2.2.8 does not answer |
 | `gtlnt` | `gtlnt` | `gtlnt <seconds>` (stored learn time; 0 = time trigger off) | – | read |
 | `ssafe` | `ssafe 0` | `ssafe ok` | `ssafe err` (not exactly one argument, or value != 0) | leaves safe mode and clears the watchdog reset window |
 
@@ -286,8 +288,9 @@ Fields 1..19 = `gvlvx`. Then:
 | 7 | 128 | earlyPending | one early partial stop at the current drive target |
 | 8 | 256 | assembly | `staop` hold |
 | 9 | 512 | svcHold | left at a service move or `sstop` position |
+| 10 | 1024 | svcKeep | `skeep 1`: the service hold does not run out (2.2.8) |
 
-Bits 10..15 are 0.
+Bits 11..15 are 0.
 
 Automatic retries: a blocked (9) or failed (4) valve is calibrated again
 (after a short: tested again) after 1 h, 6 h, then every 24 h. A blocked or

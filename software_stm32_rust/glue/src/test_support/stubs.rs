@@ -44,6 +44,7 @@ pub struct App {
     pub failsafe_mask: u16,
     pub failsafe_pct: u8,
     pub stop: i16,
+    pub keep: i16,
     pub learn_time: u32,
     pub temp_age_s: u32,
     pub protect_suspended: bool,
@@ -67,6 +68,7 @@ impl Default for App {
             failsafe_mask: 0,
             failsafe_pct: 255,
             stop: 0,
+            keep: 0,
             learn_time: 0,
             temp_age_s: 0,
             protect_suspended: false,
@@ -340,6 +342,11 @@ impl CommunicationEnv for Stubs {
     fn app_stop(&mut self, valve: u16) -> i16 {
         self.log(format!("app_stop({valve})"));
         self.app.stop
+    }
+
+    fn app_keep(&mut self, valve: u16, on: bool) -> i16 {
+        self.log(format!("app_keep({valve}, {on})"));
+        self.app.keep
     }
 
     fn app_get_learntime(&mut self) -> u32 {

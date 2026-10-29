@@ -45,6 +45,8 @@ pub const VLV_FLAG_EARLY_PENDING: u16 = 0x0080;
 pub const VLV_FLAG_ASSEMBLY: u16 = 0x0100;
 /// left where a service move or sstop ended
 pub const VLV_FLAG_SVC_HOLD: u16 = 0x0200;
+/// skeep: the service hold does not run out
+pub const VLV_FLAG_SVC_KEEP: u16 = 0x0400;
 
 /// gvlvy field 21 `fault`, cleared by a successful calibration and by a presence
 /// test that finds the valve present or absent

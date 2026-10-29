@@ -6,7 +6,7 @@
 use vdm_stm_core::move_classifier::StopReason;
 use vdm_stm_core::valve_codes::{
     ValveFault, ST_BLOCKED, ST_PRESENT, ST_UNKNOWN, VLV_FLAG_ASSEMBLY, VLV_FLAG_FS_BLOCKED,
-    VLV_FLAG_FS_LEASE, VLV_FLAG_RETRY, VLV_FLAG_UNCALIBRATED,
+    VLV_FLAG_FS_LEASE, VLV_FLAG_RETRY, VLV_FLAG_SVC_KEEP, VLV_FLAG_UNCALIBRATED,
 };
 
 use super::bench::{
@@ -224,6 +224,46 @@ fn s8_2_sstop_ends_a_service_move_where_it_is_the_valve_is_not_moved_back() {
     assert_eq!(b.gvlvx(2, K_POS), pos);
     b.finish();
     case.check_golden();
+}
+
+#[test]
+fn s8_5_skeep_keeps_a_service_move_position_past_the_hold_stgtp_ends_it() {
+    // 2.2.8, no C++ golden: valve 2 kept, valve 3 not; both after a service move
+    let mut case = Case::new(
+        "proto3__s8_5_skeep_keeps_a_service_move_position_past_the_hold",
+        "system S8-5: skeep keeps a service move position past the hold, stgtp ends it",
+    );
+    let mut b = case.boot(sim(0x0FF0), |_| {});
+    b.run_main(40000);
+    b.calibrated_idle(4);
+    let start = b.gvlvx(2, K_POS);
+    for v in [2, 3] {
+        assert_eq!(
+            b.exchange(&std::format!("svmov {v} 0 400 40\n")),
+            std::format!("svmov {v} ok\r\n")
+        );
+        assert!(b.run_main_until(|b| b.idle(), 5000));
+    }
+    let held = b.gvlvx(2, K_POS);
+    assert!(held > start);
+    assert_eq!(b.gvlvx(3, K_POS), held);
+    assert_eq!(b.exchange("skeep 2 1\n"), "skeep 2 ok\r\n");
+    let keep = i64::from(VLV_FLAG_SVC_KEEP);
+    assert_eq!(b.gvlvy(2, K_FLAGS) & keep, keep);
+    assert_eq!(b.gvlvy(3, K_FLAGS) & keep, 0);
+    // longer than the hold of about 5.5 minutes: valve 3 goes back to its target, valve 2 stays
+    let enables = b.sim().valve[2].enables;
+    b.run_main(400_000);
+    assert!(b.run_main_until(|b| b.idle(), 20000));
+    assert_eq!(b.gvlvx(3, K_POS), start);
+    assert_eq!(b.gvlvx(2, K_POS), held);
+    assert_eq!(b.sim().valve[2].enables, enables);
+    assert_eq!(b.gvlvy(2, K_FLAGS) & keep, keep);
+    // a target request ends the keep and the hold
+    assert_eq!(b.exchange(&std::format!("stgtp 2 {start}\n")), "stgtp\r\n");
+    assert!(b.run_main_until(|b| b.idle_at(2, start as u8), 20000));
+    assert_eq!(b.gvlvy(2, K_FLAGS) & keep, 0);
+    b.finish();
 }
 
 // ---------------------------------------------------------------- safe mode

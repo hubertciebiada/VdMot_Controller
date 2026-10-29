@@ -37,7 +37,7 @@ use vdm_stm_core::valve_codes::{
     ValveFault, ST_BLOCKED, ST_FAILED, ST_FULL_OPEN, ST_IDLE, ST_OPEN_CIRCUIT, ST_PRESENT,
     ST_UNKNOWN, VLV_FLAG_ASSEMBLY, VLV_FLAG_CAL_RESTORED, VLV_FLAG_EARLY_PENDING,
     VLV_FLAG_FS_BLOCKED, VLV_FLAG_FS_LEASE, VLV_FLAG_NEEDS_REF, VLV_FLAG_RECAL, VLV_FLAG_RETRY,
-    VLV_FLAG_SVC_HOLD, VLV_FLAG_UNCALIBRATED,
+    VLV_FLAG_SVC_HOLD, VLV_FLAG_SVC_KEEP, VLV_FLAG_UNCALIBRATED,
 };
 use vdm_stm_core::valve_scheduler::{
     ActionKind, Decision, SchedulerInputs, ValveScheduler, ValveView,
@@ -112,6 +112,9 @@ pub struct Valve {
     /// after svmov the position is left alone (app_10s_loop calls); set by appsetservice,
     /// cleared if the start is refused
     pub svc_hold: u8,
+    /// skeep: svc_hold does not run out; ends with everything that ends the hold and with an
+    /// expired lease
+    pub svc_keep: bool,
     /// RETEST_*: test the valve again (applied by app_loop while no valve moves)
     pub retest_request: u8,
     /// staop: open fully (applied by app_loop while no valve moves)
@@ -394,6 +397,7 @@ impl App {
         v.retry_learn = false;
         v.early_learn = false;
         v.svc_hold = 0;
+        v.svc_keep = false;
         v.touched = false;
         // the target the calibration positions to; a later different one is new
         v.rejected_target = m.mots[valve].target_position;
@@ -440,6 +444,7 @@ impl App {
     pub fn app_target_changed(&self, m: &mut MotorShared, valve: u16) {
         if let Some(v) = m.valves.get_mut(usize::from(valve)) {
             v.svc_hold = 0;
+            v.svc_keep = false;
             v.assembly_hold = false;
             v.touched = true;
         }
@@ -487,6 +492,7 @@ impl App {
             v.forced_learn = false;
             v.timed_learn = false;
             v.svc_hold = 0;
+            v.svc_keep = false;
             v.retest_request = 0;
             v.open_request = false;
             v.assembly_hold = false;
@@ -810,9 +816,16 @@ impl App {
         env: &mut impl AppEnv,
         elapsed_s: u32,
     ) -> u8 {
+        // a kept hold runs out like any other once the lease expired: the failsafe applies
+        let lease_expired = self.lease.state() == LeaseState::Expired;
         for (mot, v) in m.mots.iter_mut().zip(m.valves.iter_mut()) {
+            if lease_expired {
+                v.svc_keep = false;
+            }
             // the valve state machine clears the hold of a refused service move
-            v.svc_hold = v.svc_hold.saturating_sub(1);
+            if !v.svc_keep {
+                v.svc_hold = v.svc_hold.saturating_sub(1);
+            }
 
             // backstop for a calibration handed to the valve state machine: its end (learn_end)
             // clears the state; a calibration that did not start, or ended without it, is
@@ -919,6 +932,7 @@ impl App {
             // app_loop marks the valve PRESENT while no valve moves and starts the calibration
             v.forced_learn = true;
             v.svc_hold = 0;
+            v.svc_keep = false;
             mot.calibration = true;
             mot.calib_state = CalibState::Started;
             mot.calib_time = 10;
@@ -950,6 +964,7 @@ impl App {
         for v in &mut m.valves {
             v.retest_request = RETEST_DETECT;
             v.svc_hold = 0;
+            v.svc_keep = false;
         }
     }
 
@@ -962,6 +977,7 @@ impl App {
             mot.target_position = 100;
             v.open_request = true;
             v.svc_hold = 0;
+            v.svc_keep = false;
             v.assembly_hold = true;
         };
         if let (Some(mot), Some(v)) = (
@@ -1327,6 +1343,20 @@ impl App {
         0
     }
 
+    /// skeep: the service hold of the valve (255: of every valve) does not run out (`on`) or runs
+    /// out again; 0, -1 for an invalid valve. Whatever ends a hold ends the keep too.
+    pub fn app_keep(&self, m: &mut MotorShared, valve: u16, on: bool) -> i16 {
+        if usize::from(valve) >= VALVES && valve != 255 {
+            return -1;
+        }
+        for (x, v) in m.valves.iter_mut().enumerate() {
+            if valve == 255 || usize::from(valve) == x {
+                v.svc_keep = on;
+            }
+        }
+        0
+    }
+
     /// stored learn time (gtlnt)
     pub fn app_get_learntime(&self) -> u32 {
         self.learning_time
@@ -1399,6 +1429,9 @@ impl App {
         if v.svc_hold != 0 {
             flags += VLV_FLAG_SVC_HOLD;
         }
+        if v.svc_keep {
+            flags += VLV_FLAG_SVC_KEEP;
+        }
         *out = ValveV3Info {
             flags,
             fault: mot.fault_reason,
@@ -1416,6 +1449,8 @@ impl App {
 mod stub_env;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_keep;
 #[cfg(test)]
 mod tests_mut;
 #[cfg(test)]

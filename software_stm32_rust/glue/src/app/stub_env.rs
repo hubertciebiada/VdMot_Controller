@@ -367,6 +367,10 @@ impl AppBench {
         self.app.app_stop(&mut self.m, &mut self.env, valve)
     }
 
+    pub fn app_keep(&mut self, valve: u16, on: bool) -> i16 {
+        self.app.app_keep(&mut self.m, valve, on)
+    }
+
     pub fn app_match_sensors(&mut self) -> i16 {
         self.app.app_match_sensors(&mut self.m, &mut self.env)
     }

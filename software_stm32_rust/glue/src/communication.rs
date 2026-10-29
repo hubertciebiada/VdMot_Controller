@@ -95,6 +95,7 @@ pub const APP_PRE_GETSTATUS3: &[u8] = b"gstax";
 pub const APP_PRE_STOP: &[u8] = b"sstop";
 pub const APP_PRE_GETLEARNTIME: &[u8] = b"gtlnt";
 pub const APP_PRE_SAFEMODE: &[u8] = b"ssafe";
+pub const APP_PRE_KEEP: &[u8] = b"skeep";
 
 /// arguments of a request at most
 pub const NO_OF_ARGS: u8 = 5;
@@ -193,6 +194,8 @@ pub trait CommunicationEnv {
     fn app_set_failsafe(&mut self, valve: u16, pct: u8);
     fn app_failsafe_pct(&mut self, valve: u16) -> u8;
     fn app_stop(&mut self, valve: u16) -> i16;
+    /// skeep: 0, -1 invalid valve
+    fn app_keep(&mut self, valve: u16, on: bool) -> i16;
     fn app_get_learntime(&mut self) -> u32;
     fn app_temp_age_s(&mut self) -> u32;
     fn app_protect_suspended(&mut self) -> bool;
@@ -1170,6 +1173,18 @@ impl Communication {
             };
             let (index, error) = stopped.map_or((-1, 1), |x| (i32::from(x), 0));
             format_indexed_result(&mut self.reply_line, APP_PRE_STOP, index, error)
+        } else if req.is(APP_PRE_KEEP) {
+            // keep the service hold: skeep idx|255 0|1 -> "skeep idx ok" / "skeep -1 err 1"
+            let kept = match (
+                req.argc() == 2,
+                arg_valve_or_all(req, 0),
+                req.arg_u8(1, 0, 1),
+            ) {
+                (true, Some(x), Some(on)) if env.app_keep(x, on == 1) == 0 => Some(x),
+                _ => None,
+            };
+            let (index, error) = kept.map_or((-1, 1), |x| (i32::from(x), 0));
+            format_indexed_result(&mut self.reply_line, APP_PRE_KEEP, index, error)
         } else if req.is(APP_PRE_GETLEARNTIME) {
             // stored learn time: "gtlnt seconds" (0 = time trigger off)
             let seconds = env.app_get_learntime();
