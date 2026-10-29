@@ -86,7 +86,7 @@ Per loop, per sweep:
    flow meters, or at the bottom) are set before the start.
 4. The sweep ends at the top of the scale, after 3 steps with less than 0.05 l/min gain, at
    2600 pulses, or when a move stops early. A counted service close back to the end stop
-   follows; up and down counts go into the session file.
+   follows; up and down counts go into the `sweeps` table.
 5. The second sweep starts half a median step later, so the points of both sweeps interleave.
    A third sweep runs when the two disagree by more than 0.12 l/min (rms). The page can end a
    loop early or ask for one more sweep.
