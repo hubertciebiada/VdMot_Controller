@@ -1170,6 +1170,85 @@ fn a_request_whose_result_never_comes_frees_the_layer_after_30_s() {
 }
 
 #[test]
+fn the_result_of_a_release_frees_the_layer_at_once() {
+    let c = curve();
+    let mut f = layer(&c, &[0, 1]);
+    let mut stm = Stm::new(0x003);
+    stm.target(0, 37);
+    position(&mut stm, &mut f, 0, false, 4800, 809);
+    f.set_configs(&configs(&c, &[1]));
+    assert_eq!(stm.next(&mut f), keep(0, false));
+    stm.target(1, 37);
+    assert_eq!(stm.next(&mut f), None); // the release is in flight
+    f.take_dirty();
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    assert!(f.take_dirty());
+    assert_eq!(stm.next(&mut f), mv(1, MoveDir::Close, 4800, 34));
+}
+
+#[test]
+fn a_retry_time_half_the_clock_range_ahead_is_not_reached() {
+    let c = curve();
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
+    let until = stm.now + BUSY_RETRY_MS;
+    f.on_dropped(0, stm.now);
+    let inp = inputs(true, false);
+    assert_eq!(f.next(&stm.m, inp, until.wrapping_add(0x8000_0000)), None);
+    assert_eq!(
+        f.next(&stm.m, inp, until.wrapping_add(0x7fff_ffff)),
+        mv(0, MoveDir::Close, 4800, 34)
+    );
+}
+
+#[test]
+fn a_failed_positioning_is_tried_again_5_min_after_the_failure_to_the_ms() {
+    let c = curve();
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
+    stm.result(&mut f, 0, FlowOutcome::Rejected(1));
+    assert_eq!(f.view(0).state, FlowState::Failed);
+    let at = stm.now;
+    let inp = inputs(true, false);
+    assert_eq!(f.next(&stm.m, inp, at + FAILED_RETRY_MS - 1), None);
+    assert_eq!(
+        f.next(&stm.m, inp, at + FAILED_RETRY_MS),
+        mv(0, MoveDir::Close, 4800, 34)
+    );
+}
+
+#[test]
+fn the_record_of_the_final_move_counts_once_the_valve_stopped() {
+    let c = curve();
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 4800, 97, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    // The record is there while the valve still opens: the keep waits.
+    stm.ex[0].status = 2;
+    stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), None);
+    assert!(!f.view(0).last_valid);
+    stm.ex[0].status = 1;
+    stm.poll(0);
+    stm.tick(&mut f);
+    assert!(f.view(0).last_valid);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+}
+
+#[test]
 fn hold_lost_by_the_flag_or_another_move_repositions_when_the_valve_is_free() {
     let c = curve();
     let mut f = layer(&c, &[0]);
