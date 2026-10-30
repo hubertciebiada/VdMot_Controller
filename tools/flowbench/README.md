@@ -199,7 +199,7 @@ python tools/flowbench/endstop_test.py --summary --out endstops.jsonl
 | ruler | 5 × (close at 34 mA, open to the open end stop) | the spread of the counted stroke: does the 34 mA stop repeat (the first move after `--cold-s` idle: the cold motor) |
 | top | open to the end stop, then 5 × (close K, open to the end stop), K = stroke − the position of 1.0 l/min | the same point reached from above: does it repeat better than from the closed stop |
 
-| brake | per `--brakes` setting (`maxMs,gapMs,mult;...`, STM 2.2.9 `sbrak` through `POST /api/valves/{n}/brake`): a warm-up move, the steps phase, 5 × (open N, close at 34 mA), with `--pos` the top phase; the brake is off at the end | the missed pulses per opening move with and without the brake, the spread of one move, the brake pulses (counted − requested) |
+| brake | per `--brakes` setting (`maxMs,gapMs,mult;...`, STM 2.2.9 `sbrak` through `POST /api/valves/{n}/brake`): a warm-up move, the steps phase, 5 × (open N, close at 34 mA), with `--pos` the top phase; at the end the brake of the STM after a start (`60,20,0`) | the missed pulses per opening move with and without the brake, the spread of one move, the brake pulses (counted − requested) |
 
 `--phases` picks the phases (default `closed,steps,open,zero`); `top` needs `--pos`
 (`{"west 1": 810, ...}`, the pulses of 1.0 l/min). At the end the valve gets 0 % and then its

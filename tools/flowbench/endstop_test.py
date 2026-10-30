@@ -24,7 +24,7 @@ One more (--phases brake), for the brake of the service moves (STM 2.2.9 sbrak):
           the steps phase, 5 x (one opening move of N, close at 34 mA) and, with --pos, the top
           phase; the missed pulses per opening move with and without the brake, the spread of
           the single move, the brake pulses (counted - requested) and the move time; at the end
-          the brake is off
+          the valve gets the brake of the STM after a start (60 20 0)
 
 Every move goes to a JSON line in --out. The loops keep flowing on their targets; only the valve
 under test moves.
@@ -50,7 +50,9 @@ N_DEFAULT = 900  # about 1.5 l/min on the measured loops
 REFUSED_WAIT_S = 60  # a calibration in the queue refuses service moves; wait and try again
 PHASES_DEFAULT = ("closed", "steps", "open", "zero")
 # sbrak settings (maxMs, gapMs, mult) of the brake phase; (0, 0, 0) = off
-BRAKES_DEFAULT = ((0, 0, 0), (40, 12, 0), (40, 8, 0), (40, 0, 3), (60, 20, 0), (30, 0, 2))
+BRAKES_DEFAULT = ((0, 0, 0), (60, 20, 0))
+# the brake of the STM 2.2.9 after a start; the brake phase leaves the valve with it
+BRAKE_AFTER = (60, 20, 0)
 
 
 class Run:
@@ -191,7 +193,7 @@ class Run:
                         self.top(idx, stroke, "top" + tag)
                         self.close_ref(idx, oc, "top" + tag)
             finally:
-                self.set_brake(idx, (0, 0, 0))
+                self.set_brake(idx, BRAKE_AFTER)
         if "open" in ph:
             self.open_end(idx, "open")
             for _ in range(REPEATS):
