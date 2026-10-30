@@ -1661,3 +1661,234 @@ fn reference_counts_when_the_stroke_is_unknown_the_whole_range_at_the_limit_one_
     stm.target(3, 37);
     assert_eq!(stm.next(&mut f), mv(3, MoveDir::Close, 4800, 34));
 }
+
+// ================================================================ a position lost between moves
+
+/// The requests of a positioning to 37 % with the warm-up (closed reference, the STM target
+/// is the fallback already): the reference close, the warm-up opening and close, the final
+/// opening, the keep ...
+fn warm_requests() -> [Option<FlowRequest>; 5] {
+    [
+        mv(0, MoveDir::Close, 4800, 34),
+        mv(0, MoveDir::Open, 300, 30),
+        mv(0, MoveDir::Close, 800, 34),
+        mv(0, MoveDir::Open, 809, 30),
+        keep(0, true),
+    ]
+}
+
+/// ... and the records of the four moves.
+const WARM_RECORDS: [(MoveDir, u16, u16, StopReason); 4] = [
+    (MoveDir::Close, 4800, 97, StopReason::EndStop),
+    (MoveDir::Open, 300, 300, StopReason::Target),
+    (MoveDir::Close, 800, 350, StopReason::EndStop),
+    (MoveDir::Open, 809, 809, StopReason::Target),
+];
+
+/// Valve 0 of a layer with the warm-up after `moves` moves of its positioning to 37 %: the
+/// next request is that of step `moves` + 2 (3 warm-up opening, 4 warm-up close, 5 final
+/// move, 6 keep).
+fn warm_after(moves: usize) -> (Stm, FlowLayer) {
+    let mut c = curve();
+    c.pre_close = true;
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    for (req, rec) in warm_requests().iter().zip(WARM_RECORDS).take(moves) {
+        assert_eq!(stm.next(&mut f), *req);
+        stm.result(&mut f, 0, FlowOutcome::Ok);
+        stm.tick(&mut f);
+        stm.moved(0, rec.0, rec.1, rec.2, rec.3);
+        stm.tick(&mut f);
+    }
+    (stm, f)
+}
+
+/// A move the layer did not ask for ended (a calibration, a failsafe or target drive): its
+/// record with `flags`.
+fn foreign_move(stm: &mut Stm, v: u8, flags: u16) {
+    let e = &mut stm.ex[usize::from(v)];
+    e.last_move = MoveResult {
+        dir: MoveDir::Close,
+        requested_counts: 3000,
+        counted_counts: 2900,
+        stop: StopReason::Target,
+        peak_current: 99,
+        duration_ms: 9000,
+    };
+    e.flags = flags;
+    stm.poll(v);
+}
+
+/// The reference close of an unknown position: the stroke, one pulse more when the last
+/// record asked for it.
+fn stroke_close(stm: &Stm) -> Option<FlowRequest> {
+    let n = if stm.ex[0].last_move.requested_counts == 4800 {
+        4801
+    } else {
+        4800
+    };
+    mv(0, MoveDir::Close, n, 34)
+}
+
+fn inputs(link_up: bool, lease_expired: bool) -> FlowInputs {
+    FlowInputs {
+        link_up,
+        lease_expired,
+    }
+}
+
+#[test]
+fn a_rejected_move_then_a_calibration_restarts_the_sequence_from_the_end_stop() {
+    for moves in 1..4 {
+        let (mut stm, mut f) = warm_after(moves);
+        assert_eq!(
+            stm.next(&mut f),
+            warm_requests()[moves],
+            "step {}",
+            moves + 2
+        );
+        stm.result(&mut f, 0, FlowOutcome::Rejected(3));
+        // The calibration ends the hold and drives the valve to the STM's target.
+        stm.ex[0].calibrating = true;
+        stm.flags(0, 0);
+        stm.tick(&mut f);
+        assert_eq!(stm.next(&mut f), None);
+        stm.ex[0].calibrating = false;
+        foreign_move(&mut stm, 0, 0);
+        stm.tick(&mut f);
+        assert_eq!(stm.next(&mut f), stroke_close(&stm), "step {}", moves + 2);
+        assert_eq!(f.view(0).state, FlowState::Positioning);
+        // The sequence runs again from there: the warm-up opening follows the end stop.
+        stm.result(&mut f, 0, FlowOutcome::Ok);
+        stm.tick(&mut f);
+        stm.moved(0, MoveDir::Close, 4800, 2000, StopReason::EndStop);
+        stm.tick(&mut f);
+        assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 300, 30));
+    }
+}
+
+#[test]
+fn a_lease_failsafe_between_moves_restarts_the_sequence_from_the_end_stop() {
+    for moves in 1..5 {
+        let (mut stm, mut f) = warm_after(moves);
+        stm.now += 2;
+        if moves < 4 {
+            // (the keep is no move: it would go out)
+            assert_eq!(f.next(&stm.m, inputs(true, true), stm.now), None);
+        }
+        // The STM drives the failsafe position, which ends the hold.
+        foreign_move(&mut stm, 0, STM_FLAG_FS_LEASE);
+        assert_eq!(f.next(&stm.m, inputs(true, true), stm.now), None);
+        assert_eq!(stm.next(&mut f), None); // still at the failsafe
+        stm.flags(0, 0);
+        assert_eq!(stm.next(&mut f), stroke_close(&stm), "step {}", moves + 2);
+    }
+}
+
+#[test]
+fn a_link_loss_between_moves_restarts_the_sequence_from_the_end_stop() {
+    for moves in 1..5 {
+        let (mut stm, mut f) = warm_after(moves);
+        stm.now += 2;
+        assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
+        // Back: the model still shows the hold and the last record, which may predate the
+        // loss (the hold ran out meanwhile).
+        assert_eq!(stm.next(&mut f), stroke_close(&stm), "step {}", moves + 2);
+        assert!(!f.view(0).known);
+    }
+    // A move in flight or running when the link goes is followed by its record as usual.
+    for running in [false, true] {
+        let (mut stm, mut f) = warm_after(3);
+        assert_eq!(stm.next(&mut f), warm_requests()[3]);
+        if running {
+            stm.result(&mut f, 0, FlowOutcome::Ok);
+        }
+        stm.now += 2;
+        assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
+        if !running {
+            stm.result(&mut f, 0, FlowOutcome::Ok);
+        }
+        stm.tick(&mut f);
+        stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+        stm.tick(&mut f);
+        assert_eq!(stm.next(&mut f), keep(0, true), "running {running}");
+    }
+}
+
+#[test]
+fn busy_answers_longer_than_the_hold_restart_the_sequence_from_the_end_stop() {
+    for moves in 1..4 {
+        let (mut stm, mut f) = warm_after(moves);
+        assert_eq!(stm.next(&mut f), warm_requests()[moves]);
+        stm.result(&mut f, 0, FlowOutcome::Rejected(2));
+        // The hold ran out: the STM drove the valve to its target.
+        foreign_move(&mut stm, 0, 0);
+        stm.now += BUSY_RETRY_MS;
+        assert_eq!(stm.next(&mut f), stroke_close(&stm), "step {}", moves + 2);
+    }
+}
+
+#[test]
+fn another_record_or_a_lost_hold_alone_restarts_the_sequence() {
+    // Another service move during the wait: the hold is there, the record is not ours.
+    let (mut stm, mut f) = warm_after(3);
+    assert_eq!(stm.next(&mut f), warm_requests()[3]);
+    stm.result(&mut f, 0, FlowOutcome::Rejected(2));
+    stm.moved(0, MoveDir::Open, 50, 50, StopReason::Target);
+    stm.now += BUSY_RETRY_MS;
+    assert_eq!(stm.next(&mut f), stroke_close(&stm));
+    // The hold alone is gone (the same record): the same.
+    let (mut stm, mut f) = warm_after(3);
+    assert_eq!(stm.next(&mut f), warm_requests()[3]);
+    stm.result(&mut f, 0, FlowOutcome::Rejected(2));
+    stm.flags(0, 0);
+    stm.now += BUSY_RETRY_MS;
+    assert_eq!(stm.next(&mut f), stroke_close(&stm));
+    // Both there: the step goes on.
+    let (mut stm, mut f) = warm_after(3);
+    assert_eq!(stm.next(&mut f), warm_requests()[3]);
+    stm.result(&mut f, 0, FlowOutcome::Rejected(2));
+    stm.flags(0, STM_FLAG_SVC_HOLD);
+    stm.now += BUSY_RETRY_MS;
+    assert_eq!(stm.next(&mut f), warm_requests()[3]);
+}
+
+#[test]
+fn the_restart_closes_the_whole_stroke_not_a_retry_nor_the_held_position() {
+    let mut c = curve();
+    c.pre_close = true;
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    position_until_open(&mut stm, &mut f, 0, 4800);
+    for (req, rec) in warm_requests().iter().zip(WARM_RECORDS).skip(1) {
+        assert_eq!(stm.next(&mut f), *req);
+        stm.result(&mut f, 0, FlowOutcome::Ok);
+        stm.tick(&mut f);
+        stm.moved(0, rec.0, rec.1, rec.2, rec.3);
+        stm.tick(&mut f);
+    }
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    assert!(f.view(0).known);
+    // From the held 809: the close of 1309 misses the end stop, the retry of 800 meets it.
+    stm.now += 300_000;
+    stm.target(0, 50);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 1309, 1309, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 800, 34));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 800, 120, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert!(f.view(0).known); // the held value until the position is lost
+                              // The hold is gone before the warm-up: the stroke, neither 800 nor 809 + 500.
+    stm.flags(0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
+    assert!(!f.view(0).known);
+}

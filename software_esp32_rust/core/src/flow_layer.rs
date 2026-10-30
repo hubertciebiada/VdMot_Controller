@@ -13,7 +13,7 @@ use crate::config::crc32;
 use crate::event_log::{event_default_severity, make_event, Event, EventCode};
 use crate::json_writer::JsonWriter;
 use crate::stm_codec::{
-    stop_reason_name, MoveDir, StopReason, STM_FLAG_FS_LEASE, STM_FLAG_SVC_KEEP,
+    stop_reason_name, MoveDir, StopReason, STM_FLAG_FS_LEASE, STM_FLAG_SVC_HOLD, STM_FLAG_SVC_KEEP,
 };
 use crate::valve_model::{TargetSource, ValveModel, ValveState};
 
@@ -906,6 +906,8 @@ struct FlowValve {
     /// move_seq of the valve when the move was handed out
     move_seq_at: u32,
     move_since_ms: u32,
+    /// move_seq of the valve when the record of the last move of the sequence arrived
+    step_seq: u32,
     /// moves to the reference end stop that ended before it
     ref_attempts: u8,
     busy_retries: u16,
@@ -954,6 +956,7 @@ impl FlowValve {
         move_req: 0,
         move_seq_at: 0,
         move_since_ms: 0,
+        step_seq: 0,
         ref_attempts: 0,
         busy_retries: 0,
         waiting: false,
@@ -1192,13 +1195,24 @@ impl FlowLayer {
     /// held position serves. A new target is applied only when the flow changes by the dead
     /// band and the interval since the last positioning has passed; a target of 0 and the first
     /// positioning since the start are not delayed. A valve in assembly, calibrating, moving,
-    /// at its lease failsafe or without v3 data waits.
+    /// at its lease failsafe or without v3 data waits. A sequence between its moves starts
+    /// again from the reference end stop when the valve is no longer where the last move left
+    /// it (another move record, no service hold) or the link was lost.
     pub fn next(
         &mut self,
         model: &ValveModel,
         inp: FlowInputs,
         now_ms: u32,
     ) -> Option<FlowRequest> {
+        if !inp.link_up {
+            // What the model shows of a valve may predate the loss: a sequence between its
+            // moves starts again from the end stop.
+            for fv in &mut self.v {
+                if fv.req.is_none() && !fv.move_pending && after_move(fv.step) {
+                    rereference(fv);
+                }
+            }
+        }
         if self.v.iter().any(|fv| fv.req.is_some() || fv.move_pending) {
             return None;
         }
@@ -1527,6 +1541,12 @@ fn continue_sequence(
             pct: cfg.fallback_pct,
         });
     }
+    if after_move(fv.step) && (s.move_seq != fv.step_seq || (s.stm_flags & STM_FLAG_SVC_HOLD) == 0)
+    {
+        // The valve left where the last move put it while the step waited (a calibration, the
+        // lease, a hold that ran out, another move).
+        rereference(fv);
+    }
     if fv.step == Step::Keep {
         return Some(FlowRequest::Keep { valve, on: true });
     }
@@ -1556,6 +1576,21 @@ fn continue_sequence(
         counts,
         max_ma,
     })
+}
+
+/// The step continues where the last move of the sequence left the valve.
+fn after_move(step: Step) -> bool {
+    matches!(
+        step,
+        Step::WarmUp | Step::WarmClose | Step::Final | Step::Keep
+    )
+}
+
+/// The moves start again from the reference end stop, whose distance is unknown now.
+fn rereference(fv: &mut FlowValve) {
+    fv.step = Step::Reference;
+    fv.ref_attempts = 0;
+    fv.held_valid = false;
 }
 
 /// Pulses of the move to the reference end stop: closing, the held position plus
@@ -1607,6 +1642,7 @@ fn move_done(
     let stop = s.last_move.stop;
     let at_end = matches!(stop, StopReason::EndStop | StopReason::EarlyEndStop);
     let settled = at_end || stop == StopReason::Target;
+    fv.step_seq = s.move_seq;
     match fv.step {
         Step::Reference | Step::WarmClose if at_end => {
             if fv.target_counts == 0 {

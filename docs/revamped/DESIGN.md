@@ -479,7 +479,13 @@ a measured curve itself (API.md "Flow layer"):
   differs. A move without a record within 120 s, a stop other than the end
   stop (reference) or the target/end stop (final), a rejected request, no
   reply and a 101st `err 2` fail the positioning (event 417, state `failed`,
-  tried again after 5 min or with the next target).
+  tried again after 5 min or with the next target). Each later step (the
+  warm-up moves, the final move, the keep) needs the valve where the last move
+  of the sequence left it: the `move_seq` of that record and the `svcHold`
+  flag. Otherwise (a calibration after `err 3`, the lease failsafe, a hold
+  that ran out during `err 2` retries, another move) and after a link loss the
+  sequence starts again with a close of the whole stroke to the reference end
+  stop.
 - `tick` once per second: the records, the timeouts, the end of a calibration
   a refused move waits for, and a held valve whose `svcKeep` flag is gone (a
   poll after the keep) or whose `move_seq` moved -> `unknown`, event 418. A
