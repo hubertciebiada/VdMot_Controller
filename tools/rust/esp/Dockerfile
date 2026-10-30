@@ -21,8 +21,8 @@ RUN apt-get update \
 # 1.98.1.0, not 1.99.0.0: the std of Rust 1.99 does not build for xtensa-esp32-espidf
 # (sys/fs/unix.rs set_perm_nofollow calls libc::fchmodat(libc::AT_FDCWD, ..), which libc 0.2.189
 # does not define for espidf; error E0425 in -Zbuild-std).
-ARG ESPUP_VERSION=0.18.0
-ARG ESPUP_SHA256=32d0cc5a0d1a48be4d374e62de0a3c4f22307d43a5fcc0d06195854e064253b6
+ARG ESPUP_VERSION=0.19.0
+ARG ESPUP_SHA256=f31411c64dffff4da0f0e23c432b9a5fda48942ff8695b8b21009ceb7007bcc0
 ARG ESP_RUST_VERSION=1.98.1.0
 RUN curl -fsSL -o /usr/local/bin/espup \
       "https://github.com/esp-rs/espup/releases/download/v${ESPUP_VERSION}/espup-x86_64-unknown-linux-gnu" \
@@ -59,15 +59,21 @@ RUN curl -fsSL -o /tmp/qemu.tar.xz \
  && rm /tmp/qemu.tar.xz \
  && /opt/qemu/bin/qemu-system-xtensa --version
 
-# mklittlefs of PlatformIO's espressif32@6.1.0 (the C++ firmware's platform: tool-mklittlefs
-# ~1.203.0 next to Arduino-ESP32 2.0.7): writes and reads LittleFS images the way the C++
-# toolchain does (QEMU harness, scenario littlefs).
-ARG MKLITTLEFS_VERSION=1.203.210628
-ARG MKLITTLEFS_SHA256=272f75679b1b5562ee712375ce32701f101e498b19c8b2ad1a3766885823dc8f
+# mklittlefs 3.0.0, the GitHub release of earlephilhower/mklittlefs (commit 295fe9b; littlefs
+# submodule abd90cb8 = LittleFS 2.0, disk version 2.0; LFS_NAME_MAX 32): writes and reads LittleFS
+# images the way the C++ toolchain does (QEMU harness, scenario littlefs). The C++ firmware's
+# platform, PlatformIO espressif32@6.1.0 next to Arduino-ESP32 2.0.7, uses tool-mklittlefs
+# 1.203.210628, whose binary reports version 0.2.3-35-g943d2f7: commit 943d2f7, four commits after
+# 3.0.0, the same littlefs submodule and defaults; its one change of the image is that a pack also
+# sets the 't' and 'c' attributes (time of the pack) of the root directory. No release is built
+# from 943d2f7, and the PlatformIO registry refuses downloads outside PlatformIO Core (403).
+ARG MKLITTLEFS_RELEASE=3.0.0
+ARG MKLITTLEFS_ASSET=x86_64-linux-gnu-mklittlefs-295fe9b.tar.gz
+ARG MKLITTLEFS_SHA256=49618bc47deddad29bfb3991e4244228e9f8e9c61c3bd239c19f85ff4dee1ab8
 RUN curl -fsSL -o /tmp/mklittlefs.tar.gz \
-      "https://dl.registry.platformio.org/download/platformio/tool/tool-mklittlefs/${MKLITTLEFS_VERSION}/tool-mklittlefs-linux_x86_64-${MKLITTLEFS_VERSION}.tar.gz" \
+      "https://github.com/earlephilhower/mklittlefs/releases/download/${MKLITTLEFS_RELEASE}/${MKLITTLEFS_ASSET}" \
  && echo "${MKLITTLEFS_SHA256}  /tmp/mklittlefs.tar.gz" | sha256sum -c - \
- && mkdir -p /opt/mklittlefs && tar -xzf /tmp/mklittlefs.tar.gz -C /opt/mklittlefs \
+ && tar -xzf /tmp/mklittlefs.tar.gz -C /opt \
  && rm /tmp/mklittlefs.tar.gz \
  && ln -s /opt/mklittlefs/mklittlefs /usr/local/bin/mklittlefs \
  && mklittlefs --version

@@ -1144,7 +1144,8 @@ class Harness:
         image = os.path.join(work, "cpp-toolchain.littlefs.bin")
         out = subprocess.run(["mklittlefs", "-c", src, "-p", "256", "-b", "4096", "-s", str(SPIFFS_SIZE),
                               image], capture_output=True, text=True, check=True)
-        log(f"  mklittlefs (PlatformIO tool-mklittlefs 1.203.210628) wrote {image}: {out.stdout.strip()!r}")
+        log(f"  mklittlefs 3.0.0 (the littlefs of PlatformIO tool-mklittlefs 1.203.210628) wrote {image}: "
+            f"{out.stdout.strip()!r}")
         part = open(image, "rb").read()
         before = self.lfs_report(part, "image of mklittlefs")
 
