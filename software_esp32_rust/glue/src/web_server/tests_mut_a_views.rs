@@ -268,7 +268,9 @@ fn sensors_readings_past_the_bus_count_are_ignored() {
 }
 
 #[test]
-fn sensors_a_document_larger_than_the_response_buffer_answers_500() {
+fn sensors_the_largest_document_fits_the_response_buffer() {
+    // Every slot assigned and seen, every bus sensor unassigned as well: larger than a 12 KiB
+    // C++ slot (that answered 500 "document too large"), within RESPONSE_SIZE (Rust 2.2.8).
     let rig = Rig::new();
     rig.dev.clock.set_ms(NOW);
     // every slot and every bus position in use, the names escaped to six times their length
@@ -338,14 +340,13 @@ fn sensors_a_document_larger_than_the_response_buffer_answers_500() {
             1000,
         ));
     }
-    assert!(sensors_doc(&t, &v).len() >= RESPONSE_SIZE);
+    let n = sensors_doc(&t, &v).len();
+    assert!((12 * 1024..RESPONSE_SIZE).contains(&n), "{n}");
     let st = rig.storage();
     let mut web = rig.web(&st);
     let r = perform(&mut web, get("/api/sensors"));
-    assert_eq!(r.status, 500);
-    assert_eq!(text(&r), error_body("internal", "document too large"));
-    // the buffer serves the next document
-    assert_eq!(perform(&mut web, get("/api/status")).status, 200);
+    assert_eq!(r.status, 200);
+    assert_eq!(text(&r).len(), n);
 }
 
 // ---------------------------------------------------------------- valves

@@ -513,32 +513,58 @@ fn api_valves_document() {
 
 #[test]
 fn api_twelve_full_valves_fit_a_response_slot() {
+    // Every member at its longest: the numbers at their type's maximum (i32::MIN), every name
+    // of the health, STM flag and fault tables at its longest, booleans false where that is
+    // longer, `null` where that is longer than the value ("pct").
+    let status = (0..=u8::MAX)
+        .max_by_key(|&s| s.to_string().len() + valve_status_key(s).len())
+        .unwrap();
     let mut st = [ValveState::default(); VALVE_COUNT as usize];
     let mut cfg: [ValveConfig; VALVE_COUNT as usize] = Default::default();
     for (s, c) in st.iter_mut().zip(cfg.iter_mut()) {
         s.known = true;
-        s.status = 1;
+        s.last_seen_ms = 1; // "age" 4294967 s at now 0
+        s.status = status;
+        s.position = u8::MAX;
         s.desired_valid = true;
+        s.desired = u8::MAX;
+        s.source = TargetSource::Restored;
+        s.sync = TargetSync::AwaitVerify;
         s.stm_target_known = true;
-        s.moves = 4_000_000_000;
-        s.open_count = 4_000_000_000;
-        s.close_count = 4_000_000_000;
+        s.stm_target = u8::MAX;
+        s.mean_current = u16::MAX;
+        s.moves = u32::MAX;
+        s.open_count = u32::MAX;
+        s.close_count = u32::MAX;
         s.dead_zone = i32::MIN;
-        s.health = 0x1FF;
+        s.calib_retries = u8::MAX;
+        s.health = u16::MAX;
         s.has_extended = true;
-        s.early_stops = 4_000_000_000;
-        s.cmd_rejected = 4_000_000_000;
-        s.last_move.requested_counts = 4_000_000_000;
-        s.last_move.counted_counts = 4_000_000_000;
-        s.last_move.duration_ms = 4_000_000_000;
-        s.last_move.peak_current = 65535;
-        s.move_seq = 4_000_000_000;
+        s.cal_state = u8::MAX;
+        s.early_stops = u32::MAX;
+        s.cmd_rejected = u32::MAX;
+        s.last_move.dir = MoveDir::Close;
+        s.last_move.requested_counts = u32::MAX;
+        s.last_move.counted_counts = u32::MAX;
+        s.last_move.stop = StopReason::SafetyOverCurrent;
+        s.last_move.duration_ms = u32::MAX;
+        s.last_move.peak_current = u16::MAX;
+        s.move_seq = u32::MAX;
+        s.has_coast = true;
+        s.coast_open = u16::MAX;
+        s.coast_close = u16::MAX;
+        s.has_v3 = true;
+        s.stm_flags = u16::MAX; // every flag name; failsafe "blocked"
+        s.fault = 4; // "strokes_too_short"
+        s.drive = u8::MAX;
+        s.retry_s = u32::MAX;
+        s.retries = u8::MAX;
+        s.fs_pct = u8::MAX; // "pct":null
         c.name = full(b'"'); // worst-case escaping
         assert_eq!(c.name.len(), ITEM_NAME_MAX);
     }
     // Rust 2.2.8: the longest flow block on every valve (counts at most 10000, the curve's
-    // flow at most 65.535 l/min, the STM's duration and peak at their type's maximum). The
-    // members of 2.1 and 2.2.4 (v3, coast, calibrationEnd) stay null here as before.
+    // flow at most 65.535 l/min, the STM's duration and peak at their type's maximum).
     let flow = crate::flow_layer::FlowView {
         enabled: true,
         state: crate::flow_layer::FlowState::Positioning,
@@ -560,12 +586,14 @@ fn api_twelve_full_valves_fit_a_response_slot() {
             sensor_slot: [34, 33],
             sensor_name: [b"\"\"\"\"\"\"\"\"\"\"", b"\"\"\"\"\"\"\"\"\"\""],
             sensor_valid: [true, true],
-            sensor_tenths: [-1270, -1270],
+            sensor_tenths: [i32::from(i16::MIN), i32::from(i16::MIN)],
+            calibration_end: local(9999, 12, 31, 23, 59, 60),
             flow: Some(&flow),
-            ..ValveView::default()
         })
         .collect();
-    let mut slot = vec![0u8; 12 * 1024];
+    // the glue's response buffer (RESPONSE_SIZE): 16 KiB since Rust 2.2.8, the 12 KiB of the
+    // C++ slots do not hold this document
+    let mut slot = vec![0u8; 16 * 1024];
     let mut jw = JsonWriter::new(&mut slot);
     assert!(write_valves_json(&mut jw, &views, 0));
     assert!(jw.complete());
@@ -575,6 +603,20 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         r#""lpm":65.535,"ms":4294967295,"peak":6553.5}"#
     );
     assert_eq!(doc.matches(block).count(), 12);
+    for member in [
+        r#""age":4294967,"#,
+        r#""stop":"safety_overcurrent","#,
+        r#""coastClose":65535,"#,
+        r#""flags":["fsLease","fsBlocked","uncalibrated","needsRef","recal","calRestored","retry","earlyPending","assembly","svcHold","svcKeep","","","","",""],"#,
+        r#""fault":"strokes_too_short","#,
+        r#""failsafe":{"state":"blocked","pct":null},"#,
+        r#""calibrationEnd":"9999-12-31T23:59:60","#,
+    ] {
+        assert_eq!(doc.matches(member).count(), 12, "{member}");
+    }
+    assert_eq!(doc.matches(r#""health":["blocked","#).count(), 12);
+    assert_eq!(doc.matches(r#""temp":-3276.8}"#).count(), 24);
+    assert!(jw.length() > 12 * 1024);
     std::println!("worst-case /api/valves: {} bytes", jw.length());
 }
 

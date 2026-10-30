@@ -76,6 +76,14 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   outside the ranges (`400 out_of_range`), for `maxMs` above 0 with neither `gapMs` nor `mult`
   (`400 invalid`) and below STM 2.2.9 (`409 stm_unsupported`) ([API.md](../revamped/API.md)).
 
+### ESP32: a 16 KiB response buffer
+
+- The web server's response buffer is 16 KiB (12 KiB up to 2.2.7, the size of a C++ slot):
+  `/api/valves` with every member at its longest (twelve valves, escaped names, both sensors,
+  `ext` with `v3` and the coast, `calibrationEnd`, the `flow` block) is 16 071 B and
+  `/api/sensors` with every slot assigned and every bus sensor seen 12 684 B; both answered
+  `500 internal` "document too large" in 12 KiB. 4 KiB more heap, kept from the first request
+  ([GLUE-DESIGN-ESP.md](GLUE-DESIGN-ESP.md)).
 
 ## 2.2.7-revamped
 

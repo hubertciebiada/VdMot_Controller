@@ -286,15 +286,15 @@ The ESP32 has no 64-bit atomics, so `i64` values sit behind a mutex.
 | Static DRAM (.data + .bss) | 54.5 KB (CHANGELOG 2.1.6) | 32.0 KB (14.9 + 17.1, `esp_idf_size`) |
 | Task stacks (stm, app, mqtt, HTTP) | 6656 + 7168 + 7168 + 8960 = 29 952 B | 8192 + 10240 + 16384 + 15360 = 50 176 B (§2.1) |
 | `arduino_events` | 4096 | 0 |
-| HTTP response buffers | 2 × 12 KB | 1 × 12 KB (§4.3) |
+| HTTP response buffers | 2 × 12 KB | 1 × 16 KB (§4.3; 12 KB up to 2.2.7) |
 | Web working set | ~9.6 KB, kept from the first request | same parts, ~9.6 KB |
 | Boot allocations (session, snapshots, profile store, config copies, ...) | 29 KB | same set and sizes (core structs are ported field by field) |
 | PubSubClient buffer | 2304 | 2304 (`mqtt_conn`) |
 | Event ring | 32 × 48 B | 32 × 48 B |
 | Per request | AsyncWebServer request/response objects, header `String`s, send buffers | esp_http_server header scratch (≤ 1024 B, freed at the end of the request), one session struct per connection |
 
-Net of the rows above: about 18 KB more free heap than 2.1.7 (−22.5 KB static DRAM, +20.2 KB
-stacks, −4 KB `arduino_events`, −12 KB response buffer), before the differences of ESP-IDF 5.5 and
+Net of the rows above: about 14 KB more free heap than 2.1.7 (−22.5 KB static DRAM, +20.2 KB
+stacks, −4 KB `arduino_events`, −8 KB response buffer), before the differences of ESP-IDF 5.5 and
 Rust std.
 
 Acceptance on the device (Ethernet, idle, after boot): free heap ≥ C++ 2.1.7 minus 10 KB (2.1.7:
@@ -457,7 +457,7 @@ buffer of D§12 stays shared. A handler waits only on its own socket (`httpd_req
 
 | C++ 2.1.7 | Rust |
 |---|---|
-| 2 × 12 KB response slots, a slot released in `onDisconnect` after the response left | 1 × 12 KB response buffer: `httpd_send` returns when lwIP has copied the bytes, so the buffer is free for the next request |
+| 2 × 12 KB response slots, a slot released in `onDisconnect` after the response left | 1 × 16 KB response buffer (12 KB up to 2.2.7): `httpd_send` returns when lwIP has copied the bytes, so the buffer is free for the next request |
 | Scratch (views, event/image/file lists, status and health snapshots, health text, a profile) | the same, as one boxed `enum Scratch` sized by its largest variant (no unsafe reinterpretation). *Implementation:* the lists are a heap block of the request, the snapshots and the profile values on the handler's stack (PORT-NOTES.md, web_server "Design deviation (4.3)") |
 | `StaticJsonDocument<512>` | the 32-slot pool of `json_body` in the working set |
 | Guard detail 160 B, snapshot and config copies | same |

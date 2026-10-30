@@ -717,7 +717,7 @@ fn the_dashboard_is_every_file_of_web_gzipped_with_its_etag() {
 fn the_binding_numbers_are_the_ones_of_web_server_h() {
     // kResponseSlotSize, kMaxBodySize, kMaxConnections, kMaxStmImageSize, kMultipartSlack: the
     // limit cases use the names, so the values are pinned here
-    assert_eq!(RESPONSE_SIZE, 12 * 1024);
+    assert_eq!(RESPONSE_SIZE, 16 * 1024); // Rust 2.2.8: 12 KiB in the C++
     assert_eq!(MAX_BODY_SIZE, 8192);
     assert_eq!(MAX_CONNECTIONS, 4);
     assert_eq!(MAX_STM_IMAGE_SIZE, 512 * 1024);
