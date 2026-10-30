@@ -605,30 +605,37 @@ fn keep_builder() {
     check_rejected(build_keep(12, true));
     check_rejected(build_keep(254, false));
     check_rejected(build_keep(NO_VALVE, true));
-    // Rust 2.2.8: the brake of STM 2.2.9, arg = maxMs.
+    // Rust 2.2.8: the brake of STM 2.2.9, arg = maxMs; the multiplier only when set.
     check_line(
-        build_brake(0, 40, 5),
+        build_brake(0, 40, 5, 0),
         "sbrak 0 40 5 \r\n",
         Cmd::Sbrak,
         0,
         40,
     );
     check_line(
-        build_brake(11, 0, 0),
+        build_brake(0, 40, 5, 3),
+        "sbrak 0 40 5 3 \r\n",
+        Cmd::Sbrak,
+        0,
+        40,
+    );
+    check_line(
+        build_brake(11, 0, 0, 0),
         "sbrak 11 0 0 \r\n",
         Cmd::Sbrak,
         11,
         0,
     );
     check_line(
-        build_brake(ALL_VALVES, 65535, 65535),
-        "sbrak 255 65535 65535 \r\n",
+        build_brake(ALL_VALVES, 65535, 65535, 10),
+        "sbrak 255 65535 65535 10 \r\n",
         Cmd::Sbrak,
         ALL_VALVES,
         65535,
     );
-    check_rejected(build_brake(12, 1, 1));
-    check_rejected(build_brake(NO_VALVE, 1, 1));
+    check_rejected(build_brake(12, 1, 1, 0));
+    check_rejected(build_brake(NO_VALVE, 1, 1, 1));
 }
 
 #[test]
@@ -2978,7 +2985,7 @@ fn reply_matches_for_v3_and_indexed_replies() {
     let q = some(build_keep(ALL_VALVES, false));
     assert!(reply_matches(&q, &parsed("skeep 255 ok")));
     assert!(!reply_matches(&q, &parsed("skeep 5 ok")));
-    let q = some(build_brake(5, 40, 5));
+    let q = some(build_brake(5, 40, 5, 0));
     assert!(reply_matches(&q, &parsed("sbrak 5 ok")));
     assert!(reply_matches(&q, &parsed("sbrak -1 err 1")));
     assert!(!reply_matches(&q, &parsed("sbrak 6 ok")));
@@ -3051,7 +3058,7 @@ fn every_request_built_has_a_matching_golden_reply() {
         (build_leave_safe_mode(), "ssafe ok"),
         (build_set_learn_time(0), "stlnt"),
         (some(build_keep(3, true)), "skeep 3 ok"),
-        (some(build_brake(3, 40, 5)), "sbrak 3 ok"),
+        (some(build_brake(3, 40, 5, 2)), "sbrak 3 ok"),
     ];
     for (q, rep) in &pairs {
         assert!(reply_matches(q, &parsed(rep)), "{rep}");

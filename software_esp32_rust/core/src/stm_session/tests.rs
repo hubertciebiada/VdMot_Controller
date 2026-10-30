@@ -979,15 +979,18 @@ fn brake_sends_sbrak_and_posts_the_stm_answer_for_the_attempt() {
     r.run(3_000);
     assert_eq!(r.stm().lines_of("sbrak"), ["sbrak 0 40 5"]);
     assert_eq!(r.port().brakes, [(0, 7, true, 0)]);
-    // All valves, off; a rejected one carries the STM's code; no reply gives -1.
+    // All valves, off, with the multiplier; a rejected one carries the STM's code; no reply
+    // gives -1.
     c.valve = ALL_VALVES;
     c.max_ms = 0;
     c.gap_ms = 0;
+    c.mult = 3;
     c.attempt = 0x8008; // only the low 15 bits name the attempt
     r.command(&c);
     r.run(3_000);
-    assert_eq!(r.stm().lines_of("sbrak")[1], "sbrak 255 0 0");
+    assert_eq!(r.stm().lines_of("sbrak")[1], "sbrak 255 0 0 3");
     assert_eq!(r.port().brakes[1], (ALL_VALVES, 8, true, 0));
+    c.mult = 0;
     r.stm_mut()
         .set_answer("sbrak", |_, _| String::from("sbrak -1 err 1"));
     c.valve = 3;

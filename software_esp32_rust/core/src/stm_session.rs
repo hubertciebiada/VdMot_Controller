@@ -648,7 +648,7 @@ impl<P: StmSessionPort> StmSession<P> {
                 // Below protocol 3 (the web answers 409 before) or not queued: no reply.
                 let attempt = c.attempt & 0x7FFF;
                 let queued = proto >= 3
-                    && build_brake(c.valve, c.max_ms, c.gap_ms).is_some_and(|r| {
+                    && build_brake(c.valve, c.max_ms, c.gap_ms, c.mult).is_some_and(|r| {
                         self.enqueue(&r, Priority::User, Self::TAG_BRAKE + attempt)
                     });
                 if !queued {

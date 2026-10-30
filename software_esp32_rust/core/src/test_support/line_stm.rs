@@ -303,7 +303,7 @@ impl LineStm {
             if cmd == "ssafe" {
                 return "ssafe ok".to_string();
             }
-            if cmd == "sbrak" && t.len() > 3 && (one || v == 255) {
+            if cmd == "sbrak" && (4..=5).contains(&t.len()) && (one || v == 255) {
                 return format!("sbrak {} ok", t[1]);
             }
             if cmd == "skeep" && t.len() > 2 && (one || v == 255) {

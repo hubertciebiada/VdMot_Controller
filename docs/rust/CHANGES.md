@@ -32,10 +32,11 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs),
   [API.md](../revamped/API.md), [MQTT.md](../revamped/MQTT.md),
   [DESIGN.md](../revamped/DESIGN.md)).
-- `POST /api/valves/{n}/brake` `{"maxMs","gapMs"}` sends the STM 2.2.9 command `sbrak` (plug
-  braking at the end of a counted move, both 0 = off, RAM only on the STM) and answers with the
-  STM's reply: `200` ok, `409 stm_rejected` with the code, `504 stm_timeout` after 3 s. The
-  only route that waits for the STM: the server serves nothing else meanwhile
+- `POST /api/valves/{n}/brake` `{"maxMs","gapMs","mult"?}` sends the STM 2.2.9 command
+  `sbrak` (plug braking at the end of a counted move, both times 0 = off, the multiplier only
+  when above 0, RAM only on the STM) and answers with the STM's reply: `200` ok, `400
+  stm_rejected` with the code (a value outside the STM's ranges), `504 stm_timeout` after 3 s.
+  The only route that waits for the STM: the server serves nothing else meanwhile
   ([API.md](../revamped/API.md)).
 
 ## 2.2.7-revamped

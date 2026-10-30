@@ -952,12 +952,19 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].kind, StmCommandType::Brake);
     assert_eq!(
-        (s[0].valve, s[0].max_ms, s[0].gap_ms, s[0].attempt),
-        (1, 40, 5, 1)
+        (
+            s[0].valve,
+            s[0].max_ms,
+            s[0].gap_ms,
+            s[0].mult,
+            s[0].attempt
+        ),
+        (1, 40, 5, 0, 1)
     );
     assert_eq!(rig.state().brake_polls, 4);
     assert_eq!(rig.dev.clock.ms() - t0, 3 * u64::from(BRAKE_POLL_MS));
-    // Rejected by the STM: 409 with its code; the attempt counts up.
+    // Rejected by the STM (a value outside its ranges): 400 with its code; the attempt counts
+    // up; the multiplier goes with the command.
     rig.state().brake_polls = 0;
     rig.state().brake_after = 0;
     rig.state().brake_result = Some(BrakeResult {
@@ -966,10 +973,11 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
         ok: false,
         code: 1,
     });
-    let r = perform(&mut web, brake(r#"{"maxMs":0,"gapMs":0}"#));
-    assert_eq!(r.status, 409);
+    let r = perform(&mut web, brake(r#"{"maxMs":101,"gapMs":0,"mult":10}"#));
+    assert_eq!(r.status, 400);
     assert_eq!(text(&r), error_body("stm_rejected", "sbrak err 1"));
     assert_eq!(rig.submitted()[1].attempt, 2);
+    assert_eq!(rig.submitted()[1].mult, 10);
     // No answer (another attempt's or none): 504 after 3 s.
     rig.state().brake_result = Some(BrakeResult {
         attempt: 9,
@@ -983,7 +991,8 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
     assert_eq!(text(&r), error_body("stm_timeout", "no reply from the STM"));
     assert_eq!(rig.dev.clock.ms() - t0, u64::from(BRAKE_WAIT_MS));
     assert_eq!(rig.submitted()[2].attempt, 3);
-    // The body: both members, whole numbers 0..65535, nothing else.
+    // The body: both times, whole numbers 0..65535, an optional multiplier 0..10, nothing
+    // else.
     for body in [
         r#"{"maxMs":40}"#,
         r#"{"maxMs":70000,"gapMs":5}"#,
@@ -991,13 +1000,16 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
         r#"{"maxMs":4.5,"gapMs":5}"#,
         r#"{"maxMs":"40","gapMs":5}"#,
         r#"{"maxMs":40,"gapMs":5,"x":1}"#,
+        r#"{"maxMs":40,"gapMs":5,"mult":11}"#,
+        r#"{"maxMs":40,"gapMs":5,"mult":-1}"#,
+        r#"{"maxMs":40,"gapMs":5,"mult":1.5}"#,
         "{}",
     ] {
         let r = perform(&mut web, brake(body));
         assert_eq!(r.status, 400, "{body}");
         assert_eq!(
             text(&r),
-            error_body("out_of_range", "maxMs 0..65535, gapMs 0..65535")
+            error_body("out_of_range", "maxMs 0..65535, gapMs 0..65535, mult 0..10")
         );
     }
     assert_eq!(rig.submitted().len(), 3);

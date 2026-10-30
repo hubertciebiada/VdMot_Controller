@@ -723,21 +723,26 @@ pub fn build_keep(valve_or_all: u8, on: bool) -> Option<RequestLine> {
     })
 }
 
-/// `sbrak <valve|255> <maxMs> <gapMs>`: 0..11 or [`ALL_VALVES`] (STM 2.2.9): plug braking at
-/// the end of a counted move, both 0 = off; `arg` is `max_ms`.
-pub fn build_brake(valve_or_all: u8, max_ms: u16, gap_ms: u16) -> Option<RequestLine> {
-    (valve_or_all < VALVE_COUNT || valve_or_all == ALL_VALVES).then(|| {
-        build_numeric(
-            Cmd::Sbrak,
-            valve_or_all,
-            max_ms,
-            &[
-                u32::from(valve_or_all),
-                u32::from(max_ms),
-                u32::from(gap_ms),
-            ],
-        )
-    })
+/// `sbrak <valve|255> <maxMs> <gapMs> [<mult>]`: 0..11 or [`ALL_VALVES`] (STM 2.2.9): plug
+/// braking at the end of a counted move, both times 0 = off; the multiplier (0 = off) goes
+/// only when it is set (the three-argument form stays valid). `arg` is `max_ms`.
+pub fn build_brake(valve_or_all: u8, max_ms: u16, gap_ms: u16, mult: u8) -> Option<RequestLine> {
+    if valve_or_all >= VALVE_COUNT && valve_or_all != ALL_VALVES {
+        return None;
+    }
+    let args = [
+        u32::from(valve_or_all),
+        u32::from(max_ms),
+        u32::from(gap_ms),
+        u32::from(mult),
+    ];
+    let n = if mult > 0 { 4 } else { 3 };
+    Some(build_numeric(
+        Cmd::Sbrak,
+        valve_or_all,
+        max_ms,
+        args.get(..n).unwrap_or_default(),
+    ))
 }
 
 // ---------------------------------------------------------------- replies

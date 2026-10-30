@@ -581,14 +581,16 @@ fn target_field(v: JsonVariantConst<'_>) -> Option<u8> {
     round_target_percent(v.as_f64())
 }
 
-/// The members of a brake request: `maxMs` and `gapMs`, whole numbers 0..65535, nothing else.
-fn brake_fields(o: &JsonObjectConst<'_>) -> Option<(u16, u16)> {
-    if !only_keys(o, &[b"maxMs", b"gapMs"]) {
+/// The members of a brake request: `maxMs` and `gapMs`, whole numbers 0..65535, an optional
+/// `mult` 0..10 (0 without it), nothing else.
+fn brake_fields(o: &JsonObjectConst<'_>) -> Option<(u16, u16, u8)> {
+    if !only_keys(o, &[b"maxMs", b"gapMs", b"mult"]) {
         return None;
     }
     let max_ms = int_field(o, b"maxMs", 0..=65535, None)?;
     let gap_ms = int_field(o, b"gapMs", 0..=65535, None)?;
-    Some((max_ms as u16, gap_ms as u16))
+    let mult = int_field(o, b"mult", 0..=10, Some(0))?;
+    Some((max_ms as u16, gap_ms as u16, mult as u8))
 }
 
 /// An STM command of `kind` for `valve`.
@@ -1748,9 +1750,10 @@ where
         }
     }
 
-    /// POST /api/valves/{n}/brake `{"maxMs":0..65535,"gapMs":0..65535}` (Rust 2.2.8, STM
-    /// 2.2.9): `sbrak` with the attempt of this request, then the STM's answer: `200
-    /// {"valve":n,"result":"ok"}`, `409 stm_rejected` with the code, `504 stm_timeout` after
+    /// POST /api/valves/{n}/brake `{"maxMs":0..65535,"gapMs":0..65535,"mult":0..10}` (Rust
+    /// 2.2.8, STM 2.2.9): `sbrak` with the attempt of this request (the multiplier only when
+    /// above 0), then the STM's answer: `200 {"valve":n,"result":"ok"}`, `400 stm_rejected`
+    /// with the code (a value outside the STM's ranges), `504 stm_timeout` after
     /// [`BRAKE_WAIT_MS`] without one (the server serves nothing else meanwhile).
     fn brake(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8, body: &mut [u8]) {
         if self.refuse_while_flashing(req) || self.refuse_below_v3(req, &mut w.snap) {
@@ -1759,30 +1762,35 @@ where
         let Some(o) = parse(req, &mut w.doc, body) else {
             return;
         };
-        let Some((max_ms, gap_ms)) = brake_fields(&o) else {
-            return send_error(req, 400, "out_of_range", b"maxMs 0..65535, gapMs 0..65535");
+        let Some((max_ms, gap_ms, mult)) = brake_fields(&o) else {
+            return send_error(
+                req,
+                400,
+                "out_of_range",
+                b"maxMs 0..65535, gapMs 0..65535, mult 0..10",
+            );
         };
         // 1..0x7FFF: the stm thread keeps the low 15 bits
         let attempt = (self.brake_attempt.load(Ordering::Relaxed) % 0x7FFF) + 1;
         self.brake_attempt.store(attempt, Ordering::Relaxed);
-        if self.submit_brake(req, valve, max_ms, gap_ms, attempt) {
+        if self.submit_brake(req, valve, (max_ms, gap_ms, mult), attempt) {
             self.brake_answer(req, valve, attempt);
         }
     }
 
-    /// The Brake command of `valve`; false when the 503 was answered.
+    /// The Brake command of `valve` (maxMs, gapMs, mult); false when the 503 was answered.
     #[inline(never)]
     fn submit_brake(
         &self,
         req: &mut dyn HttpRequest,
         valve: u8,
-        max_ms: u16,
-        gap_ms: u16,
+        brake: (u16, u16, u8),
         attempt: u16,
     ) -> bool {
         let cmd = StmCommand {
-            max_ms,
-            gap_ms,
+            max_ms: brake.0,
+            gap_ms: brake.1,
+            mult: brake.2,
             attempt,
             ..command(StmCommandType::Brake, valve)
         };
@@ -1814,7 +1822,7 @@ where
             }
             Some(r) if r.code >= 0 => {
                 let n = fmt_trunc(&mut buf, format_args!("sbrak err {}", r.code));
-                send_error(req, 409, "stm_rejected", buf.get(..n).unwrap_or_default());
+                send_error(req, 400, "stm_rejected", buf.get(..n).unwrap_or_default());
             }
             _ => send_error(req, 504, "stm_timeout", b"no reply from the STM"),
         }

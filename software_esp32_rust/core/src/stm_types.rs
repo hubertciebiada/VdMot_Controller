@@ -78,9 +78,11 @@ pub struct StmCommand {
     pub counts: u16,
     /// C++ `maxmA`
     pub max_ma: u8,
-    /// Brake: the plug braking time and the gap before it, ms (0 = off)
+    /// Brake: the plug braking time and the gap before it, ms (0 = off), and the multiplier
+    /// (0 = not sent)
     pub max_ms: u16,
     pub gap_ms: u16,
+    pub mult: u8,
     /// LittleFS name below /stm/ (C++ `char[32]`)
     pub image: Text<31>,
     pub blank: bool,
@@ -112,6 +114,7 @@ impl Default for StmCommand {
             max_ma: 0,
             max_ms: 0,
             gap_ms: 0,
+            mult: 0,
             image: Text::new(),
             blank: false,
             force: false,

@@ -1636,13 +1636,17 @@ class Handler(BaseHTTPRequestHandler):
             # STM 2.2.9 `sbrak`: the STM's answer is returned (the mock STM accepts every value)
             if self.stm_refused(v3=True):
                 return
-            ms, gap = doc.get("maxMs"), doc.get("gapMs")
-            if not d.integer(ms) or not d.integer(gap) or not 0 <= ms <= 65535 or not 0 <= gap <= 65535 \
-                    or set(doc) != {"maxMs", "gapMs"}:
-                return self.error(400, "out_of_range", "maxMs 0..65535, gapMs 0..65535")
+            ms, gap, mult = doc.get("maxMs"), doc.get("gapMs"), doc.get("mult", 0)
+            if not d.integer(ms) or not d.integer(gap) or not d.integer(mult) or not 0 <= ms <= 65535 \
+                    or not 0 <= gap <= 65535 or not 0 <= mult <= 10 or not set(doc) <= {"maxMs", "gapMs", "mult"} \
+                    or not {"maxMs", "gapMs"} <= set(doc):
+                return self.error(400, "out_of_range", "maxMs 0..65535, gapMs 0..65535, mult 0..10")
             if d.queue_full():
                 return self.error(503, "queue_full", "STM command queue full")
-            v["brake"] = (ms, gap)
+            # the STM takes 0..100 ms: `sbrak -1 err 1` outside
+            if ms > 100 or gap > 100:
+                return self.error(400, "stm_rejected", "sbrak err 1")
+            v["brake"] = (ms, gap, mult)
             return self.send_json(200, {"valve": i + 1, "result": "ok"})
         if what == "target":
             t = round_target(doc.get("target"))
