@@ -8,7 +8,7 @@
 //! mapping both ways and the positioning state machine that hands requests to the session and
 //! reads the valve model. Owned by [`crate::stm_session::StmSession`].
 
-use crate::common::{elapsed_ms, parse_uint, VALVE_COUNT};
+use crate::common::{elapsed_ms, fmt_fit, parse_uint, VALVE_COUNT};
 use crate::config::crc32;
 use crate::event_log::{event_default_severity, make_event, Event, EventCode};
 use crate::json_writer::JsonWriter;
@@ -826,6 +826,10 @@ pub struct FlowView {
     pub last_ms: u32,
     /// its largest filtered current (0.1 mA)
     pub last_peak: u16,
+    /// the last opening of the open reference from a held position: the pulses it counted minus
+    /// the pulses from that position to the end stop. The end of the closing move no record
+    /// shows; a change of it over time is the drift of the valve.
+    pub ref_delta: Option<i16>,
 }
 
 /// The step of a positioning (FlowPositionFailed arg1).
@@ -932,6 +936,8 @@ struct Sequence {
     busy_retries: u16,
     /// the curve changed while it ran: another positioning follows
     restart: bool,
+    /// [`FlowView::ref_delta`] of the reference move of this positioning
+    ref_delta: Option<i16>,
 }
 
 /// What the layer does on a valve (Off and Unsupported are derived from the configuration).
@@ -977,6 +983,7 @@ struct FlowValve {
     needs_fallback: bool,
     /// a counts request arrived while a positioning ran
     pending_raw: Option<u16>,
+    ref_delta: Option<i16>,
 }
 
 impl FlowValve {
@@ -997,6 +1004,7 @@ impl FlowValve {
         started_once: false,
         needs_fallback: true,
         pending_raw: None,
+        ref_delta: None,
     };
 
     /// The state of the valve while the layer runs on it.
@@ -1503,6 +1511,7 @@ impl FlowLayer {
             last_valid: running && fv.last_valid,
             last_ms: fv.last_ms,
             last_peak: fv.last_peak,
+            ref_delta: fv.ref_delta.filter(|_| running),
         }
     }
 }
@@ -1536,6 +1545,7 @@ fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, 
         ref_attempts: 0,
         busy_retries: 0,
         restart: false,
+        ref_delta: None,
     });
 }
 
@@ -1756,6 +1766,9 @@ fn move_done(
     let settled = at_end || stop == StopReason::Target;
     seq.awaiting = Await::Nothing;
     seq.step_seq = s.move_seq;
+    if at_end && seq.step == Step::Reference && seq.ref_attempts == 0 {
+        seq.ref_delta = ref_delta(fv, cfg, s);
+    }
     match seq.step {
         Step::Reference | Step::WarmClose if at_end => {
             if fv.target_counts == 0 {
@@ -1811,6 +1824,14 @@ fn move_done(
     Phase::Positioning(seq)
 }
 
+/// [`FlowView::ref_delta`] of a whole move that ended at the open end stop from a held position.
+fn ref_delta(fv: &FlowValve, cfg: &FlowConfig, s: &ValveState) -> Option<i16> {
+    (fv.held_valid && s.last_move.dir == MoveDir::Open).then(|| {
+        let counted = s.last_move.counted_counts.min(u32::from(FLOW_COUNTS_MAX)) as i16;
+        counted - cfg.stroke_counts.saturating_sub(fv.held_counts) as i16
+    })
+}
+
 impl FlowValve {
     /// The warm-up of the closed end stop runs for this positioning.
     fn pre_close(&self, cfg: &FlowConfig) -> bool {
@@ -1836,12 +1857,17 @@ fn held(
     log: &mut dyn FnMut(&Event),
 ) -> Phase {
     fv.held_valid = true;
+    fv.ref_delta = seq.ref_delta.or(fv.ref_delta);
+    let mut text = [0u8; 12];
+    let n = seq
+        .ref_delta
+        .map_or(0, |d| fmt_fit(&mut text, format_args!("ref {d:+}")));
     log(&event(
         EventCode::FlowPositioned,
         valve,
         i32::from(fv.held_counts),
         i32::from(fv.target_pct),
-        b"",
+        text.get(..n).unwrap_or_default(),
     ));
     if seq.restart {
         Phase::Unknown

@@ -1603,7 +1603,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(404, "not_found", "no profile")
             return self.send_json(200, {"valve": i + 1, "count": len(v["profile"]), "samples": v["profile"]})
         if what == "flow" and method == "GET":
-            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v)})
+            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v), "refDelta": None})
         doc = self.json_body()
         if doc is None:
             return
@@ -1616,7 +1616,7 @@ class Handler(BaseHTTPRequestHandler):
                 v["flowCounts"] = d.flow_target_counts(v["flow"], v["target"])
             if not v["flow"]["enabled"]:
                 v["flowCounts"] = None
-            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v)})
+            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v), "refDelta": None})
         if what == "flow/counts":
             if self.stm_refused():
                 return

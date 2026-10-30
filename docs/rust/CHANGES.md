@@ -77,6 +77,14 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   outside the ranges (`400 out_of_range`), for `maxMs` above 0 with neither `gapMs` nor `mult`
   (`400 invalid`) and below STM 2.2.9 (`409 stm_unsupported`) ([API.md](../revamped/API.md)).
 
+### ESP32: the drift of a valve in the flow layer
+
+- `GET /api/valves/{n}/flow` gets `refDelta` and event 416 the text `ref +24`: with `refSide`
+  `open`, the pulses the opening to the end stop counted above the pulses from the held position
+  to it. It is the end of the closing move, which no record shows (11..28 pulses per valve with
+  the brake, sd 1..7); a change of it over days is the drift of the valve
+  ([API.md](../revamped/API.md)).
+
 ### ESP32: a 16 KiB response buffer
 
 - The web server's response buffer is 16 KiB (12 KiB up to 2.2.7, the size of a C++ slot):

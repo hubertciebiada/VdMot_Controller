@@ -1039,7 +1039,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 413 | valve_stale | Warning | W | yes | seconds |
 | 414 | service_move_done | Info | W | yes | counted / stop reason |
 | 415 | calib_stroke_short | Warning | W | yes | min(oc, cc) / minCounts |
-| 416 | flow_positioned | Info | W | yes | Rust 2.2.8: pulses from the reference end stop / target % |
+| 416 | flow_positioned | Info | W | yes | Rust 2.2.8: pulses from the reference end stop / target % / `ref +24`: refDelta of this positioning, empty without a measure |
 | 417 | flow_position_failed | Warning | W | yes | Rust 2.2.8: step 1 fallback target, 2 move to the end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep / STM error code, -1 no reply, -2 timeout, or the stop reason / reason |
 | 418 | flow_hold_lost | Warning | W | yes | Rust 2.2.8: STM flags |
 | 500 | temp_sensor_failed | Warning | W | - | slot / raw / id |

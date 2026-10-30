@@ -576,6 +576,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         last_valid: true,
         last_ms: u32::MAX,
         last_peak: u16::MAX,
+        ref_delta: None,
     };
     let views: Vec<ValveView<'_>> = st
         .iter()
@@ -1582,6 +1583,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         last_valid: true,
         last_ms: 5684,
         last_peak: 123,
+        ref_delta: Some(-24),
     };
     let mut jw = JsonWriter::new(&mut buf);
     write_flow_json(&mut jw, &held);
@@ -1634,6 +1636,11 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
     assert!(j.contains(r#""points":[[593,0.000],[1100,2.700]]},"flow":{"enabled":true,"#));
-    assert!(j.ends_with(r#""peak":12.3}}"#));
+    assert!(j.ends_with(r#""peak":12.3},"refDelta":-24}"#));
     check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());
+    let none = FlowView::default();
+    let mut jw = JsonWriter::new(&mut buf);
+    assert!(write_valve_flow_json(&mut jw, 2, &c, &none));
+    let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
+    assert!(j.ends_with(r#""peak":null},"refDelta":null}"#));
 }

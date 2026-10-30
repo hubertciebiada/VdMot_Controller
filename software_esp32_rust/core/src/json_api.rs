@@ -630,6 +630,7 @@ static NO_FLOW: FlowView = FlowView {
     last_valid: false,
     last_ms: 0,
     last_peak: 0,
+    ref_delta: None,
 };
 
 /// `{"enabled":..,"state":"off|unsupported|unknown|positioning|held|failed","counts":n|null,
@@ -660,7 +661,7 @@ pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
 }
 
 /// `GET/POST /api/valves/{n}/flow`: `{"valve":n,"config":{write_flow_config_json},
-/// "flow":{write_flow_json}}`. Returns jw.ok().
+/// "flow":{write_flow_json},"refDelta":n|null}`. Returns jw.ok().
 pub fn write_valve_flow_json(
     jw: &mut JsonWriter<'_>,
     valve: u8,
@@ -673,6 +674,7 @@ pub fn write_valve_flow_json(
     write_flow_config_json(jw, c);
     jw.key("flow");
     write_flow_json(jw, f);
+    jw.kv("refDelta", f.ref_delta.map(i32::from));
     jw.end_object();
     jw.ok()
 }

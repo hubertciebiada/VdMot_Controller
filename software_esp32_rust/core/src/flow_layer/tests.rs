@@ -39,6 +39,24 @@ fn curve() -> FlowConfig {
     c
 }
 
+/// The first positioning of an open reference: the end stop, the closing move of `close`, the
+/// keep.
+fn position_open(stm: &mut Stm, f: &mut FlowLayer, v: u8, close: u16) {
+    assert_eq!(stm.next(f), mv(v, MoveDir::Open, 10000, 30));
+    stm.result(f, v, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(v, MoveDir::Open, 10000, 4000, StopReason::EndStop);
+    stm.tick(f);
+    assert_eq!(stm.next(f), mv(v, MoveDir::Close, close, 34));
+    stm.result(f, v, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(v, MoveDir::Close, close, close, StopReason::Target);
+    stm.tick(f);
+    assert_eq!(stm.next(f), keep(v, true));
+    stm.result(f, v, FlowOutcome::Ok);
+    stm.flags(v, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+}
+
 /// The same loop measured from the open end stop: 4701 pulses of stroke.
 fn open_curve() -> FlowConfig {
     let mut c = curve();
@@ -1706,6 +1724,8 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     assert_eq!(v.state, FlowState::Held);
     assert_eq!((v.counts, v.flow_ml, v.pct), (809, 1000, 37)); // 4701 - 3892
     assert_eq!((v.last_ms, v.last_peak), (3892 * 7, 123));
+    // No held position before the first positioning.
+    assert_eq!(v.ref_delta, None);
     // A second positioning opens to the end stop again (the whole range, one more than the
     // record when equal); the final close may meet the closed end stop.
     stm.now += 300_000;
@@ -1725,7 +1745,8 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     assert_eq!(f.view(0).counts, 701); // 4701 - 4000
     assert_eq!(f.view(0).pct, 8); // 701 -> 0.225 l/min
-                                  // A target of 0 closes to the closed reference as always.
+    assert_eq!(f.view(0).ref_delta, Some(0));
+    // A target of 0 closes to the closed reference as always.
     stm.target(0, 0);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1201, 34)); // 701 + 500
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1735,6 +1756,80 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     assert_eq!((f.view(0).counts, f.view(0).pct), (0, 0));
+    // The close to the reference measures nothing: the last measure stays, the event has none.
+    assert_eq!(f.view(0).ref_delta, Some(0));
+    assert_eq!(stm.events.last().unwrap().text.as_slice(), b"");
+}
+
+#[test]
+fn ref_delta_is_what_the_opening_counted_above_the_way_to_the_end_stop() {
+    let c = open_curve();
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    let go = |stm: &mut Stm, f: &mut FlowLayer, pct, cnt, stop, close: u16| {
+        stm.now += 300_000;
+        stm.target(0, pct);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Open, 10000, 30));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, MoveDir::Open, 10000, cnt, stop);
+        stm.tick(f);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Close, close, 34));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, MoveDir::Close, close, close + 1, StopReason::Target);
+        stm.tick(f);
+        assert_eq!(stm.next(f), keep(0, true));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+        f.view(0)
+    };
+    let v = go(&mut stm, &mut f, 37, 4000, StopReason::EndStop, 3892);
+    assert_eq!((v.counts, v.ref_delta), (808, None));
+    assert_eq!(stm.events.last().unwrap().text.as_slice(), b"");
+    let v = go(&mut stm, &mut f, 10, 3919, StopReason::EndStop, 3985);
+    assert_eq!((v.counts, v.ref_delta), (715, Some(26))); // 3919 - (4701 - 808)
+    assert_eq!(stm.events.last().unwrap().text.as_slice(), b"ref +26");
+    let v = go(&mut stm, &mut f, 37, 3970, StopReason::EarlyEndStop, 3892);
+    assert_eq!((v.counts, v.ref_delta), (808, Some(-16))); // 3970 - (4701 - 715)
+    assert_eq!(stm.events.last().unwrap().text.as_slice(), b"ref -16");
+}
+
+#[test]
+fn ref_delta_needs_the_first_reference_move_from_a_held_position() {
+    let c = open_curve();
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    position_open(&mut stm, &mut f, 0, 3892);
+    assert_eq!(f.view(0).counts, 809);
+    // The first move stops short of the end stop: the count of the second one is only its end.
+    stm.now += 300_000;
+    stm.target(0, 10);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 10000, 3000, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 800, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 800, 700, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3985, 34));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 3985, 3985, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    assert_eq!(f.view(0).ref_delta, None);
+    // A disabled layer shows none.
+    let mut measured = f.view(0);
+    measured.ref_delta = Some(5);
+    assert_ne!(measured, f.view(0));
+    f.set_configs(&configs(&c, &[]));
+    assert_eq!(f.view(0).ref_delta, None);
 }
 
 #[test]

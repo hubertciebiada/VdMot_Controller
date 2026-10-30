@@ -226,7 +226,7 @@ imported (the new failsafe starts with 60 min / 50 %).
 | POST | `/api/valves/detect` | – | 202, valve detection |
 | POST | `/api/sensors/scan` | – | 202, 1-Wire bus scan |
 | POST | `/api/stm/safe-mode/leave` | – | 202 (STM 2.1) |
-| GET | `/api/valves/{n}/flow` | – | `{"valve":n,"config":{...},"flow":{...}}` (Rust 2.2.8, below) |
+| GET | `/api/valves/{n}/flow` | – | `{"valve":n,"config":{...},"flow":{...},"refDelta":n\|null}` (Rust 2.2.8, below) |
 | POST | `/api/valves/{n}/flow` | a patch of the config members (below) | 200 with the document of the GET; `400 malformed` / `invalid` (unknown key) / `out_of_range` with the rule as the detail, nothing changed; `500 nvs` `flow config not saved` (the write failed) or `stored flow config unreadable` (NVS `flow` is there but could not be read, event 124 `flow_config_unreadable`: the save would put the defaults over the other valves) |
 | POST | `/api/valves/{n}/flow/counts` | `{"counts":0..10000}` | 202; positions the valve to the corrected pulses at once (0 = closed), outside the dead band and the interval; `409 flow_off` / `409 unsupported` while the layer does not run on the valve |
 | POST | `/api/valves/{n}/brake` | `{"maxMs":0..100,"gapMs":0..100,"mult":0..10}` (both times 0 = off; `mult` optional, sent to the STM only when above 0; `maxMs` above 0 needs `gapMs` or `mult`) | the STM's answer to `sbrak` (STM 2.2.9, plug braking at the end of a counted move; RAM only): `200 {"valve":n,"result":"ok"}`, `400 stm_rejected` with the error code, `504 stm_timeout` after 3 s without an answer. Refused without sending: `400 out_of_range` for a value outside the ranges, `400 invalid` for `maxMs` above 0 with neither `gapMs` nor `mult` (a brake by time alone drives the stopped motor backwards), `409 stm_unsupported` below protocol 3 and below STM 2.2.9 (`STM 2.2.9 required`, also while the STM version is unknown). The server serves nothing else while it waits (Rust 2.2.8) |
@@ -253,8 +253,15 @@ configuration and the `flow` block of the valve entry:
            "refSide":"closed","strokeCounts":0,"preClose":false,
            "points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]},
  "flow":{"enabled":true,"state":"held","counts":809,"targetCounts":809,"lpm":1.000,
-         "ms":5663,"peak":12.3}}
+         "ms":5663,"peak":12.3},
+ "refDelta":24}
 ```
+- `refDelta` (null until measured, also on a disabled valve): with `refSide`
+  `open`, the pulses the last opening to the end stop from a held position
+  counted minus the pulses from that position to the end stop. It is the end
+  of the closing move that no record shows, about the same on a valve; its
+  change over days is the drift of the valve. Event 416 has it as text
+  (`ref +24`).
 - `enabled` (default false: nothing changes for the valve); `qmax` 0.01..20
   l/min, the flow a target of 100 % means; `refmA` and `openmA` 5..60 mA, the
   end-stop thresholds of the closing and the opening moves; `fallbackPct`

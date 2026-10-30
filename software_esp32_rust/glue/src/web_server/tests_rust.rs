@@ -802,7 +802,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert_eq!(r.status, 200);
     let t = text(&r);
     assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":false,"qmax":2.700,"#));
-    assert!(t.ends_with(&format!("{FLOW_OFF}}}")));
+    assert!(t.ends_with(&format!("{FLOW_OFF},\"refDelta\":null}}")));
     let before = st.shared().flow_revision();
     let body = r#"{"enabled":true,"qmax":2.5,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
     let r = perform(&mut web, api_post("/api/valves/1/flow", body));
@@ -917,6 +917,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
         last_valid: true,
         last_ms: 5684,
         last_peak: 123,
+        ref_delta: None,
     };
     rig.state().snapshot.valves[0].position = 37;
     let r = perform(&mut web, get("/api/valves"));
