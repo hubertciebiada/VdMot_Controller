@@ -217,6 +217,11 @@ python tools/flowbench/flowcheck.py --controller west=192.168.1.51 --controller 
 python tools/flowbench/flowcheck.py --sim --sim-auto                                    # no hardware
 ```
 
+An entry of the curves file can also carry `refSide` (`"closed"` or `"open"`), `strokeCounts`,
+`offset` and `gain`; `upload` writes them with the points. With `"open"` the controller references
+each positioning at the open end stop and closes `strokeCounts − counts`: the open end repeats
+within 2 pulses, the closed end stop at `refmA` within 6..33.
+
 Sessions (buttons on the page):
 
 - **repeat**: the marked loops 5 times closed, then the counts of 1.0 l/min; the reader types what

@@ -625,7 +625,8 @@ def make_handler(engine, page):
 
 def upload(esps, path, enable=False):
     """Writes the points of a curves file ({"NAME IDX": {"curve": [[counts, lpm], ...]}}) into the
-    controllers; the rest of the flow config stays."""
+    controllers, with "refSide", "strokeCounts", "offset" and "gain" when an entry has them; the
+    rest of the flow config stays."""
     curves = json.loads(Path(path).read_text(encoding="utf-8"))
     by = {e.name: e for e in esps}
     for key, c in curves.items():
@@ -646,7 +647,8 @@ def upload(esps, path, enable=False):
                 clean[j][1] - curve_flow([clean[j - 1], clean[j + 1]], clean[j][0])))
             clean.pop(k)
         cfg = flow_cfg(esp, int(idx))
-        cfg = {**cfg, "points": clean, "enabled": bool(enable or cfg.get("enabled"))}
+        extra = {k: c[k] for k in ("refSide", "strokeCounts", "offset", "gain") if k in c}
+        cfg = {**cfg, **extra, "points": clean, "enabled": bool(enable or cfg.get("enabled"))}
         esp.post(f"/api/valves/{idx}/flow", cfg)
         print(f"{key}: {len(clean)} points, top {clean[-1]}")
 
