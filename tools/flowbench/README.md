@@ -242,6 +242,7 @@ Sessions (buttons on the page):
   the float shows (no expected value on the card). The page keeps the readings, mean and standard
   deviation per loop (passes at 0.1 l/min), and the session ends with an offset-only fit.
 - **house**: every loop on 1.0 l/min at once, one reading each: how the loops pull on each other.
+  A typed reading gives an offset-only fit of that loop.
 - **check**: one group of a manifold (3–4 loops) through a list of stops (`short`: 1 / 2 /
   0.5 l/min, the default; `mixed`: 0.25 / 0.5 / 1 / 1.5 / 2 l/min, each twice and never twice in a
   row; also `up`, `down`, `zigzag`). Each
@@ -251,8 +252,9 @@ Sessions (buttons on the page):
   the curve. Only the corrected cards are asked again; when a stop had corrections, the group is
   confirmed once in its last setting, because one valve changes the flow of the others.
 
-After a move the page counts down 30 s for the float to come to rest; the answers are open all the
-time. A reading can be typed (with a comma or a dot) and saved with Enter.
+After a move the page counts down 15 s for the float to come to rest; the answers are open all the
+time. A reading can be typed (with a comma or a dot) and saved with Enter. A valve that loses its
+hold while its card waits ends the session, because the layer takes it to 0 % on its own.
 
 After a check session the tool fits per loop `counts = offset + gain × (counts of the curve)` from
 the OK and typed readings (least squares; the offset only with fewer than 3 points or a narrow

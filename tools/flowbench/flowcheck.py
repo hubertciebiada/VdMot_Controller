@@ -46,7 +46,8 @@ STEP_MIN, STEP_MAX = 6, 120  # pulses of one correction
 STEP_GROW = 1.5  # the same answer twice in a row: a larger step
 POSITION_S = 60  # one positioning of one valve; a controller moves one valve at a time
 TARGET_S = 30  # one target move of one valve
-SETTLE_S = 30  # the float after a move, as in flowbench; the page counts it down
+SETTLE_S = 15  # the float after a move; the page counts it down, the answers stay open
+HOLD_CHECK_S = 5  # how often a card that waits for a reading checks that its valve still holds
 OTHERS_PCT = 15  # the other loops while the curves were measured
 PUMP_MIN_W = 5  # below this the circulation pump stands
 SD_OK = 0.1  # repeat: the standard deviation that passes [l/min]
@@ -174,6 +175,7 @@ class Engine:
         self.restore = []  # (loop, cfg) of the loops whose layer the session switched on
         self.before = {}  # (controller, valve): target of those loops before the session
         self.raised = {}  # the same of the other loops the session opened
+        self.refs = {}  # loop key: refDelta of its last positioning
         if power:
             threading.Thread(target=self.watch_pump, daemon=True).start()
 
@@ -397,18 +399,33 @@ class Engine:
             if time.time() - t0 > limit:
                 raise EngineError(f"pozycjonowanie trwa ponad {limit} s: "
                                   + ", ".join(lp.key for lp in left))
+        self.note_refs(targets)
         self.set(settle_until=time.time() + SETTLE_S)
+
+    def note_refs(self, targets):
+        """What the reference move counted above the way to the end stop: the only sign of a
+        reading taken from a wrong position, and the event ring of the ESP keeps too few events
+        to read it after a session."""
+        for lp in targets:
+            try:
+                self.refs[lp.key] = lp.esp.get(f"/api/valves/{lp.idx}/flow").get("refDelta")
+            except EngineError as e:
+                self.log(f"refDelta: {e}")
+        self.log("ref: " + ", ".join(f"{lp.key} {self.refs.get(lp.key)}" for lp in targets))
 
     def ask(self, cards, confirm=False):
         """Shows the cards and waits until each asked card has an answer (and the group confirm
-        when `confirm`)."""
+        when `confirm`). A valve that loses its hold meanwhile goes to 0 % on its own: a reading
+        of it would be wrong, so that ends the session."""
         with self.lock:
             self.answers = {}
             self.confirmed = False
             self.state.update(cards=cards, confirm=confirm, phase="reading",
                               msg="Odczytaj zaznaczone karty")
             self.cv.notify_all()
-            while True:
+        checked = time.time()
+        while True:
+            with self.lock:
                 if self.stop_req:
                     raise Stop()
                 need = [c["key"] for c in cards if c["ask"]]
@@ -420,6 +437,20 @@ class Engine:
                     # a card changed while confirming: back to the corrections
                     return dict(self.answers)
                 self.cv.wait(1)
+            if time.time() - checked > HOLD_CHECK_S:
+                checked = time.time()
+                self.check_holds(cards)
+
+    def check_holds(self, cards):
+        keys = {}
+        for c in cards:
+            name, _, idx = c["key"].rpartition(" ")
+            keys[(name, int(idx))] = c["key"]
+        docs = self.docs({self.esps[name] for name, _ in keys})
+        for k, key in keys.items():
+            state = ((docs.get(k) or {}).get("flow") or {}).get("state")
+            if k in docs and state != "held":
+                raise EngineError(f"{key}: zawór stracił pozycję ({state}), odczyt byłby zły")
 
     def answer(self, body):
         with self.lock:
@@ -442,7 +473,8 @@ class Engine:
             "INSERT INTO readings (session_id, t, ctrl, valve, stop_no, round, q_target, counts, "
             "answer, value, others, power_w) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (self.sid, time.strftime("%Y-%m-%dT%H:%M:%S"), lp.esp.name, lp.idx, stop_no, rnd, q,
-             counts, ans["answer"], ans.get("value"), json.dumps(others),
+             counts, ans["answer"], ans.get("value"),
+             json.dumps({**others, "ref": self.refs.get(lp.key)}),
              self.power.read() if self.power else None))
         self.db.commit()
 
@@ -550,6 +582,7 @@ class Engine:
         self.log("cały dom: " + ", ".join(
             f"{lp.key} {ans[lp.key]['value'] if ans[lp.key]['answer'] == 'value' else ans[lp.key]['answer']}"
             for lp in loops))
+        self.make_fits(loops)
 
     def correction(self, lp, q, counts, ans, last):
         """New counts after an answer that is not OK; (counts, step factor)."""
