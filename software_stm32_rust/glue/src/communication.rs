@@ -126,8 +126,8 @@ pub const SVMOV_MAXMA_MIN: u8 = 5;
 pub const SVMOV_MAXMA_MAX: u8 = SAFETY_LIMIT_MA;
 /// app_service_move() result: a calibration of the valve is pending
 const SVMOV_CALIB_PENDING: i16 = -3;
-/// sbrak range (motor.rs)
-use crate::motor::SBRAK_MS_MAX;
+/// sbrak ranges (motor.rs)
+use crate::motor::{SBRAK_MS_MAX, SBRAK_MULT_MAX};
 
 /// The firmware identity in the ID block (docs/rust/GLUE-DESIGN-STM.md §6.2): gvers reports
 /// `<version>_<tag> <build>`.
@@ -212,7 +212,7 @@ pub trait CommunicationEnv {
     fn valve_get_snapshot(&mut self, valve: u16) -> ValveSnapshot;
     fn valve_get_profile(&mut self, valve: u16, out: &mut ProfileRecorder);
     /// sbrak: 0, -1 invalid valve
-    fn motor_set_brake(&mut self, valve: u16, max_ms: u8, gap_ms: u8) -> i16;
+    fn motor_set_brake(&mut self, valve: u16, max_ms: u8, gap_ms: u8, mult: u8) -> i16;
     // ---- eeprom.cpp
     fn eeprom_changed(&mut self, fields: u16);
     fn eeprom_changed_slot(&mut self, slot: u8);
@@ -1191,16 +1191,21 @@ impl Communication {
             let (index, error) = kept.map_or((-1, 1), |x| (i32::from(x), 0));
             format_indexed_result(&mut self.reply_line, APP_PRE_KEEP, index, error)
         } else if req.is(APP_PRE_BRAKE) {
-            // the brake of the service moves: sbrak idx|255 maxMs gapMs -> "sbrak idx ok" /
-            // "sbrak -1 err 1"
+            // the brake of the service moves: sbrak idx|255 maxMs gapMs [mult] -> "sbrak idx ok"
+            // / "sbrak -1 err 1"
+            let mult = match req.argc() {
+                3 => Some(0),
+                4 => req.arg_u8(3, 0, SBRAK_MULT_MAX),
+                _ => None,
+            };
             let set = match (
-                req.argc() == 3,
                 arg_valve_or_all(req, 0),
                 req.arg_u8(1, 0, SBRAK_MS_MAX),
                 req.arg_u8(2, 0, SBRAK_MS_MAX),
+                mult,
             ) {
-                (true, Some(x), Some(max_ms), Some(gap_ms))
-                    if env.motor_set_brake(x, max_ms, gap_ms) == 0 =>
+                (Some(x), Some(max_ms), Some(gap_ms), Some(mult))
+                    if env.motor_set_brake(x, max_ms, gap_ms, mult) == 0 =>
                 {
                     Some(x)
                 }

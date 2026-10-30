@@ -1,8 +1,9 @@
 // New cases (no C++ counterpart): the brake at the end of a service move (sbrak, 2.2.9). On the
 // stopping pulse the direction flips with the enable on; the brake ends when no pulse came for
-// the gap, or when its time is up (then a motor that already stands turns back); the end-stop
-// detector is blind meanwhile; sstop ends it; a normal move, a calibration stroke and the coast
-// probe are never braked.
+// the gap, or for a multiple of the interval before the stopping pulse, or when its time is up
+// (then a motor that already stands turns back); the end-stop detector is blind meanwhile; sstop
+// ends it; the direction goes back when it ends; a normal move, a calibration stroke and the
+// coast probe are never braked.
 use core::sync::atomic::Ordering;
 
 use vdm_stm_core::move_classifier::{StopReason, DIR_CLOSE, DIR_OPEN};
@@ -12,7 +13,7 @@ use crate::board::BoardRev;
 use crate::hal::{Out, Pins, RevIrq};
 
 use super::bench::{start_valves, Bench, REVS};
-use super::{CMD_A_OPEN, SBRAK_MS_MAX};
+use super::{CMD_A_OPEN, SBRAK_MS_MAX, SBRAK_MULT_MAX};
 
 /// pulses the sim's motor turns after its enable went off
 const COAST: i32 = 40;
@@ -44,6 +45,11 @@ fn braking(b: &Bench) -> bool {
     b.pulse.braking.load(Ordering::SeqCst)
 }
 
+/// The direction output shows `dir` (low = opening).
+fn dir_shows(b: &Bench, dir: u8) -> bool {
+    b.board.latch(Out::Dir) == (dir != DIR_OPEN)
+}
+
 /// A service move of valve 0, and the coast of the sim's motor after it.
 fn service(b: &mut Bench, dir: u8, counts: u16) {
     b.service(0, dir, counts, 40);
@@ -58,7 +64,7 @@ fn no_brake_by_default(rev: BoardRev) {
     // the full coast after the stopping pulse
     assert_eq!(travel(&b, DIR_OPEN), 500 + COAST);
     // the direction output never flipped
-    assert!(!b.board.latch(Out::Dir));
+    assert!(dir_shows(&b, DIR_OPEN));
     assert!(!braking(&b));
 }
 
@@ -69,36 +75,41 @@ fn a_service_move_without_a_brake_coasts_as_before() {
     }
 }
 
-fn brake_ends_on_the_pulse_gap(rev: BoardRev, dir: u8) {
+/// A brake that ends 17 ms after the flip on a gap of 3 ms: fixed, or 3 times the interval of
+/// 1 ms before the stopping pulse, whichever comes first.
+fn brake_ends_on_the_pulse_gap(rev: BoardRev, dir: u8, gap_ms: u8, mult: u8) {
     let mut b = placed(rev);
-    assert_eq!(b.m.appsetbrake(0, 50, 3), 0);
+    assert_eq!(b.m.appsetbrake(0, 50, gap_ms, mult), 0);
     service(&mut b, dir, 500);
     let r = b.last(0);
     assert_eq!(r.stop_reason, StopReason::Target as u8);
     assert_eq!(r.requested_counts, 500);
-    // the pulses of the slowing motor are counted; the gap of 3 ms ends the brake 17 ms after
-    // the flip, after the 8th of the 10 momentum pulses, the rest of the momentum coasts 8
-    // pulses (40 without the brake)
-    assert_eq!(r.counted_counts, 508);
-    assert_eq!(travel(&b, dir), 516);
+    // the pulses of the slowing motor are counted; the gap ends the brake after the 8th of the
+    // 10 momentum pulses, the rest of the momentum coasts 8 pulses (40 without the brake)
+    assert_eq!(r.counted_counts, 508, "gap {gap_ms} mult {mult}");
+    assert_eq!(travel(&b, dir), 516, "gap {gap_ms} mult {mult}");
     assert_eq!(b.m.mots[0].status, ST_IDLE);
     assert_eq!(b.rig.valve[0].enables, 1);
-    // the direction output stays flipped until the next move sets it
-    assert_eq!(b.board.latch(Out::Dir), dir == DIR_OPEN);
+    // the direction output went back when the brake ended
+    assert!(dir_shows(&b, dir));
     assert!(!braking(&b));
 }
 
 #[test]
 fn the_brake_flips_the_direction_on_the_stopping_pulse_and_ends_when_the_pulses_stop() {
     for rev in REVS {
-        brake_ends_on_the_pulse_gap(rev, DIR_OPEN);
-        brake_ends_on_the_pulse_gap(rev, DIR_CLOSE);
+        brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 3, 0);
+        brake_ends_on_the_pulse_gap(rev, DIR_CLOSE, 3, 0);
+        // the multiple of the interval alone, and the earlier of the two
+        brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 0, 3);
+        brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 10, 3);
+        brake_ends_on_the_pulse_gap(rev, DIR_CLOSE, 3, 10);
     }
 }
 
 fn brake_on_the_time_only(rev: BoardRev) {
     let mut b = placed(rev);
-    assert_eq!(b.m.appsetbrake(0, 50, 0), 0);
+    assert_eq!(b.m.appsetbrake(0, 50, 0, 0), 0);
     service(&mut b, DIR_OPEN, 500);
     let r = b.last(0);
     assert_eq!(r.stop_reason, StopReason::Target as u8);
@@ -107,6 +118,7 @@ fn brake_on_the_time_only(rev: BoardRev) {
     // so the valve ended short of where the count says
     assert_eq!(r.counted_counts, 514);
     assert_eq!(travel(&b, DIR_OPEN), 486);
+    assert!(dir_shows(&b, DIR_OPEN));
     assert!(!braking(&b));
 }
 
@@ -121,7 +133,7 @@ fn detector_blind_while_braking(rev: BoardRev) {
     let mut b = placed(rev);
     // far above the hard limit: sampled, the filter would trip within the brake
     b.rig.valve[0].brake_current_dma = 2900;
-    assert_eq!(b.m.appsetbrake(0, 50, 0), 0);
+    assert_eq!(b.m.appsetbrake(0, 50, 0, 0), 0);
     service(&mut b, DIR_OPEN, 500);
     let r = b.last(0);
     assert_eq!(r.stop_reason, StopReason::Target as u8);
@@ -141,13 +153,16 @@ fn the_end_stop_limits_do_not_judge_the_brake_current() {
 fn sstop_ends_the_brake(rev: BoardRev) {
     let mut b = placed(rev);
     b.rig.valve[0].brake_pulses = 60;
-    assert_eq!(b.m.appsetbrake(0, 100, 0), 0);
+    assert_eq!(b.m.appsetbrake(0, 100, 0, 0), 0);
     assert_eq!(b.appsetservice(0, DIR_OPEN, 500, 40), 0);
     b.run_ms(10);
     assert!(b.run_until(braking, 5000));
+    assert!(!dir_shows(&b, DIR_OPEN));
     assert_eq!(b.m.appstop(0), 0);
     assert!(b.run_until(|b| !braking(b), 20));
-    // the motor state machine halted the motor before the brake time was up
+    // the motor state machine halted the motor before the brake time was up, the direction
+    // output went back
+    assert!(dir_shows(&b, DIR_OPEN));
     assert!(b.run_until(Bench::idle, 5000));
     let r = b.last(0);
     assert_eq!(r.stop_reason, StopReason::Aborted as u8);
@@ -169,13 +184,13 @@ fn s8_sstop_during_the_brake_ends_it_with_the_move() {
 
 fn normal_moves_and_calibrations_not_braked(rev: BoardRev) {
     let mut b = placed(rev);
-    assert_eq!(b.m.appsetbrake(255, 50, 3), 0);
+    assert_eq!(b.m.appsetbrake(255, 50, 3, 3), 0);
     b.run(CMD_A_OPEN, 0, 10, 0);
     b.run_ms(100);
     // the pulse that stops the motor and the full coast, as without a brake
     assert_eq!(b.last(0).counted_counts, 361);
     assert_eq!(travel(&b, DIR_OPEN), 361 + COAST);
-    assert!(!b.board.latch(Out::Dir));
+    assert!(dir_shows(&b, DIR_OPEN));
     // the coast probe of a calibration measures the coast of an unbraked step
     b.learn(0);
     assert_eq!(b.m.mots[0].status, ST_IDLE);
@@ -189,28 +204,27 @@ fn a_normal_move_and_a_calibration_are_not_braked() {
     }
 }
 
+fn brake_of(b: &Bench, v: usize) -> (u8, u8, u8) {
+    let mot = &b.m.mots[v];
+    (mot.brake_max_ms, mot.brake_gap_ms, mot.brake_mult)
+}
+
 #[test]
 fn appsetbrake_sets_one_valve_or_all_clamps_to_the_maximum_and_refuses_an_invalid_valve() {
     let mut b = start_valves(BoardRev::C2);
-    assert_eq!(b.m.appsetbrake(255, 30, 5), 0);
-    for mot in &b.m.mots {
-        assert_eq!((mot.brake_max_ms, mot.brake_gap_ms), (30, 5));
+    assert_eq!(b.m.appsetbrake(255, 30, 5, 2), 0);
+    for v in 0..12 {
+        assert_eq!(brake_of(&b, v), (30, 5, 2));
     }
-    assert_eq!(b.m.appsetbrake(3, 200, 150), 0);
+    assert_eq!(b.m.appsetbrake(3, 200, 150, 99), 0);
     assert_eq!(
-        (b.m.mots[3].brake_max_ms, b.m.mots[3].brake_gap_ms),
-        (SBRAK_MS_MAX, SBRAK_MS_MAX)
+        brake_of(&b, 3),
+        (SBRAK_MS_MAX, SBRAK_MS_MAX, SBRAK_MULT_MAX)
     );
-    assert_eq!(
-        (b.m.mots[2].brake_max_ms, b.m.mots[2].brake_gap_ms),
-        (30, 5)
-    );
-    assert_eq!(b.m.appsetbrake(12, 1, 1), -1);
-    assert_eq!(b.m.appsetbrake(254, 1, 1), -1);
-    assert_eq!(
-        (b.m.mots[2].brake_max_ms, b.m.mots[2].brake_gap_ms),
-        (30, 5)
-    );
+    assert_eq!(brake_of(&b, 2), (30, 5, 2));
+    assert_eq!(b.m.appsetbrake(12, 1, 1, 1), -1);
+    assert_eq!(b.m.appsetbrake(254, 1, 1, 1), -1);
+    assert_eq!(brake_of(&b, 2), (30, 5, 2));
 }
 
 #[test]
@@ -218,16 +232,40 @@ fn the_stopping_pulse_of_a_motor_that_a_trip_already_stopped_is_not_braked() {
     // the EXTI handler alone: target reached, the brake armed, but the motor off (turning false)
     let b = start_valves(BoardRev::C2);
     b.board.attach();
-    b.pulse.arm_brake(50, 3);
+    b.pulse.arm_brake(50, 3, 0);
     b.pulse.target.store(0, Ordering::SeqCst);
     b.pulse.turning.store(false, Ordering::SeqCst);
     b.pulse.on_edge(&b.board);
     assert!(!braking(&b));
     assert!(b.pulse.stop_request.load(Ordering::SeqCst));
-    assert!(!b.board.latch(Out::Dir));
+    assert!(dir_shows(&b, DIR_OPEN));
     // armed again for the next move: a brake marked in progress is over
     b.pulse.braking.store(true, Ordering::SeqCst);
-    b.pulse.arm_brake(0, 0);
+    b.pulse.arm_brake(0, 0, 0);
     assert!(!braking(&b));
     assert_eq!(b.pulse.brake_max_ms.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_stopping_pulse_within_the_ms_of_the_one_before_leaves_the_brake_to_its_time() {
+    // the EXTI handler and the TIM1 tick alone: two pulses in the same ms give an interval of
+    // 0, so the multiple of the interval cannot end the brake, the time does
+    let b = start_valves(BoardRev::C2);
+    b.board.attach();
+    b.pulse.arm_brake(20, 0, 3);
+    b.pulse.target.store(1, Ordering::SeqCst);
+    b.pulse.turning.store(true, Ordering::SeqCst);
+    b.pulse.on_edge(&b.board);
+    b.pulse.on_edge(&b.board);
+    assert!(braking(&b));
+    assert!(!dir_shows(&b, DIR_OPEN));
+    for _ in 0..19 {
+        b.pulse.on_ms(&b.board);
+        assert!(braking(&b));
+    }
+    b.pulse.on_ms(&b.board);
+    assert!(!braking(&b));
+    assert!(b.pulse.stop_request.load(Ordering::SeqCst));
+    assert!(dir_shows(&b, DIR_OPEN));
+    assert_eq!(b.pulse.counter.load(Ordering::SeqCst), 2);
 }

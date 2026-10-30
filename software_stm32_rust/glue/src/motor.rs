@@ -72,6 +72,8 @@ pub const SVMOV_MAXMA_MAX: u8 = SAFETY_LIMIT_MA;
 /// sbrak: the longest brake and the longest pulse gap in ms (the L293D and the common's
 /// push-pull carry the brake current for a bounded time)
 pub const SBRAK_MS_MAX: u8 = 100;
+/// sbrak: the largest multiple of the pulse interval that ends the brake
+pub const SBRAK_MULT_MAX: u8 = 10;
 
 /// 1 ms (TIMER0_INTERVAL_MS * 1000)
 const TIMER0_INTERVAL_US: u32 = 1000;
@@ -246,10 +248,12 @@ pub struct ValveMotor {
     pub trip_seq: u8,
     /// the learned coast and the step away from an end stop that waits for its move back
     pub coast: ValveCoast,
-    /// sbrak: the brake at the end of a service move, the longest brake in ms (0: no brake)
-    /// and the pulse gap in ms that ends it early (0: the time only); RAM only
+    /// sbrak: the brake at the end of a service move, the longest brake in ms (0: no brake),
+    /// the pulse gap in ms that ends it early (0: off) and the multiple of the pulse interval
+    /// before the stopping pulse that ends it early (0: off); RAM only
     pub brake_max_ms: u8,
     pub brake_gap_ms: u8,
+    pub brake_mult: u8,
 }
 
 /// Diagnostics of one valve, written by the valve state machine (C++ `struct valve_diag`).
@@ -873,8 +877,9 @@ impl MotorShared {
     }
 
     /// sbrak: the brake at the end of the service moves of the valve (255: of every valve),
-    /// both values at most SBRAK_MS_MAX; 0, -1 for an invalid valve.
-    pub fn appsetbrake(&mut self, valve: u32, max_ms: u8, gap_ms: u8) -> i16 {
+    /// the ms at most SBRAK_MS_MAX, the multiple at most SBRAK_MULT_MAX; 0, -1 for an invalid
+    /// valve.
+    pub fn appsetbrake(&mut self, valve: u32, max_ms: u8, gap_ms: u8, mult: u8) -> i16 {
         if valve_index(valve).is_none() && valve != 255 {
             return -1;
         }
@@ -882,6 +887,7 @@ impl MotorShared {
             if valve == 255 || valve_index(valve) == Some(x) {
                 mot.brake_max_ms = max_ms.min(SBRAK_MS_MAX);
                 mot.brake_gap_ms = gap_ms.min(SBRAK_MS_MAX);
+                mot.brake_mult = mult.min(SBRAK_MULT_MAX);
             }
         }
         0
@@ -1263,14 +1269,11 @@ impl MotorShared {
 
     /// Switches the motor off and cancels a soft start that timer_handler0 has not done yet.
     fn motor_halt<H: MotorHw>(&mut self, io: &Io<H>) {
-        io.hw.detach();
-        io.pulse.turning.store(false, Ordering::SeqCst);
-        // a brake in progress (sstop) ends with the enable
-        io.pulse.braking.store(false, Ordering::SeqCst);
+        // also a brake in progress (sstop)
+        io.pulse.motor_off(io.hw);
         // before fin: timer_handler0 enables the motor on go && !fin
         self.isr_timer_go = false;
         self.isr_timer_fin = false;
-        ena_all_off(io.hw);
     }
 
     // ------------------------------------------------------------------ valve state machine
@@ -1888,13 +1891,13 @@ impl MotorShared {
                     .arm(self.move_bound_low, self.move_bound_high, inrush);
                 // the brake of a service move (sbrak); a normal move, a calibration stroke and
                 // the coast probe stop on their pulse count as before
-                let (max_ms, gap_ms) = match self.mots.get(mvalvenr as usize) {
+                let (max_ms, gap_ms, mult) = match self.mots.get(mvalvenr as usize) {
                     Some(mot) if self.move_kind == MOVE_SERVICE => {
-                        (mot.brake_max_ms, mot.brake_gap_ms)
+                        (mot.brake_max_ms, mot.brake_gap_ms, mot.brake_mult)
                     }
-                    _ => (0, 0),
+                    _ => (0, 0, 0),
                 };
-                io.pulse.arm_brake(max_ms, gap_ms);
+                io.pulse.arm_brake(max_ms, gap_ms, mult);
                 self.move_profile.reset();
                 self.motor_stop_cause = MotorStop::None;
                 self.last_turning_current = 0;

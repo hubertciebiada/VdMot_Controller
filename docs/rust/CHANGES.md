@@ -12,11 +12,13 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
 ### STM32: a brake at the end of a service move
 
-- New protocol-3 request `sbrak <idx|255> <maxMs> <gapMs>`: the service moves (`svmov`) of the
-  valve end with a brake. On the stopping pulse the direction output flips with the motor still
-  enabled, so the motor is driven against its motion for at most `maxMs` (0..100 ms; 0 = no
-  brake, the default) or until no pulse came for more than `gapMs` (0..100 ms; 0 = the time
-  only); then the motor is switched off. Without a brake the motor coasts 30..65 uncounted
+- New protocol-3 request `sbrak <idx|255> <maxMs> <gapMs> [<mult>]`: the service moves (`svmov`)
+  of the valve end with a brake. On the stopping pulse the direction output flips with the motor
+  still enabled, so the motor is driven against its motion for at most `maxMs` (0..100 ms; 0 = no
+  brake, the default) or until no pulse came for more than `gapMs` (0..100 ms; 0 = off) or for
+  more than `mult` times the pulse interval before the stopping pulse (0..10; 0 = off), whichever
+  comes first; then the motor is switched off and the direction output goes back. Without a
+  brake the motor coasts 30..65 uncounted
   pulses after an opening move in the low-load part of the stroke (field data of 2026-10-30),
   with a scatter of about ±15; the pulses of the braking motor are counted (`lastCnt` exceeds
   `lastReq` by them). The end-stop limits do not judge the brake current (about twice the

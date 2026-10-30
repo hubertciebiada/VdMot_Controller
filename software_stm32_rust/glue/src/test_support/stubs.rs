@@ -411,8 +411,10 @@ impl CommunicationEnv for Stubs {
         *out = self.motor.profile;
     }
 
-    fn motor_set_brake(&mut self, valve: u16, max_ms: u8, gap_ms: u8) -> i16 {
-        self.log(format!("motor_set_brake({valve}, {max_ms}, {gap_ms})"));
+    fn motor_set_brake(&mut self, valve: u16, max_ms: u8, gap_ms: u8, mult: u8) -> i16 {
+        self.log(format!(
+            "motor_set_brake({valve}, {max_ms}, {gap_ms}, {mult})"
+        ));
         self.motor.brake
     }
 
