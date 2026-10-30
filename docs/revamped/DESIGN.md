@@ -485,7 +485,10 @@ a measured curve itself (API.md "Flow layer"):
   flag. Otherwise (a calibration after `err 3`, the lease failsafe, a hold
   that ran out during `err 2` retries, another move) and after a link loss the
   sequence starts again with a close of the whole stroke to the reference end
-  stop.
+  stop. A request of the layer whose result has not come within 30 s
+  (`FLOW_REQ_TIMEOUT_MS`: another `stgtp` of the valve took the place of its
+  fallback target in the link queue, the queue was cleared) counts as not
+  queued, so it cannot stall the other valves.
 - `tick` once per second: the records, the timeouts, the end of a calibration
   a refused move waits for, and a held valve whose `svcKeep` flag is gone (a
   poll after the keep) or whose `move_seq` moved -> `unknown`, event 418. A

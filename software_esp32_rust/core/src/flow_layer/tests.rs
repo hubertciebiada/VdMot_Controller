@@ -1123,6 +1123,53 @@ fn a_dropped_request_is_tried_again_after_3_s() {
 }
 
 #[test]
+fn a_request_whose_result_never_comes_frees_the_layer_after_30_s() {
+    assert_eq!(FLOW_REQ_TIMEOUT_MS, 30_000);
+    let c = curve();
+    let mut f = layer(&c, &[0, 1]);
+    let mut stm = Stm::new(0x003);
+    stm.now += 100_000;
+    stm.ex[0].target = 50;
+    stm.poll(0);
+    stm.target(0, 37);
+    assert_eq!(stm.next(&mut f), set_target(0, 15));
+    let at = stm.now;
+    // Another stgtp of valve 0 took its place in the queue: no result. Valve 1 waits ...
+    stm.target(1, 37);
+    let inp = inputs(true, false);
+    assert_eq!(f.next(&stm.m, inp, at + FLOW_REQ_TIMEOUT_MS - 1), None);
+    // ... until the request counts as not queued: valve 0 tries again after 3 s, valve 1
+    // starts.
+    stm.now = at + FLOW_REQ_TIMEOUT_MS;
+    assert_eq!(
+        f.next(&stm.m, inp, stm.now),
+        mv(1, MoveDir::Close, 4800, 34)
+    );
+    assert_eq!(f.view(0).state, FlowState::Positioning);
+    // A late result of the old request changes nothing.
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    assert!(stm.events.is_empty());
+    stm.result(&mut f, 1, FlowOutcome::Rejected(1));
+    stm.now += BUSY_RETRY_MS;
+    assert_eq!(stm.next(&mut f), set_target(0, 15));
+    // Disabled while its request waits for a result that never comes: the release goes out
+    // 30 s after the request, not before; a release without a result goes out again.
+    let at = stm.now;
+    stm.now += 20_000;
+    f.set_configs(&configs(&c, &[1]));
+    assert_eq!(f.next(&stm.m, inp, at + FLOW_REQ_TIMEOUT_MS - 1), None);
+    stm.now = at + FLOW_REQ_TIMEOUT_MS;
+    assert_eq!(f.next(&stm.m, inp, stm.now), keep(0, false));
+    let at = stm.now;
+    assert_eq!(f.next(&stm.m, inp, at + FLOW_REQ_TIMEOUT_MS - 1), None);
+    assert_eq!(
+        f.next(&stm.m, inp, at + FLOW_REQ_TIMEOUT_MS),
+        keep(0, false)
+    );
+    assert_eq!(f.view(0).state, FlowState::Off);
+}
+
+#[test]
 fn hold_lost_by_the_flag_or_another_move_repositions_when_the_valve_is_free() {
     let c = curve();
     let mut f = layer(&c, &[0]);

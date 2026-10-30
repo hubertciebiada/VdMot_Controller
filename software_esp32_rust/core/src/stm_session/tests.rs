@@ -921,6 +921,35 @@ fn flow_layer_disabled_releases_the_keep_and_the_desired_target_is_pushed_again(
 }
 
 #[test]
+fn flow_layer_a_fallback_target_replaced_in_the_queue_stalls_the_layer_30_s_at_most() {
+    let mut r = Rig::new(3, 0x001);
+    r.stm_mut().version = String::from("2.2.8-revamped_C2 1712345678 ");
+    r.start();
+    r.run(10_000);
+    let t = r.target(0, 37, TargetSource::Web);
+    r.command(&t);
+    r.run(5_000);
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 37"]);
+    // A slow STM: the layer's fallback target waits in the queue behind a poll ...
+    r.reply_delay_ms = 300;
+    r.run_until(|r| r.s.link().busy_with(Priority::Poll), 1_000);
+    r.s.apply_flow_config(&flow_configs(0, true));
+    r.step();
+    assert_eq!(r.s.link().queued_with(Priority::User), 1);
+    // ... when the layer is disabled again: the model's stgtp of the valve takes its place.
+    r.s.apply_flow_config(&flow_configs(0, false));
+    r.step();
+    assert_eq!(r.s.link().queued_with(Priority::User), 1);
+    r.reply_delay_ms = 3;
+    r.run(25_000);
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 37", "stgtp 0 37"]);
+    assert_eq!(r.count("skeep"), 0);
+    // The release of the keep goes out once the fallback's result counts as lost.
+    r.run(10_000);
+    assert_eq!(r.stm().lines_of("skeep"), ["skeep 0 0"]);
+}
+
+#[test]
 fn flow_layer_a_lost_keep_repositions_a_rejected_move_fails_the_positioning() {
     let mut r = flow_rig();
     let t = r.target(0, 37, TargetSource::Web);

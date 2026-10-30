@@ -897,8 +897,10 @@ struct FlowValve {
     /// Unknown, Positioning, Held or Failed (Off and Unsupported are derived)
     state: FlowState,
     step: Step,
-    /// the request of this valve that was handed out: its result is awaited
+    /// the request of this valve that was handed out: its result is awaited (since
+    /// `req_since_ms`, at most [`FLOW_REQ_TIMEOUT_MS`])
     req: Option<FlowRequest>,
+    req_since_ms: u32,
     /// the STM accepted a move: its record is awaited
     move_pending: bool,
     move_dir: MoveDir,
@@ -951,6 +953,7 @@ impl FlowValve {
         state: FlowState::Unknown,
         step: Step::None,
         req: None,
+        req_since_ms: 0,
         move_pending: false,
         move_dir: MoveDir::Open,
         move_req: 0,
@@ -1003,6 +1006,9 @@ pub const BUSY_RETRIES_MAX: u16 = 100;
 pub const CALIB_RETRY_MS: u32 = 60_000;
 /// A failed positioning is tried again after this time (or with the next target).
 pub const FAILED_RETRY_MS: u32 = 300_000;
+/// A request whose result has not come within this time counts as not queued (far beyond a
+/// queue wait with its attempts and the STM's start-up hold).
+pub const FLOW_REQ_TIMEOUT_MS: u32 = 30_000;
 
 const STATUS_OPENING: u8 = 2;
 const STATUS_CLOSING: u8 = 3;
@@ -1069,6 +1075,7 @@ impl FlowLayer {
                     *fv = FlowValve {
                         release_pending: release && self.supported,
                         req: fv.req,
+                        req_since_ms: fv.req_since_ms,
                         needs_fallback: false,
                         ..FlowValve::FRESH
                     };
@@ -1213,6 +1220,13 @@ impl FlowLayer {
                 }
             }
         }
+        for fv in &mut self.v {
+            // A request whose result never comes (another stgtp of the valve took its place
+            // in the queue, the queue was cleared) must not stall every valve.
+            if fv.req.is_some() && elapsed_ms(now_ms, fv.req_since_ms) >= FLOW_REQ_TIMEOUT_MS {
+                requeue(fv, now_ms);
+            }
+        }
         if self.v.iter().any(|fv| fv.req.is_some() || fv.move_pending) {
             return None;
         }
@@ -1223,6 +1237,7 @@ impl FlowLayer {
                 let req = FlowRequest::Keep { valve, on: false };
                 self.v[i].release_pending = false;
                 self.v[i].req = Some(req);
+                self.v[i].req_since_ms = now_ms;
                 self.dirty = true;
                 return Some(req);
             }
@@ -1238,6 +1253,7 @@ impl FlowLayer {
             };
             if let Some(req) = req {
                 fv.req = Some(req);
+                fv.req_since_ms = now_ms;
                 self.cursor = (i + 1) % N;
                 self.dirty = true;
                 return Some(req);
@@ -1249,16 +1265,8 @@ impl FlowLayer {
     /// The request of `valve` could not be queued: a release goes out again, a positioning
     /// tries again after [`BUSY_RETRY_MS`].
     pub fn on_dropped(&mut self, valve: u8, now_ms: u32) {
-        let Some(fv) = self.v.get_mut(usize::from(valve)) else {
-            return;
-        };
-        let Some(req) = fv.req.take() else {
-            return;
-        };
-        if matches!(req, FlowRequest::Keep { on: false, .. }) {
-            fv.release_pending = true;
-        } else if fv.state == FlowState::Positioning {
-            wait(fv, BUSY_RETRY_MS, false, now_ms);
+        if let Some(fv) = self.v.get_mut(usize::from(valve)) {
+            requeue(fv, now_ms);
         }
     }
 
@@ -1746,6 +1754,19 @@ fn fail(
         code,
         text,
     ));
+}
+
+/// The request of the valve did not go out or its result does not come: a release goes out
+/// again, a positioning tries again after [`BUSY_RETRY_MS`].
+fn requeue(fv: &mut FlowValve, now_ms: u32) {
+    let Some(req) = fv.req.take() else {
+        return;
+    };
+    if matches!(req, FlowRequest::Keep { on: false, .. }) {
+        fv.release_pending = true;
+    } else if fv.state == FlowState::Positioning {
+        wait(fv, BUSY_RETRY_MS, false, now_ms);
+    }
 }
 
 /// The next request of the sequence waits `ms` (and, `calib`, until a calibration ended).
