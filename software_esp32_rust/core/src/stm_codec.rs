@@ -117,10 +117,16 @@ pub enum Cmd {
     // protocol v1 command, appended (the numbers are external)
     /// set learn time: `stlnt <seconds>`
     Stlnt = 40,
+    // protocol v3 command of STM 2.2.8 (the flow layer), appended
+    /// keep the service hold: `skeep <valve|255> <0|1>`
+    Skeep = 41,
+    /// plug braking at the end of a counted move (STM 2.2.9): `sbrak <valve|255> <maxMs>
+    /// <gapMs>`
+    Sbrak = 42,
 }
 
 /// Commands, including None.
-pub const CMD_COUNT: u8 = 41;
+pub const CMD_COUNT: u8 = 43;
 
 /// Indexed by the command number.
 const CMDS: [Cmd; CMD_COUNT as usize] = [
@@ -165,6 +171,8 @@ const CMDS: [Cmd; CMD_COUNT as usize] = [
     Cmd::Gtlnt,
     Cmd::Ssafe,
     Cmd::Stlnt,
+    Cmd::Skeep,
+    Cmd::Sbrak,
 ];
 
 /// Indexed by the command number.
@@ -173,6 +181,7 @@ const CMD_NAMES: [&str; CMD_COUNT as usize] = [
     "stvls", "masns", "staop", "staln", "stdet", "stlnm", "gtlnm", "smotc", "gmotc", "gvers",
     "ghwin", "eepst", "reset", "gproto", "gvlvx", "gprof", "svmov", "scalx", "gcalx", "gstat",
     "gvlvy", "gstax", "slhbt", "slcfg", "sfspo", "glcfg", "sstop", "gtlnt", "ssafe", "stlnt",
+    "skeep", "sbrak",
 ];
 
 impl Cmd {
@@ -195,7 +204,7 @@ pub fn cmd_from_name(s: &[u8]) -> Cmd {
 }
 
 /// Lowest protocol that answers the command: 1 for the v1 commands and Stlnt, 2 for
-/// Gproto..Gstat, 3 for Gvlvy..Ssafe; 0 for None.
+/// Gproto..Gstat, 3 for Gvlvy..Ssafe, Skeep (STM 2.2.8) and Sbrak (STM 2.2.9); 0 for None.
 pub fn cmd_min_protocol(c: Cmd) -> u8 {
     match c {
         Cmd::None => 0,
@@ -212,7 +221,7 @@ pub fn cmd_is_v2(c: Cmd) -> bool {
 }
 
 /// True when sending the same request twice has the same effect as once (all get*, stgtp,
-/// stvls, stlnm, smotc, scalx, stlnt and every v3 command: a repeated heartbeat, stop or
+/// stvls, stlnm, smotc, scalx, stlnt and every v3 command: a repeated heartbeat, stop, keep or
 /// safe-mode exit changes nothing). Only these are retried by LinkPolicy. Actions (staln,
 /// staop, stdet, stons, masns, svmov, reset) are never retried automatically.
 pub fn cmd_is_idempotent(c: Cmd) -> bool {
@@ -701,6 +710,36 @@ pub fn build_set_learn_time(seconds: u32) -> RequestLine {
     build_numeric(Cmd::Stlnt, NO_VALVE, 0, &[seconds])
 }
 
+/// `skeep <valve|255> <0|1>`: 0..11 or [`ALL_VALVES`] (STM 2.2.8). 1: the service hold of the
+/// valve does not run out; 0: it runs out as after any service move.
+pub fn build_keep(valve_or_all: u8, on: bool) -> Option<RequestLine> {
+    (valve_or_all < VALVE_COUNT || valve_or_all == ALL_VALVES).then(|| {
+        build_numeric(
+            Cmd::Skeep,
+            valve_or_all,
+            u16::from(on),
+            &[u32::from(valve_or_all), u32::from(on)],
+        )
+    })
+}
+
+/// `sbrak <valve|255> <maxMs> <gapMs>`: 0..11 or [`ALL_VALVES`] (STM 2.2.9): plug braking at
+/// the end of a counted move, both 0 = off; `arg` is `max_ms`.
+pub fn build_brake(valve_or_all: u8, max_ms: u16, gap_ms: u16) -> Option<RequestLine> {
+    (valve_or_all < VALVE_COUNT || valve_or_all == ALL_VALVES).then(|| {
+        build_numeric(
+            Cmd::Sbrak,
+            valve_or_all,
+            max_ms,
+            &[
+                u32::from(valve_or_all),
+                u32::from(max_ms),
+                u32::from(gap_ms),
+            ],
+        )
+    })
+}
+
 // ---------------------------------------------------------------- replies
 
 #[repr(u8)]
@@ -1030,12 +1069,14 @@ pub const STM_FLAG_EARLY_PENDING: u16 = 0x080;
 pub const STM_FLAG_ASSEMBLY: u16 = 0x100;
 /// left at a service move / sstop position
 pub const STM_FLAG_SVC_HOLD: u16 = 0x200;
+/// the service hold does not run out (`skeep`, STM 2.2.8)
+pub const STM_FLAG_SVC_KEEP: u16 = 0x400;
 
 /// "fsLease", "fsBlocked", "uncalibrated", "needsRef", "recal", "calRestored", "retry",
-/// "earlyPending", "assembly", "svcHold" for bits 0..9; "" for the reserved bits 10..15 and
-/// above.
+/// "earlyPending", "assembly", "svcHold", "svcKeep" for bits 0..10; "" for the reserved bits
+/// 11..15 and above.
 pub fn stm_flag_name(bit: u8) -> &'static str {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 11] = [
         "fsLease",
         "fsBlocked",
         "uncalibrated",
@@ -1046,6 +1087,7 @@ pub fn stm_flag_name(bit: u8) -> &'static str {
         "earlyPending",
         "assembly",
         "svcHold",
+        "svcKeep",
     ];
     NAMES.get(usize::from(bit)).copied().unwrap_or("")
 }
@@ -1226,9 +1268,9 @@ pub struct Profile {
     pub samples: [ProfileSample; PROFILE_MAX_SAMPLES as usize],
 }
 
-/// "<cmd> <idx> ok" or "<cmd> <idx> err <code>" (svmov v2; sfspo, sstop v3). index -1: the STM
-/// could not read the index; such a reply answers any outstanding request of that command.
-/// index 255 (sfspo, sstop): all valves.
+/// "<cmd> <idx> ok" or "<cmd> <idx> err <code>" (svmov v2; sfspo, sstop, skeep, sbrak v3).
+/// index -1: the STM could not read the index; such a reply answers any outstanding request of
+/// that command. index 255 (sfspo, sstop, skeep, sbrak): all valves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexedResult {
     pub index: i16,
@@ -1384,6 +1426,10 @@ pub struct Reply {
     pub stop: IndexedResult,
     /// Gtlnt
     pub learn_time: u32,
+    /// Skeep
+    pub keep: IndexedResult,
+    /// Sbrak
+    pub brake: IndexedResult,
 }
 
 /// Tokens of a reply line; one more is TooLong.
@@ -1928,6 +1974,8 @@ fn parse_payload(cmd: Cmd, a: &[&[u8]], r: &mut Reply) -> Parsed {
             r.learn_time = parse_single(a, 0, u32::MAX)?;
             Ok(())
         }
+        Cmd::Skeep => parse_indexed(a, true, &mut r.keep),
+        Cmd::Sbrak => parse_indexed(a, true, &mut r.brake),
     }
 }
 
@@ -1992,7 +2040,7 @@ fn sensor_matches(valid: bool, id: &OneWireId, expect: &OneWireId) -> bool {
 ///    there; a valid reading must carry `req.expect` unless that is zero (a late reply for
 ///    another bus index is not taken).
 ///  - Gonec/Gowvc list requests accept a count-only reply with count 0.
-///  - Svmov/Sfspo/Sstop accept index -1 (the STM could not read the index).
+///  - Svmov/Sfspo/Sstop/Skeep/Sbrak accept index -1 (the STM could not read the index).
 pub fn reply_matches(req: &RequestLine, rep: &Reply) -> bool {
     if req.cmd == Cmd::None || req.text.is_empty() || rep.cmd != req.cmd {
         return false;
@@ -2005,6 +2053,8 @@ pub fn reply_matches(req: &RequestLine, rep: &Reply) -> bool {
         Cmd::Svmov => index_matches(&rep.service_move, req.valve),
         Cmd::Sfspo => index_matches(&rep.failsafe, req.valve),
         Cmd::Sstop => index_matches(&rep.stop, req.valve),
+        Cmd::Skeep => index_matches(&rep.keep, req.valve),
+        Cmd::Sbrak => index_matches(&rep.brake, req.valve),
         Cmd::Goned => sensor_matches(rep.temp_data.valid, &rep.temp_data.id, &req.expect),
         Cmd::Gowvd => sensor_matches(rep.volt_data.valid, &rep.volt_data.id, &req.expect),
         Cmd::Stvls => rep.ack.valve == req.valve,

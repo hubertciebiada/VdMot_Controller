@@ -185,6 +185,8 @@ fn is_rejection(r: &Reply) -> bool {
         Cmd::Svmov => !r.service_move.ok,
         Cmd::Sfspo => !r.failsafe.ok,
         Cmd::Sstop => !r.stop.ok,
+        Cmd::Skeep => !r.keep.ok,
+        Cmd::Sbrak => !r.brake.ok,
         Cmd::Goned => !r.temp_data.valid,
         Cmd::Gowvd => !r.volt_data.valid,
         Cmd::Gvlon => r.gvlon_error,
