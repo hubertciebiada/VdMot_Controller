@@ -8,6 +8,36 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Unreleased
+
+### ESP32: the flow layer
+
+- A valve with a measured curve (`POST /api/valves/{n}/flow`: `qmax`, the end-stop currents,
+  the fallback stroke position, the interval and dead band, offset and gain, the reference side
+  and 2..16 points of pulses and l/min) takes and reports its target as a flow: 0..100 % means
+  0..qmax l/min on `POST /api/valves/{n}/target`, MQTT `valves/<V>/target` and in Home
+  Assistant; `pos`/`actual` is the flow percentage of the held position. The ESP positions the
+  valve with service moves from the reference end stop (a close at `refmA`, one opening move of
+  the curve's pulses at `openmA`; with `refSide` `open` an opening move to the open end stop
+  and one closing move of `strokeCounts` minus the pulses, the curve counting from the closed
+  end stop on both sides; `preClose` warms the closed end stop first) and keeps it with the
+  new STM command `skeep` (STM 2.2.8, flag
+  `svcKeep` of `gvlvy`); the STM's own target of the valve is `fallbackPct`, where it goes
+  when the hold is lost. `POST /api/valves/{n}/flow/counts` positions to given pulses for the
+  verification tool. The valve entry of `/api/valves` gets a `flow` block (state, held pulses,
+  flow, the `ms` and `peak` of the final move); events 416 `flow_positioned`, 417
+  `flow_position_failed`, 418 `flow_hold_lost`; NVS `flow`. Nothing changes for a valve
+  without the layer, and an STM below 2.2.8 keeps every valve in normal mode (`state`
+  `unsupported`). `failsafePct` and `sfspo` stay stroke percentages
+  ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs),
+  [API.md](../revamped/API.md), [MQTT.md](../revamped/MQTT.md),
+  [DESIGN.md](../revamped/DESIGN.md)).
+- `POST /api/valves/{n}/brake` `{"maxMs","gapMs"}` sends the STM 2.2.9 command `sbrak` (plug
+  braking at the end of a counted move, both 0 = off, RAM only on the STM) and answers with the
+  STM's reply: `200` ok, `409 stm_rejected` with the code, `504 stm_timeout` after 3 s. The
+  only route that waits for the STM: the server serves nothing else meanwhile
+  ([API.md](../revamped/API.md)).
+
 ## 2.2.7-revamped
 
 ESP32 release: a health warning about early stops ends with a successful calibration, and a new

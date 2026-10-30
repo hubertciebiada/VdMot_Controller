@@ -213,6 +213,15 @@ valve targets should read back:
 With **separate**, `valves/<V>/target` is the target the STM confirmed, so a
 regulator that compares it with what it sent sees a lost command.
 
+A valve with the flow layer (Rust 2.2.8, `GET /api/valves/{n}/flow` in
+API.md) takes and reports percentages of its flow band: `valves/<V>/target`
+(the command and, with separate, the confirmed value), `requested` and
+`actual` mean 0..qmax l/min, `actual` is 0 while the held position is unknown
+(after a restart, until the valve is positioned again), and `sync` is
+`synced` as soon as the layer holds the target. The Home Assistant entities
+of the valve carry the same values; `failsafe` and the failsafe position stay
+stroke percentages.
+
 ## Events
 
 Event JSON (same keys as the HTTP API plus `event_type`):
