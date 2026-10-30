@@ -282,6 +282,8 @@ fn s8_6_sbrak_brakes_a_service_move_within_a_few_pulses_of_its_count() {
         sim.valve[2].coast_pulses = 40;
         sim.valve[2].brake_pulses = 10;
     }
+    // the default brake off
+    assert_eq!(b.exchange("sbrak 2 0 0\n"), "sbrak 2 ok\r\n");
     let start = b.sim().valve[2].position;
     assert_eq!(b.exchange("svmov 2 0 400 40\n"), "svmov 2 ok\r\n");
     assert!(b.run_main_until(|b| b.idle(), 5000));

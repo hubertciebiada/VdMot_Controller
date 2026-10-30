@@ -13,7 +13,10 @@ use crate::board::BoardRev;
 use crate::hal::{Out, Pins, RevIrq};
 
 use super::bench::{start_valves, Bench, REVS};
-use super::{timer_handler0, CMD_A_OPEN, SBRAK_MS_MAX, SBRAK_MULT_MAX};
+use super::{
+    timer_handler0, CMD_A_OPEN, SBRAK_DEFAULT_GAP_MS, SBRAK_DEFAULT_MAX_MS, SBRAK_MS_MAX,
+    SBRAK_MULT_MAX,
+};
 use crate::test_support::valve_sim::SimAdc;
 
 /// pulses the sim's motor turns after its enable went off
@@ -57,8 +60,9 @@ fn service(b: &mut Bench, dir: u8, counts: u16) {
     b.run_ms(100);
 }
 
-fn no_brake_by_default(rev: BoardRev) {
+fn no_brake(rev: BoardRev) {
     let mut b = placed(rev);
+    assert_eq!(b.m.appsetbrake(255, 0, 0, 0), 0);
     service(&mut b, DIR_OPEN, 500);
     assert_eq!(b.last(0).counted_counts, 500);
     assert_eq!(b.last(0).stop_reason, StopReason::Target as u8);
@@ -70,10 +74,22 @@ fn no_brake_by_default(rev: BoardRev) {
 }
 
 #[test]
-fn a_service_move_without_a_brake_coasts_as_before() {
+fn a_service_move_with_the_brake_off_coasts_as_before() {
     for rev in REVS {
-        no_brake_by_default(rev);
+        no_brake(rev);
     }
+}
+
+#[test]
+fn after_a_start_every_valve_has_the_default_brake() {
+    let b = start_valves(BoardRev::C2);
+    for v in 0..b.m.mots.len() {
+        assert_eq!(
+            brake_of(&b, v),
+            (SBRAK_DEFAULT_MAX_MS, SBRAK_DEFAULT_GAP_MS, 0)
+        );
+    }
+    assert_eq!((SBRAK_DEFAULT_MAX_MS, SBRAK_DEFAULT_GAP_MS), (60, 20));
 }
 
 /// A brake that ends 17 ms after the flip on a gap of 3 ms: fixed, or 3 times the interval of

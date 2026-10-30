@@ -72,6 +72,11 @@ pub const SVMOV_MAXMA_MAX: u8 = SAFETY_LIMIT_MA;
 /// sbrak: the longest brake and the longest pulse gap in ms (the L293D and the common's
 /// push-pull carry the brake current for a bounded time)
 pub const SBRAK_MS_MAX: u8 = 100;
+/// The brake of the service moves after a start (2.2.9 field test, 4 valves: a further opening
+/// move missed -5..2 instead of 35..60 pulses; longer brakes drove the motor backwards): at most
+/// 60 ms, ended 20 ms after the last pulse of the slowing motor.
+pub const SBRAK_DEFAULT_MAX_MS: u8 = 60;
+pub const SBRAK_DEFAULT_GAP_MS: u8 = 20;
 /// sbrak: the largest multiple of the pulse interval that ends the brake
 pub const SBRAK_MULT_MAX: u8 = 10;
 
@@ -250,7 +255,8 @@ pub struct ValveMotor {
     pub coast: ValveCoast,
     /// sbrak: the brake at the end of a service move, the longest brake in ms (0: no brake),
     /// the pulse gap in ms that ends it early (0: off) and the multiple of the pulse interval
-    /// before the stopping pulse that ends it early (0: off); RAM only
+    /// before the stopping pulse that ends it early (0: off); RAM only, SBRAK_DEFAULT_* after a
+    /// start
     pub brake_max_ms: u8,
     pub brake_gap_ms: u8,
     pub brake_mult: u8,
@@ -600,7 +606,11 @@ impl MotorShared {
     /// The start values of the C++ statics. `board` selects the MUX levels.
     pub fn new(board: BoardRev) -> Self {
         MotorShared {
-            mots: [ValveMotor::default(); VALVES],
+            mots: [ValveMotor {
+                brake_max_ms: SBRAK_DEFAULT_MAX_MS,
+                brake_gap_ms: SBRAK_DEFAULT_GAP_MS,
+                ..ValveMotor::default()
+            }; VALVES],
             valves: [Valve::default(); VALVES],
             learning_movements: u32::from(LEARN_AFTER_MOVEMENTS_DEFAULT),
             currentbound_low_fac: 17,

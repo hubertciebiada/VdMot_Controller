@@ -515,6 +515,8 @@ fn calibration_the_temperature_gap_ends_after_exactly_3_s() {
 
 fn service_exact_counts(rev: BoardRev) {
     let mut b = start_valves(rev);
+    // the service move as before 2.2.9 (the brake counts its pulses: tests_brake)
+    assert_eq!(b.m.appsetbrake(255, 0, 0, 0), 0);
     b.place(0, 10);
     let start = b.rig.valve[0].position;
     assert_eq!(b.appsetservice(0, DIR_OPEN, 500, 40), 0);
@@ -580,6 +582,7 @@ fn service_move_the_end_stop_bound_is_maxma_x_10() {
 
 fn service_position_with_scaler_1(rev: BoardRev) {
     let mut b = start_valves(rev);
+    assert_eq!(b.m.appsetbrake(255, 0, 0, 0), 0);
     b.place(0, 10);
     b.m.mots[0].scaler = 1;
     b.service(0, DIR_OPEN, 50, 40);
