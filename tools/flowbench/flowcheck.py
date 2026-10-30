@@ -248,9 +248,12 @@ class Engine:
         """Seconds for a batch: the moves of one controller run one after the other."""
         return 30 + each_s * max(Counter(name for name, _ in keys).values())
 
-    def targets(self, wanted, stoppable=False):
+    def targets(self, wanted, stoppable=False, passing=(), say=None):
         """wanted: {(controller, valve): pct}. Sets the targets, waits until the valves stand
-        there and returns the ones that did not get there."""
+        there and returns the ones that did not get there. A valve in `passing` goes on to
+        another target, so the STM taking this one is enough: near the closed end a valve can
+        stop short of 5 % and would hold the whole batch up to its limit. `say` is the message
+        for the page."""
         left, t0, posted = dict(wanted), time.time(), 0.0
         esps = {self.esps[name] for name, _ in wanted}
         limit = self.limit(wanted, TARGET_S) if wanted else 0
@@ -268,9 +271,13 @@ class Engine:
             docs = self.docs(esps)
             for k, pct in list(left.items()):
                 v = docs.get(k) or {}
-                if v.get("stateKey") == "idle" and v.get("target") == pct \
+                if k in passing and v.get("stmTarget") == pct:
+                    del left[k]
+                elif v.get("stateKey") == "idle" and v.get("target") == pct \
                         and abs((v.get("pos") or 0) - pct) <= 2:
                     del left[k]
+            if say:
+                self.set(msg=f"{say}: zostało {len(left)}")
         return left
 
     def keep_targets(self, loops):
@@ -359,9 +366,10 @@ class Engine:
         first. Returns the valves that did not get back."""
         self.disable_restored()
         over = {k: 0 if pct else 5 for k, pct in self.before.items()}
-        left = {k: pct for k, pct in self.targets({**self.raised, **over}).items()
+        say = "Przywracam zawory"
+        left = {k: pct for k, pct in self.targets({**self.raised, **over}, passing=over, say=say).items()
                 if k in self.raised}
-        left.update(self.targets(self.before))
+        left.update(self.targets(self.before, say=say))
         self.raised, self.before = {}, {}
         return left
 
@@ -740,7 +748,7 @@ class SimEsp:
         busy = time.time() < v["busy_until"]
         on = v["cfg"]["enabled"]
         return {"idx": i, "name": v["name"], "active": True, "stateKey": "opening" if busy else "idle",
-                "pos": v["pct"], "target": v["desired"], "ext": {"moveSeq": v["seq"]},
+                "pos": v["pct"], "target": v["desired"], "stmTarget": v["pct"], "ext": {"moveSeq": v["seq"]},
                 "flow": {"enabled": on, "state": ("positioning" if busy else "held") if on else "off",
                          "counts": v["counts"], "targetCounts": v["target"],
                          "lpm": round(curve_flow(v["cfg"]["points"], v["counts"]), 3)}}
