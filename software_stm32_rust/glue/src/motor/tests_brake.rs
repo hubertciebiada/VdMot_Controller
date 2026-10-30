@@ -100,8 +100,12 @@ fn the_brake_flips_the_direction_on_the_stopping_pulse_and_ends_when_the_pulses_
     for rev in REVS {
         brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 3, 0);
         brake_ends_on_the_pulse_gap(rev, DIR_CLOSE, 3, 0);
+        // a gap of 4 ends it on the same tick: the 5th ms after the 8th pulse, the ms before
+        // the 9th
+        brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 4, 0);
         // the multiple of the interval alone, and the earlier of the two
         brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 0, 3);
+        brake_ends_on_the_pulse_gap(rev, DIR_CLOSE, 0, 4);
         brake_ends_on_the_pulse_gap(rev, DIR_OPEN, 10, 3);
         brake_ends_on_the_pulse_gap(rev, DIR_CLOSE, 3, 10);
     }
