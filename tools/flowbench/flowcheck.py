@@ -203,6 +203,13 @@ class Engine:
                 self.restore.append((lp, dict(lp.cfg)))
                 lp.esp.post(f"/api/valves/{lp.idx}/flow", {**lp.cfg, "enabled": True})
                 lp.cfg = flow_cfg(lp.esp, lp.idx)
+                # the stm thread of the ESP takes the configuration on its next round; until
+                # then /flow/counts answers 409 flow_off
+                t0 = time.time()
+                while (lp.esp.valve(lp.idx).get("flow") or {}).get("state") in (None, "off"):
+                    if time.time() - t0 > 30:
+                        raise EngineError(f"{lp.key}: warstwa przepływu nie ruszyła w 30 s")
+                    time.sleep(1)
                 self.log(f"{lp.key}: warstwa przepływu włączona na sesję")
 
     def disable_restored(self):
