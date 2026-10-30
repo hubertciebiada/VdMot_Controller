@@ -1864,6 +1864,30 @@ fn a_link_loss_between_moves_restarts_the_sequence_from_the_end_stop() {
 }
 
 #[test]
+fn a_held_valve_and_a_reference_retry_do_not_depend_on_the_last_move() {
+    // A link loss leaves a held valve alone: its position stays known, the next positioning
+    // closes from it.
+    let c = curve();
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    position(&mut stm, &mut f, 0, false, 4800, 809);
+    stm.now += 2;
+    assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
+    assert!(f.view(0).known);
+    stm.now += 300_000;
+    stm.target(0, 50);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    // The retry of a reference close that missed the end stop is the retry, hold or not.
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 1309, 1309, StopReason::Target);
+    stm.tick(&mut f);
+    stm.flags(0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 800, 34));
+}
+
+#[test]
 fn busy_answers_longer_than_the_hold_restart_the_sequence_from_the_end_stop() {
     for moves in 1..4 {
         let (mut stm, mut f) = warm_after(moves);
