@@ -260,8 +260,9 @@ configuration and the `flow` block of the valve entry:
   `open`, the pulses the last opening to the end stop from a held position
   counted minus the pulses from that position to the end stop. It is the end
   of the closing move that no record shows, about the same on a valve; its
-  change over days is the drift of the valve. Event 416 has it as text
-  (`ref +24`).
+  change over days is the drift of the valve. From the closed end stop (0
+  pulses held) it is the counted stroke minus `strokeCounts` instead. Event
+  416 has it as text (`ref +24`).
 - `enabled` (default false: nothing changes for the valve); `qmax` 0.01..20
   l/min, the flow a target of 100 % means; `refmA` and `openmA` 5..60 mA, the
   end-stop thresholds of the closing and the opening moves; `fallbackPct`
