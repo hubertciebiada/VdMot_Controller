@@ -159,6 +159,8 @@ const VALVES: usize = VALVE_COUNT as usize;
 
 /// The STM firmware the flow layer needs (`skeep`, the `svcKeep` flag).
 pub const FLOW_MIN_STM_VERSION: &str = "2.2.8";
+/// The STM firmware that answers `sbrak`.
+pub const BRAKE_MIN_STM_VERSION: &str = "2.2.9";
 
 pub struct StmSession<P: StmSessionPort> {
     port: P,
@@ -645,9 +647,12 @@ impl<P: StmSessionPort> StmSession<P> {
                 }
             }
             StmCommandType::Brake => {
-                // Below protocol 3 (the web answers 409 before) or not queued: no reply.
+                // Below protocol 3 or STM 2.2.9 (the web answers 409 before; an older STM does
+                // not answer sbrak) or not queued: no reply.
                 let attempt = c.attempt & 0x7FFF;
+                let min = parse_version(BRAKE_MIN_STM_VERSION.as_bytes());
                 let queued = proto >= 3
+                    && compare_version(&self.snap.version, &min) >= 0
                     && build_brake(c.valve, c.max_ms, c.gap_ms, c.mult).is_some_and(|r| {
                         self.enqueue(&r, Priority::User, Self::TAG_BRAKE + attempt)
                     });

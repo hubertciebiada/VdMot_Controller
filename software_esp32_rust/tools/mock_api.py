@@ -1636,16 +1636,19 @@ class Handler(BaseHTTPRequestHandler):
             # STM 2.2.9 `sbrak`: the STM's answer is returned (the mock STM accepts every value)
             if self.stm_refused(v3=True):
                 return
+            m = re.match(r"(\d+)\.(\d+)\.(\d+)", d.stm_version)
+            if not m or tuple(int(x) for x in m.groups()) < (2, 2, 9):
+                # an older STM does not answer sbrak: nothing is sent
+                return self.error(409, "stm_unsupported", "STM 2.2.9 required")
             ms, gap, mult = doc.get("maxMs"), doc.get("gapMs"), doc.get("mult", 0)
-            if not d.integer(ms) or not d.integer(gap) or not d.integer(mult) or not 0 <= ms <= 65535 \
-                    or not 0 <= gap <= 65535 or not 0 <= mult <= 10 or not set(doc) <= {"maxMs", "gapMs", "mult"} \
+            if not d.integer(ms) or not d.integer(gap) or not d.integer(mult) or not 0 <= ms <= 100 \
+                    or not 0 <= gap <= 100 or not 0 <= mult <= 10 or not set(doc) <= {"maxMs", "gapMs", "mult"} \
                     or not {"maxMs", "gapMs"} <= set(doc):
-                return self.error(400, "out_of_range", "maxMs 0..65535, gapMs 0..65535, mult 0..10")
+                return self.error(400, "out_of_range", "maxMs 0..100, gapMs 0..100, mult 0..10")
+            if ms > 0 and gap == 0 and mult == 0:
+                return self.error(400, "invalid", "maxMs above 0 needs gapMs or mult")
             if d.queue_full():
                 return self.error(503, "queue_full", "STM command queue full")
-            # the STM takes 0..100 ms: `sbrak -1 err 1` outside
-            if ms > 100 or gap > 100:
-                return self.error(400, "stm_rejected", "sbrak err 1")
             v["brake"] = (ms, gap, mult)
             return self.send_json(200, {"valve": i + 1, "result": "ok"})
         if what == "target":

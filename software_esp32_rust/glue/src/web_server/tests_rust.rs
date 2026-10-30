@@ -12,6 +12,7 @@ use vdm_esp_core::flow_layer::{FlowState, FlowView};
 use vdm_esp_core::json_api::HttpMethod;
 use vdm_esp_core::stm_flasher::FlashPhase;
 use vdm_esp_core::stm_types::StmCommandType;
+use vdm_esp_core::version::parse_version;
 
 use super::rig::*;
 use super::{
@@ -933,6 +934,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
 fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
     let rig = Rig::started();
     rig.state().proto = 3;
+    rig.state().snapshot.version = parse_version(b"2.2.9-revamped_C2");
     let st = rig.storage();
     let mut web = rig.web(&st);
     let brake = |b: &str| api_post("/api/valves/2/brake", b);
@@ -973,11 +975,14 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
         ok: false,
         code: 1,
     });
-    let r = perform(&mut web, brake(r#"{"maxMs":101,"gapMs":0,"mult":10}"#));
+    let r = perform(&mut web, brake(r#"{"maxMs":100,"gapMs":0,"mult":10}"#));
     assert_eq!(r.status, 400);
     assert_eq!(text(&r), error_body("stm_rejected", "sbrak err 1"));
     assert_eq!(rig.submitted()[1].attempt, 2);
-    assert_eq!(rig.submitted()[1].mult, 10);
+    assert_eq!(
+        (rig.submitted()[1].max_ms, rig.submitted()[1].mult),
+        (100, 10)
+    );
     // No answer (another attempt's or none): 504 after 3 s.
     rig.state().brake_result = Some(BrakeResult {
         attempt: 9,
@@ -991,12 +996,15 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
     assert_eq!(text(&r), error_body("stm_timeout", "no reply from the STM"));
     assert_eq!(rig.dev.clock.ms() - t0, u64::from(BRAKE_WAIT_MS));
     assert_eq!(rig.submitted()[2].attempt, 3);
-    // The body: both times, whole numbers 0..65535, an optional multiplier 0..10, nothing
-    // else.
+    // The body: both times, whole numbers 0..100, an optional multiplier 0..10, nothing else
+    // (refused here, no UART round trip).
     for body in [
         r#"{"maxMs":40}"#,
+        r#"{"maxMs":101,"gapMs":5}"#,
+        r#"{"maxMs":40,"gapMs":101}"#,
         r#"{"maxMs":70000,"gapMs":5}"#,
         r#"{"maxMs":-1,"gapMs":5}"#,
+        r#"{"maxMs":40,"gapMs":-1}"#,
         r#"{"maxMs":4.5,"gapMs":5}"#,
         r#"{"maxMs":"40","gapMs":5}"#,
         r#"{"maxMs":40,"gapMs":5,"x":1}"#,
@@ -1009,10 +1017,49 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
         assert_eq!(r.status, 400, "{body}");
         assert_eq!(
             text(&r),
-            error_body("out_of_range", "maxMs 0..65535, gapMs 0..65535, mult 0..10")
+            error_body("out_of_range", "maxMs 0..100, gapMs 0..100, mult 0..10")
         );
     }
+    // A brake by time alone would drive the stopped motor backwards: refused.
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":0}"#));
+    assert_eq!(r.status, 400);
+    assert_eq!(
+        text(&r),
+        error_body("invalid", "maxMs above 0 needs gapMs or mult")
+    );
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":0,"mult":0}"#));
+    assert_eq!(r.status, 400);
     assert_eq!(rig.submitted().len(), 3);
+    // With the gap or the multiplier, or off: sent (no answer here).
+    for (n, body) in [
+        r#"{"maxMs":1,"gapMs":0,"mult":1}"#,
+        r#"{"maxMs":1,"gapMs":1}"#,
+        r#"{"maxMs":0,"gapMs":0}"#,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let r = perform(&mut web, brake(body));
+        assert_eq!(r.status, 504, "{body}");
+        assert_eq!(rig.submitted().len(), 4 + n);
+    }
+    // Below STM 2.2.9 (it would not answer) or of an unknown version: 409 at once, nothing
+    // sent.
+    for version in [&b"2.2.8-revamped_C2"[..], b""] {
+        rig.state().snapshot.version = parse_version(version);
+        let t0 = rig.dev.clock.ms();
+        let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
+        assert_eq!(r.status, 409);
+        assert_eq!(
+            text(&r),
+            error_body("stm_unsupported", "STM 2.2.9 required")
+        );
+        assert_eq!(rig.dev.clock.ms(), t0);
+    }
+    rig.state().snapshot.version = parse_version(b"2.3.0");
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
+    assert_eq!(r.status, 504);
+    assert_eq!(rig.submitted().len(), 7);
     // Below protocol 3 and while flashing: refused as the stop is.
     rig.state().proto = 2;
     let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
@@ -1029,5 +1076,5 @@ fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
     rig.state().submit_result = false;
     let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
     assert_eq!(r.status, 503);
-    assert_eq!(rig.submitted().len(), 3);
+    assert_eq!(rig.submitted().len(), 7);
 }

@@ -33,11 +33,12 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   [API.md](../revamped/API.md), [MQTT.md](../revamped/MQTT.md),
   [DESIGN.md](../revamped/DESIGN.md)).
 - `POST /api/valves/{n}/brake` `{"maxMs","gapMs","mult"?}` sends the STM 2.2.9 command
-  `sbrak` (plug braking at the end of a counted move, both times 0 = off, the multiplier only
-  when above 0, RAM only on the STM) and answers with the STM's reply: `200` ok, `400
-  stm_rejected` with the code (a value outside the STM's ranges), `504 stm_timeout` after 3 s.
-  The only route that waits for the STM: the server serves nothing else meanwhile
-  ([API.md](../revamped/API.md)).
+  `sbrak` (plug braking at the end of a counted move, both times 0..100 ms, 0 = off, the
+  multiplier 0..10 only when above 0, RAM only on the STM) and answers with the STM's reply:
+  `200` ok, `400 stm_rejected` with the code, `504 stm_timeout` after 3 s. The only route that
+  waits for the STM: the server serves nothing else meanwhile. Nothing is sent for a value
+  outside the ranges (`400 out_of_range`), for `maxMs` above 0 with neither `gapMs` nor `mult`
+  (`400 invalid`) and below STM 2.2.9 (`409 stm_unsupported`) ([API.md](../revamped/API.md)).
 
 ## 2.2.7-revamped
 

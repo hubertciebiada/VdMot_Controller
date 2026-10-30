@@ -968,7 +968,9 @@ fn flow_layer_constants() {
 
 #[test]
 fn brake_sends_sbrak_and_posts_the_stm_answer_for_the_attempt() {
+    assert_eq!(BRAKE_MIN_STM_VERSION, "2.2.9");
     let mut r = Rig::new(3, 0x001);
+    r.stm_mut().version = String::from("2.2.9-revamped_C2 1712345678 ");
     r.start();
     r.run(10_000);
     let mut c = cmd(StmCommandType::Brake, 0);
@@ -1007,6 +1009,7 @@ fn brake_sends_sbrak_and_posts_the_stm_answer_for_the_attempt() {
     assert!(!r.port().has(EventCode::ServiceMoveDone));
     // Below protocol 3: nothing is sent, the answer is "no reply" at once.
     let mut r = Rig::new(2, 0x001);
+    r.stm_mut().version = String::from("2.2.9-revamped_C2 1712345678 ");
     r.start();
     r.run(10_000);
     c.attempt = 11;
@@ -1014,4 +1017,14 @@ fn brake_sends_sbrak_and_posts_the_stm_answer_for_the_attempt() {
     r.run(1_000);
     assert_eq!(r.count("sbrak"), 0);
     assert_eq!(r.port().brakes, [(3, 11, false, -1)]);
+    // Below STM 2.2.9 (which would not answer): the same.
+    let mut r = Rig::new(3, 0x001);
+    r.stm_mut().version = String::from("2.2.8-revamped_C2 1712345678 ");
+    r.start();
+    r.run(10_000);
+    c.attempt = 12;
+    r.command(&c);
+    r.run(1_000);
+    assert_eq!(r.count("sbrak"), 0);
+    assert_eq!(r.port().brakes, [(3, 12, false, -1)]);
 }

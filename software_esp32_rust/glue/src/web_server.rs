@@ -64,9 +64,10 @@ use vdm_esp_core::stm_codec::{
 use vdm_esp_core::stm_flasher::{
     check_board, flash_error_name, BoardCheck, FlashError, FlashPhase,
 };
+use vdm_esp_core::stm_session::BRAKE_MIN_STM_VERSION;
 use vdm_esp_core::stm_types::{StmCommand, StmCommandType, StmSnapshot};
 use vdm_esp_core::valve_model::TargetSource;
-use vdm_esp_core::version::{format_version, StmSupport};
+use vdm_esp_core::version::{compare_version, format_version, parse_version, StmSupport};
 use vdm_esp_core::web_guard::{
     check_request, guard_detail, guard_error_code, guard_http_status, GuardRequest, GuardScope,
     GuardVerdict, HostPolicy, RepeatLimiter,
@@ -581,14 +582,14 @@ fn target_field(v: JsonVariantConst<'_>) -> Option<u8> {
     round_target_percent(v.as_f64())
 }
 
-/// The members of a brake request: `maxMs` and `gapMs`, whole numbers 0..65535, an optional
-/// `mult` 0..10 (0 without it), nothing else.
+/// The members of a brake request: `maxMs` and `gapMs`, whole numbers 0..100 (the STM's
+/// ranges), an optional `mult` 0..10 (0 without it), nothing else.
 fn brake_fields(o: &JsonObjectConst<'_>) -> Option<(u16, u16, u8)> {
     if !only_keys(o, &[b"maxMs", b"gapMs", b"mult"]) {
         return None;
     }
-    let max_ms = int_field(o, b"maxMs", 0..=65535, None)?;
-    let gap_ms = int_field(o, b"gapMs", 0..=65535, None)?;
+    let max_ms = int_field(o, b"maxMs", 0..=100, None)?;
+    let gap_ms = int_field(o, b"gapMs", 0..=100, None)?;
     let mult = int_field(o, b"mult", 0..=10, Some(0))?;
     Some((max_ms as u16, gap_ms as u16, mult as u8))
 }
@@ -1750,13 +1751,18 @@ where
         }
     }
 
-    /// POST /api/valves/{n}/brake `{"maxMs":0..65535,"gapMs":0..65535,"mult":0..10}` (Rust
-    /// 2.2.8, STM 2.2.9): `sbrak` with the attempt of this request (the multiplier only when
-    /// above 0), then the STM's answer: `200 {"valve":n,"result":"ok"}`, `400 stm_rejected`
-    /// with the code (a value outside the STM's ranges), `504 stm_timeout` after
-    /// [`BRAKE_WAIT_MS`] without one (the server serves nothing else meanwhile).
+    /// POST /api/valves/{n}/brake `{"maxMs":0..100,"gapMs":0..100,"mult":0..10}` (Rust 2.2.8,
+    /// STM 2.2.9, `409 stm_unsupported` below it, nothing sent): `sbrak` with the attempt of
+    /// this request (the multiplier only when above 0), then the STM's answer: `200
+    /// {"valve":n,"result":"ok"}`, `400 stm_rejected` with the code, `504 stm_timeout` after
+    /// [`BRAKE_WAIT_MS`] without one (the server serves nothing else meanwhile). `maxMs` above
+    /// 0 with neither `gapMs` nor `mult` (a brake by time alone, which drives a motor that
+    /// already stopped backwards) is `400 invalid`.
     fn brake(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8, body: &mut [u8]) {
-        if self.refuse_while_flashing(req) || self.refuse_below_v3(req, &mut w.snap) {
+        if self.refuse_while_flashing(req)
+            || self.refuse_below_v3(req, &mut w.snap)
+            || self.refuse_below_brake(req, &mut w.snap)
+        {
             return;
         }
         let Some(o) = parse(req, &mut w.doc, body) else {
@@ -1767,15 +1773,31 @@ where
                 req,
                 400,
                 "out_of_range",
-                b"maxMs 0..65535, gapMs 0..65535, mult 0..10",
+                b"maxMs 0..100, gapMs 0..100, mult 0..10",
             );
         };
+        if max_ms > 0 && gap_ms == 0 && mult == 0 {
+            return send_error(req, 400, "invalid", b"maxMs above 0 needs gapMs or mult");
+        }
         // 1..0x7FFF: the stm thread keeps the low 15 bits
         let attempt = (self.brake_attempt.load(Ordering::Relaxed) % 0x7FFF) + 1;
         self.brake_attempt.store(attempt, Ordering::Relaxed);
         if self.submit_brake(req, valve, (max_ms, gap_ms, mult), attempt) {
             self.brake_answer(req, valve, attempt);
         }
+    }
+
+    /// An STM below [`BRAKE_MIN_STM_VERSION`] (or of an unknown version) does not answer
+    /// `sbrak`: 409, nothing is sent.
+    #[inline(never)]
+    fn refuse_below_brake(&self, req: &mut dyn HttpRequest, snap: &mut StmSnapshot) -> bool {
+        self.host.read_stm_snapshot(snap);
+        let min = parse_version(BRAKE_MIN_STM_VERSION.as_bytes());
+        if compare_version(&snap.version, &min) >= 0 {
+            return false;
+        }
+        send_error(req, 409, "stm_unsupported", b"STM 2.2.9 required");
+        true
     }
 
     /// The Brake command of `valve` (maxMs, gapMs, mult); false when the 503 was answered.
