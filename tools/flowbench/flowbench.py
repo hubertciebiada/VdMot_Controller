@@ -1378,19 +1378,26 @@ class SimDevice:
                 if direction == "open":
                     windup = rnd.randint(44, 98) if v.at_stop else 0
                     coast = rnd.randint(2, 14)
+                    braked = service and getattr(v, "brake", (0, 0, 0))[0] > 0
+                    if braked:  # sbrak: the brake pulses are counted, the motor stops at once
+                        coast = rnd.randint(1, 4)
                     if v.true + counts - windup + coast >= v.oc:  # reaches the open end stop
                         cnt = int(v.oc - v.true) + windup + rnd.randint(0, 6)
                         v.true, v.at_stop, stop = float(v.oc), False, "endstop"
                     else:
                         v.true = v.true + counts - windup + coast
-                        v.at_stop, cnt, stop = False, counts, "target"
+                        v.at_stop, cnt, stop = False, counts + (coast if braked else 0), "target"
                 else:
                     coast = rnd.randint(50, 80) if v.true > v.onset - 100 else rnd.randint(5, 20)
+                    braked = service and getattr(v, "brake", (0, 0, 0))[0] > 0
+                    if braked:
+                        coast = rnd.randint(1, 4)
                     if counts >= v.true:  # reaches the closed end stop
                         cnt = int(v.true) + rnd.randint(44, 98)
                         v.true, v.at_stop, stop = 0.0, True, "endstop"
                     else:
-                        v.true, cnt, stop = max(0.0, v.true - counts - coast), counts, "target"
+                        v.true, stop = max(0.0, v.true - counts - coast), "target"
+                        cnt = counts + (coast if braked else 0)
                 last = {"dir": direction, "req": counts, "cnt": cnt, "stop": stop,
                         "peak": 15.0, "ms": int(dur * 1000)}
                 # as the ESP: a move counts (moveSeq, event) only when its record differs
@@ -1446,6 +1453,9 @@ class SimDevice:
                     if v.state == "idle":
                         self.move_target(v)
                     return {"valve": v.idx, "target": v.target}
+                if parts[4] == "brake":
+                    v.brake = (int(body["maxMs"]), int(body["gapMs"]), int(body.get("mult", 0)))
+                    return {"result": "ok"}
                 if parts[4] == "service-move":
                     if v.state != "idle":
                         self.event(411, v.idx, 1, 0, "command rejected")
