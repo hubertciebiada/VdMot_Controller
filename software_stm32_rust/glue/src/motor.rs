@@ -69,6 +69,9 @@ pub const SVMOV_COUNTS_MIN: u16 = 1;
 pub const SVMOV_COUNTS_MAX: u16 = 10000;
 pub const SVMOV_MAXMA_MIN: u8 = 5;
 pub const SVMOV_MAXMA_MAX: u8 = SAFETY_LIMIT_MA;
+/// sbrak: the longest brake and the longest pulse gap in ms (the L293D and the common's
+/// push-pull carry the brake current for a bounded time)
+pub const SBRAK_MS_MAX: u8 = 100;
 
 /// 1 ms (TIMER0_INTERVAL_MS * 1000)
 const TIMER0_INTERVAL_US: u32 = 1000;
@@ -243,6 +246,10 @@ pub struct ValveMotor {
     pub trip_seq: u8,
     /// the learned coast and the step away from an end stop that waits for its move back
     pub coast: ValveCoast,
+    /// sbrak: the brake at the end of a service move, the longest brake in ms (0: no brake)
+    /// and the pulse gap in ms that ends it early (0: the time only); RAM only
+    pub brake_max_ms: u8,
+    pub brake_gap_ms: u8,
 }
 
 /// Diagnostics of one valve, written by the valve state machine (C++ `struct valve_diag`).
@@ -554,7 +561,10 @@ pub fn timer_handler0(
     m.analog_current = (m.analog_current_old * 9800 + analog_value * 200) / 10000;
     m.analog_current_old = m.analog_current;
 
-    if pulse.turning.load(Ordering::SeqCst) {
+    if pulse.braking.load(Ordering::SeqCst) {
+        // the brake of a service move (sbrak): the motor is driven against its motion, its
+        // current is no end-stop evidence; the brake is bounded, Pulse::on_ms ends it
+    } else if pulse.turning.load(Ordering::SeqCst) {
         // inrush time, filter, end-stop bounds, safety and hard limit (EndStopDetector)
         let trip = m.endstop.sample(analog_value) != Trip::None;
         m.current_ma = m.endstop.current();
@@ -569,6 +579,7 @@ pub fn timer_handler0(
         m.endstop.idle();
         m.current_ma = 0;
     }
+    pulse.on_ms(hw);
 
     // enable the valve (soft start requested by M_TURNON and not cancelled since)
     if pulse.turning.load(Ordering::SeqCst) && m.isr_timer_go && !m.isr_timer_fin {
@@ -858,6 +869,21 @@ impl MotorShared {
         env.app_warm_moving(valveindex);
         // last: valve_loop acts on the command
         self.command = CMD_A_SERVICE;
+        0
+    }
+
+    /// sbrak: the brake at the end of the service moves of the valve (255: of every valve),
+    /// both values at most SBRAK_MS_MAX; 0, -1 for an invalid valve.
+    pub fn appsetbrake(&mut self, valve: u32, max_ms: u8, gap_ms: u8) -> i16 {
+        if valve_index(valve).is_none() && valve != 255 {
+            return -1;
+        }
+        for (x, mot) in self.mots.iter_mut().enumerate() {
+            if valve == 255 || valve_index(valve) == Some(x) {
+                mot.brake_max_ms = max_ms.min(SBRAK_MS_MAX);
+                mot.brake_gap_ms = gap_ms.min(SBRAK_MS_MAX);
+            }
+        }
         0
     }
 
@@ -1239,6 +1265,8 @@ impl MotorShared {
     fn motor_halt<H: MotorHw>(&mut self, io: &Io<H>) {
         io.hw.detach();
         io.pulse.turning.store(false, Ordering::SeqCst);
+        // a brake in progress (sstop) ends with the enable
+        io.pulse.braking.store(false, Ordering::SeqCst);
         // before fin: timer_handler0 enables the motor on go && !fin
         self.isr_timer_go = false;
         self.isr_timer_fin = false;
@@ -1858,6 +1886,15 @@ impl MotorShared {
                 };
                 self.endstop
                     .arm(self.move_bound_low, self.move_bound_high, inrush);
+                // the brake of a service move (sbrak); a normal move, a calibration stroke and
+                // the coast probe stop on their pulse count as before
+                let (max_ms, gap_ms) = match self.mots.get(mvalvenr as usize) {
+                    Some(mot) if self.move_kind == MOVE_SERVICE => {
+                        (mot.brake_max_ms, mot.brake_gap_ms)
+                    }
+                    _ => (0, 0),
+                };
+                io.pulse.arm_brake(max_ms, gap_ms);
                 self.move_profile.reset();
                 self.motor_stop_cause = MotorStop::None;
                 self.last_turning_current = 0;
@@ -2017,6 +2054,8 @@ fn valve_index(valve: u32) -> Option<usize> {
 mod bench;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_brake;
 #[cfg(test)]
 mod tests_coast;
 #[cfg(test)]

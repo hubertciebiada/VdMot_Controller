@@ -563,6 +563,11 @@ impl<P: Platform> CommunicationEnv for Ctx<'_, P> {
             .lock(|m| m.valve_get_profile(u32::from(valve), out));
     }
 
+    fn motor_set_brake(&mut self, valve: u16, max_ms: u8, gap_ms: u8) -> i16 {
+        self.motor
+            .lock(|m| m.appsetbrake(u32::from(valve), max_ms, gap_ms))
+    }
+
     fn eeprom_changed(&mut self, fields: u16) {
         self.eeprom.changed(fields);
     }

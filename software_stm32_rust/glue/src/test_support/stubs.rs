@@ -90,6 +90,7 @@ impl Default for App {
 pub struct Motor {
     pub idle: bool,
     pub action: i16,
+    pub brake: i16,
     pub snapshot: [ValveSnapshot; 12],
     pub profile: ProfileRecorder,
     pub params: MotorParams,
@@ -101,6 +102,7 @@ impl Default for Motor {
         Motor {
             idle: true,
             action: 0,
+            brake: 0,
             snapshot: [ValveSnapshot::default(); 12],
             profile: ProfileRecorder::default(),
             params: MotorParams {
@@ -407,6 +409,11 @@ impl CommunicationEnv for Stubs {
     fn valve_get_profile(&mut self, valve: u16, out: &mut ProfileRecorder) {
         self.log(format!("valve_get_profile({valve})"));
         *out = self.motor.profile;
+    }
+
+    fn motor_set_brake(&mut self, valve: u16, max_ms: u8, gap_ms: u8) -> i16 {
+        self.log(format!("motor_set_brake({valve}, {max_ms}, {gap_ms})"));
+        self.motor.brake
     }
 
     fn eeprom_changed(&mut self, fields: u16) {
