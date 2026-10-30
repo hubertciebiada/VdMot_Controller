@@ -26,13 +26,16 @@ use core::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use vdm_esp_core::common::{fmt_trunc, TextBuf, TextView, NO_VALVE};
+use vdm_esp_core::common::{fmt_trunc, TextBuf, TextView, NO_VALVE, VALVE_COUNT};
 use vdm_esp_core::config::{
     encode_config, encode_config_ext, load_config_blobs, set_defaults, validate_config,
     CalibScheduleConfig, Config, ExtResult, LoadInfo, StoredBlobs, CONFIG_BLOB_MAX,
     CONFIG_EXT_BLOB_MAX, CONFIG_EXT_KEEP_MAX,
 };
 use vdm_esp_core::event_log::EventCode;
+use vdm_esp_core::flow_layer::{
+    decode_flow_configs, encode_flow_configs, FlowConfig, FLOW_BLOB_SIZE,
+};
 use vdm_esp_core::legacy_import::{import_legacy_config, ImportReport, LegacyNvsReader};
 
 use crate::boot_guard::FACTORY_RESET_KEEPS;
@@ -74,6 +77,8 @@ pub const KEY_FACTORY_LATCH: &str = "frLatch";
 pub const KEY_OTA_STM: &str = "otaStm";
 /// u8 2 = the 2.1 discovery layout was published
 pub const KEY_HA_LAYOUT: &str = "haLayout";
+/// blob, the flow layer configuration of the valves (core `encode_flow_configs`; Rust 2.2.8)
+pub const KEY_FLOW: &str = "flow";
 
 /// LittleFS file of the base config blob backup.
 pub const BACKUP_BASE: &str = "/sys/cfg.bak";
@@ -178,6 +183,10 @@ pub struct StorageShared {
     saved_since_boot: AtomicBool,
     boot_count: AtomicU32,
     boot: Mutex<Box<BootLoad>>,
+    /// Rust 2.2.8: the flow layer configuration of the valves (NVS `flow`, about 1 KB) and
+    /// its revision (+1 on every publish; the stm thread follows it).
+    flow: Mutex<Box<[FlowConfig; VALVE_COUNT as usize]>>,
+    flow_revision: AtomicU32,
 }
 
 impl Default for StorageShared {
@@ -201,7 +210,66 @@ impl StorageShared {
             saved_since_boot: AtomicBool::new(false),
             boot_count: AtomicU32::new(0),
             boot: Mutex::new(Box::default()),
+            flow: Mutex::new(Box::default()),
+            flow_revision: AtomicU32::new(0),
         }
+    }
+
+    /// +1 on every published flow configuration (the boot load, `save_flow_configs`).
+    pub fn flow_revision(&self) -> u32 {
+        self.flow_revision.load(Ordering::Relaxed)
+    }
+
+    /// Reads the flow configuration of every valve under the lock without a copy.
+    pub fn with_flow_configs<R>(
+        &self,
+        f: impl FnOnce(&[FlowConfig; VALVE_COUNT as usize]) -> R,
+    ) -> R {
+        f(&lock(&self.flow))
+    }
+
+    /// The flow configuration of one valve (the default for one out of range).
+    pub fn flow_config(&self, valve: u8) -> FlowConfig {
+        lock(&self.flow)
+            .get(usize::from(valve))
+            .copied()
+            .unwrap_or(FlowConfig::DEFAULT)
+    }
+
+    /// Replaces the flow configuration of `valve` under the lock and hands the set to `f`
+    /// (its encoding and write); published (revision + 1) when `f` returns true, else the old
+    /// value is restored. False for a valve out of range.
+    fn update_flow_config(
+        &self,
+        valve: usize,
+        c: &FlowConfig,
+        f: impl FnOnce(&[FlowConfig; VALVE_COUNT as usize]) -> bool,
+    ) -> bool {
+        let mut all = lock(&self.flow);
+        let Some(slot) = all.get_mut(valve) else {
+            return false;
+        };
+        let old = *slot;
+        *slot = *c;
+        if !f(&all) {
+            if let Some(slot) = all.get_mut(valve) {
+                *slot = old;
+            }
+            return false;
+        }
+        self.flow_revision.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Rewrites the whole set under the lock with `f` (a decode, the defaults) and publishes
+    /// it (revision + 1); returns what `f` returned.
+    fn replace_flow_configs(
+        &self,
+        f: impl FnOnce(&mut [FlowConfig; VALVE_COUNT as usize]) -> bool,
+    ) -> bool {
+        let ok = f(&mut lock(&self.flow));
+        self.flow_revision.fetch_add(1, Ordering::Relaxed);
+        ok
     }
 
     /// LittleFS is mounted (C++ `fsReady()`).
@@ -740,7 +808,49 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
             return false;
         };
         let erased = erase_keeping(&mut ns);
+        // the flow configuration went with the namespace
+        self.shared.replace_flow_configs(|all| {
+            all.iter_mut().for_each(|c| *c = FlowConfig::DEFAULT);
+            true
+        });
         ns.set_int(KEY_IMPORTED, NvsInt::U8, 1) && erased
+    }
+
+    // ------------------------------------------------------------ flow layer (Rust 2.2.8)
+
+    /// Boot: the flow configuration of the valves from NVS `flow` (the defaults without a
+    /// usable blob or memory for it), published for the stm thread. Returns whether a blob was
+    /// decoded. The blob buffer (about 1 KB) is a transient heap block.
+    pub fn load_flow_configs(&self) -> bool {
+        let _cfg = self.cfg_lock();
+        let mut bytes = try_bytes(&self.gate, FLOW_BLOB_SIZE).unwrap_or_default();
+        let n = self
+            .prefs()
+            .map_or(0, |ns| load_bytes(&ns, KEY_FLOW, &mut bytes));
+        let blob = bytes.get(..n).unwrap_or_default();
+        self.shared
+            .replace_flow_configs(|all| decode_flow_configs(blob, all))
+    }
+
+    /// `POST /api/valves/{n}/flow`: the flow configuration of `valve` replaced by `c`, the
+    /// whole set written to NVS `flow` and published; false (nothing published) for a valve
+    /// out of range, no memory for the blob buffer or a failed write.
+    pub fn save_flow_config(&self, valve: u8, c: &FlowConfig) -> bool {
+        let _cfg = self.cfg_lock();
+        let Some(mut bytes) = try_bytes(&self.gate, FLOW_BLOB_SIZE) else {
+            return false;
+        };
+        let Some(mut ns) = self.prefs() else {
+            return false;
+        };
+        self.shared
+            .update_flow_config(usize::from(valve), c, |all| {
+                let Ok(blob) = <&mut [u8; FLOW_BLOB_SIZE]>::try_from(bytes.as_mut_slice()) else {
+                    return false;
+                };
+                encode_flow_configs(all, blob);
+                ns.set_blob(KEY_FLOW, blob)
+            })
     }
 
     // ------------------------------------------------------------ NVS values

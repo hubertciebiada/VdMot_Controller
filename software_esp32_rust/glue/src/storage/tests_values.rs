@@ -11,6 +11,7 @@ use crate::testkit::nvs::NvsType;
 use crate::testkit::{Device, Reset};
 use vdm_esp_core::config::DecodeResult;
 use vdm_esp_core::file_manager::FS_PATH_MAX;
+use vdm_esp_core::flow_layer::{FlowConfig, FlowPoint, FLOW_BLOB_SIZE};
 use vdm_esp_core::legacy_import::{DROPPED_MESSENGER, LEGACY_TEMPS_BLOB};
 
 /// A config with an ext key away from its default.
@@ -665,4 +666,66 @@ fn reader_blobs_give_their_stored_length_a_larger_one_zeroes_the_output() {
     assert_eq!(small, [0, 0]);
     assert_eq!(r.read_blob("ns", "u8", &mut out), None);
     assert_eq!(r.read_blob("nope", "b3", &mut out), None);
+}
+
+// ---------------------------------------------------------------- the flow layer (Rust 2.2.8)
+
+#[test]
+fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    assert_eq!(st.shared().flow_revision(), 0);
+    // Nothing stored: the defaults, published once.
+    assert!(!st.load_flow_configs());
+    assert_eq!(st.shared().flow_revision(), 1);
+    assert!(!st.shared().flow_config(0).enabled);
+    assert_eq!(st.shared().flow_config(12), FlowConfig::DEFAULT);
+    // A save: the whole set in NVS, the shared set published.
+    let mut c = FlowConfig {
+        enabled: true,
+        count: 2,
+        ..FlowConfig::DEFAULT
+    };
+    c.points[1] = FlowPoint {
+        counts: 1000,
+        flow_ml: 2700,
+    };
+    assert!(st.save_flow_config(3, &c));
+    assert_eq!(st.shared().flow_revision(), 2);
+    assert_eq!(st.shared().flow_config(3), c);
+    assert!(!st.shared().flow_config(2).enabled);
+    assert_eq!(
+        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
+        FLOW_BLOB_SIZE
+    );
+    assert!(!st.save_flow_config(12, &c));
+    assert_eq!(st.shared().flow_revision(), 2);
+    st.shared().with_flow_configs(|all| assert!(all[3].enabled));
+    // The next boot reads it back.
+    assert!(st.load_flow_configs());
+    assert_eq!(st.shared().flow_config(3), c);
+    assert_eq!(st.shared().flow_revision(), 3);
+    // A failed write publishes nothing.
+    rig.dev.nvs.knobs().fail_set.insert(KEY_FLOW.to_string());
+    let mut c2 = c;
+    c2.offset = 9;
+    assert!(!st.save_flow_config(3, &c2));
+    assert_eq!(st.shared().flow_config(3), c);
+    assert_eq!(st.shared().flow_revision(), 3);
+    rig.dev.nvs.knobs().fail_set.clear();
+    // A damaged blob: the defaults.
+    let mut bad = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW);
+    bad[10] ^= 1;
+    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW, &bad);
+    assert!(!st.load_flow_configs());
+    assert!(!st.shared().flow_config(3).enabled);
+    // A factory reset drops the blob and the shared set.
+    assert!(st.save_flow_config(3, &c));
+    assert!(st.factory_reset());
+    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW));
+    assert!(!st.shared().flow_config(3).enabled);
+    // Without NVS: the defaults, nothing saved.
+    rig.dev.nvs.knobs().init_failed = true;
+    assert!(!st.load_flow_configs());
+    assert!(!st.save_flow_config(3, &c));
 }

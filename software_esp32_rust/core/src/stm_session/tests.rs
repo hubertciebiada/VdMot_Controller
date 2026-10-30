@@ -722,3 +722,293 @@ fn constants() {
     assert_eq!(GateAction::Flash as i32, 2);
     assert_eq!(GateAction::EspRestart as i32, 3);
 }
+
+// ================================================================ flow layer (Rust 2.2.8)
+
+use crate::flow_layer::{FlowConfig, FlowPoint, FlowState};
+
+/// The flow configuration of every valve: `valve` with a curve (593 pulses without flow,
+/// 1 l/min at 809, 2.7 at 1100), the others at their defaults.
+fn flow_configs(valve: usize, enabled: bool) -> [FlowConfig; 12] {
+    let mut all = [FlowConfig::DEFAULT; 12];
+    let c = &mut all[valve];
+    c.enabled = enabled;
+    c.count = 3;
+    c.points[0] = FlowPoint {
+        counts: 593,
+        flow_ml: 0,
+    };
+    c.points[1] = FlowPoint {
+        counts: 809,
+        flow_ml: 1000,
+    };
+    c.points[2] = FlowPoint {
+        counts: 1100,
+        flow_ml: 2700,
+    };
+    all
+}
+
+/// A protocol 3 STM of 2.2.8 with the layer on valve 0, the link up.
+fn flow_rig() -> Rig {
+    let mut r = Rig::new(3, 0x001);
+    r.stm_mut().version = String::from("2.2.8-revamped_C2 1712345678 ");
+    r.start();
+    r.s.apply_flow_config(&flow_configs(0, true));
+    r.run(10_000);
+    r
+}
+
+#[test]
+fn flow_layer_positions_a_valve_with_svmov_and_skeep_and_reports_the_flow_percent() {
+    let mut r = flow_rig();
+    assert_eq!(r.port().last.flow[0].state, FlowState::Unknown);
+    assert!(r.port().last.flow[0].enabled);
+    assert_eq!(r.port().last.flow[1].state, FlowState::Off);
+    assert_eq!(r.count("svmov"), 0);
+    assert_eq!(r.count("stgtp"), 0);
+    assert_eq!(r.s.model().flow_mask(), 0x001);
+    let t = r.target(0, 37, TargetSource::Web);
+    r.command(&t);
+    r.run(30_000);
+    // The fallback target (the STM held 50), the reference close over the stroke (3350), the
+    // opening move of 0.999 l/min, the keep.
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 15"]);
+    assert_eq!(
+        r.stm().lines_of("svmov"),
+        ["svmov 0 1 3350 34", "svmov 0 0 809 30"]
+    );
+    assert_eq!(r.stm().lines_of("skeep"), ["skeep 0 1"]);
+    assert!(r.stm().keep[0]);
+    assert_eq!(r.stm().target[0], 15);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.position, v.stm_target), (37, 37, 15));
+    assert_eq!(v.sync, TargetSync::Synced);
+    assert_eq!(v.source, TargetSource::Web);
+    let f = r.port().last.flow[0];
+    assert_eq!(f.state, FlowState::Held);
+    assert_eq!(
+        (f.counts, f.flow_ml, f.pct, f.target_counts),
+        (809, 1000, 37, 809)
+    );
+    assert!(f.last_valid);
+    assert_eq!((f.last_ms, f.last_peak), (8123, 412));
+    let done = r.port().with_code(EventCode::FlowPositioned);
+    assert_eq!(done.len(), 1);
+    assert_eq!((done[0].valve, done[0].arg1, done[0].arg2), (0, 809, 37));
+    // The layer's moves are not service moves of a user: no event 414.
+    assert!(!r.port().has(EventCode::ServiceMoveDone));
+    assert!(!r.port().has(EventCode::FlowPositionFailed));
+    // Held: nothing more for a long time, the same target changes nothing.
+    r.run(600_000);
+    r.command(&t);
+    r.run(10_000);
+    assert_eq!(r.count("svmov"), 2);
+    assert_eq!(r.count("stgtp"), 1);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    // The target persisted is the flow target.
+    let stored = r.port().targets.last().expect("stored").pos[0];
+    assert_eq!(stored, 37);
+}
+
+#[test]
+fn flow_layer_counts_command_positions_at_once_and_a_reboot_positions_again() {
+    let mut r = flow_rig();
+    let t = r.target(0, 37, TargetSource::Web);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    // 700 corrected pulses: the close from the held position + 500, the opening move, the
+    // keep; the flow of the curve at 700 is 0.495 l/min = 18 %.
+    let mut c = cmd(StmCommandType::FlowCounts, 0);
+    c.counts = 700;
+    r.command(&c);
+    r.run(30_000);
+    assert_eq!(
+        r.stm().lines_of("svmov")[2..],
+        ["svmov 0 1 1309 34", "svmov 0 0 700 30"]
+    );
+    assert_eq!(r.count("skeep"), 2);
+    let f = r.port().last.flow[0];
+    assert_eq!((f.state, f.counts, f.pct), (FlowState::Held, 700, 18));
+    assert_eq!(r.port().last.valves[0].position, 18);
+    assert_eq!(r.port().last.valves[0].desired, 37);
+    assert_eq!(r.count("stgtp"), 1);
+    // An STM reboot: the hold is lost (event), the fallback goes out again (the STM target is
+    // 50 after its start), the valve is positioned from the stroke.
+    let now = r.now;
+    r.stm_mut().reset(u64::from(now));
+    r.run(60_000);
+    assert!(r.port().has(EventCode::StmRebootDetected));
+    // The keep flag is gone with the STM's RAM (the valve data comes before the reboot is
+    // detected), then the new session: hold-lost events, the fallback target again (the STM
+    // target is 50 after its start), the valve positioned from the stroke.
+    let lost = r.port().with_code(EventCode::FlowHoldLost);
+    assert!(!lost.is_empty());
+    assert!(lost.iter().all(|e| e.valve == 0));
+    assert!(r.count("stgtp") >= 2);
+    assert_eq!(
+        r.stm().lines_of("stgtp").last().map(String::as_str),
+        Some("stgtp 0 15")
+    );
+    let svmov = r.stm().lines_of("svmov");
+    assert_eq!(
+        svmov[svmov.len() - 2..],
+        ["svmov 0 1 3350 34", "svmov 0 0 809 30"]
+    );
+    assert!(r.count("skeep") >= 3);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    assert_eq!(r.port().last.valves[0].position, 37);
+    assert!(r.port().with_code(EventCode::FlowPositioned).len() >= 3);
+}
+
+#[test]
+fn flow_layer_needs_stm_2_2_8_an_older_firmware_keeps_the_valve_in_normal_mode() {
+    let mut r = Rig::new(3, 0x001);
+    r.start();
+    r.s.apply_flow_config(&flow_configs(0, true));
+    r.run(10_000);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Unsupported);
+    assert!(r.port().last.flow[0].enabled);
+    assert_eq!(r.s.model().flow_mask(), 0);
+    let t = r.target(0, 37, TargetSource::Web);
+    r.command(&t);
+    r.run(5_000);
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 37"]);
+    assert_eq!(r.count("svmov"), 0);
+    assert_eq!(r.count("skeep"), 0);
+    let v = r.port().last.valves[0];
+    assert_eq!(
+        (v.desired, v.position, v.sync),
+        (37, 40, TargetSync::Synced)
+    );
+    let mut c = cmd(StmCommandType::FlowCounts, 0);
+    c.counts = 700;
+    r.command(&c);
+    r.run(5_000);
+    assert_eq!(r.count("svmov"), 0);
+}
+
+#[test]
+fn flow_layer_disabled_releases_the_keep_and_the_desired_target_is_pushed_again() {
+    let mut r = flow_rig();
+    let t = r.target(0, 37, TargetSource::Web);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    r.s.apply_flow_config(&flow_configs(0, false));
+    r.run(10_000);
+    assert_eq!(r.stm().lines_of("skeep"), ["skeep 0 1", "skeep 0 0"]);
+    assert!(!r.stm().keep[0]);
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 15", "stgtp 0 37"]);
+    assert_eq!(r.stm().target[0], 37);
+    let v = r.port().last.valves[0];
+    assert_eq!(
+        (v.desired, v.position, v.sync),
+        (37, 40, TargetSync::Synced)
+    );
+    assert_eq!(r.port().last.flow[0].state, FlowState::Off);
+    assert_eq!(r.s.model().flow_mask(), 0);
+    // Enabled again: the fallback target first, then the moves.
+    r.s.apply_flow_config(&flow_configs(0, true));
+    r.run(30_000);
+    assert_eq!(
+        r.stm().lines_of("stgtp"),
+        ["stgtp 0 15", "stgtp 0 37", "stgtp 0 15"]
+    );
+    assert_eq!(r.count("svmov"), 4);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+}
+
+#[test]
+fn flow_layer_a_lost_keep_repositions_a_rejected_move_fails_the_positioning() {
+    let mut r = flow_rig();
+    let t = r.target(0, 37, TargetSource::Web);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    // Another client's stgtp on the STM: the keep is gone, the layer positions the valve
+    // again (its fallback target first: the STM target is not it).
+    r.stm_mut().target[0] = 60;
+    r.stm_mut().keep[0] = false;
+    r.stm_mut().svc_hold[0] = false;
+    r.run(30_000);
+    assert_eq!(r.port().with_code(EventCode::FlowHoldLost).len(), 1);
+    assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 15", "stgtp 0 15"]);
+    assert_eq!(r.count("svmov"), 4);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    // The STM refuses the next move (err 1): the positioning fails, event 417, the state
+    // failed, the position unknown.
+    r.stm_mut()
+        .set_answer("svmov", |line, _| format!("svmov {} err 1", &line[6..7]));
+    let t = r.target(0, 50, TargetSource::Web);
+    r.now = r.now.wrapping_add(300_000);
+    r.command(&t);
+    r.run(10_000);
+    let failed = r.port().with_code(EventCode::FlowPositionFailed);
+    assert_eq!(failed.len(), 1);
+    assert_eq!((failed[0].valve, failed[0].arg1, failed[0].arg2), (0, 2, 1));
+    assert_eq!(&failed[0].text[..], b"rejected");
+    let f = r.port().last.flow[0];
+    assert_eq!(f.state, FlowState::Failed);
+    assert!(!f.known);
+    assert_eq!(r.port().last.valves[0].position, 0);
+    assert_eq!(r.port().last.valves[0].desired, 50);
+}
+
+#[test]
+fn flow_layer_constants() {
+    assert_eq!(FLOW_MIN_STM_VERSION, "2.2.8");
+    type S = crate::test_support::session_rig::Session;
+    assert_eq!(S::TAG_FLOW, 2);
+    assert_eq!(S::TAG_BRAKE, 0x8000);
+}
+
+// ================================================================ brake (STM 2.2.9)
+
+#[test]
+fn brake_sends_sbrak_and_posts_the_stm_answer_for_the_attempt() {
+    let mut r = Rig::new(3, 0x001);
+    r.start();
+    r.run(10_000);
+    let mut c = cmd(StmCommandType::Brake, 0);
+    c.max_ms = 40;
+    c.gap_ms = 5;
+    c.attempt = 7;
+    r.command(&c);
+    r.run(3_000);
+    assert_eq!(r.stm().lines_of("sbrak"), ["sbrak 0 40 5"]);
+    assert_eq!(r.port().brakes, [(0, 7, true, 0)]);
+    // All valves, off; a rejected one carries the STM's code; no reply gives -1.
+    c.valve = ALL_VALVES;
+    c.max_ms = 0;
+    c.gap_ms = 0;
+    c.attempt = 0x8008; // only the low 15 bits name the attempt
+    r.command(&c);
+    r.run(3_000);
+    assert_eq!(r.stm().lines_of("sbrak")[1], "sbrak 255 0 0");
+    assert_eq!(r.port().brakes[1], (ALL_VALVES, 8, true, 0));
+    r.stm_mut()
+        .set_answer("sbrak", |_, _| String::from("sbrak -1 err 1"));
+    c.valve = 3;
+    c.attempt = 9;
+    r.command(&c);
+    r.run(3_000);
+    assert_eq!(r.port().brakes[2], (3, 9, false, 1));
+    r.stm_mut().set_answer("sbrak", |_, _| String::new());
+    c.attempt = 10;
+    r.command(&c);
+    r.run(5_000);
+    assert_eq!(r.port().brakes[3], (3, 10, false, -1));
+    // No service-move bookkeeping, nothing else logged for it.
+    assert!(!r.port().has(EventCode::ServiceMoveDone));
+    // Below protocol 3: nothing is sent, the answer is "no reply" at once.
+    let mut r = Rig::new(2, 0x001);
+    r.start();
+    r.run(10_000);
+    c.attempt = 11;
+    r.command(&c);
+    r.run(1_000);
+    assert_eq!(r.count("sbrak"), 0);
+    assert_eq!(r.port().brakes, [(3, 11, false, -1)]);
+}

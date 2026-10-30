@@ -37,6 +37,7 @@ mod views;
 
 use core::mem::size_of;
 use core::ops::RangeInclusive;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use vdm_esp_core::common::{
     build_hostname, c_str, crc_valid, fmt_trunc, format_ipv4, is_zero, round_target_percent,
@@ -50,6 +51,7 @@ use vdm_esp_core::config::{
 use vdm_esp_core::event_log::{
     event_default_severity, make_event, Event, EventCode, EventFilter, RebootReason,
 };
+use vdm_esp_core::flow_layer::{FlowState, FLOW_COUNTS_MAX};
 use vdm_esp_core::json_api::{
     match_api_route, write_error_json, ApiRoute, HealthSnapshot, HttpMethod, RouteMatch,
 };
@@ -80,6 +82,7 @@ use crate::net::{NetInfo, TrialInfo};
 use crate::ota::{OtaHost, OtaShared, OtaUpload};
 use crate::port::Nvs;
 use crate::port::{BodyRead, Clock, Fs, HeapGate, HttpRequest, HttpServer, Ota, Platform};
+use crate::shared::BrakeResult;
 use crate::storage::{
     normalize_image_name, FileResult, ImageEntry, ImageResult, Storage, StorageHost, IMAGE_NAME_MAX,
 };
@@ -92,6 +95,10 @@ pub const RESPONSE_SIZE: usize = 12 * 1024;
 /// A JSON body is received whole into a heap buffer of its Content-Length; a larger one is
 /// refused (413) before any of it is read.
 pub const MAX_BODY_SIZE: usize = 8192;
+/// `POST /api/valves/{n}/brake` waits this long for the STM's answer (Rust 2.2.8) ...
+pub const BRAKE_WAIT_MS: u32 = 3000;
+/// ... polling the answer every ...
+pub const BRAKE_POLL_MS: u32 = 20;
 /// Connections the server holds at a time (`max_open_sockets` of the adapter; C++ the listen
 /// backlog of AsyncTCP).
 pub const MAX_CONNECTIONS: usize = 4;
@@ -225,6 +232,9 @@ pub trait WebHost {
     fn request_mqtt_reconnect(&self);
     /// `mqtt::requestDiscovery(a)`.
     fn request_discovery(&self, a: DiscoveryAction);
+    /// Rust 2.2.8: `AppShared::take_brake_result(attempt)`, the STM's answer to the `sbrak` of
+    /// `attempt` once the stm thread posted it.
+    fn take_brake_result(&self, attempt: u16) -> Option<BrakeResult>;
 }
 
 impl<T: WebHost + ?Sized> WebHost for &T {
@@ -296,6 +306,9 @@ impl<T: WebHost + ?Sized> WebHost for &T {
     }
     fn request_discovery(&self, a: DiscoveryAction) {
         (**self).request_discovery(a)
+    }
+    fn take_brake_result(&self, attempt: u16) -> Option<BrakeResult> {
+        (**self).take_brake_result(attempt)
     }
 }
 
@@ -566,6 +579,16 @@ fn target_field(v: JsonVariantConst<'_>) -> Option<u8> {
         return None;
     }
     round_target_percent(v.as_f64())
+}
+
+/// The members of a brake request: `maxMs` and `gapMs`, whole numbers 0..65535, nothing else.
+fn brake_fields(o: &JsonObjectConst<'_>) -> Option<(u16, u16)> {
+    if !only_keys(o, &[b"maxMs", b"gapMs"]) {
+        return None;
+    }
+    let max_ms = int_field(o, b"maxMs", 0..=65535, None)?;
+    let gap_ms = int_field(o, b"gapMs", 0..=65535, None)?;
+    Some((max_ms as u16, gap_ms as u16))
 }
 
 /// An STM command of `kind` for `valve`.
@@ -909,6 +932,8 @@ pub struct Web<'a, P: Platform, N, F: Fs, G, S, O: OtaHost, H> {
     work: Option<WorkSet>,
     /// RequestRefused once per verdict per 60 s.
     refused: RepeatLimiter,
+    /// Rust 2.2.8: the attempt of the last `sbrak` (1..0x7FFF, never 0).
+    brake_attempt: AtomicU16,
 }
 
 impl<'a, P, N, F, G, S, O, H> Web<'a, P, N, F, G, S, O, H>
@@ -941,6 +966,7 @@ where
             parts: Parts::default(),
             work: None,
             refused: RepeatLimiter::default(),
+            brake_attempt: AtomicU16::new(0),
         }
     }
 
@@ -1406,6 +1432,7 @@ where
             ApiRoute::Health => self.health(req, w),
             ApiRoute::Files => self.files(req, w),
             ApiRoute::ImportReport => self.import_report(req, w),
+            ApiRoute::ValveFlow => self.flow(req, w, m.valve),
             _ => self.api_valves(req, w, h, m, body),
         }
     }
@@ -1434,6 +1461,9 @@ where
             ApiRoute::Detect => self.simple(req, w, C::Detect, ALL_VALVES),
             ApiRoute::StopAll => self.stop(req, w, ALL_VALVES),
             ApiRoute::SensorsScan => self.simple(req, w, C::ScanSensors, NO_VALVE),
+            ApiRoute::ValveFlowSet => self.flow_set(req, w, v, body),
+            ApiRoute::ValveFlowCounts => self.flow_counts(req, w, v, body),
+            ApiRoute::ValveBrake => self.brake(req, w, v, body),
             _ => self.api_stm(req, w, h, m, body),
         }
     }
@@ -1581,6 +1611,61 @@ where
         }
     }
 
+    /// POST /api/valves/{n}/flow/counts `{"counts":0..10000}` (Rust 2.2.8): the flow layer
+    /// positions the valve to the corrected pulses at once (0: closed), outside its dead band
+    /// and interval (the verification tool); `409 flow_off` / `409 unsupported` while the layer
+    /// does not run on the valve.
+    fn flow_counts(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8, body: &mut [u8]) {
+        if self.refuse_while_flashing(req)
+            || self.refuse_too_old(req, &mut w.snap)
+            || !self.flow_running(req, w, valve)
+        {
+            return;
+        }
+        let Some(o) = parse(req, &mut w.doc, body) else {
+            return;
+        };
+        let counts = if only_keys(&o, &[b"counts"]) {
+            int_field(&o, b"counts", 0..=i64::from(FLOW_COUNTS_MAX), None)
+        } else {
+            None
+        };
+        let Some(counts) = counts else {
+            return send_error(req, 400, "out_of_range", b"counts 0..10000");
+        };
+        self.submit_flow_counts(req, valve, counts as u16);
+    }
+
+    /// The flow layer runs on `valve` (the snapshot); else the 409 was answered.
+    #[inline(never)]
+    fn flow_running(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8) -> bool {
+        self.host.read_stm_snapshot(&mut w.snap);
+        let state = w
+            .snap
+            .flow
+            .get(usize::from(valve))
+            .map_or(FlowState::Off, |f| f.state);
+        let refusal = match state {
+            FlowState::Off => ("flow_off", &b"flow layer not enabled"[..]),
+            FlowState::Unsupported => ("unsupported", &b"STM 2.2.8 required"[..]),
+            _ => return true,
+        };
+        send_error(req, 409, refusal.0, refusal.1);
+        false
+    }
+
+    /// The FlowCounts command of `valve`, answered 202 (or 503).
+    #[inline(never)]
+    fn submit_flow_counts(&self, req: &mut dyn HttpRequest, valve: u8, counts: u16) {
+        let cmd = StmCommand {
+            counts,
+            ..command(StmCommandType::FlowCounts, valve)
+        };
+        if self.submit(req, &cmd) {
+            accepted(req);
+        }
+    }
+
     /// POST /api/valves/{n}/sensors `{"slot1":0..34,"slot2":0..34}`: the configured ids of the
     /// slots (0 = none).
     fn valve_sensors(
@@ -1660,6 +1745,78 @@ where
         }
         if self.submit(req, &command(StmCommandType::StopValve, valve)) {
             accepted(req);
+        }
+    }
+
+    /// POST /api/valves/{n}/brake `{"maxMs":0..65535,"gapMs":0..65535}` (Rust 2.2.8, STM
+    /// 2.2.9): `sbrak` with the attempt of this request, then the STM's answer: `200
+    /// {"valve":n,"result":"ok"}`, `409 stm_rejected` with the code, `504 stm_timeout` after
+    /// [`BRAKE_WAIT_MS`] without one (the server serves nothing else meanwhile).
+    fn brake(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8, body: &mut [u8]) {
+        if self.refuse_while_flashing(req) || self.refuse_below_v3(req, &mut w.snap) {
+            return;
+        }
+        let Some(o) = parse(req, &mut w.doc, body) else {
+            return;
+        };
+        let Some((max_ms, gap_ms)) = brake_fields(&o) else {
+            return send_error(req, 400, "out_of_range", b"maxMs 0..65535, gapMs 0..65535");
+        };
+        // 1..0x7FFF: the stm thread keeps the low 15 bits
+        let attempt = (self.brake_attempt.load(Ordering::Relaxed) % 0x7FFF) + 1;
+        self.brake_attempt.store(attempt, Ordering::Relaxed);
+        if self.submit_brake(req, valve, max_ms, gap_ms, attempt) {
+            self.brake_answer(req, valve, attempt);
+        }
+    }
+
+    /// The Brake command of `valve`; false when the 503 was answered.
+    #[inline(never)]
+    fn submit_brake(
+        &self,
+        req: &mut dyn HttpRequest,
+        valve: u8,
+        max_ms: u16,
+        gap_ms: u16,
+        attempt: u16,
+    ) -> bool {
+        let cmd = StmCommand {
+            max_ms,
+            gap_ms,
+            attempt,
+            ..command(StmCommandType::Brake, valve)
+        };
+        self.submit(req, &cmd)
+    }
+
+    /// Waits for the answer of `attempt` and sends it.
+    #[inline(never)]
+    fn brake_answer(&self, req: &mut dyn HttpRequest, valve: u8, attempt: u16) {
+        let mut waited = 0;
+        let result = loop {
+            if let Some(r) = self.host.take_brake_result(attempt) {
+                break Some(r);
+            }
+            if waited >= BRAKE_WAIT_MS {
+                break None;
+            }
+            self.ports.clock.sleep_ms(BRAKE_POLL_MS);
+            waited += BRAKE_POLL_MS;
+        };
+        let mut buf = [0u8; 48];
+        match result {
+            Some(r) if r.ok => {
+                let n = fmt_trunc(
+                    &mut buf,
+                    format_args!("{{\"valve\":{},\"result\":\"ok\"}}", u32::from(valve) + 1),
+                );
+                send(req, 200, JSON, buf.get(..n).unwrap_or_default());
+            }
+            Some(r) if r.code >= 0 => {
+                let n = fmt_trunc(&mut buf, format_args!("sbrak err {}", r.code));
+                send_error(req, 409, "stm_rejected", buf.get(..n).unwrap_or_default());
+            }
+            _ => send_error(req, 504, "stm_timeout", b"no reply from the STM"),
         }
     }
 

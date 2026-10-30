@@ -10,6 +10,7 @@ use crate::port::Fs;
 use vdm_esp_core::common::ALL_VALVES;
 use vdm_esp_core::config::MqttMode;
 use vdm_esp_core::event_log::EventCode;
+use vdm_esp_core::flow_layer::FlowPoint;
 use vdm_esp_core::link_policy::LinkState;
 use vdm_esp_core::stm_flasher::FlashError;
 use vdm_esp_core::stm_types::StmCommandType;
@@ -498,4 +499,44 @@ fn task_a_missing_image_and_a_pending_restart_refuse_the_flash() {
         last.last().map(|e| e.text.to_vec()),
         Some(b"restart pending".to_vec())
     );
+}
+
+// ---------------------------------------------------------------- the flow layer (Rust 2.2.8)
+
+#[test]
+fn task_the_flow_configuration_follows_its_revision() {
+    let rig = Rig::new();
+    rig.host.s().load_source = LoadSource::Stored;
+    let stm = rig.stm();
+    stm.protocol(3);
+    let mut link = rig.link();
+    link.begin();
+    {
+        let (clock, host) = (rig.dev.clock.clone(), rig.host.clone());
+        rig.dev.clock.on_sleep(move |_| {
+            if clock.ms() == 9000 {
+                let mut s = host.s();
+                s.flow[2].enabled = true;
+                s.flow[2].count = 2;
+                s.flow[2].points[0] = FlowPoint {
+                    counts: 0,
+                    flow_ml: 0,
+                };
+                s.flow[2].points[1] = FlowPoint {
+                    counts: 1000,
+                    flow_ml: 2700,
+                };
+                s.flow_revision += 1;
+            }
+        });
+    }
+    rig.run_task(&mut link, 12_000);
+    let flow = link.session().flow();
+    assert!(flow.config(2).enabled);
+    assert_eq!(flow.config(2).count, 2);
+    assert!(!flow.config(0).enabled);
+    // the fake STM of the glue is 2.1.x: the layer does not run on it
+    assert!(!flow.supported());
+    assert!(rig.host.s().published.flow[2].enabled);
+    assert!(stm.requests_of("skeep").is_empty());
 }

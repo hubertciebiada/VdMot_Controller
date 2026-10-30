@@ -494,5 +494,64 @@ class ImageEviction(unittest.TestCase):  # M25
         self.assertIsNone(upload("stm226", "2.2.6-revamped").json["evicted"])
 
 
+class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
+    OFF = {"enabled": False, "state": "off", "counts": None, "targetCounts": 0, "lpm": None, "ms": None,
+           "peak": None}
+
+    def test_config_document_and_patch(self):
+        device(proto=3)
+        r = req("GET", "/api/valves/1/flow")
+        self.assertEqual(r.status, 200)
+        self.assertEqual(list(r.json), ["valve", "config", "flow"])
+        self.assertEqual(r.json["flow"], self.OFF)
+        self.assertEqual(r.json["config"]["qmax"], 2.7)
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"], self.OFF)
+        r = req("POST", "/api/valves/1/flow", {"enabled": True, "points": [[593, 0], [809, 1.0], [1100, 2.7]]})
+        self.assertEqual(r.status, 200)
+        self.assertTrue(r.json["config"]["enabled"])
+        self.assertEqual(r.json["config"]["points"], [[593, 0], [809, 1.0], [1100, 2.7]])
+        for body, detail in [({"x": 1}, "unknown key"), ({"qmax": 0}, "qmax 0.01..20 l/min"),
+                             ({"points": [[1, 0], [1, 1]]}, "points counts 0..10000, increasing"),
+                             ({"refSide": "up"}, "refSide closed|open"), ({"enabled": 1}, "enabled true|false")]:
+            r = req("POST", "/api/valves/1/flow", body)
+            self.assertEqual((r.status, r.json["detail"]), (400, detail), body)
+        self.assertEqual(req("DELETE", "/api/valves/1/flow").status, 405)
+        self.assertEqual(req("GET", "/api/valves/1/flow/counts").status, 405)
+
+    def test_counts_and_targets(self):
+        d = device(proto=3)
+        d.stm_version = "2.2.7-revamped_C2"
+        r = req("POST", "/api/valves/1/flow/counts", {"counts": 700})
+        self.assertEqual((r.status, r.json["error"]), (409, "flow_off"))
+        req("POST", "/api/valves/1/flow", {"enabled": True, "points": [[593, 0], [809, 1.0], [1100, 2.7]]})
+        r = req("POST", "/api/valves/1/flow/counts", {"counts": 700})
+        self.assertEqual((r.status, r.json["error"]), (409, "unsupported"))
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["state"], "unsupported")
+        d.stm_version = "2.2.8-revamped_C2"
+        r = req("POST", "/api/valves/1/flow/counts", {"counts": 10001})
+        self.assertEqual((r.status, r.json["detail"]), (400, "counts 0..10000"))
+        self.assertEqual(req("POST", "/api/valves/1/flow/counts", {"counts": 700}).status, 202)
+        v = req("GET", "/api/valves").json["valves"][0]
+        self.assertEqual((v["flow"]["state"], v["flow"]["counts"], v["flow"]["lpm"]), ("held", 700, 0.495))
+        self.assertEqual(v["pos"], 18)
+        # a target in flow percent: the curve's pulses, the position follows
+        self.assertEqual(req("POST", "/api/valves/1/target", {"target": 37}).status, 202)
+        v = req("GET", "/api/valves").json["valves"][0]
+        self.assertEqual((v["target"], v["flow"]["counts"], v["pos"]), (37, 809, 37))
+        self.assertTrue(any(e["code"] == 416 for e in req("GET", "/api/events").json["events"]))
+
+    def test_brake(self):
+        device(proto=3)
+        r = req("POST", "/api/valves/1/brake", {"maxMs": 40, "gapMs": 5})
+        self.assertEqual((r.status, r.json), (200, {"valve": 1, "result": "ok"}))
+        r = req("POST", "/api/valves/1/brake", {"maxMs": 70000, "gapMs": 5})
+        self.assertEqual((r.status, r.json["error"]), (400, "out_of_range"))
+        r = req("POST", "/api/valves/1/brake", {"maxMs": 40})
+        self.assertEqual(r.status, 400)
+        device(proto=2)
+        r = req("POST", "/api/valves/1/brake", {"maxMs": 0, "gapMs": 0})
+        self.assertEqual((r.status, r.json["error"]), (409, "stm_unsupported"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

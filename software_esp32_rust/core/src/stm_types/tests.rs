@@ -23,10 +23,20 @@ fn command_type_numbers_are_the_cpp_declaration_order() {
         StmCommandType::ConfigChanged,
         StmCommandType::StopValve,
         StmCommandType::LeaveSafeMode,
+        StmCommandType::FlowCounts,
+        StmCommandType::Brake,
     ];
     for (i, t) in all.iter().enumerate() {
         assert_eq!(*t as usize, i);
     }
+}
+
+#[test]
+fn snapshot_starts_without_a_flow_layer() {
+    // Rust 2.2.8: every valve's flow view is the default (off, nothing known).
+    let s = StmSnapshot::default();
+    assert_eq!(s.flow, [FlowView::default(); VALVE_COUNT as usize]);
+    assert!(!s.flow[0].enabled);
 }
 
 #[test]
@@ -69,6 +79,7 @@ fn command_defaults_are_the_cpp_member_initialisers() {
     assert_eq!(c.dir, MoveDir::Open);
     assert_eq!(c.counts, 0);
     assert_eq!(c.max_ma, 0);
+    assert_eq!((c.max_ms, c.gap_ms), (0, 0)); // Rust 2.2.8
     assert!(c.image.is_empty());
     assert_eq!(c.image.capacity(), 31); // C++ char[32]
     assert!(!c.blank);

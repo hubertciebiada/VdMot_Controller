@@ -7,10 +7,11 @@ use vdm_esp_core::common::{elapsed_ms, fmt_fit, VOLT_SLOT_COUNT};
 use vdm_esp_core::config::ValveConfig;
 use vdm_esp_core::event_log::parse_severity;
 use vdm_esp_core::file_manager::{write_files_json, FileEntry};
+use vdm_esp_core::flow_layer::{flow_error_text, patch_flow_config_json, FlowError, FlowView};
 use vdm_esp_core::json_api::{
     write_events_json, write_flash_status_json, write_health_json, write_motor_json,
-    write_profile_json, write_sensors_json, write_status_json, write_valves_json, SensorView,
-    StatusSnapshot, ValveView,
+    write_profile_json, write_sensors_json, write_status_json, write_valve_flow_json,
+    write_valves_json, SensorView, StatusSnapshot, ValveView,
 };
 use vdm_esp_core::legacy_http::{
     write_legacy_temps_json, write_legacy_valves_json, write_legacy_volts_json,
@@ -396,33 +397,42 @@ where
         cfg: &'v Config,
     ) -> Option<Vec<ValveView<'v>>> {
         let mut views = scratch(self.ports.gate, usize::from(VALVE_COUNT))?;
-        for (i, (st, vc)) in (0u8..).zip(snap.valves.iter().zip(cfg.valves.iter())) {
-            views.push(self.valve_view(i, st, vc, cfg));
+        for i in 0..VALVE_COUNT {
+            // filled in place: no view on the stack besides the one pushed
+            views.push(ValveView::default());
+            let (Some(v), Some(st), Some(vc), Some(flow)) = (
+                views.last_mut(),
+                snap.valves.get(usize::from(i)),
+                cfg.valves.get(usize::from(i)),
+                snap.flow.get(usize::from(i)),
+            ) else {
+                break;
+            };
+            self.valve_view(v, i, st, vc, cfg, flow);
         }
         Some(views)
     }
 
-    /// The view of valve `i`: its state and config, its sensors, the end of its last
-    /// calibration.
+    /// The view of valve `i` into `v`: its state and config, its sensors, the end of its last
+    /// calibration, its flow layer.
     fn valve_view<'v>(
         &self,
+        v: &mut ValveView<'v>,
         i: u8,
         st: &'v ValveState,
         vc: &'v ValveConfig,
         cfg: &'v Config,
-    ) -> ValveView<'v> {
-        let mut v = ValveView {
-            state: Some(st),
-            config: Some(vc),
-            ..ValveView::default()
-        };
-        valve_sensor(&mut v, 0, st.sensor_slot[0], st.temp1, cfg);
-        valve_sensor(&mut v, 1, st.sensor_slot[1], st.temp2, cfg);
+        flow: &'v FlowView,
+    ) {
+        v.state = Some(st);
+        v.config = Some(vc);
+        v.flow = Some(flow);
+        valve_sensor(v, 0, st.sensor_slot[0], st.temp1, cfg);
+        valve_sensor(v, 1, st.sensor_slot[1], st.temp2, cfg);
         v.calibration_end = self
             .host
             .calibration_end(i)
             .map_or_else(LocalTime::default, |t| LocalTime { valid: true, ..t });
-        v
     }
 
     /// GET /api/valves.
@@ -558,6 +568,53 @@ where
     }
 
     // ------------------------------------------------------------ STM documents
+
+    /// The document of GET and POST /api/valves/{n}/flow: the stored configuration of the valve
+    /// and the state of its layer from the snapshot.
+    fn flow_document(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8) {
+        let cfg = self.storage.shared().flow_config(valve);
+        self.host.read_stm_snapshot(&mut w.snap);
+        let view = w
+            .snap
+            .flow
+            .get(usize::from(valve))
+            .copied()
+            .unwrap_or_default();
+        self.document(req, &mut w.response, None, |jw| {
+            write_valve_flow_json(jw, valve, &cfg, &view)
+        });
+    }
+
+    /// GET /api/valves/{n}/flow (Rust 2.2.8).
+    pub(super) fn flow(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8) {
+        self.flow_document(req, w, valve);
+    }
+
+    /// POST /api/valves/{n}/flow (Rust 2.2.8): the members of the body patch the stored
+    /// configuration of the valve (core `patch_flow_config_json`), which is saved to NVS and
+    /// answered like the GET; `400 malformed` / `invalid` (an unknown key) / `out_of_range` with
+    /// the rule as the detail, nothing changed.
+    pub(super) fn flow_set(
+        &self,
+        req: &mut dyn HttpRequest,
+        w: &mut WorkSet,
+        valve: u8,
+        body: &[u8],
+    ) {
+        let mut cfg = self.storage.shared().flow_config(valve);
+        if let Err(e) = patch_flow_config_json(&mut cfg, body) {
+            let error = match e {
+                FlowError::Malformed => "malformed",
+                FlowError::UnknownKey => "invalid",
+                _ => "out_of_range",
+            };
+            return send_error(req, 400, error, flow_error_text(e).as_bytes());
+        }
+        if !self.storage.save_flow_config(valve, &cfg) {
+            return send_error(req, 500, "nvs", b"flow config not saved");
+        }
+        self.flow_document(req, w, valve);
+    }
 
     /// GET /api/valves/{n}/profile: 404 without one.
     pub(super) fn profile(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8) {

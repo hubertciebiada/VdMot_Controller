@@ -8,18 +8,20 @@ use std::collections::VecDeque;
 
 use vdm_esp_core::common::ALL_VALVES;
 use vdm_esp_core::event_log::{EventCode, Severity};
+use vdm_esp_core::flow_layer::{FlowState, FlowView};
 use vdm_esp_core::json_api::HttpMethod;
 use vdm_esp_core::stm_flasher::FlashPhase;
 use vdm_esp_core::stm_types::StmCommandType;
 
 use super::rig::*;
 use super::{
-    parse_epoch, BODY_TIMEOUTS, MAX_BODY_SIZE, MAX_CONNECTIONS, MAX_STM_IMAGE_SIZE,
-    MULTIPART_SLACK, RESPONSE_SIZE,
+    parse_epoch, BODY_TIMEOUTS, BRAKE_POLL_MS, BRAKE_WAIT_MS, MAX_BODY_SIZE, MAX_CONNECTIONS,
+    MAX_STM_IMAGE_SIZE, MULTIPART_SLACK, RESPONSE_SIZE,
 };
 use crate::boot_guard::BootGuard;
 use crate::ota::{OtaPorts, OtaService};
 use crate::port::{BodyRead, Clock, HttpRequest};
+use crate::shared::BrakeResult;
 use crate::storage::ImageResult;
 use crate::testkit::board::TestPlatform;
 use crate::testkit::ota::SLOT_ADDR;
@@ -779,4 +781,241 @@ fn upload_into_a_full_store_names_the_image_it_removed() {
     let r = perform(&mut web, api_upload("/api/stm/images", "x.bin", &data));
     assert_eq!(r.status, 507);
     assert_eq!(text(&r), error_body("upload_failed", "too_many_images"));
+}
+
+// ---------------------------------------------------------------- the flow layer (Rust 2.2.8)
+
+/// The flow member of a valve without the layer.
+const FLOW_OFF: &str = concat!(
+    r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"#,
+    r#""lpm":null,"ms":null,"peak":null}"#
+);
+
+#[test]
+fn flow_config_is_read_patched_saved_and_refused() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert_eq!(r.status, 200);
+    let t = text(&r);
+    assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":false,"qmax":2.700,"#));
+    assert!(t.ends_with(&format!("{FLOW_OFF}}}")));
+    let before = st.shared().flow_revision();
+    let body = r#"{"enabled":true,"qmax":2.5,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
+    let r = perform(&mut web, api_post("/api/valves/1/flow", body));
+    assert_eq!(r.status, 200);
+    let t = text(&r);
+    assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":true,"qmax":2.500,"#));
+    assert!(t.contains(r#""points":[[593,0.000],[713,0.250],[1016,2.500]]},"#));
+    // Stored: the revision moved, NVS holds the blob, the GET reads it back; the other valves
+    // keep their defaults.
+    assert_eq!(st.shared().flow_revision(), before + 1);
+    assert!(rig.dev.nvs.has("vdmrev", "flow"));
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert!(text(&r).contains(r#""qmax":2.500,"#));
+    let r = perform(&mut web, get("/api/valves/2/flow"));
+    assert!(text(&r).starts_with(r#"{"valve":2,"config":{"enabled":false,"qmax":2.700,"#));
+    assert!(st.shared().flow_config(0).enabled);
+    assert!(!st.shared().flow_config(1).enabled);
+    // A second patch keeps the members it does not name.
+    let r = perform(&mut web, api_post("/api/valves/1/flow", r#"{"offset":-7}"#));
+    assert_eq!(r.status, 200);
+    assert!(text(&r).contains(r#""qmax":2.500,"#));
+    assert!(text(&r).contains(r#""offset":-7,"#));
+    // Refusals, nothing changed.
+    let cases = [
+        ("{", "malformed", "malformed JSON"),
+        (r#"{"x":1}"#, "invalid", "unknown key"),
+        (r#"{"qmax":0}"#, "out_of_range", "qmax 0.01..20 l/min"),
+        (
+            r#"{"points":[[1,0],[1,1]]}"#,
+            "out_of_range",
+            "points counts 0..10000, increasing",
+        ),
+        (r#"{"refSide":"up"}"#, "out_of_range", "refSide closed|open"),
+    ];
+    for (body, code, detail) in cases {
+        let r = perform(&mut web, api_post("/api/valves/1/flow", body));
+        assert_eq!(r.status, 400, "{body}");
+        assert_eq!(text(&r), error_body(code, detail), "{body}");
+    }
+    assert_eq!(st.shared().flow_revision(), before + 2);
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert!(text(&r).contains(r#""offset":-7,"#));
+}
+
+#[test]
+fn flow_counts_need_a_running_layer_and_queue_the_command() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let counts = |n: &str| api_post("/api/valves/1/flow/counts", n);
+    let r = perform(&mut web, counts(r#"{"counts":800}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("flow_off", "flow layer not enabled"));
+    rig.state().snapshot.flow[0] = FlowView {
+        enabled: true,
+        state: FlowState::Unsupported,
+        ..FlowView::default()
+    };
+    let r = perform(&mut web, counts(r#"{"counts":800}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("unsupported", "STM 2.2.8 required"));
+    rig.state().snapshot.flow[0].state = FlowState::Unknown;
+    let bodies = [
+        (r#"{"counts":800}"#, true),
+        (r#"{"counts":0}"#, true),
+        (r#"{"counts":10000}"#, true),
+        (r#"{"counts":10001}"#, false),
+        (r#"{"counts":-1}"#, false),
+        (r#"{"counts":1.5}"#, false),
+        (r#"{"counts":"8"}"#, false),
+        ("{}", false),
+        (r#"{"counts":1,"x":2}"#, false),
+    ];
+    for (body, ok) in bodies {
+        let r = perform(&mut web, counts(body));
+        if ok {
+            assert_eq!(r.status, 202, "{body}");
+        } else {
+            assert_eq!(r.status, 400, "{body}");
+            assert_eq!(text(&r), error_body("out_of_range", "counts 0..10000"));
+        }
+    }
+    let s = rig.submitted();
+    assert_eq!(s.len(), 3);
+    assert!(s
+        .iter()
+        .all(|c| c.kind == StmCommandType::FlowCounts && c.valve == 0));
+    assert_eq!(
+        s.iter().map(|c| c.counts).collect::<Vec<_>>(),
+        [800, 0, 10000]
+    );
+    // The valve document shows the flow block of the snapshot (and the flow % as the position).
+    rig.state().snapshot.flow[0] = FlowView {
+        enabled: true,
+        state: FlowState::Held,
+        known: true,
+        counts: 812,
+        target_counts: 809,
+        flow_ml: 1012,
+        pct: 37,
+        last_valid: true,
+        last_ms: 5684,
+        last_peak: 123,
+    };
+    rig.state().snapshot.valves[0].position = 37;
+    let r = perform(&mut web, get("/api/valves"));
+    let t = text(&r);
+    assert!(t.contains(concat!(
+        r#""flow":{"enabled":true,"state":"held","counts":812,"targetCounts":809,"#,
+        r#""lpm":1.012,"ms":5684,"peak":12.3}},{"idx":2,"#
+    )));
+    assert!(t.contains(r#","pos":37,"#));
+    assert_eq!(count_of(&t, FLOW_OFF), 11);
+    // A full queue, a flash and a too-old STM refuse as every STM action.
+    rig.state().submit_result = false;
+    let r = perform(&mut web, counts(r#"{"counts":5}"#));
+    assert_eq!(r.status, 503);
+    rig.state().submit_result = true;
+    rig.state().flash_active = true;
+    let r = perform(&mut web, counts(r#"{"counts":5}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("flashing", "STM flash in progress"));
+    assert_eq!(rig.submitted().len(), 3);
+}
+
+// ---------------------------------------------------------------- brake (STM 2.2.9)
+
+#[test]
+fn brake_sends_sbrak_with_an_attempt_and_answers_with_the_stm_reply() {
+    let rig = Rig::started();
+    rig.state().proto = 3;
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let brake = |b: &str| api_post("/api/valves/2/brake", b);
+    // The answer arrives after a few polls: 200 ok, the attempt of the command.
+    rig.state().brake_result = Some(BrakeResult {
+        attempt: 1,
+        valve: 1,
+        ok: true,
+        code: 0,
+    });
+    rig.state().brake_after = 3;
+    let t0 = rig.dev.clock.ms();
+    let r = perform(&mut web, brake(r#"{"maxMs":40,"gapMs":5}"#));
+    assert_eq!(r.status, 200);
+    assert_eq!(text(&r), "{\"valve\":2,\"result\":\"ok\"}");
+    let s = rig.submitted();
+    assert_eq!(s.len(), 1);
+    assert_eq!(s[0].kind, StmCommandType::Brake);
+    assert_eq!(
+        (s[0].valve, s[0].max_ms, s[0].gap_ms, s[0].attempt),
+        (1, 40, 5, 1)
+    );
+    assert_eq!(rig.state().brake_polls, 4);
+    assert_eq!(rig.dev.clock.ms() - t0, 3 * u64::from(BRAKE_POLL_MS));
+    // Rejected by the STM: 409 with its code; the attempt counts up.
+    rig.state().brake_polls = 0;
+    rig.state().brake_after = 0;
+    rig.state().brake_result = Some(BrakeResult {
+        attempt: 2,
+        valve: 1,
+        ok: false,
+        code: 1,
+    });
+    let r = perform(&mut web, brake(r#"{"maxMs":0,"gapMs":0}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("stm_rejected", "sbrak err 1"));
+    assert_eq!(rig.submitted()[1].attempt, 2);
+    // No answer (another attempt's or none): 504 after 3 s.
+    rig.state().brake_result = Some(BrakeResult {
+        attempt: 9,
+        valve: 1,
+        ok: true,
+        code: 0,
+    });
+    let t0 = rig.dev.clock.ms();
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
+    assert_eq!(r.status, 504);
+    assert_eq!(text(&r), error_body("stm_timeout", "no reply from the STM"));
+    assert_eq!(rig.dev.clock.ms() - t0, u64::from(BRAKE_WAIT_MS));
+    assert_eq!(rig.submitted()[2].attempt, 3);
+    // The body: both members, whole numbers 0..65535, nothing else.
+    for body in [
+        r#"{"maxMs":40}"#,
+        r#"{"maxMs":70000,"gapMs":5}"#,
+        r#"{"maxMs":-1,"gapMs":5}"#,
+        r#"{"maxMs":4.5,"gapMs":5}"#,
+        r#"{"maxMs":"40","gapMs":5}"#,
+        r#"{"maxMs":40,"gapMs":5,"x":1}"#,
+        "{}",
+    ] {
+        let r = perform(&mut web, brake(body));
+        assert_eq!(r.status, 400, "{body}");
+        assert_eq!(
+            text(&r),
+            error_body("out_of_range", "maxMs 0..65535, gapMs 0..65535")
+        );
+    }
+    assert_eq!(rig.submitted().len(), 3);
+    // Below protocol 3 and while flashing: refused as the stop is.
+    rig.state().proto = 2;
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(
+        text(&r),
+        error_body("stm_unsupported", "STM protocol 3 required")
+    );
+    rig.state().proto = 3;
+    rig.state().flash_active = true;
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
+    assert_eq!(r.status, 409);
+    rig.state().flash_active = false;
+    rig.state().submit_result = false;
+    let r = perform(&mut web, brake(r#"{"maxMs":1,"gapMs":1}"#));
+    assert_eq!(r.status, 503);
+    assert_eq!(rig.submitted().len(), 3);
 }

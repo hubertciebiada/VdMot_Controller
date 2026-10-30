@@ -247,6 +247,16 @@ pub enum EventCode {
     ServiceMoveDone = 414,
     /// arg1 min(openCount, closeCount), arg2 minCounts
     CalibStrokeShort = 415,
+    /// Rust 2.2.8 (flow layer): the valve holds its flow position; arg1 pulses above the closed
+    /// reference, arg2 the flow target in %
+    FlowPositioned = 416,
+    /// Rust 2.2.8: a flow positioning failed; arg1 step (1 fallback target, 2 move to the
+    /// reference end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep), arg2 STM
+    /// error code, -1 no reply, -2 timeout, or the stop reason of the move; text reason
+    FlowPositionFailed = 417,
+    /// Rust 2.2.8: the STM no longer keeps the flow position (reset, calibration, lease,
+    /// another move); arg1 STM flags
+    FlowHoldLost = 418,
     // sensors 5xx (valve = NO_VALVE, arg1 config slot 1-based)
     /// arg2 raw value; text sensor id
     TempSensorFailed = 500,
@@ -491,7 +501,7 @@ const fn special(
 
 /// Registry order = the order of [`event_mqtt_names`].
 #[rustfmt::skip]
-static CODES: [CodeInfo; 89] = {
+static CODES: [CodeInfo; 92] = {
     use EventCode as C;
     use EventMqtt::{Always, No, WarnPlus as Warn};
     use Severity::{Critical, Debug, Error, Info, Warning};
@@ -676,6 +686,13 @@ static CODES: [CodeInfo; 89] = {
             concat!("service move done (", arg1!(), " counts, ", name2!("x"), ")")),
         templated(C::CalibStrokeShort, Warning, Warn, "calib_stroke_short",
             concat!("calibration stroke ", arg1!(), " close to the minimum ", arg2!())),
+        templated(C::FlowPositioned, Info, Warn, "flow_positioned",
+            concat!("flow position held (", arg1!(), " counts, target ", arg2!(), " %)")),
+        templated(C::FlowPositionFailed, Warning, Warn, "flow_position_failed",
+            concat!("flow positioning failed (step ", arg1!(), ", code ", arg2!(), if_txt!(),
+                    ", ", txt!(), end_txt!(), ")")),
+        templated(C::FlowHoldLost, Warning, Warn, "flow_hold_lost",
+            concat!("flow position lost (flags 0x", name1!("2"), ")")),
         templated(C::TempSensorFailed, Warning, Warn, "temp_sensor_failed",
             concat!("temp sensor ", arg1!(), " failed (raw ", arg2!(), if_txt!(), ", ", txt!(),
                     end_txt!(), ")")),

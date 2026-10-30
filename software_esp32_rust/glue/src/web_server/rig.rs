@@ -21,6 +21,7 @@ use crate::logger::{LogRead, Logger, LoggerShared};
 use crate::mqtt_client::{DiscoveryAction, MqttStatus};
 use crate::net::{NetInfo, TrialInfo};
 use crate::ota::{OtaHost, OtaShared, OtaUpload};
+use crate::shared::BrakeResult;
 use crate::storage::{LoadDetails, Storage, StorageHost, StorageShared};
 use crate::testkit::board::TestPlatform;
 use crate::testkit::board::{APP_A, APP_B};
@@ -35,6 +36,10 @@ use crate::testkit::{
 pub(super) struct HostState {
     // app: scripted
     pub(super) submit_result: bool,
+    /// Rust 2.2.8: the answer to an `sbrak`, handed out after `brake_after` polls.
+    pub(super) brake_result: Option<BrakeResult>,
+    pub(super) brake_after: u32,
+    pub(super) brake_polls: u32,
     pub(super) snapshot: Box<StmSnapshot>,
     pub(super) profiles: [Profile; VALVE_COUNT as usize],
     pub(super) flash_active: bool,
@@ -75,6 +80,9 @@ impl Default for HostState {
     fn default() -> Self {
         HostState {
             submit_result: true,
+            brake_result: None,
+            brake_after: 0,
+            brake_polls: 0,
             snapshot: Box::default(),
             profiles: [Profile::default(); VALVE_COUNT as usize],
             flash_active: false,
@@ -267,6 +275,14 @@ impl WebHost for Host {
     }
     fn request_discovery(&self, a: DiscoveryAction) {
         self.state().discovery.push(a);
+    }
+    fn take_brake_result(&self, attempt: u16) -> Option<BrakeResult> {
+        let mut s = self.state();
+        s.brake_polls += 1;
+        if s.brake_polls <= s.brake_after {
+            return None;
+        }
+        s.brake_result.take().filter(|r| r.attempt == attempt)
     }
 }
 

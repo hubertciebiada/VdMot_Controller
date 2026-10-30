@@ -4,6 +4,7 @@
 
 use crate::common::{OneWireId, Text, NO_VALVE, TEMP_SLOT_COUNT, VALVE_COUNT, VOLT_SLOT_COUNT};
 use crate::failsafe::LeaseStatus;
+use crate::flow_layer::FlowView;
 use crate::link_policy::{LinkState, LinkStats};
 use crate::stm_codec::{Breakaway, MotorChars, MoveDir, StmStatus};
 use crate::stm_flasher::FlashStatus;
@@ -47,6 +48,12 @@ pub enum StmCommandType {
     StopValve = 13,
     /// ssafe 0 (protocol 3)
     LeaveSafeMode = 14,
+    /// Rust 2.2.8: valve, counts; the flow layer positions the valve to `counts` corrected
+    /// pulses (`POST /api/valves/{n}/flow/counts`)
+    FlowCounts = 15,
+    /// Rust 2.2.8: valve or ALL_VALVES, max_ms, gap_ms, attempt: `sbrak` of STM 2.2.9, its
+    /// result posted for `attempt` (`POST /api/valves/{n}/brake`)
+    Brake = 16,
 }
 
 /// One command into the STM task; only the fields of its [`StmCommandType`] are read.
@@ -71,6 +78,9 @@ pub struct StmCommand {
     pub counts: u16,
     /// C++ `maxmA`
     pub max_ma: u8,
+    /// Brake: the plug braking time and the gap before it, ms (0 = off)
+    pub max_ms: u16,
+    pub gap_ms: u16,
     /// LittleFS name below /stm/ (C++ `char[32]`)
     pub image: Text<31>,
     pub blank: bool,
@@ -100,6 +110,8 @@ impl Default for StmCommand {
             dir: MoveDir::Open,
             counts: 0,
             max_ma: 0,
+            max_ms: 0,
+            gap_ms: 0,
             image: Text::new(),
             blank: false,
             force: false,
@@ -187,6 +199,9 @@ pub struct StmSnapshot {
     pub learn_time_s: u32,
     /// a flash waits for the STM EEPROM
     pub flash_pending: bool,
+    /// Rust 2.2.8: the flow layer of every valve (`valves[i].position` of an enabled valve is
+    /// its flow %)
+    pub flow: [FlowView; VALVE_COUNT as usize],
 }
 
 impl Default for StmSnapshot {
@@ -224,6 +239,7 @@ impl Default for StmSnapshot {
             have_learn_time: false,
             learn_time_s: 0,
             flash_pending: false,
+            flow: [FlowView::default(); VALVE_COUNT as usize],
         }
     }
 }

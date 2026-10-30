@@ -24,6 +24,7 @@ use crate::event_log::{
 use crate::failsafe::{
     regulator_cause, LeaseMode, LeaseState, LeaseStatus, RegulatorCause, RegulatorInput,
 };
+use crate::flow_layer::{FlowConfig, FlowInputs, FlowLayer, FlowOutcome, FlowRequest, FlowState};
 use crate::health_monitor::{HealthMonitor, MAX_EVENTS_PER_UPDATE};
 use crate::lease_client::{effective_lease_config, LeaseClient, LeaseClientSnapshot};
 use crate::line_assembler::{LineAssembler, STM_MAX_LINE_LEN};
@@ -34,10 +35,11 @@ use crate::link_policy::{
 use crate::poll_planner::{PollPlanner, ResyncStep};
 use crate::reset_gate::{ResetGate, ResetGateState};
 use crate::stm_codec::{
-    build_assembly, build_calibrate, build_detect, build_eeprom_state, build_leave_safe_mode,
-    build_match_sensors, build_scan_one_wire, build_service_move, build_set_breakaway,
-    build_set_learn_movements, build_set_motor_chars, build_set_target, build_set_valve_sensors,
-    build_stop, parse_reply, Cmd, ParseStatus, Profile, Reply, RequestLine, StmStatus,
+    build_assembly, build_brake, build_calibrate, build_detect, build_eeprom_state, build_keep,
+    build_leave_safe_mode, build_match_sensors, build_scan_one_wire, build_service_move,
+    build_set_breakaway, build_set_learn_movements, build_set_motor_chars, build_set_target,
+    build_set_valve_sensors, build_stop, parse_reply, Cmd, ParseStatus, Profile, Reply,
+    RequestLine, StmStatus,
 };
 use crate::stm_flasher::{
     board_tag_valid, flash_phase_name, FlashError, FlashImage, FlashOptions, FlashPhase,
@@ -73,6 +75,9 @@ pub trait StmSessionPort {
     fn set_stm_save_state(&mut self, s: StmSaveState);
     /// Once per second: the lease emulation for the RTC record.
     fn store_lease_record(&mut self, s: &LeaseClientSnapshot);
+    /// Rust 2.2.8: the STM answered (or not) the `sbrak` of `attempt`: `ok`, else `code` is
+    /// the STM's error code or -1 without a reply (the web waits for it).
+    fn post_brake_result(&mut self, valve: u8, attempt: u16, ok: bool, code: i32);
     /// Opens the image of a flash run (the C++ `openImage` returning a pointer); false when it
     /// cannot be opened. It is closed ([`close_image`](Self::close_image)) when the run ends or
     /// does not start.
@@ -152,6 +157,9 @@ const TEMPS: usize = TEMP_SLOT_COUNT as usize;
 const VOLTS: usize = VOLT_SLOT_COUNT as usize;
 const VALVES: usize = VALVE_COUNT as usize;
 
+/// The STM firmware the flow layer needs (`skeep`, the `svcKeep` flag).
+pub const FLOW_MIN_STM_VERSION: &str = "2.2.8";
+
 pub struct StmSession<P: StmSessionPort> {
     port: P,
     lines: LineAssembler<{ STM_MAX_LINE_LEN + 1 }>,
@@ -165,6 +173,9 @@ pub struct StmSession<P: StmSessionPort> {
     learn: LearnTimeSync,
     gate: ResetGate,
     flasher: StmFlasher,
+    /// Rust 2.2.8: the flow layer
+    flow: FlowLayer,
+    flow_min_version: Version,
     reply: Reply,
 
     // Sensor slots of the config (the valve sensor assignment, failure edges).
@@ -222,6 +233,12 @@ impl<P: StmSessionPort> StmSession<P> {
     pub const SCHEDULED_CALIB_WINDOW_MS: u32 = 4 * 3600 * 1000;
     pub const PUBLISH_MIN_MS: u32 = 100;
     pub const TAG_SCHEDULED_CALIB: u16 = 1;
+    /// Requests of the flow layer (Rust 2.2.8): their results go to the layer, not to the
+    /// service-move bookkeeping.
+    pub const TAG_FLOW: u16 = 2;
+    /// An `sbrak` (Rust 2.2.8): the tag is this bit plus the attempt of the web request, whose
+    /// result is posted through the port.
+    pub const TAG_BRAKE: u16 = 0x8000;
     pub const STM_BAUD: u32 = 115_200;
 
     pub fn new(port: P) -> Self {
@@ -238,6 +255,8 @@ impl<P: StmSessionPort> StmSession<P> {
             learn: LearnTimeSync::default(),
             gate: ResetGate::default(),
             flasher: StmFlasher::new(),
+            flow: FlowLayer::new(),
+            flow_min_version: parse_version(FLOW_MIN_STM_VERSION.as_bytes()),
             reply: Reply::default(),
             slot_ids: [OneWireId::default(); TEMPS],
             temp_active: [false; TEMPS],
@@ -345,6 +364,30 @@ impl<P: StmSessionPort> StmSession<P> {
         self.dirty = true;
     }
 
+    /// The flow configuration of the valves (Rust 2.2.8; initially and whenever it changed):
+    /// the layer takes it, the model stops delivering the targets of the enabled valves.
+    pub fn apply_flow_config(&mut self, cfgs: &[FlowConfig; VALVES]) {
+        self.flow.set_configs(cfgs);
+        self.model.set_flow_mask(self.flow.active_mask());
+        self.dirty = true;
+    }
+
+    /// The flow layer runs on this STM: protocol 3 and the version at least
+    /// [`FLOW_MIN_STM_VERSION`] (an unsupported STM never gets `skeep`, which it would not
+    /// answer). The model's flow mask follows.
+    fn update_flow_support(&mut self, version_known: bool) {
+        let supported = version_known
+            && !self.too_old()
+            && self.planner.protocol() >= 3
+            && compare_version(&self.snap.version, &self.flow_min_version) >= 0;
+        self.flow.set_supported(supported);
+        let mask = self.flow.active_mask();
+        if mask != self.model.flow_mask() {
+            self.model.set_flow_mask(mask);
+            self.dirty = true;
+        }
+    }
+
     /// ESP boot, after the first [`apply_config`](Self::apply_config): restores the desired
     /// targets (TargetsRestored) and the lease record, starts the re-sync behind the STM
     /// start-up hold-off (the IO15 strap may have reset it).
@@ -384,6 +427,8 @@ impl<P: StmSessionPort> StmSession<P> {
         self.planner.request_resync();
         self.lease.on_stm_reboot();
         self.learn.on_stm_reboot();
+        let (flow, port) = (&mut self.flow, &mut self.port);
+        flow.on_stm_rebooted(&mut |e| port.log_event(e));
         self.have_prev_status = false;
         self.snap.proto = self.planner.protocol(); // unknown until gproto answers again
         self.snap.support = self.planner.support();
@@ -587,6 +632,27 @@ impl<P: StmSessionPort> StmSession<P> {
             StmCommandType::LeaveSafeMode => {
                 if proto >= 3 {
                     self.enqueue(&build_leave_safe_mode(), Priority::User, 0);
+                }
+            }
+            StmCommandType::FlowCounts => {
+                let d = self.model.valve(c.valve);
+                let desired = d.desired_valid.then_some(d.desired);
+                if self
+                    .flow
+                    .position_counts(c.valve, c.counts, desired, now_ms)
+                {
+                    self.dirty = true;
+                }
+            }
+            StmCommandType::Brake => {
+                // Below protocol 3 (the web answers 409 before) or not queued: no reply.
+                let attempt = c.attempt & 0x7FFF;
+                let queued = proto >= 3
+                    && build_brake(c.valve, c.max_ms, c.gap_ms).is_some_and(|r| {
+                        self.enqueue(&r, Priority::User, Self::TAG_BRAKE + attempt)
+                    });
+                if !queued {
+                    self.port.post_brake_result(c.valve, attempt, false, -1);
                 }
             }
         }
@@ -876,6 +942,27 @@ impl<P: StmSessionPort> StmSession<P> {
         }
     }
 
+    /// A completed request of the flow layer (tag [`TAG_FLOW`](Self::TAG_FLOW)). `has_reply`:
+    /// `self.reply` is the reply that completed it (its error code for a rejected one).
+    fn on_flow_result(&mut self, c: &Completion, has_reply: bool, now_ms: u32) {
+        let v = c.request.valve;
+        let code = match c.request.cmd {
+            Cmd::Svmov => self.reply.service_move.error_code,
+            Cmd::Skeep => self.reply.keep.error_code,
+            _ => 0,
+        };
+        let outcome = match c.outcome {
+            Outcome::Ok => FlowOutcome::Ok,
+            Outcome::Rejected if has_reply => FlowOutcome::Rejected(code),
+            Outcome::Rejected | Outcome::Timeout => FlowOutcome::NoReply,
+        };
+        if c.request.cmd == Cmd::Svmov && outcome == FlowOutcome::Ok {
+            self.planner.request_target(v); // fast read-back of gvlvy
+        }
+        let (flow, port) = (&mut self.flow, &mut self.port);
+        flow.on_result(v, outcome, now_ms, &mut |e| port.log_event(e));
+    }
+
     /// A completed svmov. `has_reply`: `self.reply` is the reply that completed it.
     fn on_service_move_result(&mut self, c: &Completion, has_reply: bool, now_ms: u32) {
         let v = c.request.valve;
@@ -915,6 +1002,21 @@ impl<P: StmSessionPort> StmSession<P> {
         let ok = c.outcome == Outcome::Ok;
         let req = &c.request;
         let rep = if has_reply { Some(&self.reply) } else { None };
+        if c.tag == Self::TAG_FLOW {
+            self.on_flow_result(c, has_reply, now_ms);
+            self.planner.on_result(req, ok, now_ms);
+            self.dirty = true;
+            return;
+        }
+        if req.cmd == Cmd::Sbrak && c.tag >= Self::TAG_BRAKE {
+            let code = match (has_reply, ok) {
+                (_, true) => 0,
+                (true, false) => i32::from(self.reply.brake.error_code),
+                (false, false) => -1,
+            };
+            self.port
+                .post_brake_result(req.valve, c.tag - Self::TAG_BRAKE, ok, code);
+        }
         match req.cmd {
             Cmd::Stgtp => {
                 if ok {
@@ -1055,6 +1157,34 @@ impl<P: StmSessionPort> StmSession<P> {
         }
     }
 
+    /// The next request of the flow layer (Rust 2.2.8), at most one in flight: the fallback
+    /// target, a service move or a keep, with tag [`TAG_FLOW`](Self::TAG_FLOW). A request that
+    /// cannot be queued is handed back to the layer (it tries again later).
+    fn schedule_flow(&mut self, now_ms: u32) {
+        let inp = FlowInputs {
+            link_up: self.stm_answers(now_ms),
+            lease_expired: self.last_lease.state == LeaseState::Expired,
+        };
+        let Some(req) = self.flow.next(&self.model, inp, now_ms) else {
+            return;
+        };
+        let line = match req {
+            FlowRequest::SetTarget { valve, pct } => build_set_target(valve, pct),
+            FlowRequest::Move {
+                valve,
+                dir,
+                counts,
+                max_ma,
+            } => build_service_move(valve, dir, counts, max_ma),
+            FlowRequest::Keep { valve, on } => build_keep(valve, on),
+        };
+        let queued = line.is_some_and(|r| self.enqueue(&r, Priority::User, Self::TAG_FLOW));
+        if !queued {
+            self.flow.on_dropped(req.valve(), now_ms);
+        }
+        self.dirty = true;
+    }
+
     fn schedule_requests(&mut self, now_ms: u32) {
         if self.gate.state() == ResetGateState::Waiting {
             let held =
@@ -1078,11 +1208,16 @@ impl<P: StmSessionPort> StmSession<P> {
         // Nothing but gproto and gvers before the version is known.
         let step = self.planner.resync_step();
         let version_known = step != ResyncStep::Proto && step != ResyncStep::Version;
+        self.update_flow_support(version_known);
         if version_known && self.link.queued_with(Priority::Config) == 0 {
             self.schedule_config(now_ms, unsupported);
         }
+        if version_known && !unsupported {
+            self.schedule_flow(now_ms);
+        }
         for i in 0..VALVE_COUNT {
-            self.planner.set_valve_busy(i, self.model.is_busy(i));
+            self.planner
+                .set_valve_busy(i, self.model.is_busy(i) || self.flow.busy(i));
         }
         if self.link.queued_with(Priority::Poll) == 0 {
             if let Some(mut r) = self.planner.next(now_ms) {
@@ -1335,6 +1470,10 @@ impl<P: StmSessionPort> StmSession<P> {
             self.snap.sensors_settled = settled;
             self.dirty = true;
         }
+        {
+            let (flow, model, port) = (&mut self.flow, &self.model, &mut self.port);
+            flow.tick(model, now_ms, &mut |e| port.log_event(e));
+        }
         for (v, m) in (0u8..).zip(self.moves.iter_mut()) {
             if !m.active {
                 continue;
@@ -1409,14 +1548,23 @@ impl<P: StmSessionPort> StmSession<P> {
             capture_targets(&self.model, &mut t);
             self.port.store_desired_targets(&t);
         }
+        if self.flow.take_dirty() {
+            self.dirty = true;
+        }
         if !self.dirty
             || (self.published_once
                 && elapsed_ms(now_ms, self.last_publish_ms) < Self::PUBLISH_MIN_MS)
         {
             return;
         }
-        for (i, v) in (0u8..).zip(self.snap.valves.iter_mut()) {
+        let views = self.snap.valves.iter_mut().zip(self.snap.flow.iter_mut());
+        for (i, (v, f)) in (0u8..).zip(views) {
             *v = *self.model.valve(i);
+            *f = self.flow.view(i);
+            // A flow valve reports its flow % as the position (0 while unknown).
+            if !matches!(f.state, FlowState::Off | FlowState::Unsupported) {
+                v.position = f.pct;
+            }
         }
         self.snap.temp_count = self.sensors.temp_count();
         for (i, t) in (0u8..).zip(self.snap.temps.iter_mut()) {
@@ -1463,6 +1611,10 @@ impl<P: StmSessionPort> StmSession<P> {
 
     pub fn lease(&self) -> &LeaseClient {
         &self.lease
+    }
+
+    pub fn flow(&self) -> &FlowLayer {
+        &self.flow
     }
 
     pub fn snapshot(&self) -> &StmSnapshot {

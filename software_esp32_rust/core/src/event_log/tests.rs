@@ -21,7 +21,7 @@ type C = EventCode;
 /// DESIGN.md section 13, the binding table (registry order): code, number, name, severity,
 /// MQTT class.
 #[rustfmt::skip]
-const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 89] = [
+const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 92] = [
     (C::Boot, 100, "boot", Info, Warn),
     (C::ConfigImported, 101, "config_imported", Info, Warn),
     (C::ConfigSaved, 102, "config_saved", Info, Warn),
@@ -104,6 +104,9 @@ const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 89] = [
     (C::ValveStale, 413, "valve_stale", Warning, Warn),
     (C::ServiceMoveDone, 414, "service_move_done", Info, Warn),
     (C::CalibStrokeShort, 415, "calib_stroke_short", Warning, Warn),
+    (C::FlowPositioned, 416, "flow_positioned", Info, Warn),
+    (C::FlowPositionFailed, 417, "flow_position_failed", Warning, Warn),
+    (C::FlowHoldLost, 418, "flow_hold_lost", Warning, Warn),
     (C::TempSensorFailed, 500, "temp_sensor_failed", Warning, Warn),
     (C::TempSensorRecovered, 501, "temp_sensor_recovered", Info, Warn),
     (C::SensorCountChanged, 502, "sensor_count_changed", Info, Warn),
@@ -218,7 +221,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
         assert_eq!(EventCode::from_raw(v), row.map(|r| r.0), "{v}");
         found += usize::from(row.is_some());
     }
-    assert_eq!(found, 89);
+    assert_eq!(found, 92);
     // the registry holds every code once, in the order of the design table
     assert_eq!(CODES.len(), TABLE.len());
     for (ci, row) in CODES.iter().zip(TABLE) {
@@ -229,7 +232,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
 #[test]
 fn event_mqtt_names_lists_every_published_code_in_registry_order() {
     let expected: Vec<&str> = TABLE.iter().filter(|r| r.4 != No).map(|r| r.2).collect();
-    assert_eq!(expected.len(), 82);
+    assert_eq!(expected.len(), 85);
     let mut names = [""; 100];
     assert_eq!(event_mqtt_names(&mut names), expected.len());
     for (i, want) in expected.iter().enumerate() {
@@ -757,6 +760,11 @@ fn event_messages_for_every_code() {
         (ev(C::ValveStale, 2, 60, 0, ""), "valve 3: no data for 60 s"),
         (ev(C::ServiceMoveDone, 2, 500, 1, ""), "valve 3: service move done (500 counts, target)"),
         (ev(C::CalibStrokeShort, 2, 3599, 3000, ""), "valve 3: calibration stroke 3599 close to the minimum 3000"),
+        // Rust 2.2.8: the flow layer
+        (ev(C::FlowPositioned, 0, 812, 37, ""), "valve 1: flow position held (812 counts, target 37 %)"),
+        (ev(C::FlowPositionFailed, 1, 2, 1, "no end stop"), "valve 2: flow positioning failed (step 2, code 1, no end stop)"),
+        (ev(C::FlowPositionFailed, 1, 6, -1, ""), "valve 2: flow positioning failed (step 6, code -1)"),
+        (ev(C::FlowHoldLost, 3, 0x204, 0, ""), "valve 4: flow position lost (flags 0x204)"),
         (ev(C::TempSensorFailed, NO_VALVE, 4, -1270, "28-84-37-94-97-ff-03-23"), "temp sensor 4 failed (raw -1270, 28-84-37-94-97-ff-03-23)"),
         (ev(C::TempSensorFailed, NO_VALVE, 4, 850, ""), "temp sensor 4 failed (raw 850)"),
         (ev(C::TempSensorRecovered, NO_VALVE, 4, 0, ""), "temp sensor 4 recovered"),

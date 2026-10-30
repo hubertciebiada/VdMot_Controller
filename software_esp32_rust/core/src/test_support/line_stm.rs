@@ -64,6 +64,11 @@ pub struct LineStm {
     pub learn_time: u32,
     pub target: [u8; 12],
     pub assembly: [bool; 12],
+    /// Rust 2.2.8: the service hold after a svmov and the keep of `skeep`
+    pub svc_hold: [bool; 12],
+    pub keep: [bool; 12],
+    /// the last move of each valve: dir, requested, counted, stop (the gvlvy record)
+    pub last_move: [(u8, u32, u32, u8); 12],
     pub answers: BTreeMap<String, Answer>,
 
     // ---- observation
@@ -88,6 +93,9 @@ impl Default for LineStm {
             learn_time: 604_800,
             target: [50; 12],
             assembly: [false; 12],
+            svc_hold: [false; 12],
+            keep: [false; 12],
+            last_move: [LineStm::GOLDEN_MOVE; 12],
             answers: BTreeMap::new(),
             lines: Vec::new(),
             boot_at_ms: 0,
@@ -96,11 +104,28 @@ impl Default for LineStm {
 }
 
 impl LineStm {
+    /// The last move of the gvlvx/gvlvy golden: close, 3000 requested, 1450 counted, early
+    /// end stop.
+    pub const GOLDEN_MOVE: (u8, u32, u32, u8) = (1, 3000, 1450, 3);
+
     pub fn reset(&mut self, now_ms: u64) {
         self.boot_at_ms = now_ms;
         self.uptime_base_s = 0;
         self.target = [50; 12];
         self.assembly = [false; 12];
+        self.svc_hold = [false; 12];
+        self.keep = [false; 12];
+        self.last_move = [Self::GOLDEN_MOVE; 12];
+    }
+
+    /// stgtp, staop, staln of a valve (255: all) end its service hold and keep.
+    fn end_hold(&mut self, v: i64) {
+        for k in 0..12 {
+            if v == 255 || v == k {
+                self.svc_hold[k as usize] = false;
+                self.keep[k as usize] = false;
+            }
+        }
     }
 
     /// Scripts the reply of `cmd` (C++ `answers[cmd] = ...`).
@@ -229,6 +254,7 @@ impl LineStm {
         if cmd == "stgtp" && one && t.len() > 2 {
             self.target[vi] = stoi(t[2]) as u8;
             self.assembly[vi] = false;
+            self.end_hold(v);
             return "stgtp".to_string();
         }
         if cmd == "staop" {
@@ -238,7 +264,12 @@ impl LineStm {
                     self.assembly[k as usize] = true;
                 }
             }
+            self.end_hold(v);
             return "staop".to_string();
+        }
+        if cmd == "staln" {
+            self.end_hold(v);
+            return "staln".to_string();
         }
         if self.protocol >= 3 {
             if cmd == "slhbt" {
@@ -272,12 +303,35 @@ impl LineStm {
             if cmd == "ssafe" {
                 return "ssafe ok".to_string();
             }
+            if cmd == "sbrak" && t.len() > 3 && (one || v == 255) {
+                return format!("sbrak {} ok", t[1]);
+            }
+            if cmd == "skeep" && t.len() > 2 && (one || v == 255) {
+                let on = stoi(t[2]) != 0;
+                for k in 0..12 {
+                    if v == 255 || v == k {
+                        self.keep[k as usize] = on;
+                    }
+                }
+                return format!("skeep {} ok", t[1]);
+            }
         }
         if cmd == "stlnt" {
             self.learn_time = stoi(t[1]) as u32;
             return "stlnt".to_string();
         }
         if cmd == "svmov" && self.protocol >= 2 {
+            // The move ends at once: a close meets the end stop after 97 pulses, an opening
+            // move counts its pulses; the valve stays held (the keep stays).
+            if one && t.len() > 3 {
+                let (dir, counts) = (stoi(t[2]) as u8, stoi(t[3]) as u32);
+                self.last_move[vi] = if dir == 1 {
+                    (1, counts, counts.min(97), 2)
+                } else {
+                    (0, counts, counts, 1)
+                };
+                self.svc_hold[vi] = true;
+            }
             return format!("svmov {} ok", t[1]);
         }
         if matches!(
@@ -290,13 +344,17 @@ impl LineStm {
     }
 
     fn valve_ex(&self, v: usize, v3: bool) -> String {
+        let (dir, req, cnt, stop) = self.last_move[v];
         let mut s = format!(
-            "{}{v} 1 40 {} 21 3120 3350 -230 0 57 0 0 0 1 3000 1450 3 412 8123",
+            "{}{v} 1 40 {} 21 3120 3350 -230 0 57 0 0 0 {dir} {req} {cnt} {stop} 412 8123",
             if v3 { "gvlvy " } else { "gvlvx " },
             self.target[v]
         );
         if v3 {
-            let hold = if self.assembly[v] { 256 } else { 0 };
+            // disjoint bits: `+` is the `|`
+            let hold = u16::from(self.assembly[v]) * 256
+                + u16::from(self.svc_hold[v]) * 512
+                + u16::from(self.keep[v]) * 1024;
             s += &format!(" {hold} 0 50 {} 0 0", self.target[v]);
         }
         s

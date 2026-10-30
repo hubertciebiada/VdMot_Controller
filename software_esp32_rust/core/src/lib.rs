@@ -15,6 +15,7 @@ pub mod event_log;
 pub mod factory_reset;
 pub mod failsafe;
 pub mod file_manager;
+pub mod flow_layer;
 pub mod ha_discovery;
 pub mod health_monitor;
 pub mod image_store;
