@@ -87,6 +87,8 @@ pub struct TestPort {
     pub saves: Vec<StmSaveState>,
     pub lease: LeaseClientSnapshot,
     pub lease_records: usize,
+    /// post_brake_result() calls: valve, attempt, ok, code
+    pub brakes: Vec<(u8, u16, bool, i32)>,
     pub image: MemImage,
     pub image_ok: bool,
     pub opened: Vec<String>,
@@ -112,6 +114,7 @@ impl Default for TestPort {
             saves: Vec::new(),
             lease: LeaseClientSnapshot::default(),
             lease_records: 0,
+            brakes: Vec::new(),
             image: MemImage::default(),
             image_ok: true,
             opened: Vec::new(),
@@ -192,6 +195,10 @@ impl StmSessionPort for TestPort {
     fn store_lease_record(&mut self, s: &LeaseClientSnapshot) {
         self.lease = *s;
         self.lease_records += 1;
+    }
+
+    fn post_brake_result(&mut self, valve: u8, attempt: u16, ok: bool, code: i32) {
+        self.brakes.push((valve, attempt, ok, code));
     }
 
     fn open_image(&mut self, name: &[u8]) -> bool {

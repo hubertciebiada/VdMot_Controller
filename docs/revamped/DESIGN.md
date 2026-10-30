@@ -453,6 +453,56 @@ condition never floods the log.
 active valve Blocked/Failed; 1 = link Unknown/Degraded/Booting/Suspended, the
 failsafe active, or any other health flag on an active valve; 0 = otherwise.
 
+### Flow layer (Rust 2.2.8, STM 2.2.8)
+
+The whole flow band of a floor-heating loop (0..2.5 l/min) lies in 229..481
+motor pulses above the closed end stop, 5..11 % of the stroke, so a stroke
+target (`stgtp`, 1 % = 41..49 pulses) is too coarse to set a flow. The flow
+layer (`core/src/flow_layer.rs`, owned by `StmSession`) positions a valve with
+a measured curve itself (API.md "Flow layer"):
+
+- The external target of the valve stays the desired target of `ValveModel`
+  (persisted, restored, shown as `target`), but means 0..qmax l/min. The model
+  keeps a flow mask: such a valve is never pushed with `stgtp`, a read-back
+  marks it Synced without comparing (the STM target is the layer's
+  `fallbackPct`, sent once when the layer is enabled, after an STM reboot and
+  when it differs at the start of a positioning) and no STM target is adopted
+  as desired. A valve that leaves the mask goes Pending with a forced push.
+- Positioning, variant P1 of the plan: service moves (`svmov`, tag of the
+  layer on the link, Priority User, one request in flight over all valves)
+  from a reference end stop, then `skeep idx 1`; the STM keeps the position
+  until the next `stgtp`, `staop`, `staln`, `stdet`, calibration, a refused
+  service move, an expired lease or `skeep idx 0`. The end of a move is the
+  STM's last-move record with the move's direction and pulses, read after the
+  `move_seq` of the valve changed; a move to the end stop that would equal
+  the last record asks one pulse more (less at 10000), so its record always
+  differs. A move without a record within 120 s, a stop other than the end
+  stop (reference) or the target/end stop (final), a rejected request, no
+  reply and a 101st `err 2` fail the positioning (event 417, state `failed`,
+  tried again after 5 min or with the next target). Each later step (the
+  warm-up moves, the final move, the keep) needs the valve where the last move
+  of the sequence left it: the `move_seq` of that record and the `svcHold`
+  flag. Otherwise (a calibration after `err 3`, the lease failsafe, a hold
+  that ran out during `err 2` retries, another move) and after a link loss the
+  sequence starts again with a close of the whole stroke to the reference end
+  stop. A request of the layer whose result has not come within 30 s
+  (`FLOW_REQ_TIMEOUT_MS`: another `stgtp` of the valve took the place of its
+  fallback target in the link queue, the queue was cleared) counts as not
+  queued, so it cannot stall the other valves.
+- `tick` once per second: the records, the timeouts, the end of a calibration
+  a refused move waits for, and a held valve whose `svcKeep` flag is gone (a
+  poll after the keep) or whose `move_seq` moved -> `unknown`, event 418. A
+  new STM session (`new_stm_session`) makes every enabled valve unknown. The
+  layer runs only when the STM answers protocol 3 and `gvers` is at least
+  2.2.8 (`FLOW_MIN_STM_VERSION`); otherwise `unsupported`, the mask is empty.
+- The snapshot carries `FlowView` per valve; `position` of an enabled valve
+  is the flow percentage of the held position (0 while unknown), so MQTT,
+  Home Assistant and the dashboard see flow percentages without a change.
+- The configuration (`FlowConfig`, 12 x 81 B) lives in NVS `flow`
+  (section 9), loaded next to the config at boot, published with a revision
+  the stm thread follows (`StmLinkHost::flow_revision`), written by
+  `POST /api/valves/{n}/flow`.
+
 ## 7. Config schema
 
 One struct, `vdm::Config` (`config.h`). The key path is what
@@ -626,6 +676,7 @@ NVS namespace `vdmrev`:
 | `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous interface/DHCP/addresses/WiFi, CRCs) |
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
+| `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it |
 
 Config load order (`loadConfigBlobs`): `cfg` + `cfgx` from NVS; a missing or
 undecodable `cfg` falls back to the backup files (`config_restored`); a
@@ -930,6 +981,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 120 | config_newer_schema | Warning | W | - | base schema / unknown ext records |
 | 121 | files_removed | Info | - | - | files / KiB / name or `legacy images` |
 | 122 | heap_critical | Error | W | - | free / largest block (the heap guard's restart follows, section 16) |
+| 124 | flow_config_unreadable | Error | W | - | Rust 2.2.8: 1 NVS not open, 2 no memory, 3 a bad blob (NVS `flow`, section 9) |
 | 200 | net_up | Info | W | - | 1 eth, 2 wifi / - / IP |
 | 201 | net_down | Warning | W | - | interface |
 | 202 | mqtt_connected | Info | W | - | |
@@ -987,6 +1039,9 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 413 | valve_stale | Warning | W | yes | seconds |
 | 414 | service_move_done | Info | W | yes | counted / stop reason |
 | 415 | calib_stroke_short | Warning | W | yes | min(oc, cc) / minCounts |
+| 416 | flow_positioned | Info | W | yes | Rust 2.2.8: pulses from the reference end stop / target % |
+| 417 | flow_position_failed | Warning | W | yes | Rust 2.2.8: step 1 fallback target, 2 move to the end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep / STM error code, -1 no reply, -2 timeout, or the stop reason / reason |
+| 418 | flow_hold_lost | Warning | W | yes | Rust 2.2.8: STM flags |
 | 500 | temp_sensor_failed | Warning | W | - | slot / raw / id |
 | 501 | temp_sensor_recovered | Info | W | - | slot |
 | 502 | sensor_count_changed | Info | W | - | count / 0 temp, 1 volt |

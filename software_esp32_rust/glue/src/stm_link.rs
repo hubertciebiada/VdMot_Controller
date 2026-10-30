@@ -18,9 +18,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vdm_esp_core::calib_schedule::CalibFailure;
 use vdm_esp_core::common::elapsed_ms;
+use vdm_esp_core::common::VALVE_COUNT;
 use vdm_esp_core::config::Config;
 use vdm_esp_core::event_log::Event;
 use vdm_esp_core::failsafe::RegulatorInput;
+use vdm_esp_core::flow_layer::FlowConfig;
 use vdm_esp_core::lease_client::LeaseClientSnapshot;
 use vdm_esp_core::stm_codec::Profile;
 use vdm_esp_core::stm_flasher::{FlashImage, FlashTransport};
@@ -79,10 +81,16 @@ pub trait StmLinkHost {
     fn set_stm_save_state(&mut self, s: StmSaveState);
     /// C++ `stm_service::storeLeaseRecord(s)`: the RTC record of the ESP failsafe emulation.
     fn store_lease_record(&mut self, s: &LeaseClientSnapshot);
+    /// Rust 2.2.8: `AppShared::post_brake_result`, the answer to an `sbrak` the web waits for.
+    fn post_brake_result(&mut self, valve: u8, attempt: u16, ok: bool, code: i32);
     /// C++ `storage::configRevision()`.
     fn config_revision(&mut self) -> u32;
     /// C++ `storage::getConfig()`: calls `f` with the active config (under the config lock).
     fn with_config(&mut self, f: &mut dyn FnMut(&Config));
+    /// Rust 2.2.8: the revision of the flow layer configuration (`StorageShared`).
+    fn flow_revision(&mut self) -> u32;
+    /// Rust 2.2.8: calls `f` with the flow configuration of every valve (under its lock).
+    fn with_flow_config(&mut self, f: &mut dyn FnMut(&[FlowConfig; VALVE_COUNT as usize]));
     /// C++ `storage::bootLoadSource()`.
     fn boot_load_source(&mut self) -> LoadSource;
     /// C++ `storage::configSavedSinceBoot()`.
@@ -163,6 +171,9 @@ impl<P: Platform, H: StmLinkHost> StmSessionPort for SessionPort<'_, P, H> {
     fn store_lease_record(&mut self, s: &LeaseClientSnapshot) {
         self.host.store_lease_record(s);
     }
+    fn post_brake_result(&mut self, valve: u8, attempt: u16, ok: bool, code: i32) {
+        self.host.post_brake_result(valve, attempt, ok, code);
+    }
     fn open_image(&mut self, name: &[u8]) -> bool {
         self.image.open(name)
     }
@@ -230,6 +241,7 @@ pub struct StmLink<'a, P: Platform, H: StmLinkHost + Clone> {
     host: H,
     session: Box<Session<'a, P, H>>,
     cfg_revision: u32,
+    flow_revision: u32,
     last_second_ms: u32,
     watchdog: Option<P::Watchdog>,
 }
@@ -262,6 +274,7 @@ impl<'a, P: Platform, H: StmLinkHost + Clone> StmLink<'a, P, H> {
             host,
             session: new_session(port),
             cfg_revision: 0,
+            flow_revision: 0,
             last_second_ms: 0,
             watchdog: None,
         }
@@ -304,11 +317,20 @@ impl<'a, P: Platform, H: StmLinkHost + Clone> StmLink<'a, P, H> {
             .with_config(&mut |c| session.apply_config(c, trusted));
     }
 
+    /// The flow layer configuration into the session (Rust 2.2.8), read under its lock.
+    fn reload_flow_config(&mut self) {
+        self.flow_revision = self.host.flow_revision();
+        let session = &mut self.session;
+        self.host
+            .with_flow_config(&mut |c| session.apply_flow_config(c));
+    }
+
     /// The start of the thread (C++ the task's start): its watchdog, the config, then the
     /// session begins with the boot targets and the lease record of stm_service.
     pub fn start(&mut self, watchdog: P::Watchdog) {
         self.watchdog = Some(watchdog);
         self.reload_config();
+        self.reload_flow_config();
         let start = self.clock.now_ms();
         let (targets, source) = self.host.boot_targets();
         let lease = self.host.boot_lease();
@@ -329,7 +351,7 @@ impl<'a, P: Platform, H: StmLinkHost + Clone> StmLink<'a, P, H> {
     }
 
     /// One pass of the thread; returns the delay before the next one ([`PASS_DELAY_MS`]):
-    /// 1. the watchdog, a changed config,
+    /// 1. the watchdog, a changed config (the flow configuration too),
     /// 2. at most [`COMMANDS_PER_PASS`] commands into the session,
     /// 3. at most 512 UART bytes into the session, `poll`, the next request line onto the UART;
     ///    while flashing a flasher step instead,
@@ -343,6 +365,9 @@ impl<'a, P: Platform, H: StmLinkHost + Clone> StmLink<'a, P, H> {
         let now = self.clock.now_ms();
         if self.host.config_revision() != self.cfg_revision {
             self.reload_config();
+        }
+        if self.host.flow_revision() != self.flow_revision {
+            self.reload_flow_config();
         }
         for _ in 0..COMMANDS_PER_PASS {
             let Some(cmd) = self.host.receive() else {

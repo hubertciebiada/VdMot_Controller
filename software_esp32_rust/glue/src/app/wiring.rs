@@ -14,10 +14,11 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use vdm_esp_core::calib_schedule::CalibFailure;
-use vdm_esp_core::common::LocalTime;
+use vdm_esp_core::common::{LocalTime, VALVE_COUNT};
 use vdm_esp_core::config::{CalibScheduleConfig, Config};
 use vdm_esp_core::event_log::{Event, EventCode, EventFilter};
 use vdm_esp_core::failsafe::RegulatorInput;
+use vdm_esp_core::flow_layer::FlowConfig;
 use vdm_esp_core::json_api::{HealthSnapshot, MqttState};
 use vdm_esp_core::lease_client::LeaseClientSnapshot;
 use vdm_esp_core::legacy_import::ImportReport;
@@ -37,7 +38,7 @@ use crate::mqtt_client::{DiscoveryAction, MqttClient, MqttHost, MqttPorts, MqttS
 use crate::net::{self, Net, NetHost, NetInfo, NetPorts, TrialInfo};
 use crate::ota::{OtaHost, OtaPorts, OtaService, OtaUpload};
 use crate::port::{Clock, Fs, HeapGate, HttpServer, Platform, Rtc, System, TcpConnector, Watchdog};
-use crate::shared::{CalibInfo, Shared};
+use crate::shared::{BrakeResult, CalibInfo, Shared};
 use crate::stm_link::{StmLink, StmLinkHost, StmLinkPorts};
 use crate::stm_service::{StmService, StmServiceHost, StmServiceLink, StmServicePorts};
 use crate::storage::{LoadDetails, LoadSource, Storage, StorageHost};
@@ -379,11 +380,20 @@ impl<P: Platform> StmLinkHost for Wire<'_, P> {
     fn store_lease_record(&mut self, s: &LeaseClientSnapshot) {
         self.stm_service_link().store_lease_record(s);
     }
+    fn post_brake_result(&mut self, valve: u8, attempt: u16, ok: bool, code: i32) {
+        self.shared.app.post_brake_result(valve, attempt, ok, code);
+    }
     fn config_revision(&mut self) -> u32 {
         self.shared.storage.config_revision()
     }
     fn with_config(&mut self, f: &mut dyn FnMut(&Config)) {
         self.shared.storage.with_config(f);
+    }
+    fn flow_revision(&mut self) -> u32 {
+        self.shared.storage.flow_revision()
+    }
+    fn with_flow_config(&mut self, f: &mut dyn FnMut(&[FlowConfig; VALVE_COUNT as usize])) {
+        self.shared.storage.with_flow_configs(f);
     }
     fn boot_load_source(&mut self) -> LoadSource {
         self.shared.storage.boot_load_source()
@@ -479,6 +489,9 @@ impl<P: Platform> WebHost for Wire<'_, P> {
     }
     fn request_discovery(&self, a: DiscoveryAction) {
         self.shared.mqtt.request_discovery(a);
+    }
+    fn take_brake_result(&self, attempt: u16) -> Option<BrakeResult> {
+        self.shared.app.take_brake_result(attempt)
     }
 }
 
@@ -819,6 +832,8 @@ impl<P: Platform, W: AppWeb> AppHost for Modules<'_, P, W> {
         details: &mut LoadDetails,
     ) {
         self.wire.storage.load_config(out, report, details);
+        // Rust 2.2.8: the flow layer configuration next to the config
+        self.wire.storage.load_flow_configs();
     }
     fn set_active_config(&mut self, c: &Config) {
         self.wire.shared.storage.set_active_config(c);

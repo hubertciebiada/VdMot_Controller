@@ -40,6 +40,16 @@ pub struct CalibInfo {
     pub next_epoch: i64,
 }
 
+/// The STM's answer to an `sbrak` the web waits for (Rust 2.2.8): the attempt of the request,
+/// the valve, `ok`, else the STM's error code or -1 without a reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BrakeResult {
+    pub attempt: u16,
+    pub valve: u8,
+    pub ok: bool,
+    pub code: i32,
+}
+
 /// The snapshot and the profiles, under one lock (C++ `gSnapMutex`).
 struct Store {
     snapshot: Box<StmSnapshot>,
@@ -68,6 +78,8 @@ pub struct AppShared {
     /// The app thread ran its first pass: the boot finished (the boot deadline of
     /// GLUE-DESIGN-ESP.md 6.3).
     app_running: AtomicBool,
+    /// Rust 2.2.8: the latest answer to an `sbrak` (stm thread -> web), taken once.
+    brake: Mutex<Option<BrakeResult>>,
 }
 
 impl Default for AppShared {
@@ -96,6 +108,31 @@ impl AppShared {
             found: Default::default(),
             min_largest: AtomicU32::new(0),
             app_running: AtomicBool::new(false),
+            brake: Mutex::new(None),
+        }
+    }
+
+    // ------------------------------------------------------------ brake (Rust 2.2.8)
+
+    /// The stm thread: the answer to the `sbrak` of `attempt` (replaces an untaken one).
+    pub fn post_brake_result(&self, valve: u8, attempt: u16, ok: bool, code: i32) {
+        *lock(&self.brake) = Some(BrakeResult {
+            attempt,
+            valve,
+            ok,
+            code,
+        });
+    }
+
+    /// The web thread: the answer of `attempt`, taken once; an answer of another attempt is
+    /// dropped.
+    pub fn take_brake_result(&self, attempt: u16) -> Option<BrakeResult> {
+        let mut slot = lock(&self.brake);
+        let r = slot.take()?;
+        if r.attempt == attempt {
+            Some(r)
+        } else {
+            None
         }
     }
 

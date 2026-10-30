@@ -130,6 +130,10 @@ pub enum EventCode {
     /// Rust only (D9): a due restart waits while the STM's sector 0 is erased and not written
     /// (an ESP restart resets the STM); arg1 RebootReason
     RestartDeferred = 123,
+    /// Rust 2.2.8: NVS `flow` (the flow layer configuration) is there but could not be read:
+    /// the defaults run, no flow configuration is saved until it was read; arg1 1 NVS not
+    /// open, 2 no memory, 3 a bad blob
+    FlowConfigUnreadable = 124,
     // network / MQTT / web 2xx
     /// arg1 interface (1 eth, 2 wifi); text IP
     NetUp = 200,
@@ -247,6 +251,16 @@ pub enum EventCode {
     ServiceMoveDone = 414,
     /// arg1 min(openCount, closeCount), arg2 minCounts
     CalibStrokeShort = 415,
+    /// Rust 2.2.8 (flow layer): the valve holds its flow position; arg1 pulses above the closed
+    /// reference, arg2 the flow target in %
+    FlowPositioned = 416,
+    /// Rust 2.2.8: a flow positioning failed; arg1 step (1 fallback target, 2 move to the
+    /// reference end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep), arg2 STM
+    /// error code, -1 no reply, -2 timeout, or the stop reason of the move; text reason
+    FlowPositionFailed = 417,
+    /// Rust 2.2.8: the STM no longer keeps the flow position (reset, calibration, lease,
+    /// another move); arg1 STM flags
+    FlowHoldLost = 418,
     // sensors 5xx (valve = NO_VALVE, arg1 config slot 1-based)
     /// arg2 raw value; text sensor id
     TempSensorFailed = 500,
@@ -491,7 +505,7 @@ const fn special(
 
 /// Registry order = the order of [`event_mqtt_names`].
 #[rustfmt::skip]
-static CODES: [CodeInfo; 89] = {
+static CODES: [CodeInfo; 93] = {
     use EventCode as C;
     use EventMqtt::{Always, No, WarnPlus as Warn};
     use Severity::{Critical, Debug, Error, Info, Warning};
@@ -551,6 +565,9 @@ static CODES: [CodeInfo; 89] = {
         templated(C::RestartDeferred, Warning, Warn, "restart_deferred",
             concat!("restart deferred (", name1!("b"), "): STM sector 0 not written, keep the ",
                     "power on")),
+        templated(C::FlowConfigUnreadable, Error, Warn, "flow_config_unreadable",
+            concat!("stored flow configuration unreadable (reason ", arg1!(),
+                    "), flow changes are not saved")),
         templated(C::NetUp, Info, Warn, "net_up",
             concat!("network up (", name1!("i"), if_txt!(), ", ", txt!(), end_txt!(), ")")),
         templated(C::NetDown, Warning, Warn, "net_down",
@@ -676,6 +693,13 @@ static CODES: [CodeInfo; 89] = {
             concat!("service move done (", arg1!(), " counts, ", name2!("x"), ")")),
         templated(C::CalibStrokeShort, Warning, Warn, "calib_stroke_short",
             concat!("calibration stroke ", arg1!(), " close to the minimum ", arg2!())),
+        templated(C::FlowPositioned, Info, Warn, "flow_positioned",
+            concat!("flow position held (", arg1!(), " counts, target ", arg2!(), " %)")),
+        templated(C::FlowPositionFailed, Warning, Warn, "flow_position_failed",
+            concat!("flow positioning failed (step ", arg1!(), ", code ", arg2!(), if_txt!(),
+                    ", ", txt!(), end_txt!(), ")")),
+        templated(C::FlowHoldLost, Warning, Warn, "flow_hold_lost",
+            concat!("flow position lost (flags 0x", name1!("2"), ")")),
         templated(C::TempSensorFailed, Warning, Warn, "temp_sensor_failed",
             concat!("temp sensor ", arg1!(), " failed (raw ", arg2!(), if_txt!(), ", ", txt!(),
                     end_txt!(), ")")),

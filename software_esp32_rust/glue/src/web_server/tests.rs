@@ -1145,8 +1145,8 @@ fn valves_carry_the_sensor_position_and_the_calibration_end() {
     assert!(
         body.contains("\"sensors\":[{\"sensor\":2,\"slot\":7,\"name\":\"Wall\",\"temp\":20.7}]")
     );
-    assert!(body.contains("\"calibrationEnd\":\"2026-09-20T03:04:05\"},{\"idx\":2,"));
-    assert!(body.contains("\"calibrationEnd\":\"2026-09-21T06:07:08\"},{\"idx\":3,"));
+    assert!(body.contains("\"calibrationEnd\":\"2026-09-20T03:04:05\",\"flow\":{"));
+    assert!(body.contains("\"calibrationEnd\":\"2026-09-21T06:07:08\",\"flow\":{"));
     assert_eq!(count_of(&body, "\"calibrationEnd\":null"), 10);
 }
 

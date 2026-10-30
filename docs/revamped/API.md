@@ -151,7 +151,8 @@ Valve entry (`/api/valves`):
         "coastOpen":12,"coastClose":9,
         "v3":{"flags":["calRestored"],"fault":"none","drive":15,"retryS":0,"retries":0}},
  "failsafe":{"state":"off","pct":50},
- "calibrationEnd":"2026-09-23T03:12:40"}
+ "calibrationEnd":"2026-09-23T03:12:40",
+ "flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"ms":null,"peak":null}}
 ```
 - `target` / `stmTarget`: null while unknown.
 - `targetSource`: `none`, `stm`, `web`, `mqtt`, `restored` (from RTC/NVS after
@@ -176,6 +177,17 @@ Valve entry (`/api/valves`):
   hold.
 - `calibrationEnd`: end of the last calibration seen since the ESP booted, or
   null.
+- `flow` (Rust 2.2.8, the flow layer below): `enabled`; `state` `off`,
+  `unsupported` (STM below 2.2.8), `unknown` (no held position: a positioning
+  follows when the valve is free), `positioning`, `held`, `failed` (tried again
+  after 5 min or with the next target); `counts` the held position in motor
+  pulses from the reference end stop (0 = closed) and `lpm` the flow of the
+  curve there, both null while the position is not held; `targetCounts` the
+  pulses of the current or last positioning; `ms` and `peak` (mA) of the final
+  move of the last positioning, null before the first. With the layer
+  enabled, `pos` is the flow percentage of the held position (`lpm` / qmax,
+  0 while unknown), `target` the flow percentage asked for, and `stmTarget`
+  the STM's own target, which is the layer's `fallbackPct`.
 
 Flasher state (`GET /api/stm/flash`): `phase`, `status` (legacy code),
 `percent`, `bytesDone`, `bytesTotal`, `bootloaderVersion`, `attempt`,
@@ -214,11 +226,87 @@ imported (the new failsafe starts with 60 min / 50 %).
 | POST | `/api/valves/detect` | – | 202, valve detection |
 | POST | `/api/sensors/scan` | – | 202, 1-Wire bus scan |
 | POST | `/api/stm/safe-mode/leave` | – | 202 (STM 2.1) |
+| GET | `/api/valves/{n}/flow` | – | `{"valve":n,"config":{...},"flow":{...}}` (Rust 2.2.8, below) |
+| POST | `/api/valves/{n}/flow` | a patch of the config members (below) | 200 with the document of the GET; `400 malformed` / `invalid` (unknown key) / `out_of_range` with the rule as the detail, nothing changed; `500 nvs` `flow config not saved` (the write failed) or `stored flow config unreadable` (NVS `flow` is there but could not be read, event 124 `flow_config_unreadable`: the save would put the defaults over the other valves) |
+| POST | `/api/valves/{n}/flow/counts` | `{"counts":0..10000}` | 202; positions the valve to the corrected pulses at once (0 = closed), outside the dead band and the interval; `409 flow_off` / `409 unsupported` while the layer does not run on the valve |
+| POST | `/api/valves/{n}/brake` | `{"maxMs":0..100,"gapMs":0..100,"mult":0..10}` (both times 0 = off; `mult` optional, sent to the STM only when above 0; `maxMs` above 0 needs `gapMs` or `mult`) | the STM's answer to `sbrak` (STM 2.2.9, plug braking at the end of a counted move; RAM only): `200 {"valve":n,"result":"ok"}`, `400 stm_rejected` with the error code, `504 stm_timeout` after 3 s without an answer. Refused without sending: `400 out_of_range` for a value outside the ranges, `400 invalid` for `maxMs` above 0 with neither `gapMs` nor `mult` (a brake by time alone drives the stopped motor backwards), `409 stm_unsupported` below protocol 3 and below STM 2.2.9 (`STM 2.2.9 required`, also while the STM version is unknown). The server serves nothing else while it waits (Rust 2.2.8) |
 
 Calibrate, assembly, service move and profile are accepted for inactive valves
 too. Stop and safe mode answer `409 stm_unsupported` below protocol 3. While the
 failsafe is active, a target is stored and applied once the regulator is back;
 to open a valve at once use assembly or change its failsafe position.
+
+#### Flow layer (Rust 2.2.8, STM 2.2.8)
+
+A valve with a measured curve takes and reports its target as a flow: 0..100 %
+means 0..`qmax` l/min instead of a stroke percentage, on every path that sets
+or shows a target (this API, MQTT, Home Assistant). The ESP positions the valve
+itself with service moves from a reference end stop and asks the STM to keep
+the position (`skeep`); the STM's own target of the valve is `fallbackPct`,
+the stroke position it drives to when the hold is lost (STM reset, lease
+failsafe, calibration). `GET /api/valves/{n}/flow` returns the stored
+configuration and the `flow` block of the valve entry:
+```json
+{"valve":1,
+ "config":{"enabled":true,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,
+           "minIntervalS":300,"deadbandLpm":0.050,"offset":0,"gain":1.000,
+           "refSide":"closed","strokeCounts":0,"preClose":false,
+           "points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]},
+ "flow":{"enabled":true,"state":"held","counts":809,"targetCounts":809,"lpm":1.000,
+         "ms":5663,"peak":12.3}}
+```
+- `enabled` (default false: nothing changes for the valve); `qmax` 0.01..20
+  l/min, the flow a target of 100 % means; `refmA` and `openmA` 5..60 mA, the
+  end-stop thresholds of the closing and the opening moves; `fallbackPct`
+  0..100, the STM target (a stroke %) while the layer runs; `minIntervalS`
+  0..3600, the least time between two positionings of the valve;
+  `deadbandLpm` 0..5, a smaller change of the target flow is not applied;
+  `offset` -10000..10000 pulses and `gain` 0.1..10: the curve counts are
+  multiplied by `gain` and then `offset` is added (the correction of the
+  verification tool); `refSide` `closed` (default) or `open`: the end stop a
+  positioning starts from; `strokeCounts` 0..10000, the counted open stroke
+  of the valve from the closed end stop (1..10000 with `open`: the final
+  closing move is `strokeCounts` minus the target counts); `preClose` (closed
+  reference only): a warm-up of the end stop before the final move (close,
+  open 300 pulses, close again).
+- `points`: 2..16 pairs `[counts, lpm]`, pulses from the closed end stop
+  (whatever `refSide`) strictly increasing (the first may be 0, every one at
+  most 10000), the flow non-decreasing. A target t maps to the first position
+  where the curve reaches t / 100 x qmax (linear between the points, the last
+  point above the last flow), then round(offset + gain x counts), 1..10000;
+  t = 0 is a close to the closed end stop without an opening move. The
+  reported position is the inverse: the flow of the curve at the held pulses
+  (counted from the closed end stop on both sides), / qmax x 100, rounded.
+- Numbers are plain decimals with at most three decimals; `POST` applies the
+  members it names (`points` replaces every point) and checks the result;
+  the set is stored in NVS (`flow`) and survives restarts; a factory reset
+  drops it. The config import/export (`/api/config`) does not carry it.
+- Positioning (every change, from the reference end stop): a close of the
+  held pulses + 500 (the stroke when unknown) at `refmA` that must end at an
+  end stop (two more closes of 800 otherwise, then `failed`), one opening move
+  of the counts at `openmA`, then `skeep`. With `refSide` `open` the move to
+  the open end stop (10000 pulses at `openmA`, the same retries) is followed
+  by one closing move of `strokeCounts` minus the counts at `refmA` (none
+  when the target is the open end stop). The moves of different valves run one
+  after the other. A new target is applied when its flow differs from the held
+  one by `deadbandLpm` and `minIntervalS` passed since the last positioning
+  (the latest target wins then); a target of 0 and the first positioning after
+  a start are not delayed. The layer waits while the valve moves, calibrates,
+  is in assembly, is at its lease failsafe or the STM does not answer; a
+  service move the STM refuses for a pending calibration (`err 3`) is sent
+  again when the calibration ended, a busy one (`err 2`) after 3 s.
+- The layer runs only on an STM 2.2.8 or newer (`skeep`); older firmware shows
+  `state` `unsupported` and the valve stays in normal mode. After an ESP
+  restart, an STM reset or a lost keep (the `svcKeep` flag of `gvlvy` gone,
+  another move of the valve) the state is `unknown` and the valve is
+  positioned again once it is free (the fallback target is sent first when
+  the STM's target is not it). Disabling the layer releases the keep
+  (`skeep 0`) and hands the valve back to the normal target delivery with its
+  current target.
+- `failsafePct` of the config and `sfspo` stay stroke percentages: the
+  failsafe position of a flow valve is not a flow.
+- Events 416 `flow_positioned`, 417 `flow_position_failed`, 418
+  `flow_hold_lost` (DESIGN.md section 13).
 
 ### Configuration
 

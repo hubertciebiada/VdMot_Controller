@@ -28,6 +28,8 @@ pub(super) struct HostState {
     // storage
     pub cfg: Box<Config>,
     pub revision: u32,
+    pub flow: Box<[FlowConfig; VALVE_COUNT as usize]>,
+    pub flow_revision: u32,
     pub load_source: LoadSource,
     pub config_saved: bool,
     pub config_reads: u32,
@@ -39,6 +41,7 @@ pub(super) struct HostState {
     pub stored_targets: Vec<PersistedTargets>,
     pub lease_records: Vec<LeaseClientSnapshot>,
     pub calib_results: Vec<(u16, bool, CalibFailure)>,
+    pub brake_results: Vec<(u8, u16, bool, i32)>,
     // logger
     pub events: Vec<Event>,
     // mqtt
@@ -59,6 +62,8 @@ impl Default for HostState {
             save_states: Vec::new(),
             cfg: Box::default(),
             revision: 0,
+            flow: Box::new([FlowConfig::DEFAULT; VALVE_COUNT as usize]),
+            flow_revision: 0,
             load_source: LoadSource::Stored,
             config_saved: false,
             config_reads: 0,
@@ -69,6 +74,7 @@ impl Default for HostState {
             stored_targets: Vec::new(),
             lease_records: Vec::new(),
             calib_results: Vec::new(),
+            brake_results: Vec::new(),
             events: Vec::new(),
             regulator: RegulatorInput::default(),
             restart_pending: false,
@@ -144,6 +150,9 @@ impl StmLinkHost for FakeHost {
     fn store_lease_record(&mut self, r: &LeaseClientSnapshot) {
         self.s().lease_records.push(*r);
     }
+    fn post_brake_result(&mut self, valve: u8, attempt: u16, ok: bool, code: i32) {
+        self.s().brake_results.push((valve, attempt, ok, code));
+    }
     fn config_revision(&mut self) -> u32 {
         self.s().revision
     }
@@ -151,6 +160,12 @@ impl StmLinkHost for FakeHost {
         let mut s = self.s();
         s.config_reads += 1;
         f(&s.cfg);
+    }
+    fn flow_revision(&mut self) -> u32 {
+        self.s().flow_revision
+    }
+    fn with_flow_config(&mut self, f: &mut dyn FnMut(&[FlowConfig; VALVE_COUNT as usize])) {
+        f(&self.s().flow);
     }
     fn boot_load_source(&mut self) -> LoadSource {
         self.s().load_source

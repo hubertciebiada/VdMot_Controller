@@ -63,7 +63,8 @@ EVENT_NAMES = {
     306: "stm_version", 311: "stm_flash_started", 312: "stm_flash_done", 400: "target_set",
     401: "valve_state_changed", 402: "valve_blocked", 406: "calib_started", 407: "calib_ok",
     408: "calib_retry", 409: "calib_failed", 410: "early_stop", 411: "cmd_rejected",
-    414: "service_move_done", 502: "sensor_count_changed", 600: "scheduled_calibration",
+    414: "service_move_done", 416: "flow_positioned", 417: "flow_position_failed", 418: "flow_hold_lost",
+    502: "sensor_count_changed", 600: "scheduled_calibration",
 }
 
 INT_RANGES = {
@@ -292,7 +293,12 @@ class Device:
                                 "cr": 0, "earlyStops": 0, "cmdRejected": 0, "lastMove": None, "moveSeq": 0,
                                 "calUntil": 0.0, "calState": 0, "profile": None, "slots": [0, 0],
                                 "coast": [0, 0] if self.proto >= 3 else None,  # open, close; None below STM 2.2.4
-                                "moveFrom": 0.0, "moveStart": 0.0, "blocked": None, "baseEarly": 0, "baseRej": 0})
+                                "moveFrom": 0.0, "moveStart": 0.0, "blocked": None, "baseEarly": 0, "baseRej": 0,
+                                # the flow layer (Rust 2.2.8): its configuration and held position
+                                "flow": {"enabled": False, "qmax": 2.7, "refmA": 34, "openmA": 30, "fallbackPct": 15,
+                                         "minIntervalS": 300, "deadbandLpm": 0.05, "offset": 0, "gain": 1.0,
+                                         "refSide": "closed", "strokeCounts": 0, "preClose": False, "points": []},
+                                "flowCounts": None})
         for i, (name, blocked) in enumerate(STATIONS[self.station]):
             v = self.valves[i]
             self.config["valves"][i].update(name=name, active=True)
@@ -717,6 +723,9 @@ class Device:
             failsafe = {"state": "blocked" if v["state"] == 9 and self.proto >= 3 else "lease" if lease_on else "off",
                         "pct": None if pct == 255 else pct}
             cal_end = dt.datetime.fromtimestamp(self.boot_wall + 3600 * 20 + 60 * i).strftime("%Y-%m-%dT%H:%M:%S")
+            flow = self.flow_view(v)
+            if flow["enabled"] and flow["counts"] is not None:
+                v["pos"] = self.flow_pct(v["flow"], flow["lpm"])
             out.append({"idx": i + 1, "name": cfg["name"], "active": cfg["active"], "known": True, "state": state,
                         "stateKey": status_key, "calibrating": bool(v["calUntil"]) and v["calState"] == 2,
                         "pos": v["pos"], "target": v["target"] if cfg["active"] else None,
@@ -724,8 +733,112 @@ class Device:
                         "stmTarget": v["target"], "meanCur": v["meanCur"], "moves": v["moves"], "oc": v["oc"],
                         "cc": v["cc"], "dc": v["cc"] - v["oc"], "cr": v["cr"], "health": health,
                         "age": age, "sensors": sensors, "ext": ext, "failsafe": failsafe,
-                        "calibrationEnd": cal_end if cfg["active"] else None})
+                        "calibrationEnd": cal_end if cfg["active"] else None, "flow": flow})
         return {"valves": out}
+
+    # ------------------------------------------------------------ the flow layer (Rust 2.2.8)
+
+    @staticmethod
+    def flow_lpm(cfg, counts):
+        """The flow of the curve at `counts` corrected pulses (the firmware's counts_flow)."""
+        pts = cfg["points"]
+        if counts == 0 or not pts:
+            return 0.0
+        raw = max(0.0, (counts - cfg["offset"]) / cfg["gain"])
+        if raw <= pts[0][0]:
+            return pts[0][1]
+        for (c0, q0), (c1, q1) in zip(pts, pts[1:]):
+            if raw <= c1:
+                return q0 + (raw - c0) * (q1 - q0) / max(1, c1 - c0)
+        return pts[-1][1]
+
+    @staticmethod
+    def flow_pct(cfg, lpm):
+        return min(100, int(round(lpm / cfg["qmax"] * 100)))
+
+    def flow_view(self, v):
+        """The `flow` member of a valve: off, unsupported below STM 2.2.8, else held at the last position."""
+        f = v["flow"]
+        if not f["enabled"]:
+            return {"enabled": False, "state": "off", "counts": None, "targetCounts": 0, "lpm": None, "ms": None,
+                    "peak": None}
+        if self.proto < 3 or self.stm_version < "2.2.8":
+            return {"enabled": True, "state": "unsupported", "counts": None, "targetCounts": 0, "lpm": None,
+                    "ms": None, "peak": None}
+        counts = v["flowCounts"]
+        if counts is None:
+            return {"enabled": True, "state": "unknown", "counts": None, "targetCounts": 0, "lpm": None,
+                    "ms": None, "peak": None}
+        lpm = self.flow_lpm(f, counts)
+        return {"enabled": True, "state": "held", "counts": counts, "targetCounts": counts, "lpm": round(lpm, 3),
+                "ms": counts * 7, "peak": 12.3}
+
+    def flow_target_counts(self, cfg, pct):
+        """The pulses of a target (the firmware's target_counts)."""
+        pts = cfg["points"]
+        if pct == 0 or not pts:
+            return 0
+        q = pct / 100 * cfg["qmax"]
+        falling = cfg["refSide"] == "open"
+        reached = (lambda flow: flow <= q) if falling else (lambda flow: flow >= q)
+        raw = pts[-1][0]
+        if reached(pts[0][1]):
+            raw = pts[0][0]
+        else:
+            for (c0, q0), (c1, q1) in zip(pts, pts[1:]):
+                if reached(q1):
+                    raw = c0 + (abs(q - q0)) * (c1 - c0) / max(1e-9, abs(q1 - q0))
+                    break
+        return max(1, min(10000, int(round(raw * cfg["gain"] + cfg["offset"]))))
+
+    def flow_patch(self, cfg, doc):
+        """Applies a flow configuration patch; returns an error detail or None (the firmware's rules)."""
+        keys = {"enabled", "qmax", "refmA", "openmA", "fallbackPct", "minIntervalS", "deadbandLpm", "offset", "gain",
+                "refSide", "strokeCounts", "preClose", "points"}
+        for k in doc:
+            if k not in keys:
+                return "invalid", "unknown key"
+        new = dict(cfg)
+        new.update(doc)
+        rules = [("enabled", lambda x: isinstance(x, bool), "enabled true|false"),
+                 ("preClose", lambda x: isinstance(x, bool), "preClose true|false"),
+                 ("refSide", lambda x: x in ("closed", "open"), "refSide closed|open"),
+                 ("qmax", lambda x: self.number(x) and 0.01 <= x <= 20, "qmax 0.01..20 l/min"),
+                 ("refmA", lambda x: self.integer(x) and 5 <= x <= 60, "refmA 5..60"),
+                 ("openmA", lambda x: self.integer(x) and 5 <= x <= 60, "openmA 5..60"),
+                 ("fallbackPct", lambda x: self.integer(x) and 0 <= x <= 100, "fallbackPct 0..100"),
+                 ("minIntervalS", lambda x: self.integer(x) and 0 <= x <= 3600, "minIntervalS 0..3600"),
+                 ("deadbandLpm", lambda x: self.number(x) and 0 <= x <= 5, "deadbandLpm 0..5"),
+                 ("offset", lambda x: self.integer(x) and -10000 <= x <= 10000, "offset -10000..10000"),
+                 ("gain", lambda x: self.number(x) and 0.1 <= x <= 10, "gain 0.1..10"),
+                 ("strokeCounts", lambda x: self.integer(x) and 0 <= x <= 10000,
+                  "strokeCounts 0..10000 (refSide open needs 1..10000)")]
+        for key, ok, detail in rules:
+            if not ok(new[key]):
+                return "out_of_range", detail
+        if new["refSide"] == "open" and new["strokeCounts"] == 0:
+            return "out_of_range", "strokeCounts 0..10000 (refSide open needs 1..10000)"
+        pts = new["points"]
+        if not isinstance(pts, list) or any(not isinstance(p, list) or len(p) != 2 or not self.number(p[0])
+                                            or not self.number(p[1]) for p in pts):
+            return "out_of_range", "points [[counts,lpm],...]"
+        if (pts and len(pts) < 2) or len(pts) > 16 or (new["enabled"] and not pts):
+            return "out_of_range", "points 2..16 (enabled needs them)"
+        for i, (c, q) in enumerate(pts):
+            if not self.integer(c) or not 0 <= c <= 10000 or (i and c <= pts[i - 1][0]):
+                return "out_of_range", "points counts 0..10000, increasing"
+            if q < 0 or (i and q < pts[i - 1][1]):
+                return "out_of_range", "points lpm 0..65.535, non-decreasing"
+        cfg.update(new)
+        return None
+
+    @staticmethod
+    def number(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+    @staticmethod
+    def integer(x):
+        return isinstance(x, int) and not isinstance(x, bool)
 
     def sensors_doc(self):
         temps = []
@@ -1046,6 +1159,12 @@ class Device:
         now = time.time()
         v["target"], v["src"] = t, "web"
         self.event(400, valve=i, a1=t, a2=2)
+        if v["flow"]["enabled"] and self.flow_view(v)["state"] != "unsupported":
+            # the flow layer positions the valve itself; the STM target stays the fallback
+            v["flowCounts"] = self.flow_target_counts(v["flow"], t)
+            v["sync"] = "synced"
+            self.event(416, valve=i, a1=v["flowCounts"], a2=t)
+            return
         if v["state"] == 9:
             if self.proto >= 2:
                 v["cmdRejected"] += 1
@@ -1301,7 +1420,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method, path, q):
         d = self.dev
-        m = re.fullmatch(r"/api/valves/([1-9]|1[0-2])/([a-z-]+)", path)
+        m = re.fullmatch(r"/api/valves/([1-9]|1[0-2])/([a-z-]+(?:/counts)?)", path)
         if m:
             return self.valve_route(method, int(m.group(1)) - 1, m.group(2))
         known = self.KNOWN.get(path)
@@ -1471,7 +1590,8 @@ class Handler(BaseHTTPRequestHandler):
         d = self.dev
         v = d.valves[i]
         routes = {"target": "POST", "calibrate": "POST", "assembly": "POST", "service-move": "POST",
-                  "sensors": "POST", "profile": ("GET", "POST"), "stop": "POST"}
+                  "sensors": "POST", "profile": ("GET", "POST"), "stop": "POST", "flow": ("GET", "POST"),
+                  "flow/counts": "POST", "brake": "POST"}
         if what not in routes:
             self.drain()
             return self.error(404, "not_found", self.path)
@@ -1482,10 +1602,55 @@ class Handler(BaseHTTPRequestHandler):
             if d.proto < 2 or not v["profile"]:
                 return self.error(404, "not_found", "no profile")
             return self.send_json(200, {"valve": i + 1, "count": len(v["profile"]), "samples": v["profile"]})
+        if what == "flow" and method == "GET":
+            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v)})
         doc = self.json_body()
         if doc is None:
             return
         active = d.config["valves"][i]["active"]
+        if what == "flow":
+            err = d.flow_patch(v["flow"], doc)
+            if err:
+                return self.error(400, err[0], err[1])
+            if v["flow"]["enabled"] and v["target"] is not None and v["flowCounts"] is None:
+                v["flowCounts"] = d.flow_target_counts(v["flow"], v["target"])
+            if not v["flow"]["enabled"]:
+                v["flowCounts"] = None
+            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v)})
+        if what == "flow/counts":
+            if self.stm_refused():
+                return
+            state = d.flow_view(v)["state"]
+            if state == "off":
+                return self.error(409, "flow_off", "flow layer not enabled")
+            if state == "unsupported":
+                return self.error(409, "unsupported", "STM 2.2.8 required")
+            n = doc.get("counts")
+            if not d.integer(n) or not 0 <= n <= 10000 or set(doc) != {"counts"}:
+                return self.error(400, "out_of_range", "counts 0..10000")
+            if d.queue_full():
+                return self.error(503, "queue_full", "STM command queue full")
+            v["flowCounts"] = n
+            return self.accepted()
+        if what == "brake":
+            # STM 2.2.9 `sbrak`: the STM's answer is returned (the mock STM accepts every value)
+            if self.stm_refused(v3=True):
+                return
+            m = re.match(r"(\d+)\.(\d+)\.(\d+)", d.stm_version)
+            if not m or tuple(int(x) for x in m.groups()) < (2, 2, 9):
+                # an older STM does not answer sbrak: nothing is sent
+                return self.error(409, "stm_unsupported", "STM 2.2.9 required")
+            ms, gap, mult = doc.get("maxMs"), doc.get("gapMs"), doc.get("mult", 0)
+            if not d.integer(ms) or not d.integer(gap) or not d.integer(mult) or not 0 <= ms <= 100 \
+                    or not 0 <= gap <= 100 or not 0 <= mult <= 10 or not set(doc) <= {"maxMs", "gapMs", "mult"} \
+                    or not {"maxMs", "gapMs"} <= set(doc):
+                return self.error(400, "out_of_range", "maxMs 0..100, gapMs 0..100, mult 0..10")
+            if ms > 0 and gap == 0 and mult == 0:
+                return self.error(400, "invalid", "maxMs above 0 needs gapMs or mult")
+            if d.queue_full():
+                return self.error(503, "queue_full", "STM command queue full")
+            v["brake"] = (ms, gap, mult)
+            return self.send_json(200, {"valve": i + 1, "result": "ok"})
         if what == "target":
             t = round_target(doc.get("target"))
             if t is None or set(doc) != {"target"}:

@@ -44,6 +44,39 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   cancels the requested calibrations of the valve
   ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md), [app.rs](../../software_stm32_rust/glue/src/app.rs)).
 
+### ESP32: the flow layer
+
+- A valve with a measured curve (`POST /api/valves/{n}/flow`: `qmax`, the end-stop currents,
+  the fallback stroke position, the interval and dead band, offset and gain, the reference side
+  and 2..16 points of pulses and l/min) takes and reports its target as a flow: 0..100 % means
+  0..qmax l/min on `POST /api/valves/{n}/target`, MQTT `valves/<V>/target` and in Home
+  Assistant; `pos`/`actual` is the flow percentage of the held position. The ESP positions the
+  valve with service moves from the reference end stop (a close at `refmA`, one opening move of
+  the curve's pulses at `openmA`; with `refSide` `open` an opening move to the open end stop
+  and one closing move of `strokeCounts` minus the pulses, the curve counting from the closed
+  end stop on both sides; `preClose` warms the closed end stop first) and keeps it with the
+  new STM command `skeep` (STM 2.2.8, flag
+  `svcKeep` of `gvlvy`); the STM's own target of the valve is `fallbackPct`, where it goes
+  when the hold is lost. `POST /api/valves/{n}/flow/counts` positions to given pulses for the
+  verification tool. The valve entry of `/api/valves` gets a `flow` block (state, held pulses,
+  flow, the `ms` and `peak` of the final move); events 416 `flow_positioned`, 417
+  `flow_position_failed`, 418 `flow_hold_lost`; NVS `flow` (a stored set that cannot be read
+  gives the defaults and event 124 `flow_config_unreadable`, and `POST /api/valves/{n}/flow`
+  answers `500 nvs` instead of saving the defaults over it). Nothing changes for a valve
+  without the layer, and an STM below 2.2.8 keeps every valve in normal mode (`state`
+  `unsupported`). `failsafePct` and `sfspo` stay stroke percentages
+  ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs),
+  [API.md](../revamped/API.md), [MQTT.md](../revamped/MQTT.md),
+  [DESIGN.md](../revamped/DESIGN.md)).
+- `POST /api/valves/{n}/brake` `{"maxMs","gapMs","mult"?}` sends the STM 2.2.9 command
+  `sbrak` (plug braking at the end of a counted move, both times 0..100 ms, 0 = off, the
+  multiplier 0..10 only when above 0, RAM only on the STM) and answers with the STM's reply:
+  `200` ok, `400 stm_rejected` with the code, `504 stm_timeout` after 3 s. The only route that
+  waits for the STM: the server serves nothing else meanwhile. Nothing is sent for a value
+  outside the ranges (`400 out_of_range`), for `maxMs` above 0 with neither `gapMs` nor `mult`
+  (`400 invalid`) and below STM 2.2.9 (`409 stm_unsupported`) ([API.md](../revamped/API.md)).
+
+
 ## 2.2.7-revamped
 
 ESP32 release: a health warning about early stops ends with a successful calibration, and a new

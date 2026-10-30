@@ -79,7 +79,7 @@ fn id_list(one: &str, n: usize, trailing_comma: bool) -> String {
 
 #[test]
 fn command_names_round_trip_and_are_exact() {
-    assert_eq!(CMD_COUNT, 41);
+    assert_eq!(CMD_COUNT, 43);
     assert_eq!(cmd_name(Cmd::None), "");
     // C++ cmdName(static_cast<Cmd>(kCmdCount)) and (200) == "": no Rust form.
     assert_eq!(Cmd::from_raw(CMD_COUNT), None);
@@ -89,7 +89,7 @@ fn command_names_round_trip_and_are_exact() {
         "stons", "stvls", "masns", "staop", "staln", "stdet", "stlnm", "gtlnm", "smotc", "gmotc",
         "gvers", "ghwin", "eepst", "reset", "gproto", "gvlvx", "gprof", "svmov", "scalx", "gcalx",
         "gstat", "gvlvy", "gstax", "slhbt", "slcfg", "sfspo", "glcfg", "sstop", "gtlnt", "ssafe",
-        "stlnt",
+        "stlnt", "skeep", "sbrak",
     ];
     assert_eq!(expected.len(), usize::from(CMD_COUNT));
     for (i, name) in (0u8..).zip(expected) {
@@ -138,6 +138,10 @@ fn v2_and_idempotent_classification() {
     assert_eq!(cmd_min_protocol(Cmd::Ssafe), 3);
     assert_eq!(cmd_min_protocol(Cmd::Stlnt), 1);
     assert!(!cmd_is_v2(Cmd::Stlnt));
+    assert_eq!(cmd_min_protocol(Cmd::Skeep), 3);
+    assert!(cmd_is_idempotent(Cmd::Skeep));
+    assert_eq!(cmd_min_protocol(Cmd::Sbrak), 3);
+    assert!(cmd_is_idempotent(Cmd::Sbrak));
     // C++ cmdMinProtocol / cmdIsV2 of kCmdCount and 255 (0, false): no Rust form.
 
     let not_idempotent = [
@@ -584,6 +588,54 @@ fn valve_or_all_builders() {
         check_rejected(f(12));
         check_rejected(f(254));
     }
+}
+
+#[test]
+fn keep_builder() {
+    // Rust 2.2.8: the keep flag of the flow layer, arg = the flag.
+    check_line(build_keep(0, true), "skeep 0 1 \r\n", Cmd::Skeep, 0, 1);
+    check_line(build_keep(11, false), "skeep 11 0 \r\n", Cmd::Skeep, 11, 0);
+    check_line(
+        build_keep(ALL_VALVES, true),
+        "skeep 255 1 \r\n",
+        Cmd::Skeep,
+        ALL_VALVES,
+        1,
+    );
+    check_rejected(build_keep(12, true));
+    check_rejected(build_keep(254, false));
+    check_rejected(build_keep(NO_VALVE, true));
+    // Rust 2.2.8: the brake of STM 2.2.9, arg = maxMs; the multiplier only when set.
+    check_line(
+        build_brake(0, 40, 5, 0),
+        "sbrak 0 40 5 \r\n",
+        Cmd::Sbrak,
+        0,
+        40,
+    );
+    check_line(
+        build_brake(0, 40, 5, 3),
+        "sbrak 0 40 5 3 \r\n",
+        Cmd::Sbrak,
+        0,
+        40,
+    );
+    check_line(
+        build_brake(11, 0, 0, 0),
+        "sbrak 11 0 0 \r\n",
+        Cmd::Sbrak,
+        11,
+        0,
+    );
+    check_line(
+        build_brake(ALL_VALVES, 65535, 65535, 10),
+        "sbrak 255 65535 65535 10 \r\n",
+        Cmd::Sbrak,
+        ALL_VALVES,
+        65535,
+    );
+    check_rejected(build_brake(12, 1, 1, 0));
+    check_rejected(build_brake(NO_VALVE, 1, 1, 1));
 }
 
 #[test]
@@ -2575,10 +2627,15 @@ fn slcfg_and_ssafe_ok_err_forms() {
 
 #[test]
 fn sfspo_and_sstop_indexed_results() {
-    for c in ["sfspo", "sstop"] {
-        let is_stop = c == "sstop";
+    // Rust 2.2.8: skeep and sbrak answer in the same forms.
+    for c in ["sfspo", "sstop", "skeep", "sbrak"] {
         let mut r = Reply::default();
-        let res = |r: &Reply| if is_stop { r.stop } else { r.failsafe };
+        let res = |r: &Reply| match c {
+            "sstop" => r.stop,
+            "skeep" => r.keep,
+            "sbrak" => r.brake,
+            _ => r.failsafe,
+        };
         assert_eq!(parse(&format!("{c} 3 ok"), &mut r), ParseStatus::Ok, "{c}");
         assert_eq!(r.cmd, cmd_from_name(c.as_bytes()));
         assert_eq!(res(&r).index, 3);
@@ -2686,6 +2743,7 @@ fn v3_flag_fault_and_configuration_flag_names() {
         STM_FLAG_EARLY_PENDING,
         STM_FLAG_ASSEMBLY,
         STM_FLAG_SVC_HOLD,
+        STM_FLAG_SVC_KEEP,
     ];
     let flag_names = [
         "fsLease",
@@ -2698,12 +2756,13 @@ fn v3_flag_fault_and_configuration_flag_names() {
         "earlyPending",
         "assembly",
         "svcHold",
+        "svcKeep",
     ];
-    for b in 0..10u8 {
+    for b in 0..11u8 {
         assert_eq!(flags[usize::from(b)], 1u16 << b, "{b}");
         assert_eq!(stm_flag_name(b), flag_names[usize::from(b)], "{b}");
     }
-    for b in [10, 11, 15, 16, 255] {
+    for b in [11, 12, 15, 16, 255] {
         assert_eq!(stm_flag_name(b), "", "{b}");
     }
 
@@ -2918,6 +2977,20 @@ fn reply_matches_for_v3_and_indexed_replies() {
     let q = some(build_stop(ALL_VALVES));
     assert!(reply_matches(&q, &parsed("sstop 255 ok")));
 
+    let q = some(build_keep(5, true));
+    assert!(reply_matches(&q, &parsed("skeep 5 ok")));
+    assert!(reply_matches(&q, &parsed("skeep -1 err 1")));
+    assert!(!reply_matches(&q, &parsed("skeep 6 ok")));
+    assert!(!reply_matches(&q, &parsed("sstop 5 ok")));
+    let q = some(build_keep(ALL_VALVES, false));
+    assert!(reply_matches(&q, &parsed("skeep 255 ok")));
+    assert!(!reply_matches(&q, &parsed("skeep 5 ok")));
+    let q = some(build_brake(5, 40, 5, 0));
+    assert!(reply_matches(&q, &parsed("sbrak 5 ok")));
+    assert!(reply_matches(&q, &parsed("sbrak -1 err 1")));
+    assert!(!reply_matches(&q, &parsed("sbrak 6 ok")));
+    assert!(!reply_matches(&q, &parsed("skeep 5 ok")));
+
     let q = build_get_status_v3();
     assert!(reply_matches(&q, &parsed(GSTAX_GOLDEN)));
     assert!(!reply_matches(&q, &parsed("gstat 1 2 3 4 5 6")));
@@ -2984,6 +3057,8 @@ fn every_request_built_has_a_matching_golden_reply() {
         (build_get_learn_time(), "gtlnt 604800"),
         (build_leave_safe_mode(), "ssafe ok"),
         (build_set_learn_time(0), "stlnt"),
+        (some(build_keep(3, true)), "skeep 3 ok"),
+        (some(build_brake(3, 40, 5, 2)), "sbrak 3 ok"),
     ];
     for (q, rep) in &pairs {
         assert!(reply_matches(q, &parsed(rep)), "{rep}");

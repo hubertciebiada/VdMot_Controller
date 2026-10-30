@@ -18,6 +18,7 @@ use crate::failsafe::{
     failsafe_kind_name, ha_status_name, lease_mode_name, lease_state_name, regulator_cause_name,
     HaStatus, LeaseMode, LeaseStatus,
 };
+use crate::flow_layer::{flow_state_name, write_flow_config_json, FlowConfig, FlowState, FlowView};
 use crate::json_writer::JsonWriter;
 use crate::link_policy::{link_state_name, LinkState, LinkStats};
 use crate::net_policy::{net_evidence_name, NetEvidence};
@@ -613,6 +614,67 @@ pub struct ValveView<'a> {
     pub sensor_tenths: [i32; 2],
     /// last calibration seen by MQTT; null when !valid
     pub calibration_end: LocalTime,
+    /// Rust 2.2.8: the flow layer of the valve (`StmSnapshot::flow`); None renders as off
+    pub flow: Option<&'a FlowView>,
+}
+
+/// The flow view of a valve without the layer (a view without one).
+static NO_FLOW: FlowView = FlowView {
+    enabled: false,
+    state: FlowState::Off,
+    known: false,
+    counts: 0,
+    target_counts: 0,
+    flow_ml: 0,
+    pct: 0,
+    last_valid: false,
+    last_ms: 0,
+    last_peak: 0,
+};
+
+/// `{"enabled":..,"state":"off|unsupported|unknown|positioning|held|failed","counts":n|null,
+/// "targetCounts":n,"lpm":1.000|null,"ms":n|null,"peak":12.3|null}`: the held position
+/// (pulses from the reference end stop, the flow there) while it is known, the pulses of the
+/// current or last positioning, the duration and the peak current (mA, one decimal) of the
+/// final move of the last positioning.
+pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
+    jw.begin_object();
+    jw.kv("enabled", f.enabled);
+    jw.kv("state", flow_state_name(f.state));
+    jw.kv("counts", f.known.then_some(f.counts));
+    jw.kv("targetCounts", f.target_counts);
+    jw.key("lpm");
+    if f.known {
+        jw.fixed(f.flow_ml.min(i32::MAX as u32) as i32, 3);
+    } else {
+        jw.null_value();
+    }
+    jw.kv("ms", f.last_valid.then_some(f.last_ms));
+    jw.key("peak");
+    if f.last_valid {
+        jw.fixed(i32::from(f.last_peak), 1); // 0.1 mA -> mA
+    } else {
+        jw.null_value();
+    }
+    jw.end_object();
+}
+
+/// `GET/POST /api/valves/{n}/flow`: `{"valve":n,"config":{write_flow_config_json},
+/// "flow":{write_flow_json}}`. Returns jw.ok().
+pub fn write_valve_flow_json(
+    jw: &mut JsonWriter<'_>,
+    valve: u8,
+    c: &FlowConfig,
+    f: &FlowView,
+) -> bool {
+    jw.begin_object();
+    jw.kv("valve", u32::from(valve) + 1);
+    jw.key("config");
+    write_flow_config_json(jw, c);
+    jw.key("flow");
+    write_flow_json(jw, f);
+    jw.end_object();
+    jw.ok()
 }
 
 fn write_last_move(jw: &mut JsonWriter<'_>, m: &MoveResult) {
@@ -729,6 +791,8 @@ fn write_valve(jw: &mut JsonWriter<'_>, idx: u32, v: &ValveView<'_>, now_ms: u32
     jw.kv("pct", (st.fs_pct <= 100).then_some(st.fs_pct));
     jw.end_object();
     local_time_value(jw, "calibrationEnd", &v.calibration_end, true);
+    jw.key("flow");
+    write_flow_json(jw, v.flow.unwrap_or(&NO_FLOW));
     jw.end_object();
 }
 
@@ -754,6 +818,8 @@ fn write_valve(jw: &mut JsonWriter<'_>, idx: u32, v: &ValveView<'_>, now_ms: u32
 /// failsafe_kind_name,"pct":fs_pct|null (hold)}, "calibrationEnd":"YYYY-MM-DDTHH:MM:SS"|null.
 /// 2.2.4 members: ext."coastOpen" and ext."coastClose" between "moveSeq" and "v3", motor
 /// pulses|null (null until the STM reports them, state.has_coast).
+/// Rust 2.2.8: "flow" ([`write_flow_json`]) after "calibrationEnd"; "pos" and "target" of a
+/// valve with the flow layer are flow percentages.
 /// A view without state or config renders them as empty. Returns jw.ok().
 pub fn write_valves_json(jw: &mut JsonWriter<'_>, views: &[ValveView<'_>], now_ms: u32) -> bool {
     jw.begin_object();
@@ -1332,6 +1398,16 @@ pub enum ApiRoute {
     /// POST /api/system/ota/switch-back {"confirm":"switch-back"}: restart into the other OTA
     /// slot (Rust firmware only)
     OtaSwitchBack = 45,
+    /// GET /api/valves/{n}/flow: the flow layer configuration and state (Rust 2.2.8)
+    ValveFlow = 46,
+    /// POST /api/valves/{n}/flow: a patch of the flow layer configuration (Rust 2.2.8)
+    ValveFlowSet = 47,
+    /// POST /api/valves/{n}/flow/counts {"counts":0..10000}: a flow position in pulses (Rust
+    /// 2.2.8)
+    ValveFlowCounts = 48,
+    /// POST /api/valves/{n}/brake {"maxMs":..,"gapMs":..}: the plug braking of STM 2.2.9
+    /// (Rust 2.2.8)
+    ValveBrake = 49,
 }
 
 /// {name}: at most 31 chars (C++ `char name[32]`).
@@ -1358,7 +1434,7 @@ impl Default for RouteMatch {
 
 /// Pattern segments: '#' = valve number {n}, '*' = file name {name}; below "/api/".
 #[rustfmt::skip]
-const ROUTES: [(&[u8], HttpMethod, ApiRoute); 44] = [
+const ROUTES: [(&[u8], HttpMethod, ApiRoute); 48] = [
     (b"status", HttpMethod::Get, ApiRoute::Status),
     (b"valves", HttpMethod::Get, ApiRoute::Valves),
     (b"valves/#/target", HttpMethod::Post, ApiRoute::ValveTarget),
@@ -1403,6 +1479,10 @@ const ROUTES: [(&[u8], HttpMethod, ApiRoute); 44] = [
     (b"import-report", HttpMethod::Get, ApiRoute::ImportReport),
     (b"import-report", HttpMethod::Delete, ApiRoute::ImportReportDismiss),
     (b"system/ota/switch-back", HttpMethod::Post, ApiRoute::OtaSwitchBack),
+    (b"valves/#/flow", HttpMethod::Get, ApiRoute::ValveFlow),
+    (b"valves/#/flow", HttpMethod::Post, ApiRoute::ValveFlowSet),
+    (b"valves/#/flow/counts", HttpMethod::Post, ApiRoute::ValveFlowCounts),
+    (b"valves/#/brake", HttpMethod::Post, ApiRoute::ValveBrake),
 ];
 
 /// "1".."12" without leading zeros -> 0-based valve.

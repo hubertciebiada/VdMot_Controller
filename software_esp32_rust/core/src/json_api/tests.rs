@@ -440,7 +440,9 @@ fn api_valves_document() {
         r#""lastMove":{"dir":"close","req":3000,"cnt":1500,"stop":"#,
         &q(stop_reason_name(StopReason::EarlyEndStop)),
         r#","peak":12.3,"ms":4567},"moveSeq":9,"coastOpen":null,"coastClose":null,"v3":null},"#,
-        r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null},"#,
+        r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null,"#,
+        FLOW_OFF,
+        r#"},"#,
         r#"{"idx":2,"name":"","active":false,"known":false,"state":0,"stateKey":"#,
         &q(valve_status_key(0)),
         r#","calibrating":false,"pos":0,"target":null,"targetSource":"#,
@@ -449,7 +451,9 @@ fn api_valves_document() {
         &q(target_sync_name(TargetSync::Unknown)),
         r#","stmTarget":null,"meanCur":0,"moves":0,"oc":0,"cc":0,"dc":0,"cr":0,"#,
         r#""health":[],"age":null,"sensors":[],"ext":null,"#,
-        r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null},"#,
+        r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null,"#,
+        FLOW_OFF,
+        r#"},"#,
         r#"{"idx":3,"name":"","active":false,"known":true,"state":9,"stateKey":"#,
         &q(valve_status_key(9)),
         r#","calibrating":false,"pos":0,"target":null,"targetSource":"#,
@@ -465,7 +469,9 @@ fn api_valves_document() {
         r#""req":0,"cnt":0,"stop":"#,
         &q(stop_reason_name(StopReason::None)),
         r#","peak":0.0,"ms":0},"moveSeq":0,"coastOpen":null,"coastClose":null,"v3":null},"#,
-        r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null}]}"#,
+        r#""failsafe":{"state":"off","pct":null},"calibrationEnd":null,"#,
+        FLOW_OFF,
+        r#"}]}"#,
     ]
     .concat();
     assert_eq!(j, expected);
@@ -530,6 +536,21 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         c.name = full(b'"'); // worst-case escaping
         assert_eq!(c.name.len(), ITEM_NAME_MAX);
     }
+    // Rust 2.2.8: the longest flow block on every valve (counts at most 10000, the curve's
+    // flow at most 65.535 l/min, the STM's duration and peak at their type's maximum). The
+    // members of 2.1 and 2.2.4 (v3, coast, calibrationEnd) stay null here as before.
+    let flow = crate::flow_layer::FlowView {
+        enabled: true,
+        state: crate::flow_layer::FlowState::Positioning,
+        known: true,
+        counts: crate::flow_layer::FLOW_COUNTS_MAX,
+        target_counts: crate::flow_layer::FLOW_COUNTS_MAX,
+        flow_ml: u32::from(u16::MAX),
+        pct: 100,
+        last_valid: true,
+        last_ms: u32::MAX,
+        last_peak: u16::MAX,
+    };
     let views: Vec<ValveView<'_>> = st
         .iter()
         .zip(cfg.iter())
@@ -540,6 +561,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
             sensor_name: [b"\"\"\"\"\"\"\"\"\"\"", b"\"\"\"\"\"\"\"\"\"\""],
             sensor_valid: [true, true],
             sensor_tenths: [-1270, -1270],
+            flow: Some(&flow),
             ..ValveView::default()
         })
         .collect();
@@ -547,6 +569,12 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     let mut jw = JsonWriter::new(&mut slot);
     assert!(write_valves_json(&mut jw, &views, 0));
     assert!(jw.complete());
+    let doc = String::from_utf8(jw.as_bytes().to_vec()).expect("UTF-8");
+    let block = concat!(
+        r#""flow":{"enabled":true,"state":"positioning","counts":10000,"targetCounts":10000,"#,
+        r#""lpm":65.535,"ms":4294967295,"peak":6553.5}"#
+    );
+    assert_eq!(doc.matches(block).count(), 12);
     std::println!("worst-case /api/valves: {} bytes", jw.length());
 }
 
@@ -851,7 +879,13 @@ const G: HttpMethod = HttpMethod::Get;
 const P: HttpMethod = HttpMethod::Post;
 const D: HttpMethod = HttpMethod::Delete;
 
-const CASES: [(HttpMethod, &str, ApiRoute); 43] = [
+/// The flow member of a valve without the layer (Rust 2.2.8).
+const FLOW_OFF: &str = concat!(
+    r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"#,
+    r#""lpm":null,"ms":null,"peak":null}"#
+);
+
+const CASES: [(HttpMethod, &str, ApiRoute); 47] = [
     (G, "/api/status", ApiRoute::Status),
     (G, "/api/valves", ApiRoute::Valves),
     (P, "/api/valves/1/target", ApiRoute::ValveTarget),
@@ -895,6 +929,10 @@ const CASES: [(HttpMethod, &str, ApiRoute); 43] = [
     (D, "/api/files", ApiRoute::FileDelete),
     (G, "/api/import-report", ApiRoute::ImportReport),
     (D, "/api/import-report", ApiRoute::ImportReportDismiss),
+    (G, "/api/valves/1/flow", ApiRoute::ValveFlow),
+    (P, "/api/valves/1/flow", ApiRoute::ValveFlowSet),
+    (P, "/api/valves/1/flow/counts", ApiRoute::ValveFlowCounts),
+    (P, "/api/valves/1/brake", ApiRoute::ValveBrake),
 ];
 
 #[test]
@@ -1252,7 +1290,9 @@ fn valves_v3_fields_failsafe_and_calibration_end() {
         &q(valve_fault_name(5)),
         r#","drive":40,"retryS":1200,"retries":3}},"#,
         r#""failsafe":{"state":"lease","pct":30},"#,
-        r#""calibrationEnd":"2026-09-21T04:07:09"}]}"#,
+        r#""calibrationEnd":"2026-09-21T04:07:09","#,
+        FLOW_OFF,
+        r#"}]}"#,
     ]
     .concat();
     assert!(j.len() >= tail.len());
@@ -1295,7 +1335,7 @@ fn valves_v3_fields_failsafe_and_calibration_end() {
     st.has_v3 = false;
     j = view(&st, false);
     assert!(j.contains("\"v3\":null},"));
-    assert!(j.contains("\"calibrationEnd\":null}"));
+    assert!(j.contains("\"calibrationEnd\":null,\"flow\":"));
     // the coast: null while the STM does not report it (before 2.2.4)
     st.has_coast = false;
     j = view(&st, false);
@@ -1439,4 +1479,119 @@ fn route_of_the_ota_switch_back() {
     // appended after the C++ routes: their numbers stay
     assert_eq!(ApiRoute::ImportReportDismiss as u8, 44);
     assert_eq!(ApiRoute::OtaSwitchBack as u8, 45);
+}
+
+#[test]
+fn routes_of_the_flow_layer() {
+    // Rust 2.2.8: appended after the switch back.
+    assert_eq!(ApiRoute::ValveFlow as u8, 46);
+    assert_eq!(ApiRoute::ValveFlowSet as u8, 47);
+    assert_eq!(ApiRoute::ValveFlowCounts as u8, 48);
+    assert_eq!(ApiRoute::ValveBrake as u8, 49);
+    assert_eq!(route(P, "/api/valves/12/brake").valve, 11);
+    assert_eq!(
+        route(G, "/api/valves/1/brake").route,
+        ApiRoute::MethodNotAllowed
+    );
+    assert_eq!(route(P, "/api/valves/brake").route, ApiRoute::NotFound);
+    for n in 1u8..=12 {
+        let m = route(G, &format!("/api/valves/{n}/flow"));
+        assert_eq!(m.route, ApiRoute::ValveFlow);
+        assert_eq!(m.valve, n - 1);
+        let m = route(P, &format!("/api/valves/{n}/flow"));
+        assert_eq!(m.route, ApiRoute::ValveFlowSet);
+        assert_eq!(m.valve, n - 1);
+        let m = route(P, &format!("/api/valves/{n}/flow/counts"));
+        assert_eq!(m.route, ApiRoute::ValveFlowCounts);
+        assert_eq!(m.valve, n - 1);
+    }
+    assert_eq!(
+        route(D, "/api/valves/1/flow").route,
+        ApiRoute::MethodNotAllowed
+    );
+    assert_eq!(
+        route(G, "/api/valves/1/flow/counts").route,
+        ApiRoute::MethodNotAllowed
+    );
+    for p in [
+        "/api/valves/0/flow",
+        "/api/valves/13/flow",
+        "/api/valves/flow",
+        "/api/valves/1/flow/",
+        "/api/valves/1/flow/count",
+        "/api/valves/1/flows",
+    ] {
+        assert_eq!(route(P, p).route, ApiRoute::NotFound, "{p}");
+    }
+}
+
+#[test]
+fn flow_json_of_a_valve_and_the_flow_document() {
+    use crate::flow_layer::{FlowConfig, FlowPoint, FlowState, FlowView};
+    let mut buf = [0u8; 512];
+    let held = FlowView {
+        enabled: true,
+        state: FlowState::Held,
+        known: true,
+        counts: 812,
+        target_counts: 809,
+        flow_ml: 1012,
+        pct: 37,
+        last_valid: true,
+        last_ms: 5684,
+        last_peak: 123,
+    };
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_json(&mut jw, &held);
+    assert!(jw.ok());
+    assert_eq!(
+        String::from_utf8_lossy(jw.as_bytes()),
+        concat!(
+            r#"{"enabled":true,"state":"held","counts":812,"targetCounts":809,"#,
+            r#""lpm":1.012,"ms":5684,"peak":12.3}"#
+        )
+    );
+    // Unknown after a positioning: the position is gone, the last move stays.
+    let unknown = FlowView {
+        state: FlowState::Unknown,
+        known: false,
+        counts: 0,
+        flow_ml: 0,
+        pct: 0,
+        ..held
+    };
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_json(&mut jw, &unknown);
+    assert_eq!(
+        String::from_utf8_lossy(jw.as_bytes()),
+        concat!(
+            r#"{"enabled":true,"state":"unknown","counts":null,"targetCounts":809,"#,
+            r#""lpm":null,"ms":5684,"peak":12.3}"#
+        )
+    );
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_json(&mut jw, &FlowView::default());
+    assert_eq!(String::from_utf8_lossy(jw.as_bytes()), &FLOW_OFF[7..]);
+    // The document of GET /api/valves/{n}/flow.
+    let mut c = FlowConfig {
+        enabled: true,
+        count: 2,
+        ..FlowConfig::DEFAULT
+    };
+    c.points[0] = FlowPoint {
+        counts: 593,
+        flow_ml: 0,
+    };
+    c.points[1] = FlowPoint {
+        counts: 1100,
+        flow_ml: 2700,
+    };
+    let mut buf = [0u8; 1024];
+    let mut jw = JsonWriter::new(&mut buf);
+    assert!(write_valve_flow_json(&mut jw, 2, &c, &held));
+    let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
+    assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
+    assert!(j.contains(r#""points":[[593,0.000],[1100,2.700]]},"flow":{"enabled":true,"#));
+    assert!(j.ends_with(r#""peak":12.3}}"#));
+    check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());
 }

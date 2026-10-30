@@ -589,6 +589,9 @@ pub struct ValveModel {
     v: [ValveState; N],
     t: [Track; N],
     active: u16,
+    /// Rust 2.2.8: valves whose desired target the flow layer delivers (no stgtp, no read-back
+    /// comparison: the STM target of such a valve is the layer's fallback position)
+    flow: u16,
     push_cursor: usize,
     hold_while_calibrating: bool,
     assembly_via_staop: bool,
@@ -609,6 +612,7 @@ impl ValveModel {
             v: [ValveState::EMPTY; N],
             t: [Track::default(); N],
             active: 0,
+            flow: 0,
             push_cursor: 0,
             hold_while_calibrating: true,
             assembly_via_staop: false,
@@ -619,6 +623,43 @@ impl ValveModel {
 
     fn is_active(&self, i: usize) -> bool {
         (self.active >> i) & 1 != 0
+    }
+
+    fn is_flow(&self, i: usize) -> bool {
+        (self.flow >> i) & 1 != 0
+    }
+
+    /// Rust 2.2.8: the valves the flow layer positions (bit v). Their desired target is kept
+    /// and persisted as before, but never pushed with stgtp and never compared with the STM's
+    /// target (which is the layer's fallback position): a read-back marks them Synced, and no
+    /// STM target is adopted as desired. A valve that leaves the mask goes Pending with a
+    /// forced push, so the normal delivery takes over with the current desired target.
+    pub fn set_flow_mask(&mut self, mask: u16) {
+        for i in 0..N {
+            let now = (mask >> i) & 1 != 0;
+            if self.is_flow(i) == now {
+                continue;
+            }
+            let before = self.v[i];
+            // The bit differs: toggling sets it to `now`.
+            self.flow ^= 1 << i;
+            let (v, t) = (&mut self.v[i], &mut self.t[i]);
+            if now {
+                if v.desired_valid {
+                    mark_synced(v, t);
+                }
+            } else if v.desired_valid {
+                v.sync = TargetSync::Pending;
+                v.push_attempts = 0;
+                v.force_push = true;
+                t.keep_unconfirmed = false;
+            }
+            self.commit(i, &before);
+        }
+    }
+
+    pub fn flow_mask(&self) -> u16 {
+        self.flow
     }
 
     /// Recomputes the health of valve `i` and counts the revisions (C++ `commit`). A successful
@@ -900,10 +941,18 @@ impl ValveModel {
     /// `hold_ok` false: a protocol 3 read-back of an Assembly valve without the STM's Assembly
     /// flag (the hold is gone even when the target matches).
     fn apply_read_back(&mut self, i: usize, target: u8, hold_ok: bool) {
+        let flow = self.is_flow(i);
         let (v, t) = (&mut self.v[i], &mut self.t[i]);
         v.stm_target_known = true;
         v.stm_target = target;
         t.read_back_first = false;
+        // A flow valve's STM target is the layer's fallback: nothing to compare or adopt.
+        if flow {
+            if v.desired_valid {
+                mark_synced(v, t);
+            }
+            return;
+        }
         if !v.desired_valid {
             v.desired_valid = true;
             v.desired = target;
@@ -1007,7 +1056,7 @@ impl ValveModel {
             if !self.is_active(i) || !(v.known || v.stm_target_known) || !v.desired_valid {
                 continue;
             }
-            if t.read_back_first {
+            if t.read_back_first || self.is_flow(i) {
                 continue;
             }
             let via_staop = self.assembly_via_staop && v.source == TargetSource::Assembly;
@@ -1053,7 +1102,8 @@ impl ValveModel {
     /// valve in Pending (or Failed past failed_retry_ms), active, known (valve data or a target
     /// read-back), not calibrating (only while held, see
     /// [`set_hold_targets_while_calibrating`](Self::set_hold_targets_while_calibrating)), not
-    /// waiting for the first read-back of a restored target, push_retry_ms since the last push.
+    /// waiting for the first read-back of a restored target, not delivered by the flow layer
+    /// ([`set_flow_mask`](Self::set_flow_mask)), push_retry_ms since the last push.
     /// Round robin over valves. Moves that valve to AwaitAck and counts the attempt; `pos` is
     /// [`push_target`](Self::push_target)`(valve)`. A force_push valve is pushed although its
     /// read-back equals the target (once, after an STM reboot).
