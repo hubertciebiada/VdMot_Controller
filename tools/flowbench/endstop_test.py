@@ -24,7 +24,16 @@ One more (--phases brake), for the brake of the service moves (STM 2.2.9 sbrak):
           the steps phase, 5 x (one opening move of N, close at 34 mA) and, with --pos, the top
           phase; the missed pulses per opening move with and without the brake, the spread of
           the single move, the brake pulses (counted - requested) and the move time; at the end
-          the valve gets the brake of the STM after a start (60 20 0)
+          the valve gets the brake of the STM after a start (35 20 0)
+
+One more (--phases relative), for positioning without a reference move, the open end stop as the
+ruler, with --pos:
+
+  relative  3 x (close K, open to the end stop): A; 3 x (close K, open 300, open to the end stop):
+            B + 300 - A is what one more stop loses near the working point; 3 x (close K, 5 pairs
+            of open m and close m, open to the end stop): how far the pairs moved the valve per
+            pair. Counts alone do not show the backlash: the end stop pins the same flank of the
+            gears on every run
 
 Every move goes to a JSON line in --out. The loops keep flowing on their targets; only the valve
 under test moves.
@@ -44,15 +53,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from flowbench import CLOSE_MA, OPEN_MA, EngineError, Esp, SimDevice, serve_sim  # noqa: E402
 
 REPEATS = 5
+REL_REPEATS = 3
+REL_PAIRS = (150, 300, 100, 200, 250)  # pulses of the open and close pairs of the relative phase
 STEP_PULSES = 300
 STEPS_K = 5
 N_DEFAULT = 900  # about 1.5 l/min on the measured loops
 REFUSED_WAIT_S = 60  # a calibration in the queue refuses service moves; wait and try again
 PHASES_DEFAULT = ("closed", "steps", "open", "zero")
 # sbrak settings (maxMs, gapMs, mult) of the brake phase; (0, 0, 0) = off
-BRAKES_DEFAULT = ((0, 0, 0), (60, 20, 0))
+BRAKES_DEFAULT = ((0, 0, 0), (35, 20, 0))
 # the brake of the STM 2.2.9 after a start; the brake phase leaves the valve with it
-BRAKE_AFTER = (60, 20, 0)
+BRAKE_AFTER = (35, 20, 0)
 
 
 class Run:
@@ -150,6 +161,24 @@ class Run:
                 self.move(idx, "open", part, OPEN_MA, f"steps{k}{tag}")
             self.close_ref(idx, n, f"steps{k}{tag}")
 
+    def relative(self, idx, stroke):
+        k = int(round(stroke - self.pos_by_valve[idx]))
+        self.write(idx=idx, phase="rel", k=k, stroke=round(stroke), pos10=self.pos_by_valve[idx])
+        self.open_end(idx, "rel")
+        for _ in range(REL_REPEATS):
+            self.move(idx, "close", k, CLOSE_MA, "rel_a")
+            self.open_end(idx, "rel_a")
+        for _ in range(REL_REPEATS):
+            self.move(idx, "close", k, CLOSE_MA, "rel_stop")
+            self.move(idx, "open", STEP_PULSES, OPEN_MA, "rel_stop")
+            self.open_end(idx, "rel_stop")
+        for _ in range(REL_REPEATS):
+            self.move(idx, "close", k, CLOSE_MA, "rel_pairs")
+            for m in REL_PAIRS:
+                self.move(idx, "open", m, OPEN_MA, "rel_pairs")
+                self.move(idx, "close", m, CLOSE_MA, "rel_pairs")
+            self.open_end(idx, "rel_pairs")
+
     def target(self, idx, pct, phase):
         self.esp.post(f"/api/valves/{idx}/target", {"target": pct})
         t0 = time.time()
@@ -209,9 +238,15 @@ class Run:
             stroke = statistics.mean(strokes)
         if "top" in ph and idx in self.pos_by_valve:
             self.top(idx, stroke, "top")
+        if "relative" in ph and idx in self.pos_by_valve:
+            self.relative(idx, stroke)
         if "zero" in ph:
             self.zero(idx, back_to)
-        self.target(idx, 0, "restore")
+        self.restore(idx, back_to)
+
+    def restore(self, idx, back_to):
+        # the ESP sends only a changed target: a valve that stays at 0 % goes over another one
+        self.target(idx, 0 if back_to else 5, "restore")
         self.target(idx, back_to, "restore")
 
     def zero(self, idx, back_to):
@@ -232,8 +267,7 @@ class Run:
                 if zero_only:
                     back = v.get("target") if v.get("target") is not None else v.get("pos", 0)
                     self.zero(v["idx"], back)
-                    self.target(v["idx"], 0, "restore")
-                    self.target(v["idx"], back, "restore")
+                    self.restore(v["idx"], back)
                     continue
                 self.valve(v)
             except Exception as e:  # noqa: BLE001 - any failure leaves the valve on a target
@@ -241,8 +275,7 @@ class Run:
                 # leave the valve on a normal target again
                 try:
                     back = v.get("target") if v.get("target") is not None else v.get("pos", 0)
-                    self.target(v["idx"], 0, "restore")
-                    self.target(v["idx"], back, "restore")
+                    self.restore(v["idx"], back)
                 except EngineError as e2:
                     self.write(idx=v["idx"], phase="error", error=f"restore: {e2}")
 
@@ -309,6 +342,25 @@ def summary(path):
         # the first open of the top phase starts at the 34 mA stop, the others after a close of K
         tp = [r["cnt"] for r in moves if r["phase"] == "top" and r["dir"] == "open"][1:]
         tk = [r["cnt"] for r in moves if r["phase"] == "top" and r["dir"] == "close"]
+        ends = {tag: [r["cnt"] for r in moves if r["phase"] == tag and r["stop"] in
+                      ("endstop", "early_endstop")] for tag in ("rel_a", "rel_stop", "rel_pairs")}
+        close_k = [r["cnt"] for r in moves if r["phase"] == "rel_a" and r["dir"] == "close"]
+        a = statistics.mean(ends["rel_a"]) if ends["rel_a"] else None
+        rel = None
+        if a is not None and ends["rel_stop"] and ends["rel_pairs"]:
+            pairs = [r for r in moves if r["phase"] == "rel_pairs" and r["stop"] == "target"]
+            # the counted pulses of the pairs and the close of K, from the record; the first
+            # close of each run is the close of K, the others are pairs
+            net = [r["cnt"] if r["dir"] == "open" else -r["cnt"] for r in pairs
+                   if not (r["dir"] == "close" and r["req"] not in REL_PAIRS)]
+            cc = a - statistics.mean(close_k)
+            rel = {"k": close_k[0], "a": ends["rel_a"], "stop": ends["rel_stop"],
+                   "pairs": ends["rel_pairs"], "closing_coast": round(cc, 1),
+                   "loss_per_stop": round(statistics.mean(ends["rel_stop"]) + STEP_PULSES - a, 1),
+                   # what the pairs left the valve below the close of K, per pair: the first
+                   # term from the end stop, the second what the counter says
+                   "pair_drift": round((statistics.mean(ends["rel_pairs"]) - a
+                                        + sum(net) / len(ends["rel_pairs"])) / len(REL_PAIRS), 1)}
         row = {"ctrl": c, "idx": i,
                "close34": cl, "close34_sd": round(statistics.pstdev(cl), 1) if len(cl) > 1 else None,
                "open_end": op, "open_end_sd": round(statistics.pstdev(op), 1) if len(op) > 1 else None,
@@ -322,6 +374,7 @@ def summary(path):
                "ruler_close": closes("ruler"),
                "top_k": top_k[0]["k"] if top_k else None, "top_close": tk, "top": tp,
                "top_sd": round(statistics.pstdev(tp), 1) if len(tp) > 1 else None,
+               "relative": rel,
                "errors": [r["error"] for r in last if r["phase"] == "error"]}
         rows.append(row)
     return rows

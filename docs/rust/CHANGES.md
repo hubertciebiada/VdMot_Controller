@@ -24,10 +24,11 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   `lastReq` by them). The end-stop limits do not judge the brake current (about twice the
   stall current, bounded by `maxMs`); `sstop` ends a brake with the move. Normal moves,
   calibration strokes and the coast probe are not braked. After a start every valve brakes with
-  `60 20 0`: in the field test (4 valves, 5 moves each) a further opening move missed -5..2
-  instead of 35..60 pulses, and the spread of one opening move of ~900 pulses from the closed
-  end stop fell from sd 19..23 to 3..9 pulses on 3 valves (the fourth: 6 before, 7 after);
-  80 30 0 drove a stopped motor backwards (up to 8 brake pulses). `sbrak` changes it in RAM until the next STM reset ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md),
+  `35 20 0`: in the field test (13 valves, 5 moves each) a further opening move missed a median
+  of 3 pulses instead of 28..60, the spread of one opening move of ~900 pulses from the closed
+  end stop fell from sd 6..24 to a median of 8 pulses, and 60 20 0 was a little worse (median
+  5 missed, spread 10); 60 10 0 was unstable and 80 30 0 drove a stopped motor backwards (up to
+  8 brake pulses). `sbrak` changes it in RAM until the next STM reset ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md),
   [pulse.rs](../../software_stm32_rust/glue/src/motor/pulse.rs)).
 
 ## 2.2.8-revamped (unreleased)

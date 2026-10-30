@@ -89,7 +89,7 @@ fn after_a_start_every_valve_has_the_default_brake() {
             (SBRAK_DEFAULT_MAX_MS, SBRAK_DEFAULT_GAP_MS, 0)
         );
     }
-    assert_eq!((SBRAK_DEFAULT_MAX_MS, SBRAK_DEFAULT_GAP_MS), (60, 20));
+    assert_eq!((SBRAK_DEFAULT_MAX_MS, SBRAK_DEFAULT_GAP_MS), (35, 20));
 }
 
 /// A brake that ends 17 ms after the flip on a gap of 3 ms: fixed, or 3 times the interval of
