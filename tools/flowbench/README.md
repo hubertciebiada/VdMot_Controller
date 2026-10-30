@@ -209,7 +209,7 @@ target again. Every move is a JSON line in `--out`.
 ## Checking the curves on the flow layer (`flowcheck.py`)
 
 Needs firmware 2.2.8 with the flow layer (`/api/valves/{n}/flow`): the controller positions each
-valve itself (a close to the closed end stop at `refmA`, one opening move, the hold kept with
+valve itself (a move to the reference end stop, one move away from it, the hold kept with
 `skeep`), the tool only asks. Its own page (Polish), port 4681, data in `~/flowbench/flowcheck.db`.
 
 ```sh
@@ -218,6 +218,18 @@ python tools/flowbench/flowcheck.py --controller west=192.168.1.51 --controller 
 python tools/flowbench/flowcheck.py --sim --sim-auto                                    # no hardware
 ```
 
+`--ha-power ENTITY` (with `HA_URL` and `HA_TOKEN` in the environment) shows the pump power on the
+page and refuses a session below 5 W; an unknown power does not stop it. `--pick "west 3,east 7"`
+marks the loops of the repeat session on the page.
+
+Every session starts the same way: the target of every valve is noted, the loops outside the
+session that stand below 15 % go to 15 % (the curves were measured with them there), the layer goes
+on for the session loops. At the end, also after STOP or an error, the layer goes off and every
+valve goes back to the noted target. A layer that lets go leaves the valve at `fallbackPct` while
+the ESP keeps the old target as desired, and the ESP sends only a changed target, so a session loop
+goes over another target first (5 % on the way to 0 %). A valve that does not get back is named on
+the page. Stopping the tool with Ctrl-C does the same; killing it leaves the layers on.
+
 An entry of the curves file can also carry `refSide` (`"closed"` or `"open"`), `strokeCounts`,
 `offset` and `gain`; `upload` writes them with the points. With `"open"` the controller references
 each positioning at the open end stop and closes `strokeCounts − counts`: the open end repeats
@@ -225,16 +237,22 @@ within 2 pulses, the closed end stop at `refmA` within 6..33.
 
 Sessions (buttons on the page):
 
-- **repeat**: the marked loops 5 times closed, then the counts of 1.0 l/min; the reader types what
-  the float shows (no expected value on the card).
+- **repeat**: the counts of 1.0 l/min 5 times on the marked loops (a loop with `refSide` `closed`
+  closes first; with `open` every positioning starts at the open end anyway); the reader types what
+  the float shows (no expected value on the card). The page keeps the readings, mean and standard
+  deviation per loop (passes at 0.1 l/min), and the session ends with an offset-only fit.
 - **house**: every loop on 1.0 l/min at once, one reading each: how the loops pull on each other.
-- **check**: one group of a manifold (3–4 loops) through a list of stops (`mixed`: 0.25 / 0.5 /
-  1 / 1.5 / 2 l/min, each twice and never twice in a row; also `up`, `down`, `zigzag`). Each
+- **check**: one group of a manifold (3–4 loops) through a list of stops (`short`: 1 / 2 /
+  0.5 l/min, the default; `mixed`: 0.25 / 0.5 / 1 / 1.5 / 2 l/min, each twice and never twice in a
+  row; also `up`, `down`, `zigzag`). Each
   card shows the expected flow with `OK` (within 0.1 l/min), `Za dużo`, `Za mało` and a typed
   reading (`Nie płynie`, `Powyżej skali`). Too much / too little moves the valve by 0.1 l/min of
   the local slope (1.5 × after the same answer twice); a typed reading moves it by the secant of
   the curve. Only the corrected cards are asked again; when a stop had corrections, the group is
   confirmed once in its last setting, because one valve changes the flow of the others.
+
+After a move the page counts down 30 s for the float to come to rest; the answers are open all the
+time. A reading can be typed (with a comma or a dot) and saved with Enter.
 
 After a check session the tool fits per loop `counts = offset + gain × (counts of the curve)` from
 the OK and typed readings (least squares; the offset only with fewer than 3 points or a narrow

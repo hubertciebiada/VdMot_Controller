@@ -33,12 +33,15 @@ button.pri { background: var(--accent); color: var(--accent-fg); border-color: v
 button.stop { background: var(--danger); color: #fff; border-color: var(--danger); }
 button:disabled { opacity: .45; cursor: default; }
 button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+select { font: inherit; min-height: 44px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+  color: var(--fg); padding: 0 8px; margin-left: 6px; }
 .bar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--line);
   display: flex; gap: 8px; align-items: center; }
 .bar .what { flex: 1; min-width: 0; font-size: 13px; }
 .bar .what b { font-size: 15px; }
-.msg { font-weight: 600; }
+.msg { font-weight: 600; overflow-wrap: anywhere; }
 .msg.err { color: var(--danger); }
+.pump.low { color: var(--danger); font-weight: 700; }
 .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 .card { background: var(--panel); border: 2px solid var(--line); border-radius: 12px; padding: 12px; }
 .card.ask { border-color: var(--accent); }
@@ -49,23 +52,36 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .card .ans { font-size: 13px; color: var(--muted); min-height: 18px; }
 .btns3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
 .btns3 button.ok { background: var(--ok); color: #fff; border-color: var(--ok); }
-.val { display: grid; grid-template-columns: 56px 1fr 56px; gap: 6px; margin-top: 8px; align-items: center; }
-.val .v { text-align: center; font: 700 24px/1 var(--font); font-variant-numeric: tabular-nums; }
+.val { display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px; gap: 6px; margin-top: 8px; align-items: stretch; }
+.val input { width: 100%; min-width: 0; text-align: center; font: 700 24px/1 var(--font); font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--fg); }
+.val input:focus { outline: 3px solid var(--accent); outline-offset: 1px; }
+.val button { padding: 11px 4px; }
 .val2 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 6px; }
+.val2 button { padding: 8px 4px; }
 .confirm { width: 100%; font-size: 17px; margin: 8px 0; }
 .log { font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+#loopPick label { display: inline-flex; gap: 6px; align-items: center; padding: 8px 6px; }
+#loopPick input { width: 20px; height: 20px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
-td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
+td.good { color: var(--ok); font-weight: 700; }
+td.bad { color: var(--danger); font-weight: 700; }
 </style>
 </head>
 <body>
 <div class="bar">
-  <div class="what"><b id="title">flowcheck</b><br><span id="msg" class="msg"></span></div>
+  <div class="what"><b id="title">flowcheck</b> <span id="pump" class="pump small muted"></span><br><span id="msg" class="msg"></span></div>
   <button id="stopBtn" class="stop" hidden>STOP</button>
 </div>
 
 <button id="confirmBtn" class="pri confirm" hidden>Wszystkie karty nadal OK — dalej</button>
 <div id="cards" class="cards"></div>
+
+<div id="summary" class="panel" hidden>
+  <h2>Powtarzalność (zaliczone: sd do 0,1 l/min)</h2>
+  <table id="sumTable"></table>
+</div>
 
 <div id="fits" class="panel" hidden>
   <h2>Dopasowanie krzywych (offset + wzmocnienie)</h2>
@@ -74,17 +90,19 @@ td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: lef
 
 <div id="setup" class="panel">
   <h2>Nowa sesja</h2>
-  <div class="small muted">Zawory ustawia sterownik (warstwa przepływu). Ty tylko odczytujesz.</div>
-  <div class="row" style="margin-top:8px">
-    <label class="small">Przystanki
+  <div id="howto" class="small muted"></div>
+  <h2 style="margin-top:12px">Powtarzalność</h2>
+  <div class="small muted">5 razy ta sama pozycja 1,0 l/min, wpisujesz odczyt. Oczekiwanej wartości nie widać.</div>
+  <div id="loopPick" class="row small" style="margin-top:4px"></div>
+  <div class="row"><button id="repeatBtn" class="pri">Powtarzalność zaznaczonych</button></div>
+  <h2 style="margin-top:12px">Sprawdzanie krzywych</h2>
+  <div class="row">
+    <label class="small">Lista przystanków
       <select id="mode"></select></label>
   </div>
   <div id="groups" class="row" style="margin-top:8px"></div>
-  <div class="row" style="margin-top:8px">
-    <button id="houseBtn">Cały dom na 1,0 l/min</button>
-    <button id="repeatBtn">Powtarzalność (zaznaczone)</button>
-  </div>
-  <div id="loopPick" class="row small" style="margin-top:8px"></div>
+  <h2 style="margin-top:12px">Wpływ pętli na siebie</h2>
+  <div class="row"><button id="houseBtn">Cały dom na 1,0 l/min</button></div>
 </div>
 
 <div class="panel"><h2>Dziennik</h2><div id="log" class="log"></div></div>
@@ -94,7 +112,14 @@ td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: lef
 const $ = (id) => document.getElementById(id);
 const fix2 = (q) => q.toFixed(2).replace(".", ",");
 const fmt = (q) => q == null ? "–" : (Math.round(q * 100) / 100).toString().replace(".", ",");
-let S = null, presets = null, local = {}, lastSig = "";  // local: per card the value being typed
+const parse = (t) => {
+  const s = String(t ?? "").trim().replace(",", "."), v = Number(s);
+  return s !== "" && Number.isFinite(v) && v >= 0 ? v : null;
+};
+const KIND = {repeat: "powtarzalność", house: "cały dom", check: "sprawdzanie"};
+const PHASE = {idle: "gotowe", moving: "ustawiam zawory", reading: "odczyt", restoring: "przywracam zawory",
+  done: "koniec sesji", stopped: "zatrzymane", error: "błąd"};
+let S = null, presets = null, local = {}, fitSig = "";  // local: per card the reading being typed
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"},
@@ -107,22 +132,22 @@ async function api(path, body) {
 function say(e) { $("msg").textContent = String(e.message || e); $("msg").className = "msg err"; }
 
 async function answer(key, a, value) {
+  document.activeElement?.blur?.();
   try { await api("/api/answer", {key, answer: a, value}); delete local[key]; poll(); } catch (e) { say(e); }
 }
 
 function cardEl(c) {
   const el = document.createElement("div");
   const given = S.answered && S.answered[c.key];
-  el.className = "card" + (c.ask && !given ? " ask" : " done");
-  const v = local[c.key] ?? (c.expect ?? 1.0);
-  local[c.key] = v;
+  const reading = S.phase === "reading";
+  el.className = "card" + (reading && c.ask && !given ? " ask" : " done");
   const exp = c.expect == null ? "Odczytaj" : `${fmt(c.expect)} <small>l/min?</small>`;
   const word = (x) => ({ok: "OK", more: "za dużo", less: "za mało", value: fmt(x.value) + " l/min"}[x.answer]);
   const last = given ? `twoja odpowiedź: ${word(given)} (możesz zmienić)` : c.last ? `ostatnio: ${word(c.last)}` : "";
   el.innerHTML = `<div class="name">${c.name} <span class="small muted">${c.key} · ${c.counts} imp</span></div>
     <div class="exp">${exp}</div><div class="ans">${last}</div>`;
   // while the group is confirmed every card can still be changed
-  if (!c.ask && !S.confirm) return el;
+  if (!reading || (!c.ask && !S.confirm)) return el;
   if (c.expect != null) {
     const b3 = document.createElement("div"); b3.className = "btns3";
     for (const [a, label, cls] of [["more", "Za dużo", ""], ["ok", "OK", "ok"], ["less", "Za mało", ""]]) {
@@ -133,14 +158,26 @@ function cardEl(c) {
   }
   const val = document.createElement("div"); val.className = "val";
   const minus = document.createElement("button"); minus.textContent = "−0,05";
-  const out = document.createElement("div"); out.className = "v"; out.textContent = fix2(v);
+  const input = document.createElement("input");
+  input.inputMode = "decimal"; input.enterKeyHint = "done"; input.autocomplete = "off";
+  input.placeholder = "l/min"; input.setAttribute("aria-label", `Odczyt ${c.key} w l/min`);
+  input.value = local[c.key] ?? (c.expect != null ? fix2(c.expect) : "");
   const plus = document.createElement("button"); plus.textContent = "+0,05";
-  const step = (d) => { local[c.key] = Math.max(0, Math.round((local[c.key] + d) * 100) / 100); out.textContent = fix2(local[c.key]); };
+  const step = (d) => {
+    const v = Math.max(0, Math.round(((parse(input.value) ?? c.expect ?? 1) + d) * 100) / 100);
+    input.value = local[c.key] = fix2(v);
+  };
+  const save = () => {
+    const v = parse(input.value);
+    if (v == null) return say(new Error("wpisz odczyt, np. 1,05"));
+    answer(c.key, "value", v);
+  };
+  input.oninput = () => { local[c.key] = input.value; };
+  input.onkeydown = (e) => { if (e.key === "Enter") save(); };
   minus.onclick = () => step(-0.05); plus.onclick = () => step(0.05);
-  val.append(minus, out, plus); el.appendChild(val);
+  val.append(minus, input, plus); el.appendChild(val);
   const v2 = document.createElement("div"); v2.className = "val2";
-  for (const [label, f] of [["Nie płynie", () => answer(c.key, "value", 0)],
-                            ["Zapisz odczyt", () => answer(c.key, "value", local[c.key])],
+  for (const [label, f] of [["Nie płynie", () => answer(c.key, "value", 0)], ["Zapisz odczyt", save],
                             ["Powyżej skali", () => answer(c.key, "value", 2.7)]]) {
     const b = document.createElement("button"); b.textContent = label; b.onclick = f;
     if (label === "Zapisz odczyt") b.className = "pri";
@@ -150,31 +187,52 @@ function cardEl(c) {
   return el;
 }
 
+// Only a card that changed is drawn again: a tap never hits a card being replaced, and the card
+// with the reading being typed waits until the typing ends.
+function drawCards(list) {
+  const box = $("cards"), keys = new Set(list.map((c) => c.key));
+  for (const el of [...box.children]) if (!keys.has(el.dataset.key)) el.remove();
+  for (const c of list) {
+    const sig = JSON.stringify([c, S.answered[c.key], S.confirm, S.phase]);
+    const old = [...box.children].find((el) => el.dataset.key === c.key);
+    if (old && (old.dataset.sig === sig || old.contains(document.activeElement))) continue;
+    const el = cardEl(c);
+    el.dataset.key = c.key; el.dataset.sig = sig;
+    if (old) old.replaceWith(el); else box.appendChild(el);
+  }
+}
+
 function render() {
   if (!S) return;
-  const st = S.stop ? ` · przystanek ${S.stop.no}/${S.stop.of}` + (S.stop.q != null ? ` (${fmt(S.stop.q)} l/min)` : "") : "";
-  $("title").textContent = `flowcheck · ${S.kind || "—"} · ${S.phase}${st}`;
-  $("msg").textContent = S.error || S.msg || ""; $("msg").className = "msg" + (S.error ? " err" : "");
-  const running = ["moving", "reading"].includes(S.phase);
-  $("stopBtn").hidden = !running;
-  $("setup").hidden = running;
+  const part = S.kind === "repeat" ? "powtórka" : "przystanek";
+  const st = S.stop ? ` · ${part} ${S.stop.no}/${S.stop.of}` + (S.stop.q != null ? ` (${fmt(S.stop.q)} l/min)` : "") : "";
+  $("title").textContent = [KIND[S.kind], PHASE[S.phase] || S.phase].filter(Boolean).join(" · ") + st;
+  const settle = S.phase === "reading" && S.settle_s > 0 ? ` · pływak ustala się jeszcze ${S.settle_s} s` : "";
+  $("msg").textContent = (S.error || S.msg || "") + settle; $("msg").className = "msg" + (S.error ? " err" : "");
+  $("pump").textContent = S.pump == null ? "" : `· pompa ${Math.round(S.pump)} W`;
+  $("pump").className = "pump small " + (S.pump != null && S.pump < 5 ? "low" : "muted");
+  const asking = ["moving", "reading"].includes(S.phase);
+  $("stopBtn").hidden = !asking;
+  $("setup").hidden = asking || S.phase === "restoring";
   $("confirmBtn").hidden = !(S.phase === "reading" && S.confirm);
-  // the cards are drawn again only when they change, so a tap never hits a card being replaced
-  const sig = JSON.stringify([S.phase, S.confirm, S.cards, S.answered]);
-  if (sig !== lastSig) {
-    lastSig = sig;
-    const box = $("cards"); box.innerHTML = "";
-    if (running) for (const c of S.cards || []) box.appendChild(cardEl(c));
-  }
+  drawCards(asking ? S.cards || [] : []);
   $("log").textContent = (S.log || []).slice().reverse().join("\n");
+  const sum = S.summary || [];
+  $("summary").hidden = !sum.length;
+  $("sumTable").innerHTML = "<tr><th>pętla</th><th>odczyty</th><th>średnia</th><th>sd</th></tr>" +
+    sum.map((r) => `<tr><td>${r.name}<br><span class="muted">${r.key} · ${r.counts} imp</span></td>
+      <td>${r.values.map(fmt).join(" · ")}</td><td>${fmt(r.mean)}</td>
+      <td class="${r.ok ? "good" : "bad"}">${fmt(r.sd)}</td></tr>`).join("");
   const fits = S.fits || [];
   $("fits").hidden = !fits.length;
+  if (JSON.stringify(fits) === fitSig) return;
+  fitSig = JSON.stringify(fits);
   $("fitTable").innerHTML = "<tr><th>pętla</th><th>offset</th><th>wzm.</th><th>n</th><th></th></tr>" +
     fits.map((f) => `<tr><td>${f.name}<br><span class="muted">${f.key}</span></td><td>${f.offset} <span class="muted">(${f.was.offset})</span></td>
       <td>${f.gain} <span class="muted">(${f.was.gain})</span></td><td>${f.n}</td>
-      <td><button data-k="${f.key}">Zapisz</button></td></tr>`).join("");
+      <td><button data-k="${f.key}" ${f.applied ? "disabled" : ""}>${f.applied ? "Zapisane" : "Zapisz"}</button></td></tr>`).join("");
   for (const b of $("fitTable").querySelectorAll("button"))
-    b.onclick = async () => { try { await api("/api/apply-fit", {key: b.dataset.k}); b.disabled = true; } catch (e) { say(e); } };
+    b.onclick = async () => { try { await api("/api/apply-fit", {key: b.dataset.k}); poll(); } catch (e) { say(e); } };
 }
 
 async function poll() {
@@ -183,14 +241,16 @@ async function poll() {
 
 async function setup() {
   try { presets = await api("/api/presets"); } catch (e) { say(e); return; }
-  $("mode").innerHTML = presets.stops.map((m) => `<option>${m}</option>`).join("");
+  $("howto").textContent = `Zawory ustawia sterownik, ty tylko odczytujesz. Pozostałe pętle stoją w tym czasie na ${presets.others} %, po sesji każdy zawór wraca na swój cel.`;
+  $("mode").innerHTML = presets.stops.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
   const g = $("groups"); g.innerHTML = "";
   for (const grp of presets.groups) {
     const b = document.createElement("button"); b.className = "pri"; b.textContent = `Sprawdź ${grp.label}`;
     b.onclick = () => start({kind: "check", loops: grp.loops, mode: $("mode").value}); g.appendChild(b);
   }
   const all = presets.groups.flatMap((x) => x.loops);
-  $("loopPick").innerHTML = all.map((k) => `<label><input type="checkbox" value="${k}"> ${k}</label>`).join(" ");
+  $("loopPick").innerHTML = all.map((k) =>
+    `<label><input type="checkbox" value="${k}" ${presets.pick.includes(k) ? "checked" : ""}> ${k}</label>`).join(" ");
   $("houseBtn").onclick = () => start({kind: "house", loops: all, q: 1.0});
   $("repeatBtn").onclick = () => {
     const pick = [...$("loopPick").querySelectorAll("input:checked")].map((i) => i.value);
