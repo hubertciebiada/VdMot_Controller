@@ -56,6 +56,111 @@ fn id_with_crc(seed: u8) -> OneWireId {
     id
 }
 
+// ================================================================ flow layer (Rust 2.2.8)
+
+#[test]
+fn flow_mask_a_flow_valve_keeps_its_desired_target_without_a_push_and_is_synced_by_any_read_back() {
+    let mut m = synced(0x003, 40);
+    assert_eq!(m.flow_mask(), 0);
+    m.set_flow_mask(0x001);
+    assert_eq!(m.flow_mask(), 0x001);
+    // A new target: kept, no stgtp for valve 0; valve 1 is delivered as before.
+    assert!(m.set_desired_target(0, 70, TargetSource::Web, 100));
+    assert!(m.set_desired_target(1, 70, TargetSource::Web, 100));
+    assert_eq!(m.valve(0).desired, 70);
+    assert_eq!(m.valve(0).sync, TargetSync::Pending);
+    assert_eq!(m.next_target_push(5000), Some((1, 70)));
+    assert_eq!(m.next_target_push(10_000), None);
+    // The STM target of the flow valve is the fallback (15): the read-back does not compare.
+    m.apply_valve_ex(&ex_v3(0, 15, 0), 200);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    assert_eq!(m.valve(0).stm_target, 15);
+    assert!(m.valve(0).stm_target_known);
+    assert_eq!(m.valve(0).desired, 70);
+    assert_eq!(m.valve(0).health & HEALTH_TARGET_UNCONFIRMED, 0);
+    assert!(!m.is_busy(0));
+    assert_eq!(m.next_target_push(20_000), None);
+    // gtgtp read-backs do the same.
+    m.apply_target(&target(0, 15), 300);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    // The mask again: nothing changes.
+    m.set_flow_mask(0x001);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    // An STM reboot: the flow valve goes Pending but is never pushed; the read-back syncs it.
+    m.on_stm_rebooted(400);
+    assert_eq!(m.valve(0).sync, TargetSync::Pending);
+    assert!(m.valve(0).force_push);
+    assert_eq!(m.next_target_push(30_000), Some((1, 70)));
+    assert_eq!(m.next_target_push(40_000), None);
+    m.apply_valve_ex(&ex_v3(0, 15, 0), 500);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    assert_eq!(m.valve(0).desired, 70);
+}
+
+#[test]
+fn flow_mask_no_stm_target_is_adopted_for_a_flow_valve_without_a_desired_target() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x001);
+    m.set_flow_mask(0x001);
+    m.apply_valve_ex(&ex_v3(0, 15, 0), 100);
+    assert!(!m.valve(0).desired_valid);
+    assert_eq!(m.valve(0).sync, TargetSync::Unknown);
+    assert!(m.valve(0).stm_target_known);
+    assert_eq!(m.next_target_push(5000), None);
+    // Without the mask the same read-back adopts the STM target.
+    m.set_flow_mask(0);
+    m.apply_valve_ex(&ex_v3(0, 15, 0), 200);
+    assert!(m.valve(0).desired_valid);
+    assert_eq!(m.valve(0).desired, 15);
+    assert_eq!(m.valve(0).source, TargetSource::Stm);
+}
+
+#[test]
+fn flow_mask_a_valve_that_leaves_the_mask_is_pushed_once_with_its_desired_target() {
+    let mut m = synced(0x001, 40);
+    m.set_flow_mask(0x001);
+    assert!(m.set_desired_target(0, 70, TargetSource::Mqtt, 100));
+    m.apply_valve_ex(&ex_v3(0, 15, 0), 200);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    let rev = m.valve(0).revision;
+    m.set_flow_mask(0);
+    assert_eq!(m.flow_mask(), 0);
+    assert_eq!(m.valve(0).sync, TargetSync::Pending);
+    assert!(m.valve(0).force_push);
+    assert_eq!(m.valve(0).push_attempts, 0);
+    assert_ne!(m.valve(0).revision, rev);
+    assert_eq!(m.next_target_push(5000), Some((0, 70)));
+    m.on_target_ack(0, 5001);
+    m.apply_valve_ex(&ex_v3(0, 70, 0), 5100);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    // Leaving the mask without a desired target changes nothing.
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x001);
+    m.set_flow_mask(0x001);
+    m.set_flow_mask(0);
+    assert_eq!(m.valve(0).sync, TargetSync::Unknown);
+    assert!(!m.valve(0).force_push);
+}
+
+#[test]
+fn flow_mask_an_assembly_of_a_flow_valve_is_still_delivered_by_staop() {
+    let mut m = synced(0x001, 40);
+    m.set_assembly_via_staop(true);
+    m.set_flow_mask(0x001);
+    m.set_assembly(0, 100);
+    assert_eq!(m.valve(0).source, TargetSource::Assembly);
+    assert_eq!(m.valve(0).sync, TargetSync::AwaitAck);
+    m.on_assembly_ack(0, 200);
+    assert_eq!(m.valve(0).sync, TargetSync::AwaitVerify);
+    m.apply_valve_ex(&ex_v3(0, 100, STM_FLAG_ASSEMBLY), 300);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    // A lost assembly hold is not re-pushed for a flow valve: the layer takes over.
+    m.apply_valve_ex(&ex_v3(0, 15, 0), 400);
+    assert_eq!(m.valve(0).sync, TargetSync::Synced);
+    assert_eq!(m.next_assembly_push(5000), None);
+    assert_eq!(m.next_target_push(5000), None);
+}
+
 /// Valves in `mask` active and known, desired `pos` delivered and verified.
 fn synced(mask: u16, pos: u8) -> ValveModel {
     let mut m = ValveModel::default();
