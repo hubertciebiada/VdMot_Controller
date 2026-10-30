@@ -830,10 +830,8 @@ pub struct FlowView {
 
 /// The step of a positioning (FlowPositionFailed arg1).
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
-    #[default]
-    None = 0,
     /// `stgtp fallbackPct`
     Fallback = 1,
     /// the move to the reference end stop
@@ -892,32 +890,73 @@ pub struct FlowInputs {
     pub lease_expired: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct FlowValve {
-    /// Unknown, Positioning, Held or Failed (Off and Unsupported are derived)
-    state: FlowState,
+/// A request of a positioning that was handed out: its result is awaited (since `since_ms`, at
+/// most [`FLOW_REQ_TIMEOUT_MS`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Sent {
+    req: FlowRequest,
+    since_ms: u32,
+    /// move_seq of the valve when the request was handed out
+    seq_at: u32,
+}
+
+/// What a running positioning waits for before its next request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Await {
+    /// nothing: the next request goes out when the valve is free
+    Nothing,
+    /// the result of the request that was handed out
+    Result(Sent),
+    /// the STM accepted a move: its record (another move_seq than `seq_at`, the direction and
+    /// the requested pulses of the move), since `since_ms` at most [`MOVE_TIMEOUT_MS`]
+    Record {
+        dir: MoveDir,
+        counts: u16,
+        seq_at: u32,
+        since_ms: u32,
+    },
+    /// the next request waits until `until_ms` (`calib`: or until a calibration of the valve
+    /// ended)
+    Retry { until_ms: u32, calib: bool },
+}
+
+/// A running positioning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Sequence {
     step: Step,
-    /// the request of this valve that was handed out: its result is awaited (since
-    /// `req_since_ms`, at most [`FLOW_REQ_TIMEOUT_MS`])
-    req: Option<FlowRequest>,
-    req_since_ms: u32,
-    /// the STM accepted a move: its record is awaited
-    move_pending: bool,
-    move_dir: MoveDir,
-    move_req: u16,
-    /// move_seq of the valve when the move was handed out
-    move_seq_at: u32,
-    move_since_ms: u32,
+    awaiting: Await,
     /// move_seq of the valve when the record of the last move of the sequence arrived
     step_seq: u32,
     /// moves to the reference end stop that ended before it
     ref_attempts: u8,
     busy_retries: u16,
-    /// the next request of the sequence waits until `wait_until_ms`
-    waiting: bool,
-    wait_until_ms: u32,
-    /// ... or until a calibration of the valve ended
-    wait_calib: bool,
+    /// the curve changed while it ran: another positioning follows
+    restart: bool,
+}
+
+/// What the layer does on a valve (Off and Unsupported are derived from the configuration).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// the position is not held: a positioning follows when the valve is free (also a disabled
+    /// valve with nothing to release)
+    Unknown,
+    /// the moves of a positioning run
+    Positioning(Sequence),
+    /// the STM keeps the position, taken at `move_seq`, since `at_ms`
+    Held { move_seq: u32, at_ms: u32 },
+    /// the last positioning failed at `at_ms`
+    Failed { at_ms: u32 },
+    /// the layer was disabled while the STM may keep the position: `skeep 0` goes out once
+    /// the request of the positioning still in flight (handed out at `in_flight`) has its
+    /// result
+    Release { in_flight: Option<u32> },
+    /// the layer was disabled: the result of `skeep 0` (handed out at `since_ms`) is awaited
+    Releasing { since_ms: u32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FlowValve {
+    phase: Phase,
     calib_seen: bool,
     /// the goal of the positioning
     target_counts: u16,
@@ -925,11 +964,9 @@ struct FlowValve {
     /// the desired target the positioning serves (served_valid)
     served_desired: u8,
     served_valid: bool,
-    /// the position the STM keeps (held_valid), the move_seq it was taken at and when
+    /// the position the STM keeps (held_valid)
     held_counts: u16,
     held_valid: bool,
-    held_seq: u32,
-    held_at_ms: u32,
     /// the final move of the last positioning (last_valid)
     last_valid: bool,
     last_ms: u32,
@@ -938,33 +975,14 @@ struct FlowValve {
     started_once: bool,
     /// `stgtp fallbackPct` goes before the next positioning (unless the STM target equals it)
     needs_fallback: bool,
-    /// `skeep 0` goes out (the layer was disabled)
-    release_pending: bool,
     /// a counts request arrived while a positioning ran
     pending_raw: Option<u16>,
-    /// the curve changed while a positioning ran: another one follows
-    restart_pending: bool,
-    failed_ms: u32,
 }
 
 impl FlowValve {
     /// A valve the layer knows nothing about: unknown, the fallback target due.
     const FRESH: Self = Self {
-        state: FlowState::Unknown,
-        step: Step::None,
-        req: None,
-        req_since_ms: 0,
-        move_pending: false,
-        move_dir: MoveDir::Open,
-        move_req: 0,
-        move_seq_at: 0,
-        move_since_ms: 0,
-        step_seq: 0,
-        ref_attempts: 0,
-        busy_retries: 0,
-        waiting: false,
-        wait_until_ms: 0,
-        wait_calib: false,
+        phase: Phase::Unknown,
         calib_seen: false,
         target_counts: 0,
         target_pct: 0,
@@ -972,19 +990,51 @@ impl FlowValve {
         served_valid: false,
         held_counts: 0,
         held_valid: false,
-        held_seq: 0,
-        held_at_ms: 0,
         last_valid: false,
         last_ms: 0,
         last_peak: 0,
         last_start_ms: 0,
         started_once: false,
         needs_fallback: true,
-        release_pending: false,
         pending_raw: None,
-        restart_pending: false,
-        failed_ms: 0,
     };
+
+    /// The state of the valve while the layer runs on it.
+    fn state(&self) -> FlowState {
+        match self.phase {
+            Phase::Positioning(_) => FlowState::Positioning,
+            Phase::Held { .. } => FlowState::Held,
+            Phase::Failed { .. } => FlowState::Failed,
+            Phase::Unknown | Phase::Release { .. } | Phase::Releasing { .. } => FlowState::Unknown,
+        }
+    }
+
+    /// When the request of the valve whose result is awaited was handed out.
+    fn sent_since(&self) -> Option<u32> {
+        match self.phase {
+            Phase::Positioning(Sequence {
+                awaiting: Await::Result(sent),
+                ..
+            }) => Some(sent.since_ms),
+            Phase::Release { in_flight } => in_flight,
+            Phase::Releasing { since_ms } => Some(since_ms),
+            Phase::Unknown | Phase::Positioning(_) | Phase::Held { .. } | Phase::Failed { .. } => {
+                None
+            }
+        }
+    }
+
+    /// A request of the valve or a move the STM accepted is in flight.
+    fn in_flight(&self) -> bool {
+        self.sent_since().is_some()
+            || matches!(
+                self.phase,
+                Phase::Positioning(Sequence {
+                    awaiting: Await::Record { .. },
+                    ..
+                })
+            )
+    }
 }
 
 /// Pulses the move to the closed reference adds to the believed position.
@@ -1071,21 +1121,26 @@ impl FlowLayer {
                 if new.enabled {
                     *fv = FlowValve::FRESH;
                 } else {
-                    let release = fv.state != FlowState::Unknown || fv.req.is_some();
+                    // The STM may keep a valve the layer ran on: `skeep 0` goes out, after the
+                    // result of a request still in flight. (Only Unknown while the STM does
+                    // not support the layer: a change of the support forgets every valve.)
+                    let phase = match fv.phase {
+                        Phase::Unknown => Phase::Unknown,
+                        _ => Phase::Release {
+                            in_flight: fv.sent_since(),
+                        },
+                    };
                     *fv = FlowValve {
-                        release_pending: release && self.supported,
-                        req: fv.req,
-                        req_since_ms: fv.req_since_ms,
+                        phase,
                         needs_fallback: false,
                         ..FlowValve::FRESH
                     };
                 }
                 self.dirty = true;
             } else if new.enabled && cur.curve_key() != new.curve_key() {
-                if fv.state == FlowState::Positioning {
-                    fv.restart_pending = true;
-                } else {
-                    fv.state = FlowState::Unknown;
+                match &mut fv.phase {
+                    Phase::Positioning(seq) => seq.restart = true,
+                    phase => *phase = Phase::Unknown,
                 }
                 self.dirty = true;
             }
@@ -1140,7 +1195,7 @@ impl FlowLayer {
     /// the fallback target first.
     pub fn on_stm_rebooted(&mut self, log: &mut dyn FnMut(&Event)) {
         for (i, fv) in self.v.iter().enumerate() {
-            if self.active(i) && fv.state == FlowState::Held {
+            if self.active(i) && matches!(fv.phase, Phase::Held { .. }) {
                 log(&event(EventCode::FlowHoldLost, i as u8, 0, 0, b""));
             }
         }
@@ -1154,7 +1209,7 @@ impl FlowLayer {
             && self
                 .v
                 .get(i)
-                .is_some_and(|fv| fv.state == FlowState::Positioning)
+                .is_some_and(|fv| matches!(fv.phase, Phase::Positioning(_)))
     }
 
     /// A positioning was handed out or completed: the snapshot is due.
@@ -1184,7 +1239,7 @@ impl FlowLayer {
         let counts = counts.min(FLOW_COUNTS_MAX);
         fv.served_desired = desired.unwrap_or(0);
         fv.served_valid = desired.is_some();
-        if fv.state == FlowState::Positioning {
+        if matches!(fv.phase, Phase::Positioning(_)) {
             fv.pending_raw = Some(counts);
         } else {
             fv.pending_raw = None;
@@ -1215,48 +1270,50 @@ impl FlowLayer {
             // What the model shows of a valve may predate the loss: a sequence between its
             // moves starts again from the end stop.
             for fv in &mut self.v {
-                if fv.req.is_none() && !fv.move_pending && after_move(fv.step) {
-                    rereference(fv);
+                if let Phase::Positioning(seq) = &mut fv.phase {
+                    if matches!(seq.awaiting, Await::Nothing | Await::Retry { .. })
+                        && after_move(seq.step)
+                    {
+                        rereference(seq, &mut fv.held_valid);
+                    }
                 }
             }
         }
         for fv in &mut self.v {
             // A request whose result never comes (another stgtp of the valve took its place
             // in the queue, the queue was cleared) must not stall every valve.
-            if fv.req.is_some() && elapsed_ms(now_ms, fv.req_since_ms) >= FLOW_REQ_TIMEOUT_MS {
+            if fv
+                .sent_since()
+                .is_some_and(|since| elapsed_ms(now_ms, since) >= FLOW_REQ_TIMEOUT_MS)
+            {
                 requeue(fv, now_ms);
             }
         }
-        if self.v.iter().any(|fv| fv.req.is_some() || fv.move_pending) {
+        if self.v.iter().any(FlowValve::in_flight) {
             return None;
         }
         let cursor = self.cursor;
         for i in (cursor..N).chain(0..cursor) {
             let valve = i as u8;
-            if self.v[i].release_pending && inp.link_up {
-                let req = FlowRequest::Keep { valve, on: false };
-                self.v[i].release_pending = false;
-                self.v[i].req = Some(req);
-                self.v[i].req_since_ms = now_ms;
+            if matches!(self.v[i].phase, Phase::Release { in_flight: None }) && inp.link_up {
+                self.v[i].phase = Phase::Releasing { since_ms: now_ms };
                 self.dirty = true;
-                return Some(req);
+                return Some(FlowRequest::Keep { valve, on: false });
             }
             if !self.active(i) {
                 continue;
             }
             let s = model.valve(valve);
             let (fv, cfg) = (&mut self.v[i], &self.cfg[i]);
-            let req = if fv.state == FlowState::Positioning {
+            let req = if matches!(fv.phase, Phase::Positioning(_)) {
                 continue_sequence(fv, cfg, s, valve, inp, now_ms)
             } else {
                 start_if_due(fv, cfg, s, valve, inp, now_ms)
             };
-            if let Some(req) = req {
-                fv.req = Some(req);
-                fv.req_since_ms = now_ms;
+            if req.is_some() {
                 self.cursor = (i + 1) % N;
                 self.dirty = true;
-                return Some(req);
+                return req;
             }
         }
         None
@@ -1278,49 +1335,71 @@ impl FlowLayer {
         now_ms: u32,
         log: &mut dyn FnMut(&Event),
     ) {
-        let i = usize::from(valve);
-        let Some(fv) = self.v.get_mut(i) else {
+        let Some(fv) = self.v.get_mut(usize::from(valve)) else {
             return;
         };
-        let Some(req) = fv.req.take() else {
-            return;
+        let (mut seq, sent) = match fv.phase {
+            Phase::Positioning(
+                seq @ Sequence {
+                    awaiting: Await::Result(sent),
+                    ..
+                },
+            ) => (seq, sent),
+            // A disabled valve: its release goes out next, or it is done.
+            Phase::Release { in_flight: Some(_) } => {
+                fv.phase = Phase::Release { in_flight: None };
+                self.dirty = true;
+                return;
+            }
+            Phase::Releasing { .. } => {
+                fv.phase = Phase::Unknown;
+                self.dirty = true;
+                return;
+            }
+            _ => return,
         };
         self.dirty = true;
-        if matches!(req, FlowRequest::Keep { on: false, .. }) || !self.active(i) {
-            return;
-        }
-        let fv = &mut self.v[i];
-        if fv.state != FlowState::Positioning {
-            return;
-        }
-        match (req, outcome) {
+        seq.awaiting = Await::Nothing;
+        fv.phase = match (sent.req, outcome) {
             (FlowRequest::SetTarget { .. }, FlowOutcome::Ok) => {
                 fv.needs_fallback = false;
-                fv.step = Step::Reference;
+                seq.step = Step::Reference;
+                Phase::Positioning(seq)
             }
             (FlowRequest::Move { dir, counts, .. }, FlowOutcome::Ok) => {
-                fv.move_pending = true;
-                fv.move_dir = dir;
-                fv.move_req = counts;
-                fv.move_since_ms = now_ms;
+                seq.awaiting = Await::Record {
+                    dir,
+                    counts,
+                    seq_at: sent.seq_at,
+                    since_ms: now_ms,
+                };
+                Phase::Positioning(seq)
             }
             (FlowRequest::Move { .. }, FlowOutcome::Rejected(2)) => {
-                fv.busy_retries = fv.busy_retries.saturating_add(1);
-                if fv.busy_retries > BUSY_RETRIES_MAX {
-                    fail(fv, valve, 2, b"busy", now_ms, log);
+                seq.busy_retries = seq.busy_retries.saturating_add(1);
+                if seq.busy_retries > BUSY_RETRIES_MAX {
+                    fail(fv, seq.step, valve, 2, b"busy", now_ms, log)
                 } else {
-                    wait(fv, BUSY_RETRY_MS, false, now_ms);
+                    seq.awaiting = wait(BUSY_RETRY_MS, false, now_ms);
+                    Phase::Positioning(seq)
                 }
             }
             (FlowRequest::Move { .. }, FlowOutcome::Rejected(3)) => {
-                wait(fv, CALIB_RETRY_MS, true, now_ms);
+                seq.awaiting = wait(CALIB_RETRY_MS, true, now_ms);
+                Phase::Positioning(seq)
             }
-            (FlowRequest::Keep { .. }, FlowOutcome::Ok) => held(fv, valve, now_ms, log),
-            (_, FlowOutcome::Rejected(code)) => {
-                fail(fv, valve, i32::from(code), b"rejected", now_ms, log);
-            }
-            (_, FlowOutcome::NoReply) => fail(fv, valve, -1, b"no reply", now_ms, log),
-        }
+            (FlowRequest::Keep { .. }, FlowOutcome::Ok) => held(fv, &seq, valve, now_ms, log),
+            (_, FlowOutcome::Rejected(code)) => fail(
+                fv,
+                seq.step,
+                valve,
+                i32::from(code),
+                b"rejected",
+                now_ms,
+                log,
+            ),
+            (_, FlowOutcome::NoReply) => fail(fv, seq.step, valve, -1, b"no reply", now_ms, log),
+        };
     }
 
     /// Once per second: the end of an accepted move (its record arrived: direction and
@@ -1339,33 +1418,44 @@ impl FlowLayer {
                 fv.calib_seen = true;
             } else if fv.calib_seen {
                 fv.calib_seen = false;
-                if fv.wait_calib {
-                    fv.waiting = false;
-                    fv.wait_calib = false;
+                if let Phase::Positioning(seq) = &mut fv.phase {
+                    if let Await::Retry { calib: true, .. } = seq.awaiting {
+                        seq.awaiting = Await::Nothing;
+                    }
                 }
             }
-            match fv.state {
-                FlowState::Positioning if fv.move_pending => {
+            match fv.phase {
+                Phase::Positioning(
+                    seq @ Sequence {
+                        awaiting:
+                            Await::Record {
+                                dir,
+                                counts,
+                                seq_at,
+                                since_ms,
+                            },
+                        ..
+                    },
+                ) => {
                     let moving = s.status == STATUS_OPENING || s.status == STATUS_CLOSING;
-                    let record = s.move_seq != fv.move_seq_at
-                        && s.last_move.dir == fv.move_dir
-                        && s.last_move.requested_counts == u32::from(fv.move_req);
+                    let record = s.move_seq != seq_at
+                        && s.last_move.dir == dir
+                        && s.last_move.requested_counts == u32::from(counts);
                     if record && !moving {
-                        fv.move_pending = false;
-                        move_done(fv, &self.cfg[i], s, valve, now_ms, log);
+                        fv.phase = move_done(fv, seq, &self.cfg[i], s, valve, now_ms, log);
                         self.dirty = true;
-                    } else if elapsed_ms(now_ms, fv.move_since_ms) >= MOVE_TIMEOUT_MS {
-                        fail(fv, valve, -2, b"timeout", now_ms, log);
+                    } else if elapsed_ms(now_ms, since_ms) >= MOVE_TIMEOUT_MS {
+                        fv.phase = fail(fv, seq.step, valve, -2, b"timeout", now_ms, log);
                         self.dirty = true;
                     }
                 }
-                FlowState::Held => {
-                    let since = elapsed_ms(s.last_seen_ms, fv.held_at_ms);
+                Phase::Held { move_seq, at_ms } => {
+                    let since = elapsed_ms(s.last_seen_ms, at_ms);
                     let fresh = (1..0x8000_0000).contains(&since);
-                    let lost = (fresh && (s.stm_flags & STM_FLAG_SVC_KEEP) == 0)
-                        || s.move_seq != fv.held_seq;
+                    let lost =
+                        (fresh && (s.stm_flags & STM_FLAG_SVC_KEEP) == 0) || s.move_seq != move_seq;
                     if lost {
-                        fv.state = FlowState::Unknown;
+                        fv.phase = Phase::Unknown;
                         fv.held_valid = false;
                         log(&event(
                             EventCode::FlowHoldLost,
@@ -1393,7 +1483,7 @@ impl FlowLayer {
         } else if !self.supported {
             FlowState::Unsupported
         } else {
-            fv.state
+            fv.state()
         };
         let running = state != FlowState::Off && state != FlowState::Unsupported;
         let known = running && fv.held_valid;
@@ -1425,13 +1515,6 @@ fn event(code: EventCode, valve: u8, a1: i32, a2: i32, text: &[u8]) -> Event {
 /// Starts the moves of a positioning: the fallback target first when it is due and the STM's
 /// target is not it already, else the move to the reference end stop.
 fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, now_ms: u32) {
-    fv.state = FlowState::Positioning;
-    fv.ref_attempts = 0;
-    fv.busy_retries = 0;
-    fv.waiting = false;
-    fv.wait_calib = false;
-    fv.move_pending = false;
-    fv.restart_pending = false;
     fv.last_start_ms = now_ms;
     fv.started_once = true;
     // The fallback target goes out when the STM's target is known to be another one (another
@@ -1440,12 +1523,20 @@ fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, 
         Some(s) if s.stm_target_known => s.stm_target != cfg.fallback_pct,
         _ => fv.needs_fallback,
     };
-    if send_fallback {
-        fv.step = Step::Fallback;
+    let step = if send_fallback {
+        Step::Fallback
     } else {
         fv.needs_fallback = false;
-        fv.step = Step::Reference;
-    }
+        Step::Reference
+    };
+    fv.phase = Phase::Positioning(Sequence {
+        step,
+        awaiting: Await::Nothing,
+        step_seq: 0,
+        ref_attempts: 0,
+        busy_retries: 0,
+        restart: false,
+    });
 }
 
 /// Starts a positioning to the desired target `pct`.
@@ -1481,8 +1572,8 @@ fn start_if_due(
     }
     let desired = s.desired;
     let same = fv.served_valid && desired == fv.served_desired;
-    match fv.state {
-        FlowState::Held => {
+    match fv.phase {
+        Phase::Held { .. } => {
             if same {
                 return None;
             }
@@ -1498,7 +1589,7 @@ fn start_if_due(
                 }
             }
         }
-        FlowState::Failed if same && elapsed_ms(now_ms, fv.failed_ms) < FAILED_RETRY_MS => {
+        Phase::Failed { at_ms } if same && elapsed_ms(now_ms, at_ms) < FAILED_RETRY_MS => {
             return None;
         }
         _ => {}
@@ -1509,21 +1600,22 @@ fn start_if_due(
 
 /// Open reference: the pulses of the final closing move from the open end stop, the stroke
 /// minus the target counts (0: the target is the open end stop).
-fn final_close(fv: &FlowValve, cfg: &FlowConfig) -> u16 {
-    cfg.stroke_counts.saturating_sub(fv.target_counts)
+fn final_close(target_counts: u16, cfg: &FlowConfig) -> u16 {
+    cfg.stroke_counts.saturating_sub(target_counts)
 }
 
 /// The direction and threshold of the move to the reference end stop: closed for a target of
 /// 0 and the closed reference, open for the open one.
-fn reference_move(fv: &FlowValve, cfg: &FlowConfig) -> (MoveDir, u8) {
-    if fv.target_counts == 0 || cfg.ref_side == RefSide::Closed {
+fn reference_move(target_counts: u16, cfg: &FlowConfig) -> (MoveDir, u8) {
+    if target_counts == 0 || cfg.ref_side == RefSide::Closed {
         (MoveDir::Close, cfg.ref_ma)
     } else {
         (MoveDir::Open, cfg.open_ma)
     }
 }
 
-/// The next request of a running positioning, None while it waits.
+/// The next request of a running positioning (its result is awaited from now on), None while
+/// it waits.
 fn continue_sequence(
     fv: &mut FlowValve,
     cfg: &FlowConfig,
@@ -1532,58 +1624,72 @@ fn continue_sequence(
     inp: FlowInputs,
     now_ms: u32,
 ) -> Option<FlowRequest> {
-    if !inp.link_up || fv.move_pending {
+    let Phase::Positioning(seq) = &mut fv.phase else {
+        return None;
+    };
+    if !inp.link_up {
         return None;
     }
-    if fv.waiting {
-        if elapsed_ms(now_ms, fv.wait_until_ms) < 0x8000_0000 {
-            fv.waiting = false;
-            fv.wait_calib = false;
+    if let Await::Retry { until_ms, .. } = seq.awaiting {
+        if elapsed_ms(now_ms, until_ms) < 0x8000_0000 {
+            seq.awaiting = Await::Nothing;
         } else {
             return None;
         }
     }
-    if fv.step == Step::Fallback {
-        return Some(FlowRequest::SetTarget {
-            valve,
-            pct: cfg.fallback_pct,
-        });
-    }
-    if after_move(fv.step) && (s.move_seq != fv.step_seq || (s.stm_flags & STM_FLAG_SVC_HOLD) == 0)
+    if after_move(seq.step)
+        && (s.move_seq != seq.step_seq || (s.stm_flags & STM_FLAG_SVC_HOLD) == 0)
     {
         // The valve left where the last move put it while the step waited (a calibration, the
         // lease, a hold that ran out, another move).
-        rereference(fv);
+        rereference(seq, &mut fv.held_valid);
     }
-    if fv.step == Step::Keep {
-        return Some(FlowRequest::Keep { valve, on: true });
-    }
-    if fv.step == Step::None || !can_move(s, inp) {
-        return None;
-    }
-    let (dir, counts, max_ma) = match fv.step {
-        Step::Reference => {
-            let (dir, ma) = reference_move(fv, cfg);
-            (dir, distinct(reference_counts(fv, s, dir), s), ma)
-        }
-        Step::WarmUp => (MoveDir::Open, distinct(WARM_UP_COUNTS, s), cfg.open_ma),
-        Step::WarmClose => (
-            MoveDir::Close,
-            distinct(WARM_UP_COUNTS + CLOSE_EXTRA_COUNTS, s),
-            cfg.ref_ma,
-        ),
-        _ => match cfg.ref_side {
-            RefSide::Closed => (MoveDir::Open, fv.target_counts, cfg.open_ma),
-            RefSide::Open => (MoveDir::Close, final_close(fv, cfg), cfg.ref_ma),
+    let req = match seq.step {
+        Step::Fallback => FlowRequest::SetTarget {
+            valve,
+            pct: cfg.fallback_pct,
         },
+        Step::Keep => FlowRequest::Keep { valve, on: true },
+        step => {
+            if !can_move(s, inp) {
+                return None;
+            }
+            let (dir, counts, max_ma) = match step {
+                Step::Reference => {
+                    let (dir, ma) = reference_move(fv.target_counts, cfg);
+                    let held = fv.held_valid.then_some(fv.held_counts);
+                    let n = reference_counts(seq.ref_attempts, held, s, dir);
+                    (dir, distinct(n, s), ma)
+                }
+                Step::WarmUp => (MoveDir::Open, distinct(WARM_UP_COUNTS, s), cfg.open_ma),
+                Step::WarmClose => (
+                    MoveDir::Close,
+                    distinct(WARM_UP_COUNTS + CLOSE_EXTRA_COUNTS, s),
+                    cfg.ref_ma,
+                ),
+                _ => match cfg.ref_side {
+                    RefSide::Closed => (MoveDir::Open, fv.target_counts, cfg.open_ma),
+                    RefSide::Open => (
+                        MoveDir::Close,
+                        final_close(fv.target_counts, cfg),
+                        cfg.ref_ma,
+                    ),
+                },
+            };
+            FlowRequest::Move {
+                valve,
+                dir,
+                counts,
+                max_ma,
+            }
+        }
     };
-    fv.move_seq_at = s.move_seq;
-    Some(FlowRequest::Move {
-        valve,
-        dir,
-        counts,
-        max_ma,
-    })
+    seq.awaiting = Await::Result(Sent {
+        req,
+        since_ms: now_ms,
+        seq_at: s.move_seq,
+    });
+    Some(req)
 }
 
 /// The step continues where the last move of the sequence left the valve.
@@ -1595,27 +1701,24 @@ fn after_move(step: Step) -> bool {
 }
 
 /// The moves start again from the reference end stop, whose distance is unknown now.
-fn rereference(fv: &mut FlowValve) {
-    fv.step = Step::Reference;
-    fv.ref_attempts = 0;
-    fv.held_valid = false;
+fn rereference(seq: &mut Sequence, held_valid: &mut bool) {
+    seq.step = Step::Reference;
+    seq.ref_attempts = 0;
+    *held_valid = false;
 }
 
 /// Pulses of the move to the reference end stop: closing, the held position plus
 /// [`CLOSE_EXTRA_COUNTS`] (the stroke when the position is unknown); opening, the whole range;
 /// [`REF_RETRY_COUNTS`] for a further attempt.
-fn reference_counts(fv: &FlowValve, s: &ValveState, dir: MoveDir) -> u16 {
-    if fv.ref_attempts > 0 {
+fn reference_counts(attempts: u8, held: Option<u16>, s: &ValveState, dir: MoveDir) -> u16 {
+    if attempts > 0 {
         return REF_RETRY_COUNTS;
     }
     if dir == MoveDir::Open {
         return FLOW_COUNTS_MAX;
     }
-    if fv.held_valid {
-        return fv
-            .held_counts
-            .saturating_add(CLOSE_EXTRA_COUNTS)
-            .min(FLOW_COUNTS_MAX);
+    if let Some(held) = held {
+        return held.saturating_add(CLOSE_EXTRA_COUNTS).min(FLOW_COUNTS_MAX);
     }
     let stroke = s.open_count.max(s.close_count);
     if stroke == 0 {
@@ -1641,39 +1744,49 @@ fn distinct(n: u16, s: &ValveState) -> u16 {
 /// The record of the accepted move arrived: the next step, or the failure.
 fn move_done(
     fv: &mut FlowValve,
+    mut seq: Sequence,
     cfg: &FlowConfig,
     s: &ValveState,
     valve: u8,
     now_ms: u32,
     log: &mut dyn FnMut(&Event),
-) {
+) -> Phase {
     let stop = s.last_move.stop;
     let at_end = matches!(stop, StopReason::EndStop | StopReason::EarlyEndStop);
     let settled = at_end || stop == StopReason::Target;
-    fv.step_seq = s.move_seq;
-    match fv.step {
+    seq.awaiting = Await::Nothing;
+    seq.step_seq = s.move_seq;
+    match seq.step {
         Step::Reference | Step::WarmClose if at_end => {
             if fv.target_counts == 0 {
                 // closed: the reference close is the final move
                 fv.held_counts = 0;
-                finish_move(fv, s);
-            } else if cfg.ref_side == RefSide::Open && final_close(fv, cfg) == 0 {
+                finish_move(fv, &mut seq, s);
+            } else if cfg.ref_side == RefSide::Open && final_close(fv.target_counts, cfg) == 0 {
                 // the target is the open end stop itself: nothing to close
                 fv.held_counts = cfg.stroke_counts;
-                finish_move(fv, s);
-            } else if fv.step == Step::Reference && fv.pre_close(cfg) {
-                fv.step = Step::WarmUp;
+                finish_move(fv, &mut seq, s);
+            } else if seq.step == Step::Reference && fv.pre_close(cfg) {
+                seq.step = Step::WarmUp;
             } else {
-                fv.step = Step::Final;
+                seq.step = Step::Final;
             }
         }
         Step::Reference | Step::WarmClose if stop == StopReason::Target => {
-            fv.ref_attempts = fv.ref_attempts.saturating_add(1);
-            if fv.ref_attempts >= REF_ATTEMPTS {
-                fail(fv, valve, stop as i32, b"no end stop", now_ms, log);
+            seq.ref_attempts = seq.ref_attempts.saturating_add(1);
+            if seq.ref_attempts >= REF_ATTEMPTS {
+                return fail(
+                    fv,
+                    seq.step,
+                    valve,
+                    stop as i32,
+                    b"no end stop",
+                    now_ms,
+                    log,
+                );
             }
         }
-        Step::WarmUp if settled => fv.step = Step::WarmClose,
+        Step::WarmUp if settled => seq.step = Step::WarmClose,
         Step::Final if settled => {
             let counted = s.last_move.counted_counts.min(u32::from(FLOW_COUNTS_MAX)) as u16;
             // the held position counts from the closed end stop on both sides
@@ -1681,17 +1794,21 @@ fn move_done(
                 RefSide::Closed => counted,
                 RefSide::Open => cfg.stroke_counts.saturating_sub(counted),
             };
-            finish_move(fv, s);
+            finish_move(fv, &mut seq, s);
         }
-        _ => fail(
-            fv,
-            valve,
-            stop as i32,
-            stop_reason_name(stop).as_bytes(),
-            now_ms,
-            log,
-        ),
+        _ => {
+            return fail(
+                fv,
+                seq.step,
+                valve,
+                stop as i32,
+                stop_reason_name(stop).as_bytes(),
+                now_ms,
+                log,
+            )
+        }
     }
+    Phase::Positioning(seq)
 }
 
 impl FlowValve {
@@ -1702,20 +1819,23 @@ impl FlowValve {
 }
 
 /// The final move of a positioning ended: its record is kept, the keep follows.
-fn finish_move(fv: &mut FlowValve, s: &ValveState) {
-    fv.held_seq = s.move_seq;
+fn finish_move(fv: &mut FlowValve, seq: &mut Sequence, s: &ValveState) {
     fv.last_valid = true;
     fv.last_ms = s.last_move.duration_ms;
     fv.last_peak = s.last_move.peak_current;
-    fv.step = Step::Keep;
+    seq.step = Step::Keep;
 }
 
-/// The keep was acknowledged: the position is held, event FlowPositioned.
-fn held(fv: &mut FlowValve, valve: u8, now_ms: u32, log: &mut dyn FnMut(&Event)) {
-    fv.state = FlowState::Held;
-    fv.step = Step::None;
+/// The keep was acknowledged: the position is held at the record of the final move (unknown
+/// when the curve changed meanwhile), event FlowPositioned.
+fn held(
+    fv: &mut FlowValve,
+    seq: &Sequence,
+    valve: u8,
+    now_ms: u32,
+    log: &mut dyn FnMut(&Event),
+) -> Phase {
     fv.held_valid = true;
-    fv.held_at_ms = now_ms;
     log(&event(
         EventCode::FlowPositioned,
         valve,
@@ -1723,57 +1843,61 @@ fn held(fv: &mut FlowValve, valve: u8, now_ms: u32, log: &mut dyn FnMut(&Event))
         i32::from(fv.target_pct),
         b"",
     ));
-    if fv.restart_pending {
-        fv.restart_pending = false;
-        fv.state = FlowState::Unknown;
+    if seq.restart {
+        Phase::Unknown
+    } else {
+        Phase::Held {
+            move_seq: seq.step_seq,
+            at_ms: now_ms,
+        }
     }
 }
 
-/// The positioning failed: event FlowPositionFailed (arg1 the step, arg2 `code`).
+/// The positioning failed in `step`: event FlowPositionFailed (arg1 the step, arg2 `code`).
 fn fail(
     fv: &mut FlowValve,
+    step: Step,
     valve: u8,
     code: i32,
     text: &[u8],
     now_ms: u32,
     log: &mut dyn FnMut(&Event),
-) {
-    let step = fv.step as i32;
-    fv.state = FlowState::Failed;
-    fv.step = Step::None;
-    fv.move_pending = false;
-    fv.waiting = false;
-    fv.wait_calib = false;
+) -> Phase {
     fv.held_valid = false;
-    fv.failed_ms = now_ms;
-    fv.restart_pending = false;
     log(&event(
         EventCode::FlowPositionFailed,
         valve,
-        step,
+        step as i32,
         code,
         text,
     ));
+    Phase::Failed { at_ms: now_ms }
 }
 
 /// The request of the valve did not go out or its result does not come: a release goes out
 /// again, a positioning tries again after [`BUSY_RETRY_MS`].
 fn requeue(fv: &mut FlowValve, now_ms: u32) {
-    let Some(req) = fv.req.take() else {
-        return;
+    fv.phase = match fv.phase {
+        Phase::Positioning(
+            seq @ Sequence {
+                awaiting: Await::Result(_),
+                ..
+            },
+        ) => Phase::Positioning(Sequence {
+            awaiting: wait(BUSY_RETRY_MS, false, now_ms),
+            ..seq
+        }),
+        Phase::Release { .. } | Phase::Releasing { .. } => Phase::Release { in_flight: None },
+        phase => phase,
     };
-    if matches!(req, FlowRequest::Keep { on: false, .. }) {
-        fv.release_pending = true;
-    } else if fv.state == FlowState::Positioning {
-        wait(fv, BUSY_RETRY_MS, false, now_ms);
-    }
 }
 
 /// The next request of the sequence waits `ms` (and, `calib`, until a calibration ended).
-fn wait(fv: &mut FlowValve, ms: u32, calib: bool, now_ms: u32) {
-    fv.waiting = true;
-    fv.wait_until_ms = now_ms.wrapping_add(ms);
-    fv.wait_calib = calib;
+fn wait(ms: u32, calib: bool, now_ms: u32) -> Await {
+    Await::Retry {
+        until_ms: now_ms.wrapping_add(ms),
+        calib,
+    }
 }
 
 #[cfg(test)]
