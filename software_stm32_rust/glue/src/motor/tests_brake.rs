@@ -13,7 +13,8 @@ use crate::board::BoardRev;
 use crate::hal::{Out, Pins, RevIrq};
 
 use super::bench::{start_valves, Bench, REVS};
-use super::{CMD_A_OPEN, SBRAK_MS_MAX, SBRAK_MULT_MAX};
+use super::{timer_handler0, CMD_A_OPEN, SBRAK_MS_MAX, SBRAK_MULT_MAX};
+use crate::test_support::valve_sim::SimAdc;
 
 /// pulses the sim's motor turns after its enable went off
 const COAST: i32 = 40;
@@ -248,6 +249,29 @@ fn the_stopping_pulse_of_a_motor_that_a_trip_already_stopped_is_not_braked() {
     b.pulse.arm_brake(0, 0, 0);
     assert!(!braking(&b));
     assert_eq!(b.pulse.brake_max_ms.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_brake_started_before_the_soft_start_never_enables_the_motor() {
+    // a stray edge between TurnOn and the enable of TIM1 on a move of one pulse (target 0)
+    let mut b = start_valves(BoardRev::C2);
+    b.board.attach();
+    b.pulse.arm_brake(50, 3, 0);
+    b.pulse.target.store(0, Ordering::SeqCst);
+    b.pulse.turning.store(true, Ordering::SeqCst);
+    b.m.isr_valvenr = 0;
+    b.m.isr_timer_go = true;
+    b.m.isr_timer_fin = false;
+    b.pulse.on_edge(&b.board);
+    assert!(braking(&b));
+    timer_handler0(&mut b.m, &b.pulse, &mut SimAdc(0), &b.board);
+    assert!(!b.m.isr_timer_fin);
+    assert!(!b.board.latch(Out::Ena0));
+    // without the brake the same tick enables the motor
+    b.pulse.braking.store(false, Ordering::SeqCst);
+    timer_handler0(&mut b.m, &b.pulse, &mut SimAdc(0), &b.board);
+    assert!(b.m.isr_timer_fin);
+    assert!(b.board.latch(Out::Ena0));
 }
 
 #[test]

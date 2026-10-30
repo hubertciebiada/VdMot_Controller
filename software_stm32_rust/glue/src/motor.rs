@@ -583,8 +583,14 @@ pub fn timer_handler0(
     }
     pulse.on_ms(hw);
 
-    // enable the valve (soft start requested by M_TURNON and not cancelled since)
-    if pulse.turning.load(Ordering::SeqCst) && m.isr_timer_go && !m.isr_timer_fin {
+    // enable the valve (soft start requested by M_TURNON and not cancelled since); a brake that
+    // a stray edge started before the enable (a move of one pulse) must not drive the motor
+    // against the flipped direction
+    if pulse.turning.load(Ordering::SeqCst)
+        && !pulse.braking.load(Ordering::SeqCst)
+        && m.isr_timer_go
+        && !m.isr_timer_fin
+    {
         m.isr_timer_fin = true;
         ena_on(hw, m.isr_valvenr);
     }

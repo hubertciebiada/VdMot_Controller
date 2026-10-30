@@ -533,6 +533,8 @@ fn sbrak_one_valve_or_all_through_motor_set_brake_bad_arguments_or_a_refusal_are
         "sbrak 3 1 1 1 1\n",
         "sbrak x 1 1\n",
         "sbrak 3 1 1 x\n",
+        "sbrak 3 40 0\n",
+        "sbrak 3 40 0 0\n",
     ] {
         let e = r.exchange(bad);
         assert_eq!(e.reply, "sbrak -1 err 1\r\n", "{bad}");

@@ -1204,8 +1204,11 @@ impl Communication {
                 req.arg_u8(2, 0, SBRAK_MS_MAX),
                 mult,
             ) {
+                // a brake on the time only drives a motor that already stands backwards: a
+                // brake needs the pulse gap or the multiple of the interval
                 (Some(x), Some(max_ms), Some(gap_ms), Some(mult))
-                    if env.motor_set_brake(x, max_ms, gap_ms, mult) == 0 =>
+                    if (max_ms == 0 || gap_ms > 0 || mult > 0)
+                        && env.motor_set_brake(x, max_ms, gap_ms, mult) == 0 =>
                 {
                     Some(x)
                 }
