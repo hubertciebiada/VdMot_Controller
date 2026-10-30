@@ -574,9 +574,7 @@ pub fn timer_handler0(
         m.current_ma = m.endstop.current();
         if trip {
             // stop the motor at once
-            hw.detach();
-            ena_all_off(hw);
-            pulse.turning.store(false, Ordering::SeqCst);
+            pulse.motor_off(hw);
             m.isr_overcurrentevent = true;
         }
     } else {
