@@ -536,6 +536,21 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         c.name = full(b'"'); // worst-case escaping
         assert_eq!(c.name.len(), ITEM_NAME_MAX);
     }
+    // Rust 2.2.8: the longest flow block on every valve (counts at most 10000, the curve's
+    // flow at most 65.535 l/min, the STM's duration and peak at their type's maximum). The
+    // members of 2.1 and 2.2.4 (v3, coast, calibrationEnd) stay null here as before.
+    let flow = crate::flow_layer::FlowView {
+        enabled: true,
+        state: crate::flow_layer::FlowState::Positioning,
+        known: true,
+        counts: crate::flow_layer::FLOW_COUNTS_MAX,
+        target_counts: crate::flow_layer::FLOW_COUNTS_MAX,
+        flow_ml: u32::from(u16::MAX),
+        pct: 100,
+        last_valid: true,
+        last_ms: u32::MAX,
+        last_peak: u16::MAX,
+    };
     let views: Vec<ValveView<'_>> = st
         .iter()
         .zip(cfg.iter())
@@ -546,6 +561,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
             sensor_name: [b"\"\"\"\"\"\"\"\"\"\"", b"\"\"\"\"\"\"\"\"\"\""],
             sensor_valid: [true, true],
             sensor_tenths: [-1270, -1270],
+            flow: Some(&flow),
             ..ValveView::default()
         })
         .collect();
@@ -553,6 +569,12 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     let mut jw = JsonWriter::new(&mut slot);
     assert!(write_valves_json(&mut jw, &views, 0));
     assert!(jw.complete());
+    let doc = String::from_utf8(jw.as_bytes().to_vec()).expect("UTF-8");
+    let block = concat!(
+        r#""flow":{"enabled":true,"state":"positioning","counts":10000,"targetCounts":10000,"#,
+        r#""lpm":65.535,"ms":4294967295,"peak":6553.5}"#
+    );
+    assert_eq!(doc.matches(block).count(), 12);
     std::println!("worst-case /api/valves: {} bytes", jw.length());
 }
 
