@@ -509,6 +509,44 @@ fn skeep_one_valve_or_all_through_app_keep_bad_arguments_or_a_refusal_are_an_err
 }
 
 #[test]
+fn sbrak_one_valve_or_all_through_motor_set_brake_bad_arguments_or_a_refusal_are_an_error() {
+    let mut r = Rig::begin();
+    let e = r.exchange("sbrak 3 40 12\n");
+    assert_eq!(e.reply, "sbrak 3 ok\r\n");
+    assert_eq!(e.calls, vec!["motor_set_brake(3, 40, 12, 0)"]);
+    let e = r.exchange("sbrak 255 0 0\n");
+    assert_eq!(e.reply, "sbrak 255 ok\r\n");
+    assert_eq!(e.calls, vec!["motor_set_brake(255, 0, 0, 0)"]);
+    let e = r.exchange("sbrak 11 100 100 10\n");
+    assert_eq!(e.reply, "sbrak 11 ok\r\n");
+    assert_eq!(e.calls, vec!["motor_set_brake(11, 100, 100, 10)"]);
+    assert_eq!(r.exchange("sbrak 0 40 0 3\n").reply, "sbrak 0 ok\r\n");
+    for bad in [
+        "sbrak 12 1 1\n",
+        "sbrak 254 1 1\n",
+        "sbrak 3 101 0\n",
+        "sbrak 3 0 101\n",
+        "sbrak 3 1 1 11\n",
+        "sbrak 3 1\n",
+        "sbrak 3\n",
+        "sbrak\n",
+        "sbrak 3 1 1 1 1\n",
+        "sbrak x 1 1\n",
+        "sbrak 3 1 1 x\n",
+        "sbrak 3 40 0\n",
+        "sbrak 3 40 0 0\n",
+    ] {
+        let e = r.exchange(bad);
+        assert_eq!(e.reply, "sbrak -1 err 1\r\n", "{bad}");
+        assert!(e.calls.is_empty(), "{bad}");
+    }
+    r.stubs.motor.brake = -1;
+    let e = r.exchange("sbrak 3 1 1 2\n");
+    assert_eq!(e.reply, "sbrak -1 err 1\r\n");
+    assert_eq!(e.calls, vec!["motor_set_brake(3, 1, 1, 2)"]);
+}
+
+#[test]
 fn sstop_one_valve_or_all_through_app_stop_an_invalid_index_or_a_refusal_is_an_error() {
     let mut r = Rig::begin();
     let e = r.exchange("sstop 3\n");

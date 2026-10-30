@@ -266,6 +266,44 @@ fn s8_5_skeep_keeps_a_service_move_position_past_the_hold_stgtp_ends_it() {
     b.finish();
 }
 
+#[test]
+fn s8_6_sbrak_brakes_a_service_move_within_a_few_pulses_of_its_count() {
+    // 2.2.9, no C++ golden: valve 2 with a motor that coasts 40 pulses and brakes over 10
+    let mut case = Case::new(
+        "proto3__s8_6_sbrak_brakes_a_service_move_within_a_few_pulses_of_its_count",
+        "system S8-6: sbrak brakes a service move within a few pulses of its count",
+    );
+    let mut b = case.boot(sim(0x0FF0), |_| {});
+    b.run_main(40000);
+    b.calibrated_idle(4);
+    {
+        let mut sim = b.sim();
+        sim.valve[2].pulses_per_ms = 1.0;
+        sim.valve[2].coast_pulses = 40;
+        sim.valve[2].brake_pulses = 10;
+    }
+    // the default brake off
+    assert_eq!(b.exchange("sbrak 2 0 0\n"), "sbrak 2 ok\r\n");
+    let start = b.sim().valve[2].position;
+    assert_eq!(b.exchange("svmov 2 0 400 40\n"), "svmov 2 ok\r\n");
+    assert!(b.run_main_until(|b| b.idle(), 5000));
+    assert_eq!(b.gvlvx(2, K_LAST_CNT), 400);
+    // without a brake the motor coasts
+    assert_eq!(b.sim().valve[2].position, start + 440);
+    assert_eq!(b.exchange("sbrak 2 50 3\n"), "sbrak 2 ok\r\n");
+    assert_eq!(b.exchange("sbrak 12 50 3\n"), "sbrak -1 err 1\r\n");
+    let start = b.sim().valve[2].position;
+    assert_eq!(b.exchange("svmov 2 0 400 40\n"), "svmov 2 ok\r\n");
+    assert!(b.run_main_until(|b| b.idle(), 5000));
+    let counted = b.gvlvx(2, K_LAST_CNT);
+    assert_eq!(b.gvlvx(2, K_LAST_STOP), i64::from(StopReason::Target as u8));
+    // the pulses of the braking motor are counted, the rest of its momentum coasts
+    assert_eq!(counted, 408);
+    assert_eq!(i64::from(b.sim().valve[2].position - start), 416);
+    assert_eq!(b.exchange("sbrak 255 0 0\n"), "sbrak 255 ok\r\n");
+    b.finish();
+}
+
 // ---------------------------------------------------------------- safe mode
 
 #[test]

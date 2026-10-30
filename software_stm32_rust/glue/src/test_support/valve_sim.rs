@@ -58,6 +58,12 @@ pub struct SimValve {
     pub coast_pulses: i32,
     /// pulses the motor turns after a reversal before the valve moves (the play of the gears)
     pub backlash_pulses: i32,
+    /// pulses the turning motor still makes its way when the direction flips with the enable on
+    /// (a brake), slowing down evenly; then it turns the other way, speeding up over as many
+    /// pulses. 0: it turns the other way at once
+    pub brake_pulses: i32,
+    /// current while braking (the sign of the direction output)
+    pub brake_current_dma: i32,
     /// obstacle: opening stalls in [jam_from, jam_to), closing stalls in (jam_from, jam_to]
     pub jam_from: i32,
     pub jam_to: i32,
@@ -83,6 +89,8 @@ impl Default for SimValve {
             inrush_ms: 0,
             coast_pulses: 0,
             backlash_pulses: 0,
+            brake_pulses: 0,
+            brake_current_dma: 1400,
             jam_from: -1,
             jam_to: -1,
             pulses: 0,
@@ -125,6 +133,12 @@ pub struct Rig {
     pulse_acc: [f32; VALVES],
     coast_left: [i32; VALVES],
     coast_dir: [i32; VALVES],
+    /// the direction the motor of each valve turns while it is enabled: after a reversal with
+    /// the enable on the old one until its brake pulses are spent
+    motion_dir: [i32; VALVES],
+    brake_left: [i32; VALVES],
+    /// pulses of the speed-up after a brake left
+    spinup_left: [i32; VALVES],
     /// direction of the last pulse, and the play left before the valve moves
     turn_dir: [i32; VALVES],
     slack_left: [i32; VALVES],
@@ -146,6 +160,9 @@ impl Rig {
             pulse_acc: [0.0; VALVES],
             coast_left: [0; VALVES],
             coast_dir: [0; VALVES],
+            motion_dir: [0; VALVES],
+            brake_left: [0; VALVES],
+            spinup_left: [0; VALVES],
             turn_dir: [0; VALVES],
             slack_left: [0; VALVES],
             last_state: 0xFF,
@@ -207,6 +224,21 @@ impl Rig {
         self.valve[i].pulses += 1;
     }
 
+    /// The speed of the motor of valve `i` as a share of its running speed: lower while it brakes
+    /// or speeds up after a brake.
+    fn speed(&self, i: usize) -> f32 {
+        let n = self.valve[i].brake_pulses;
+        if n <= 0 {
+            1.0
+        } else if self.brake_left[i] > 0 {
+            self.brake_left[i] as f32 / n as f32
+        } else if self.spinup_left[i] > 0 {
+            (n - self.spinup_left[i] + 1) as f32 / n as f32
+        } else {
+            1.0
+        }
+    }
+
     /// The motor model of one millisecond; `fire` is a rising edge on REVIN (the EXTI handler).
     pub fn on_ms(&mut self, board: &FakeBoard, fire: &mut dyn FnMut()) {
         self.ms += 1;
@@ -222,17 +254,24 @@ impl Rig {
             -1
         };
         if e != self.last_enabled {
-            // the motor that lost its enable turns on for its coast pulses
+            // the motor that lost its enable turns on for its coast pulses, fewer at a lower
+            // speed
             if self.last_enabled >= 0 {
                 let l = self.last_enabled as usize;
-                self.coast_left[l] = self.valve[l].coast_pulses;
+                self.coast_left[l] =
+                    (self.valve[l].coast_pulses as f32 * self.speed(l)).round() as i32;
+                self.coast_dir[l] = self.motion_dir[l];
+                self.brake_left[l] = 0;
+                self.spinup_left[l] = 0;
                 self.pulse_acc[l] = 0.0;
             }
             if e >= 0 {
                 let i = e as usize;
                 self.valve[i].enables += 1;
                 self.coast_left[i] = 0;
-                self.coast_dir[i] = dir;
+                self.motion_dir[i] = dir;
+                self.brake_left[i] = 0;
+                self.spinup_left[i] = 0;
                 self.pulse_acc[i] = 0.0;
             }
             self.enabled_ms = 0;
@@ -243,10 +282,43 @@ impl Rig {
         if e >= 0 {
             let i = e as usize;
             self.enabled_ms += 1;
-            self.coast_dir[i] = dir;
             let v = self.valve[i];
+            // a reversal with the enable on: a turning motor with brake pulses brakes first
+            if dir != self.motion_dir[i] && self.brake_left[i] == 0 {
+                if v.brake_pulses > 0 && !stalled(&v, self.motion_dir[i]) {
+                    self.brake_left[i] = v.brake_pulses;
+                    self.pulse_acc[i] = 0.0;
+                } else {
+                    self.motion_dir[i] = dir;
+                    self.spinup_left[i] = 0;
+                }
+            }
             if v.connected && v.shorted {
                 self.current = dir * v.short_current_dma;
+            } else if v.connected && self.brake_left[i] > 0 {
+                // braking: the pulses of the slowing motor still go its way
+                let md = self.motion_dir[i];
+                self.current = dir * v.brake_current_dma;
+                self.pulse_acc[i] += v.pulses_per_ms * self.speed(i);
+                while self.pulse_acc[i] >= 1.0
+                    && self.brake_left[i] > 0
+                    && !stalled(&self.valve[i], md)
+                    && self.enabled_valve(board) == e
+                {
+                    self.pulse_acc[i] -= 1.0;
+                    self.brake_left[i] -= 1;
+                    self.turn(i, md);
+                    fire();
+                }
+                if stalled(&self.valve[i], md) {
+                    self.brake_left[i] = 0;
+                }
+                if self.brake_left[i] == 0 {
+                    // the motor stands: driven on, it speeds up the other way
+                    self.motion_dir[i] = dir;
+                    self.spinup_left[i] = v.brake_pulses;
+                    self.pulse_acc[i] = 0.0;
+                }
             } else if v.connected {
                 let inrush = v.inrush_peak_dma != 0 && self.enabled_ms <= v.inrush_ms;
                 self.current = dir
@@ -257,13 +329,14 @@ impl Rig {
                     } else {
                         v.run_current_dma
                     };
-                self.pulse_acc[i] += v.pulses_per_ms;
+                self.pulse_acc[i] += v.pulses_per_ms * self.speed(i);
                 // every pulse runs the EXTI handler, which may switch the enable off at once
                 while self.pulse_acc[i] >= 1.0
                     && !stalled(&self.valve[i], dir)
                     && self.enabled_valve(board) == e
                 {
                     self.pulse_acc[i] -= 1.0;
+                    self.spinup_left[i] = (self.spinup_left[i] - 1).max(0);
                     self.turn(i, dir);
                     fire();
                 }

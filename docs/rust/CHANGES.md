@@ -8,6 +8,28 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.9-revamped (unreleased)
+
+### STM32: a brake at the end of a service move
+
+- New protocol-3 request `sbrak <idx|255> <maxMs> <gapMs> [<mult>]`: the service moves (`svmov`)
+  of the valve end with a brake. On the stopping pulse the direction output flips with the motor
+  still enabled, so the motor is driven against its motion for at most `maxMs` (0..100 ms; 0 = no
+  brake) or until no pulse came for more than `gapMs` (0..100 ms; 0 = off) or for
+  more than `mult` times the pulse interval before the stopping pulse (0..10; 0 = off), whichever
+  comes first; then the motor is switched off and the direction output goes back. Without a
+  brake the motor coasts 30..65 uncounted
+  pulses after an opening move in the low-load part of the stroke (field data of 2026-10-30),
+  with a scatter of about ±15; the pulses of the braking motor are counted (`lastCnt` exceeds
+  `lastReq` by them). The end-stop limits do not judge the brake current (about twice the
+  stall current, bounded by `maxMs`); `sstop` ends a brake with the move. Normal moves,
+  calibration strokes and the coast probe are not braked. After a start every valve brakes with
+  `60 20 0`: in the field test (4 valves, 5 moves each) a further opening move missed -5..2
+  instead of 35..60 pulses, and the spread of one opening move of ~900 pulses from the closed
+  end stop fell from sd 19..23 to 3..9 pulses on 3 valves (the fourth: 6 before, 7 after);
+  80 30 0 drove a stopped motor backwards (up to 8 brake pulses). `sbrak` changes it in RAM until the next STM reset ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md),
+  [pulse.rs](../../software_stm32_rust/glue/src/motor/pulse.rs)).
+
 ## 2.2.8-revamped (unreleased)
 
 ### STM32: a service hold that does not run out

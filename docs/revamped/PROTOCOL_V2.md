@@ -61,10 +61,11 @@ Protocol 2:
 | `gmotx` | – | `gmotx lowMin lowMax highMin highMax sopMin sopMax minCntMin minCntMax retrMin retrMax` |
 
 Protocol 3 (section "Protocol 3 commands"): `slhbt`, `slcfg`, `sfspo`,
-`glcfg`, `gvlvy`, `gstax`, `sstop`, `gtlnt`, `ssafe`, `skeep` (2.2.8).
+`glcfg`, `gvlvy`, `gstax`, `sstop`, `gtlnt`, `ssafe`, `skeep` (2.2.8),
+`sbrak` (2.2.9).
 
 `idx` is always the 0-based valve index 0..11. A request for another index
-gets no reply (except `svmov`, `sfspo`, `sstop` and `skeep`).
+gets no reply (except `svmov`, `sfspo`, `sstop`, `skeep` and `sbrak`).
 
 ### `gproto` – protocol version
 
@@ -160,6 +161,24 @@ it. A failed, blocked, open-circuit or pending-calibration status is kept
 undercurrent (and needs a full calibration, flag `recal`), and failed after a
 timeout (fault 1) or an enforced inrush trip (fault 5).
 
+The motor coasts after its enable went off (the pulses come from the motor
+current, so the coast is not counted): an opening move in the low-load part
+of the stroke travels 30..65 pulses more than it counted, with a scatter of
+about ±15. `sbrak idx maxMs gapMs [mult]` (2.2.9) brakes the service moves
+of the valve: on the stopping pulse the direction output flips with the motor
+still enabled, so the motor is driven against its motion (the common of the
+motors sits at half the supply; the brake current is about twice the stall
+current and is not judged by the end-stop limits), for at most `maxMs`
+(0..100, 0 = no brake; 60 after a start) or until no pulse came for more than
+`gapMs` (0..100, 0 = off) or for more than `mult` times the interval between
+the two last pulses before the stopping pulse (0..10, 0 = off; measured in
+ms, so two pulses in one ms switch it off for that brake), whichever comes
+first; then the motor is switched off and the direction output goes back. A
+brake that outlasts the motion turns the motor back, and those pulses count
+as forward travel: the gaps end the brake when the pulses stop. The pulses of
+the braking motor are counted, so `lastCnt` exceeds `lastReq` by them. Normal
+moves and calibration strokes are not braked. RAM only.
+
 ### `scalx enable stepPct maxmA` / `gcalx` – breakaway escalation
 
 | arg | range | default |
@@ -226,6 +245,7 @@ arguments (`glcfg`, `gstax`, `gtlnt`) ignore extra arguments.
 | `gstax` | `gstax` | 23 values, below | – | read; values 1..6 equal `gstat` |
 | `sstop` | `sstop <idx\|255>` | `sstop <idx> ok` (also when nothing ran) | `sstop -1 err 1` | stops the running move, calibration or service move of idx (255: whatever runs), cancels the requested calibrations of idx (255: all), leaves the valve where it stopped (service hold) |
 | `skeep` | `skeep <idx\|255> <0\|1>` (2.2.8) | `skeep <idx> ok` (`skeep 255 ok` for all) | `skeep -1 err 1` (idx or value missing or invalid, extra arguments) | 1: the service hold of the valve does not run out (flag `svcKeep`); 0: it runs out again. Everything that ends a hold ends the keep too (`stgtp`, `staop`, `staln`, `stdet 255`, a calibration start, a refused service-move start); an expired lease ends it and the remaining hold runs out. RAM only. A firmware before 2.2.8 does not answer |
+| `sbrak` | `sbrak <idx\|255> <maxMs> <gapMs> [<mult>]` (2.2.9) | `sbrak <idx> ok` (`sbrak 255 ok` for all) | `sbrak -1 err 1` (idx, maxMs or gapMs missing or invalid, mult invalid, extra arguments, maxMs > 0 with gapMs and mult both 0: a brake on the time only would drive a standing motor backwards) | the brake at the end of the service moves of the valve (section `svmov`): maxMs 0..100 (0 = no brake), gapMs 0..100 (0 = off), mult 0..10 (0 = off, the default when left out); after a start every valve has `60 20 0`. RAM only. A firmware before 2.2.9 does not answer |
 | `gtlnt` | `gtlnt` | `gtlnt <seconds>` (stored learn time; 0 = time trigger off) | – | read |
 | `ssafe` | `ssafe 0` | `ssafe ok` | `ssafe err` (not exactly one argument, or value != 0) | leaves safe mode and clears the watchdog reset window |
 
