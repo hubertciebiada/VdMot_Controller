@@ -6,7 +6,7 @@
 
 The controller positions each valve itself (POST /api/valves/{n}/flow/counts: a move to the
 reference end stop, one move away from it, the hold kept). The reader answers per valve on the
-phone page. The other loops stand at 15 %, as they did while the curves were measured. At the end
+phone page. The other loops stand closed, as they did while the curves were measured. At the end
 of a session, also after STOP or an error, every valve goes back to the target it had.
 
 Sessions:
@@ -48,7 +48,8 @@ POSITION_S = 60  # one positioning of one valve; a controller moves one valve at
 TARGET_S = 30  # one target move of one valve
 SETTLE_S = 15  # the float after a move; the page counts it down, the answers stay open
 HOLD_CHECK_S = 5  # how often a card that waits for a reading checks that its valve still holds
-OTHERS_PCT = 15  # the other loops while the curves were measured
+OTHERS_PCT = 0  # the other loops while the curves were measured: one loop open at a time
+PUMP_WARN_W = 70  # the pump saturates near 77 W: above this it does not keep its head
 PUMP_MIN_W = 5  # below this the circulation pump stands
 SD_OK = 0.1  # repeat: the standard deviation that passes [l/min]
 # stops of a check session [l/min]; mixed: every stop twice and never twice in a row
@@ -212,7 +213,7 @@ class Engine:
                 if part:
                     groups.append({"label": f"{esp.name} {part[0]}–{part[-1]}",
                                    "loops": [f"{esp.name} {i}" for i in part]})
-        return {"groups": groups, "pick": self.pick, "others": OTHERS_PCT,
+        return {"groups": groups, "pick": self.pick, "others": OTHERS_PCT, "pumpWarn": PUMP_WARN_W,
                 "stops": [{"id": k, "label": STOP_LABELS[k]} for k in STOPS]}
 
     def check(self):
@@ -290,14 +291,14 @@ class Engine:
                 self.before[k] = docs[k].get("target") or 0
 
     def open_others(self, loops, pct):
-        """The pump pressure of the curves holds only with the other loops open as they were
-        while the curves were measured. The old targets go down first, so that a session that
-        stops here still brings them back."""
+        """The flow of a curve holds only at the pump head of the curves, and a pump near its
+        saturation does not keep that head while other loops take water. The old targets are
+        noted first, so that a session that stops here still brings them back."""
         mine = {(lp.esp.name, lp.idx) for lp in loops}
         for esp in self.esps.values():
             for v in esp.valves():
                 k = (esp.name, v["idx"])
-                if k not in mine and (v.get("target") or 0) < pct \
+                if k not in mine and (v.get("target") or 0) != pct \
                         and not (v.get("flow") or {}).get("enabled"):
                     self.raised[k] = v.get("target") or 0
         if self.raised:

@@ -223,8 +223,9 @@ page and refuses a session below 5 W; an unknown power does not stop it. `--pick
 marks the loops of the repeat session on the page.
 
 Every session starts the same way: the target of every valve is noted, the loops outside the
-session that stand below 15 % go to 15 % (the curves were measured with them there), the layer goes
-on for the session loops. At the end, also after STOP or an error, the layer goes off and every
+session close (the curves were measured with one loop open, so the pump keeps its head), the layer
+goes on for the session loops. The page marks a pump power above 70 W: near saturation (about 77 W here)
+the head sags, so a reading there does not fit the curve. At the end, also after STOP or an error, the layer goes off and every
 valve goes back to the noted target. A layer that lets go leaves the valve at `fallbackPct` while
 the ESP keeps the old target as desired, and the ESP sends only a changed target, so a session loop
 goes over another target first (5 % on the way to 0 %). A valve that does not get back is named on

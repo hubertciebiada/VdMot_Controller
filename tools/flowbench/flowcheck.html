@@ -209,8 +209,9 @@ function render() {
   $("title").textContent = [KIND[S.kind], PHASE[S.phase] || S.phase].filter(Boolean).join(" · ") + st;
   const settle = S.phase === "reading" && S.settle_s > 0 ? ` · pływak ustala się jeszcze ${S.settle_s} s` : "";
   $("msg").textContent = (S.error || S.msg || "") + settle; $("msg").className = "msg" + (S.error ? " err" : "");
-  $("pump").textContent = S.pump == null ? "" : `· pompa ${Math.round(S.pump)} W`;
-  $("pump").className = "pump small " + (S.pump != null && S.pump < 5 ? "low" : "muted");
+  const pumpHigh = presets && S.pump != null && S.pump > presets.pumpWarn;
+  $("pump").textContent = S.pump == null ? "" : `· pompa ${Math.round(S.pump)} W` + (pumpHigh ? " · za dużo, odczyt niepewny" : "");
+  $("pump").className = "pump small " + (S.pump != null && (S.pump < 5 || pumpHigh) ? "low" : "muted");
   const asking = ["moving", "reading"].includes(S.phase);
   $("stopBtn").hidden = !asking;
   $("setup").hidden = asking || S.phase === "restoring";
@@ -241,7 +242,7 @@ async function poll() {
 
 async function setup() {
   try { presets = await api("/api/presets"); } catch (e) { say(e); return; }
-  $("howto").textContent = `Zawory ustawia sterownik, ty tylko odczytujesz. Pozostałe pętle stoją w tym czasie na ${presets.others} %, po sesji każdy zawór wraca na swój cel.`;
+  $("howto").textContent = `Zawory ustawia sterownik, ty tylko odczytujesz. Pozostałe pętle są w tym czasie zamknięte, jak przy pomiarze krzywych, po sesji każdy zawór wraca na swój cel.`;
   $("mode").innerHTML = presets.stops.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
   const g = $("groups"); g.innerHTML = "";
   for (const grp of presets.groups) {
