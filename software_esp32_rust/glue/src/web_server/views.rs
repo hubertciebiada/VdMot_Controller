@@ -593,7 +593,8 @@ where
     /// POST /api/valves/{n}/flow (Rust 2.2.8): the members of the body patch the stored
     /// configuration of the valve (core `patch_flow_config_json`), which is saved to NVS and
     /// answered like the GET; `400 malformed` / `invalid` (an unknown key) / `out_of_range` with
-    /// the rule as the detail, nothing changed.
+    /// the rule as the detail, nothing changed; `500 nvs` while the stored configuration cannot
+    /// be read (the save would put the defaults over the other valves).
     pub(super) fn flow_set(
         &self,
         req: &mut dyn HttpRequest,
@@ -601,6 +602,9 @@ where
         valve: u8,
         body: &[u8],
     ) {
+        if !self.storage.ensure_flow_loaded() {
+            return send_error(req, 500, "nvs", b"stored flow config unreadable");
+        }
         let mut cfg = self.storage.shared().flow_config(valve);
         if let Err(e) = patch_flow_config_json(&mut cfg, body) {
             let error = match e {

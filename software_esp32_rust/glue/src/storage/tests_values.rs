@@ -713,19 +713,49 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert_eq!(st.shared().flow_config(3), c);
     assert_eq!(st.shared().flow_revision(), 3);
     rig.dev.nvs.knobs().fail_set.clear();
-    // A damaged blob: the defaults.
+    assert!(st.shared().flow_loaded());
+    assert!(rig.host.events().is_empty());
+    // A damaged blob: the defaults, event 124, and no save over the valves it holds (the
+    // load is tried again first, the blob stays as it is).
     let mut bad = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW);
     bad[10] ^= 1;
     rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW, &bad);
     assert!(!st.load_flow_configs());
     assert!(!st.shared().flow_config(3).enabled);
-    // A factory reset drops the blob and the shared set.
-    assert!(st.save_flow_config(3, &c));
+    assert!(!st.shared().flow_loaded());
+    let e = rig.host.with_code(EventCode::FlowConfigUnreadable);
+    assert_eq!((e.len(), e[0].valve, e[0].arg1), (1, NO_VALVE, 3));
+    assert!(!st.save_flow_config(3, &c));
+    assert!(!st.ensure_flow_loaded());
+    assert_eq!(rig.host.with_code(EventCode::FlowConfigUnreadable).len(), 2);
+    assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), bad);
+    // A factory reset drops the blob and the shared set; saves work again.
     assert!(st.factory_reset());
     assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW));
     assert!(!st.shared().flow_config(3).enabled);
-    // Without NVS: the defaults, nothing saved.
+    assert!(st.ensure_flow_loaded());
+    assert!(st.save_flow_config(3, &c));
+    // No memory for the buffer of a blob that is there: the same (reason 2), a later load
+    // with memory reads it.
+    rig.dev.heap.state().fail_all = true;
+    assert!(!st.load_flow_configs());
+    assert!(!st.shared().flow_loaded());
+    let e = rig.host.with_code(EventCode::FlowConfigUnreadable);
+    assert_eq!((e.len(), e[2].arg1), (3, 2));
+    rig.dev.heap.state().fail_all = false;
+    assert!(st.ensure_flow_loaded());
+    assert_eq!(st.shared().flow_config(3), c);
+    // ... and no memory without a blob: nothing to keep, saves go on.
+    assert!(st.factory_reset());
+    rig.dev.heap.state().fail_all = true;
+    assert!(!st.load_flow_configs());
+    assert!(st.shared().flow_loaded());
+    assert_eq!(rig.host.with_code(EventCode::FlowConfigUnreadable).len(), 3);
+    rig.dev.heap.state().fail_all = false;
+    // Without NVS: the defaults, nothing saved (reason 1).
     rig.dev.nvs.knobs().init_failed = true;
     assert!(!st.load_flow_configs());
     assert!(!st.save_flow_config(3, &c));
+    let e = rig.host.with_code(EventCode::FlowConfigUnreadable);
+    assert_eq!((e.len(), e[3].arg1), (4, 1));
 }

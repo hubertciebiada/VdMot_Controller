@@ -21,7 +21,7 @@ type C = EventCode;
 /// DESIGN.md section 13, the binding table (registry order): code, number, name, severity,
 /// MQTT class.
 #[rustfmt::skip]
-const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 92] = [
+const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 93] = [
     (C::Boot, 100, "boot", Info, Warn),
     (C::ConfigImported, 101, "config_imported", Info, Warn),
     (C::ConfigSaved, 102, "config_saved", Info, Warn),
@@ -46,6 +46,7 @@ const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 92] = [
     (C::FilesRemoved, 121, "files_removed", Info, No),
     (C::HeapCritical, 122, "heap_critical", Error, Warn),
     (C::RestartDeferred, 123, "restart_deferred", Warning, Warn),
+    (C::FlowConfigUnreadable, 124, "flow_config_unreadable", Error, Warn),
     (C::NetUp, 200, "net_up", Info, Warn),
     (C::NetDown, 201, "net_down", Warning, Warn),
     (C::MqttConnected, 202, "mqtt_connected", Info, Warn),
@@ -221,7 +222,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
         assert_eq!(EventCode::from_raw(v), row.map(|r| r.0), "{v}");
         found += usize::from(row.is_some());
     }
-    assert_eq!(found, 92);
+    assert_eq!(found, 93);
     // the registry holds every code once, in the order of the design table
     assert_eq!(CODES.len(), TABLE.len());
     for (ci, row) in CODES.iter().zip(TABLE) {
@@ -232,7 +233,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
 #[test]
 fn event_mqtt_names_lists_every_published_code_in_registry_order() {
     let expected: Vec<&str> = TABLE.iter().filter(|r| r.4 != No).map(|r| r.2).collect();
-    assert_eq!(expected.len(), 85);
+    assert_eq!(expected.len(), 86);
     let mut names = [""; 100];
     assert_eq!(event_mqtt_names(&mut names), expected.len());
     for (i, want) in expected.iter().enumerate() {
@@ -612,6 +613,7 @@ fn event_messages_for_every_code() {
         (ev(C::RestartDeferred, NO_VALVE, 7, 0, ""), "restart deferred (switch back): STM sector 0 not written, keep the power on"),
         (ev(C::RestartDeferred, NO_VALVE, 8, 0, ""), "restart deferred (unknown): STM sector 0 not written, keep the power on"),
         (ev(C::RestartDeferred, NO_VALVE, -1, 0, ""), "restart deferred (unknown): STM sector 0 not written, keep the power on"),
+        (ev(C::FlowConfigUnreadable, NO_VALVE, 3, 0, ""), "stored flow configuration unreadable (reason 3), flow changes are not saved"),
         (ev(C::NetUp, NO_VALVE, 1, 0, "192.168.1.5"), "network up (eth, 192.168.1.5)"),
         (ev(C::NetUp, NO_VALVE, 2, 0, ""), "network up (wifi)"),
         (ev(C::NetUp, NO_VALVE, 3, 0, ""), "network up (unknown)"),

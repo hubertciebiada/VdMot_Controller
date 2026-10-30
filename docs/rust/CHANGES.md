@@ -26,7 +26,9 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   when the hold is lost. `POST /api/valves/{n}/flow/counts` positions to given pulses for the
   verification tool. The valve entry of `/api/valves` gets a `flow` block (state, held pulses,
   flow, the `ms` and `peak` of the final move); events 416 `flow_positioned`, 417
-  `flow_position_failed`, 418 `flow_hold_lost`; NVS `flow`. Nothing changes for a valve
+  `flow_position_failed`, 418 `flow_hold_lost`; NVS `flow` (a stored set that cannot be read
+  gives the defaults and event 124 `flow_config_unreadable`, and `POST /api/valves/{n}/flow`
+  answers `500 nvs` instead of saving the defaults over it). Nothing changes for a valve
   without the layer, and an STM below 2.2.8 keeps every valve in normal mode (`state`
   `unsupported`). `failsafePct` and `sfspo` stay stroke percentages
   ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs),

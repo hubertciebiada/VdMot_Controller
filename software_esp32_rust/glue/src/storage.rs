@@ -187,6 +187,9 @@ pub struct StorageShared {
     /// its revision (+1 on every publish; the stm thread follows it).
     flow: Mutex<Box<[FlowConfig; VALVE_COUNT as usize]>>,
     flow_revision: AtomicU32,
+    /// `flow` holds what NVS holds (the load read the blob or found none, or a save or factory
+    /// reset wrote it): only then may a save write the whole set
+    flow_loaded: AtomicBool,
 }
 
 impl Default for StorageShared {
@@ -212,7 +215,13 @@ impl StorageShared {
             boot: Mutex::new(Box::default()),
             flow: Mutex::new(Box::default()),
             flow_revision: AtomicU32::new(0),
+            flow_loaded: AtomicBool::new(false),
         }
+    }
+
+    /// The flow configuration in RAM is what NVS holds (see `flow_loaded`).
+    pub fn flow_loaded(&self) -> bool {
+        self.flow_loaded.load(Ordering::Relaxed)
     }
 
     /// +1 on every published flow configuration (the boot load, `save_flow_configs`).
@@ -813,29 +822,64 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
             all.iter_mut().for_each(|c| *c = FlowConfig::DEFAULT);
             true
         });
+        self.shared.flow_loaded.store(erased, Ordering::Relaxed);
         ns.set_int(KEY_IMPORTED, NvsInt::U8, 1) && erased
     }
 
     // ------------------------------------------------------------ flow layer (Rust 2.2.8)
 
-    /// Boot: the flow configuration of the valves from NVS `flow` (the defaults without a
-    /// usable blob or memory for it), published for the stm thread. Returns whether a blob was
-    /// decoded. The blob buffer (about 1 KB) is a transient heap block.
+    /// Boot: the flow configuration of the valves from NVS `flow` (the defaults without one),
+    /// published for the stm thread. Returns whether a blob was decoded. A blob that is there
+    /// but cannot be read (arg1 of the event FlowConfigUnreadable: 1 NVS not open, 2 no memory
+    /// for the buffer, 3 a bad blob) gives the defaults too, and no flow configuration is
+    /// saved until a load read it: a save writes the whole set, the defaults over every other
+    /// valve. The blob buffer (about 1 KB) is a transient heap block.
     pub fn load_flow_configs(&self) -> bool {
-        let _cfg = self.cfg_lock();
-        let mut bytes = try_bytes(&self.gate, FLOW_BLOB_SIZE).unwrap_or_default();
-        let n = self
-            .prefs()
-            .map_or(0, |ns| load_bytes(&ns, KEY_FLOW, &mut bytes));
-        let blob = bytes.get(..n).unwrap_or_default();
-        self.shared
-            .replace_flow_configs(|all| decode_flow_configs(blob, all))
+        let (decoded, reason) = {
+            let _cfg = self.cfg_lock();
+            let mut bytes = try_bytes(&self.gate, FLOW_BLOB_SIZE);
+            let ns = self.prefs();
+            let (n, reason) = match (&ns, bytes.as_mut()) {
+                (None, _) => (0, 1),
+                (Some(ns), _) if ns.blob_len(KEY_FLOW).is_none() => (0, 0),
+                (Some(_), None) => (0, 2),
+                (Some(ns), Some(b)) => (load_bytes(ns, KEY_FLOW, b), 3),
+            };
+            let blob = bytes
+                .as_deref()
+                .and_then(|b| b.get(..n))
+                .unwrap_or_default();
+            let decoded = self
+                .shared
+                .replace_flow_configs(|all| decode_flow_configs(blob, all));
+            (decoded, reason)
+        };
+        let loaded = decoded || reason == 0;
+        self.shared.flow_loaded.store(loaded, Ordering::Relaxed);
+        if !loaded {
+            self.host
+                .log(EventCode::FlowConfigUnreadable, NO_VALVE, reason, 0, b"");
+        }
+        decoded
+    }
+
+    /// The flow configuration in RAM is what NVS holds, else the load is tried again (a save
+    /// patches the valve's record in RAM).
+    pub fn ensure_flow_loaded(&self) -> bool {
+        if !self.shared.flow_loaded() {
+            self.load_flow_configs();
+        }
+        self.shared.flow_loaded()
     }
 
     /// `POST /api/valves/{n}/flow`: the flow configuration of `valve` replaced by `c`, the
     /// whole set written to NVS `flow` and published; false (nothing published) for a valve
-    /// out of range, no memory for the blob buffer or a failed write.
+    /// out of range, a set that is not what NVS holds (`flow_loaded`), no memory for the blob
+    /// buffer or a failed write.
     pub fn save_flow_config(&self, valve: u8, c: &FlowConfig) -> bool {
+        if !self.shared.flow_loaded() {
+            return false;
+        }
         let _cfg = self.cfg_lock();
         let Some(mut bytes) = try_bytes(&self.gate, FLOW_BLOB_SIZE) else {
             return false;

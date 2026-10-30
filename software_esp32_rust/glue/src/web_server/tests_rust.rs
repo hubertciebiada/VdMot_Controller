@@ -796,6 +796,7 @@ const FLOW_OFF: &str = concat!(
 fn flow_config_is_read_patched_saved_and_refused() {
     let rig = Rig::started();
     let st = rig.storage();
+    assert!(!st.load_flow_configs()); // the boot load: nothing stored
     let mut web = rig.web(&st);
     let r = perform(&mut web, get("/api/valves/1/flow"));
     assert_eq!(r.status, 200);
@@ -845,6 +846,16 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert_eq!(st.shared().flow_revision(), before + 2);
     let r = perform(&mut web, get("/api/valves/1/flow"));
     assert!(text(&r).contains(r#""offset":-7,"#));
+    // A stored set that cannot be read is not saved over (the load is tried again first).
+    let mut bad = rig.dev.nvs.get_blob("vdmrev", "flow");
+    bad[10] ^= 1;
+    rig.dev.nvs.set_blob("vdmrev", "flow", &bad);
+    assert!(!st.load_flow_configs());
+    let r = perform(&mut web, api_post("/api/valves/2/flow", r#"{"offset":1}"#));
+    assert_eq!(r.status, 500);
+    assert_eq!(text(&r), error_body("nvs", "stored flow config unreadable"));
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow"), bad);
+    assert_eq!(st.shared().flow_revision(), before + 4);
 }
 
 #[test]

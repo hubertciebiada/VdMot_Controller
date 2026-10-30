@@ -130,6 +130,10 @@ pub enum EventCode {
     /// Rust only (D9): a due restart waits while the STM's sector 0 is erased and not written
     /// (an ESP restart resets the STM); arg1 RebootReason
     RestartDeferred = 123,
+    /// Rust 2.2.8: NVS `flow` (the flow layer configuration) is there but could not be read:
+    /// the defaults run, no flow configuration is saved until it was read; arg1 1 NVS not
+    /// open, 2 no memory, 3 a bad blob
+    FlowConfigUnreadable = 124,
     // network / MQTT / web 2xx
     /// arg1 interface (1 eth, 2 wifi); text IP
     NetUp = 200,
@@ -501,7 +505,7 @@ const fn special(
 
 /// Registry order = the order of [`event_mqtt_names`].
 #[rustfmt::skip]
-static CODES: [CodeInfo; 92] = {
+static CODES: [CodeInfo; 93] = {
     use EventCode as C;
     use EventMqtt::{Always, No, WarnPlus as Warn};
     use Severity::{Critical, Debug, Error, Info, Warning};
@@ -561,6 +565,9 @@ static CODES: [CodeInfo; 92] = {
         templated(C::RestartDeferred, Warning, Warn, "restart_deferred",
             concat!("restart deferred (", name1!("b"), "): STM sector 0 not written, keep the ",
                     "power on")),
+        templated(C::FlowConfigUnreadable, Error, Warn, "flow_config_unreadable",
+            concat!("stored flow configuration unreadable (reason ", arg1!(),
+                    "), flow changes are not saved")),
         templated(C::NetUp, Info, Warn, "net_up",
             concat!("network up (", name1!("i"), if_txt!(), ", ", txt!(), end_txt!(), ")")),
         templated(C::NetDown, Warning, Warn, "net_down",

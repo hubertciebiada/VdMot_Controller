@@ -676,7 +676,7 @@ NVS namespace `vdmrev`:
 | `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous interface/DHCP/addresses/WiFi, CRCs) |
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
-| `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated, a bad blob gives the defaults |
+| `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it |
 
 Config load order (`loadConfigBlobs`): `cfg` + `cfgx` from NVS; a missing or
 undecodable `cfg` falls back to the backup files (`config_restored`); a
@@ -981,6 +981,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 120 | config_newer_schema | Warning | W | - | base schema / unknown ext records |
 | 121 | files_removed | Info | - | - | files / KiB / name or `legacy images` |
 | 122 | heap_critical | Error | W | - | free / largest block (the heap guard's restart follows, section 16) |
+| 124 | flow_config_unreadable | Error | W | - | Rust 2.2.8: 1 NVS not open, 2 no memory, 3 a bad blob (NVS `flow`, section 9) |
 | 200 | net_up | Info | W | - | 1 eth, 2 wifi / - / IP |
 | 201 | net_down | Warning | W | - | interface |
 | 202 | mqtt_connected | Info | W | - | |
