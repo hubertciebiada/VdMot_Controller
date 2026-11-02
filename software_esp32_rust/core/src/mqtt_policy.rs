@@ -8,8 +8,8 @@ use crate::common::{build_hostname, elapsed_ms, Backoff, Text, TextBuf, NO_VALVE
 use crate::config::{crc32, MqttMode};
 use crate::failsafe::HaStatus;
 use crate::mqtt_topics::{
-    parse_button_payload, parse_inbound_topic, parse_target_payload, InboundKind, InboundTopic,
-    Segments, TargetPayload, TopicContext, TOPIC_MAX,
+    parse_button_payload, parse_flow_payload, parse_inbound_topic, parse_target_payload,
+    InboundKind, InboundTopic, Segments, TargetPayload, TopicContext, TOPIC_MAX,
 };
 
 /// Valves (the arrays of the echo filter and the latch).
@@ -364,6 +364,8 @@ pub enum InboundAction {
     StmSafeExit = 10,
     HaOnline = 11,
     HaOffline = 12,
+    /// a target given as a flow (Rust 2.2.10)
+    SetFlow = 13,
 }
 
 impl InboundAction {
@@ -382,6 +384,7 @@ impl InboundAction {
             Self::StmSafeExit,
             Self::HaOnline,
             Self::HaOffline,
+            Self::SetFlow,
         ]
         .get(usize::from(v))
         .copied()
@@ -409,6 +412,8 @@ pub struct InboundDecision {
     pub valve: u8,
     /// SetTarget
     pub pos: u8,
+    /// SetFlow: ml/min
+    pub flow_ml: u16,
     pub reason: RejectReason,
     /// Reject Payload: the TargetPayload value
     pub detail: i32,
@@ -422,6 +427,7 @@ impl Default for InboundDecision {
             action: InboundAction::Ignore,
             valve: NO_VALVE,
             pos: 0,
+            flow_ml: 0,
             reason: RejectReason::None,
             detail: 0,
             clear_retained: false,
@@ -484,7 +490,7 @@ fn active(mask: u16, valve: u8) -> bool {
         .is_some_and(|m| m & 1 != 0)
 }
 
-/// Target and CalibrateValve: the valve, then the payload.
+/// Target, FlowTarget and CalibrateValve: the valve, then the payload.
 fn valve_command(c: &InboundContext<'_>, t: &InboundTopic, payload: &[u8]) -> InboundDecision {
     let Some(valve) = t.valve else {
         return reject(RejectReason::UnknownValve, NO_VALVE, 0);
@@ -503,6 +509,15 @@ fn valve_command(c: &InboundContext<'_>, t: &InboundTopic, payload: &[u8]) -> In
             decided(InboundAction::CalibrateValve, 0)
         } else {
             reject(RejectReason::Payload, valve, 0)
+        };
+    }
+    if t.kind == InboundKind::FlowTarget {
+        return match parse_flow_payload(payload) {
+            Ok(flow_ml) => InboundDecision {
+                flow_ml,
+                ..decided(InboundAction::SetFlow, 0)
+            },
+            Err(r) => reject(RejectReason::Payload, valve, i32::from(r as u8)),
         };
     }
     match parse_target_payload(payload) {
@@ -555,6 +570,8 @@ fn button_command(c: &InboundContext<'_>, kind: InboundKind, payload: &[u8]) -> 
 ///    SetTarget (state form && echo.is_echo(valve, pos) -> Ignore); Stop -> StopValve with
 ///    stm_v3, else Reject Unsupported; NotNumber/OutOfRange -> Reject Payload (detail = the
 ///    TargetPayload);
+///  - FlowTarget: valve and inactive as Target; a number in l/min -> SetFlow, whether the valve
+///    takes it is known to the caller; else Reject Payload (detail = the TargetPayload);
 ///  - CalibrateValve: valve and inactive as Target, payload must be PRESS (else Reject Payload);
 ///  - other cmd topics: payload PRESS (else Reject Payload); StopAll and StmSafeExit need stm_v3
 ///    (else Unsupported); UnknownCommand -> Reject;
@@ -584,7 +601,9 @@ pub fn decide_inbound(c: &InboundContext<'_>, topic: &[u8], payload: &[u8]) -> I
         return ignore;
     }
     let mut d = match t.kind {
-        InboundKind::Target | InboundKind::CalibrateValve => valve_command(c, &t, payload),
+        InboundKind::Target | InboundKind::FlowTarget | InboundKind::CalibrateValve => {
+            valve_command(c, &t, payload)
+        }
         InboundKind::UnknownCommand => reject(RejectReason::UnknownCommand, NO_VALVE, 0),
         kind => button_command(c, kind, payload),
     };

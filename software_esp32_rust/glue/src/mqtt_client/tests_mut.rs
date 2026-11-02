@@ -10,6 +10,7 @@ use super::*;
 use crate::mqtt_conn::MQTT_CONNECT_UNAUTHORIZED;
 use vdm_esp_core::common::{OneWireId, TEMP_READ_ERROR, VAD_FAILED};
 use vdm_esp_core::event_log::{make_event, EVENT_TEXT_MAX};
+use vdm_esp_core::flow_layer::FlowView;
 use vdm_esp_core::stm_codec::StopReason;
 use vdm_esp_core::valve_model::HEALTH_STALE;
 
@@ -1475,6 +1476,192 @@ fn inbound_refused_targets_are_submitted_again_valve_after_valve_from_valve_1() 
     assert_eq!(sub[0].valve, 2);
     assert_eq!(sub[1].valve, 0);
     assert_eq!(sub[2].valve, 1);
+}
+
+// ---------------------------------------------------------------- the flow (Rust 2.2.10)
+
+const FLOW_SET: &str = "VdMot/valves/1/flow/set";
+const FLOW_STATE: &str = "VdMot/valves/1/flow/value";
+
+fn held_flow(hold_min: u16, est_ml: u32) -> FlowView {
+    FlowView {
+        enabled: true,
+        state: FlowState::Held,
+        known: true,
+        hold_min,
+        est_ml,
+        qmax_ml: 2500,
+        ..FlowView::default()
+    }
+}
+
+#[test]
+fn inbound_a_flow_is_a_target_through_the_qmax_and_the_message_is_cleared() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::MqttHa);
+    rig.snap(|s| s.flow[0] = held_flow(0, 0));
+    rig.publish_snap();
+    rig.settle(&mut c, 2);
+    let seq = rig.shared.regulator_state().command_seq;
+    rig.deliver(FLOW_SET, "1,25");
+    rig.run(&mut c, 2);
+    let sub = rig.submitted();
+    assert_eq!(sub.len(), 1);
+    assert_eq!(sub[0].kind, StmCommandType::SetTarget);
+    assert_eq!((sub[0].valve, sub[0].pos), (0, 50));
+    assert_eq!(sub[0].source, TargetSource::Mqtt);
+    assert_eq!(rig.payloads(FLOW_SET), vec![""]);
+    assert_eq!(rig.shared.regulator_state().command_seq, seq + 1);
+    rig.deliver(FLOW_SET, "2.5");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted()[1].pos, 100);
+    assert_eq!(rig.shared.status().commands_rejected, 0);
+    // Above qmax: the out of range of a target.
+    rig.deliver(FLOW_SET, "2.501");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted().len(), 2);
+    assert_eq!(rig.payloads(FLOW_SET), vec!["", "", ""]);
+    let ev = rig.rejected();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(Rig::text(&ev[0]), reject_reason_name(RejectReason::Payload));
+    assert_eq!(
+        (ev[0].arg1, ev[0].arg2),
+        (1, TargetPayload::OutOfRange as i32)
+    );
+    assert_eq!(rig.shared.regulator_state().command_seq, seq + 2);
+}
+
+#[test]
+fn inbound_a_flow_without_a_running_layer_is_unsupported() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.settle(&mut c, 2);
+    rig.deliver(FLOW_SET, "1");
+    rig.run(&mut c, 2);
+    rig.snap(|s| {
+        s.flow[0] = FlowView {
+            enabled: true,
+            state: FlowState::Unsupported,
+            ..held_flow(0, 0)
+        };
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 2);
+    rig.deliver(FLOW_SET, "1");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.shared.status().commands_rejected, 2);
+    assert!(rig.submitted().is_empty());
+    let ev = rig.rejected();
+    assert_eq!(
+        Rig::text(&ev[0]),
+        reject_reason_name(RejectReason::Unsupported)
+    );
+    assert_eq!((ev[0].arg1, ev[0].arg2), (1, 0));
+}
+
+#[test]
+fn inbound_a_flow_the_queue_refuses_is_submitted_again() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.snap(|s| s.flow[0] = held_flow(0, 0));
+    rig.publish_snap();
+    rig.settle(&mut c, 2);
+    rig.host.state().submit_result = false;
+    rig.deliver(FLOW_SET, "1,25");
+    rig.run(&mut c, 2);
+    assert!(rig.submitted().is_empty());
+    rig.host.state().submit_result = true;
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted()[0].pos, 50);
+}
+
+#[test]
+fn flow_state_goes_out_with_a_full_publish_and_when_the_estimate_moves() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| {
+        c.valves[1].active = true;
+        c.valves[2].active = true;
+    });
+    rig.link_up();
+    rig.snap(|s| {
+        s.valves[1].known = true;
+        s.valves[2].known = true;
+        s.flow[0] = held_flow(60, 973);
+        s.flow[1].enabled = false;
+        s.flow[3] = held_flow(60, 973); // inactive
+    });
+    rig.publish_snap();
+    rig.settle(&mut c, 40);
+    rig.run(&mut c, 10);
+    let a = r#"{"holdMin":60,"estLpm":0.973}"#;
+    assert_eq!(rig.payloads(FLOW_STATE), vec![a]);
+    assert!(rig
+        .published()
+        .iter()
+        .any(|p| p.topic == FLOW_STATE.as_bytes() && p.retain));
+    assert_eq!(rig.count("VdMot/valves/2/flow/value"), 0);
+    assert_eq!(rig.count("VdMot/valves/4/flow/value"), 0);
+    let targets = rig.count("VdMot/valves/1/target/value");
+    // A minute without a change of the estimate says nothing.
+    rig.snap(|s| s.flow[0].hold_min = 61);
+    rig.publish_snap();
+    rig.run(&mut c, 20);
+    assert_eq!(rig.payloads(FLOW_STATE), vec![a]);
+    // The estimate moved: this topic alone, one valve a pass, an inactive one is not published.
+    rig.snap(|s| {
+        s.flow[0] = held_flow(62, 972);
+        s.flow[2] = held_flow(62, 800);
+        s.flow[3].est_ml = 700;
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 1);
+    let b = r#"{"holdMin":62,"estLpm":0.972}"#;
+    assert_eq!(rig.payloads(FLOW_STATE), vec![a, b]);
+    assert_eq!(rig.count("VdMot/valves/3/flow/value"), 0);
+    rig.run(&mut c, 20);
+    assert_eq!(rig.payloads(FLOW_STATE), vec![a, b]);
+    let c_state = r#"{"holdMin":62,"estLpm":0.800}"#;
+    assert_eq!(rig.payloads("VdMot/valves/3/flow/value"), vec![c_state]);
+    assert_eq!(rig.count("VdMot/valves/4/flow/value"), 0);
+    assert_eq!(rig.count("VdMot/valves/1/target/value"), targets);
+    // Not known any more: the topic says so.
+    rig.snap(|s| {
+        s.flow[0] = FlowView {
+            known: false,
+            hold_min: 0,
+            est_ml: 0,
+            ..s.flow[0]
+        };
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 2);
+    assert_eq!(
+        rig.payloads(FLOW_STATE).last().map(String::as_str),
+        Some(r#"{"holdMin":null,"estLpm":null}"#)
+    );
+}
+
+#[test]
+fn flow_state_on_change_off_goes_out_with_the_full_publish_only() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| c.mqtt.on_change = false);
+    rig.link_up();
+    rig.snap(|s| s.flow[0] = held_flow(60, 973));
+    rig.publish_snap();
+    rig.settle(&mut c, 40);
+    rig.run(&mut c, 10);
+    assert_eq!(rig.count(FLOW_STATE), 1);
+    rig.snap(|s| s.flow[0].est_ml = 950);
+    rig.publish_snap();
+    rig.run(&mut c, 20);
+    assert_eq!(rig.count(FLOW_STATE), 1);
 }
 
 // ---------------------------------------------------------------- connection

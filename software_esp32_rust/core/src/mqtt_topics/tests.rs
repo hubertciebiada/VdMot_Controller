@@ -438,6 +438,12 @@ fn compat_and_new_topics_byte_exact() {
             b"Bad/WC",
             "VdMot/diag/valves/Bad/WC/coastClose",
         ),
+        row(
+            Topic::ValveFlow,
+            b"Bad/WC",
+            "VdMot/valves/Bad/WC/flow/value",
+            "VdMot/valves/Bad/WC/flow",
+        ),
     ];
     // every topic covered: the array type has TOPIC_COUNT entries
     for (i, r) in rows.iter().enumerate() {
@@ -587,7 +593,8 @@ fn subs(
     seg: Option<&Segments>,
     cap: usize,
 ) -> Vec<String> {
-    let mut out: [Subscription; MAX_SUBSCRIPTIONS + 1] = Default::default();
+    let mut out: [Subscription; MAX_SUBSCRIPTIONS + 1] =
+        core::array::from_fn(|_| Subscription::default());
     let n = build_subscriptions(c, mode, prefix, seg, &mut out[..cap]);
     out[..n]
         .iter()
@@ -608,6 +615,7 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "VdMot/valves/+/target/set q1",
             "VdMot/valves/+/target/set/set q1",
+            "VdMot/valves/+/flow/set q1",
             "VdMot/cmd/# q0",
             "homeassistant/status q1"
         ])
@@ -617,6 +625,7 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "VdMot/valves/+/target/set q1",
             "VdMot/valves/+/target/set/set q1",
+            "VdMot/valves/+/flow/set q1",
             "VdMot/cmd/# q0",
             "homeassistant/status q1",
             "ha/status q1"
@@ -628,6 +637,7 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "VdMot/valves/+/target/set q1",
             "VdMot/valves/+/target/set/set q1",
+            "VdMot/valves/+/flow/set q1",
             "VdMot/cmd/# q0",
             "homeassistant/status q1"
         ])
@@ -643,6 +653,7 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "VdMot/valves/+/target q1",
             "VdMot/valves/+/target/set q1",
+            "VdMot/valves/+/flow/set q1",
             "VdMot/cmd/# q0"
         ])
     );
@@ -657,6 +668,7 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "/VdMot/valves/+/target/set q1",
             "/VdMot/valves/+/target/set/set q1",
+            "/VdMot/valves/+/flow/set q1",
             "/VdMot/cmd/# q0"
         ])
     );
@@ -693,11 +705,14 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "VdMot/valves/+/target/set q1",
             "VdMot/valves/+/target/set/set q1",
+            "VdMot/valves/+/flow/set q1",
             "VdMot/cmd/# q0",
             "VdMot/valves/Bad/WC/target/set q1",
             "VdMot/valves/Bad/WC/target/set/set q1",
+            "VdMot/valves/Bad/WC/flow/set q1",
             "VdMot/valves/a/b/c/target/set q1",
-            "VdMot/valves/a/b/c/target/set/set q1"
+            "VdMot/valves/a/b/c/target/set/set q1",
+            "VdMot/valves/a/b/c/flow/set q1"
         ])
     );
     assert_eq!(
@@ -711,11 +726,14 @@ fn subscriptions_per_mode_separate_and_prefix() {
         v(&[
             "VdMot/valves/+/target q1",
             "VdMot/valves/+/target/set q1",
+            "VdMot/valves/+/flow/set q1",
             "VdMot/cmd/# q0",
             "VdMot/valves/Bad/WC/target q1",
             "VdMot/valves/Bad/WC/target/set q1",
+            "VdMot/valves/Bad/WC/flow/set q1",
             "VdMot/valves/a/b/c/target q1",
             "VdMot/valves/a/b/c/target/set q1",
+            "VdMot/valves/a/b/c/flow/set q1",
             "homeassistant/status q1"
         ])
     );
@@ -727,7 +745,7 @@ fn subscriptions_per_mode_separate_and_prefix() {
     );
     // A root so long that "/set" no longer fits after the spelled-out filter.
     let long_root = ctx_of(b"abcdefghijklmnopqrst", true, true);
-    assert_eq!(subs(&long_root, MqttMode::Mqtt, b"ha", None, ALL).len(), 3);
+    assert_eq!(subs(&long_root, MqttMode::Mqtt, b"ha", None, ALL).len(), 4);
 }
 
 #[test]
@@ -742,7 +760,7 @@ fn build_subscription_entry_i_of_the_table_none_past_the_last_and_for_off() {
         seg: Option<&'a Segments>,
     }
     let cases = [
-        // every entry: 29
+        // every entry: 42
         Case {
             ctx: ctx(b"VdMot"),
             mode: MqttMode::MqttHa,
@@ -771,7 +789,8 @@ fn build_subscription_entry_i_of_the_table_none_past_the_last_and_for_off() {
         },
     ];
     for c in &cases {
-        let mut table: [Subscription; MAX_SUBSCRIPTIONS + 1] = Default::default();
+        let mut table: [Subscription; MAX_SUBSCRIPTIONS + 1] =
+            core::array::from_fn(|_| Subscription::default());
         let n = build_subscriptions(&c.ctx, c.mode, c.prefix, c.seg, &mut table);
         assert!(n > 0);
         for (i, want) in table[..n].iter().enumerate() {
@@ -1047,6 +1066,32 @@ fn parse_inbound_topic_targets() {
         parse_inbound_topic(&s, b"ha", &edge, Some(&seg)).kind,
         InboundKind::Target
     );
+    // A flow in l/min: one form with separate and without, no state form.
+    let flow = parse_inbound_topic(&s, b"ha", b"VdMot/valves/2/flow/set", Some(&seg));
+    let want = InboundTopic {
+        kind: InboundKind::FlowTarget,
+        valve: Some(1),
+        state_form: false,
+    };
+    assert_eq!(flow, want);
+    let plain = ctx_of(b"VdMot", false, false);
+    let flow = parse_inbound_topic(&plain, b"ha", b"VdMot/valves/2/flow/set", Some(&seg));
+    assert_eq!(flow, want);
+    let flow = parse_inbound_topic(&s, b"ha", b"VdMot/valves/99/flow/set", Some(&seg));
+    assert_eq!((flow.kind, flow.valve), (InboundKind::FlowTarget, None));
+    for t in [
+        &b"VdMot/valves//flow/set"[..],
+        b"VdMot/valves/2/flow",
+        b"VdMot/valves/2/flow/value",
+        b"VdMot/valves/2/flow/set/set",
+    ] {
+        assert_eq!(
+            parse_inbound_topic(&s, b"ha", t, Some(&seg)).kind,
+            InboundKind::None,
+            "{}",
+            t.escape_ascii()
+        );
+    }
     // The empty topic is none of ours, also with an empty HA prefix (whose status topic does not
     // exist).
     assert_eq!(
@@ -1161,6 +1206,53 @@ fn parse_inbound_topic_fuzz_fixed_seed() {
         }
     }
     assert!(accepted < 20000);
+}
+
+#[test]
+fn parse_flow_payload_cases() {
+    use TargetPayload::*;
+    let oks: [(&[u8], u16); 13] = [
+        (b"0", 0),
+        (b"2", 2000),
+        (b"2.5", 2500),
+        (b"2,5", 2500),
+        (b"2.50", 2500),
+        (b"2.500", 2500),
+        (b"2,125", 2125),
+        (b"0.001", 1),
+        (b"00.25", 250),
+        (b" 1.5\r\n", 1500),
+        (b"\t1.5 ", 1500),
+        (b"65.535", 65535),
+        (b"0000000000000.25", 250),
+    ];
+    for (p, want) in oks {
+        assert_eq!(parse_flow_payload(p), Ok(want), "{}", p.escape_ascii());
+    }
+    let bad: [(&[u8], TargetPayload); 19] = [
+        (b"", Empty),
+        (b"   ", Empty),
+        (b"\r\n", Empty),
+        (b"abc", NotNumber),
+        (b"OPEN", NotNumber),
+        (b"STOP", NotNumber),
+        (b"-1", NotNumber),
+        (b"+1", NotNumber),
+        (b"1e3", NotNumber),
+        (b".5", NotNumber),
+        (b"5.", NotNumber),
+        (b"1.2.3", NotNumber),
+        (b"1,2,3", NotNumber),
+        (b"1 .5", NotNumber),
+        (b"2.5000", NotNumber),
+        (b"0.0001", NotNumber),
+        (b"1234567890123.456", NotNumber), // 17 bytes
+        (b"65.536", OutOfRange),
+        (b"999999999999.999", OutOfRange),
+    ];
+    for (p, want) in bad {
+        assert_eq!(parse_flow_payload(p), Err(want), "{}", p.escape_ascii());
+    }
 }
 
 #[test]

@@ -423,7 +423,7 @@ fn reject_reason_names() {
 
 #[test]
 fn inbound_button_actions() {
-    for a in 0..=InboundAction::HaOffline as u8 {
+    for a in 0..=InboundAction::SetFlow as u8 {
         let x = InboundAction::from_raw(a).unwrap();
         assert_eq!(x as u8, a);
         let button = matches!(
@@ -438,7 +438,43 @@ fn inbound_button_actions() {
         );
         assert_eq!(inbound_is_button(x), button, "{a}");
     }
-    assert_eq!(InboundAction::from_raw(13), None);
+    assert_eq!(InboundAction::from_raw(14), None);
+}
+
+#[test]
+fn decide_inbound_a_flow_clears_the_retained_message_and_leaves_the_rest_to_the_caller() {
+    let inb = Inbound::new(true, MqttMode::MqttHa);
+    let topic = "VdMot/valves/1/flow/set";
+    let d = inb.decide(topic, "2,5");
+    assert_eq!(d.action, InboundAction::SetFlow);
+    assert_eq!((d.valve, d.pos, d.flow_ml), (0, 0, 2500));
+    assert!(d.clear_retained);
+    assert!(!inbound_is_button(d.action));
+    let d = inb.decide(topic, "abc");
+    assert_eq!(
+        (d.action, d.valve, d.reason, d.detail),
+        (
+            InboundAction::Reject,
+            0,
+            RejectReason::Payload,
+            TargetPayload::NotNumber as i32
+        )
+    );
+    assert!(d.clear_retained);
+    let d = inb.decide(topic, "65.536");
+    assert_eq!(d.detail, TargetPayload::OutOfRange as i32);
+    let d = inb.decide("VdMot/valves/99/flow/set", "1");
+    assert_eq!(
+        (d.action, d.reason),
+        (InboundAction::Reject, RejectReason::UnknownValve)
+    );
+    let d = inb.decide("VdMot/valves/12/flow/set", "1");
+    assert_eq!(
+        (d.action, d.reason, d.valve),
+        (InboundAction::Reject, RejectReason::Inactive, 11)
+    );
+    // The broker echoing the clear.
+    assert_eq!(inb.decide(topic, "").action, InboundAction::Ignore);
 }
 
 #[test]

@@ -282,9 +282,12 @@ pub enum Topic {
     DiagValveCoastOpen = 55,
     /// `<main>diag/valves/<V>/coastClose`
     DiagValveCoastClose = 56,
+    // ---- 2.2.10 ----
+    /// `<main>valves/<V>/flow[/value]` the drift clock and the estimate of the flow layer
+    ValveFlow = 57,
 }
 
-pub const TOPIC_COUNT: u8 = 57;
+pub const TOPIC_COUNT: u8 = 58;
 
 /// Every topic in number order.
 const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
@@ -345,6 +348,7 @@ const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
     Topic::CmdStmSafeExit,
     Topic::DiagValveCoastOpen,
     Topic::DiagValveCoastClose,
+    Topic::ValveFlow,
 ];
 
 impl Topic {
@@ -458,9 +462,10 @@ const TOPICS: [TopicDef; TOPIC_COUNT as usize] = [
     path(b"cmd/stmSafeExit", false, N),
     item(b"diag/valves/", b"/coastOpen", false, S),
     item(b"diag/valves/", b"/coastClose", false, S),
+    item(b"valves/", b"/flow", true, S),
 ];
 const _: () = assert!(
-    Topic::DiagValveCoastClose as u8 + 1 == TOPIC_COUNT,
+    Topic::ValveFlow as u8 + 1 == TOPIC_COUNT,
     "TOPICS out of sync"
 );
 
@@ -538,7 +543,7 @@ pub fn build_ha_status_topic(prefix: &[u8], out: &mut [u8]) -> usize {
 }
 
 /// Subscriptions of one connection.
-pub const MAX_SUBSCRIPTIONS: usize = 29;
+pub const MAX_SUBSCRIPTIONS: usize = 42;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subscription {
@@ -574,7 +579,7 @@ fn add_subscription(s: &mut SubscriptionSink<'_>, filter: &[u8], qos: u8) {
     }
 }
 
-/// "<main>valves/<seg>/target[/set]" and the same + "/set".
+/// "<main>valves/<seg>/target[/set]", the same + "/set", and "<main>valves/<seg>/flow/set".
 fn add_target_filters(ctx: &TopicContext, main: &[u8], seg: &[u8], s: &mut SubscriptionSink<'_>) {
     let mut f = [0u8; TOPIC_BUF];
     let mut b = Builder::new(&mut f);
@@ -588,6 +593,12 @@ fn add_target_filters(ctx: &TopicContext, main: &[u8], seg: &[u8], s: &mut Subsc
     });
     add_subscription(s, b.text(), 1);
     b.add(b"/set");
+    add_subscription(s, b.text(), 1);
+    let mut b = Builder::new(&mut f);
+    b.add(main);
+    b.add(b"valves/");
+    b.add(seg);
+    b.add(b"/flow/set");
     add_subscription(s, b.text(), 1);
 }
 
@@ -626,10 +637,11 @@ fn add_subscriptions(
     }
 }
 
-/// Modes Mqtt and MqttHa: the two target command filters with a '+' for the valve (separate:
+/// Modes Mqtt and MqttHa: the three command filters with a '+' for the valve (separate:
 /// "<main>valves/+/target/set" and ".../target/set/set"; not separate: "<main>valves/+/target"
-/// and ".../target/set"), QoS 1; then "<main>cmd/#", QoS 0; then for every valve whose segment
-/// contains '/' the same two filters spelled out (QoS 1: '+' matches one level only); MqttHa also
+/// and ".../target/set"; both: ".../flow/set"), QoS 1; then "<main>cmd/#", QoS 0; then for every
+/// valve whose segment contains '/' the same three filters spelled out (QoS 1: '+' matches one
+/// level only); MqttHa also
 /// "homeassistant/status" and "<ha_prefix>/status" when the prefix differs (QoS 1). Off: none.
 /// Entries that do not fit `out` (the C++ cap) or [`TOPIC_MAX`] are skipped. `segments` may be
 /// None (no spelled-out filters); `ha_prefix` is read up to a NUL (the C++ null prefix is the
@@ -705,12 +717,14 @@ pub enum InboundKind {
     StmSafeExit = 9,
     /// `<main>cmd/<anything else>`
     UnknownCommand = 10,
+    /// `<main>valves/<seg>/flow/set` a flow in l/min (Rust 2.2.10)
+    FlowTarget = 11,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InboundTopic {
     pub kind: InboundKind,
-    /// Target / CalibrateValve: 0..11; None (C++ -1) = the segment names no valve
+    /// Target / CalibrateValve / FlowTarget: 0..11; None (C++ -1) = the segment names no valve
     pub valve: Option<u8>,
     /// Target without separate: exactly "<main>valves/<seg>/target"
     pub state_form: bool,
@@ -745,6 +759,7 @@ fn match_segment(seg: &[u8], segments: Option<&Segments>) -> Option<u8> {
 ///  - a leading '/' on the topic and on main is ignored for the rest;
 ///  - "<main>valves/<seg>/" + ("target/set" | "target/set/set") when separate,
 ///    + ("target" | "target/set") when not -> Target;
+///  - "<main>valves/<seg>/flow/set" -> FlowTarget;
 ///  - "<main>cmd/valves/<seg>/calibrate" -> CalibrateValve; the fixed cmd/ topics -> their kind;
 ///    any other "<main>cmd/..." -> UnknownCommand.
 ///
@@ -796,7 +811,14 @@ pub fn parse_inbound_topic(
                 };
             }
         }
-        return none;
+        return match rest.strip_suffix(b"/flow/set").filter(|s| !s.is_empty()) {
+            Some(seg) => InboundTopic {
+                kind: InboundKind::FlowTarget,
+                valve: match_segment(seg, segments),
+                state_form: false,
+            },
+            None => none,
+        };
     }
     let Some(rest) = rest.strip_prefix(b"cmd/") else {
         return none;
@@ -856,6 +878,19 @@ fn trim_blanks(p: &[u8]) -> &[u8] {
     p.get(start..end).unwrap_or_default()
 }
 
+/// The digits of 1+ digits, optionally followed by '.' or ',' and 1+ digits.
+fn split_number(s: &[u8]) -> Option<(&[u8], &[u8])> {
+    let int_len = s.iter().take_while(|c| c.is_ascii_digit()).count();
+    let int = s.get(..int_len).filter(|i| !i.is_empty())?;
+    match s.get(int_len..).unwrap_or_default() {
+        [] => Some((int, &[])),
+        [b'.' | b',', frac @ ..] if !frac.is_empty() && frac.iter().all(u8::is_ascii_digit) => {
+            Some((int, frac))
+        }
+        _ => None,
+    }
+}
+
 /// Target payload: optional surrounding spaces/tabs/CR/LF, at most 16 bytes in all; "OPEN" ->
 /// 100, "CLOSE" -> 0, "STOP" -> Err(Stop); otherwise 1+ digits, optionally '.' or ',' and 1+
 /// digits, converted with `round_target_percent()` (exact range 0..100, half up: 43.5 -> 44,
@@ -877,14 +912,7 @@ pub fn parse_target_payload(p: &[u8]) -> Result<u8, TargetPayload> {
         b"STOP" => return Err(TargetPayload::Stop),
         _ => {}
     }
-    // 1+ digits, then nothing or one separator and 1+ digits
-    let int_len = s.iter().take_while(|c| c.is_ascii_digit()).count();
-    let number = match s.get(int_len..).unwrap_or_default() {
-        [] => true,
-        [b'.' | b',', frac @ ..] => !frac.is_empty() && frac.iter().all(u8::is_ascii_digit),
-        _ => false,
-    };
-    if int_len == 0 || !number {
+    if split_number(s).is_none() {
         return Err(TargetPayload::NotNumber);
     }
     // "<int>[.<frac>]" (at most 16 bytes) through the correctly rounded decimal conversion, like
@@ -899,6 +927,29 @@ pub fn parse_target_payload(p: &[u8]) -> Result<u8, TargetPayload> {
         .and_then(|t| t.parse::<f64>().ok());
     v.and_then(round_target_percent)
         .ok_or(TargetPayload::OutOfRange)
+}
+
+/// Flow payload in l/min: optional surrounding spaces/tabs/CR/LF, at most 16 bytes in all; 1+
+/// digits, optionally '.' or ',' and 1..3 digits. The flow in ml/min; a target of the valve only
+/// up to its qmax, which the caller knows.
+pub fn parse_flow_payload(p: &[u8]) -> Result<u16, TargetPayload> {
+    if p.is_empty() {
+        return Err(TargetPayload::Empty);
+    }
+    if p.len() > TARGET_PAYLOAD_MAX {
+        return Err(TargetPayload::NotNumber);
+    }
+    let s = trim_blanks(p);
+    if s.is_empty() {
+        return Err(TargetPayload::Empty);
+    }
+    let (int, frac) = split_number(s)
+        .filter(|(_, frac)| frac.len() <= 3)
+        .ok_or(TargetPayload::NotNumber)?;
+    let pad = b"000".get(frac.len()..).unwrap_or_default();
+    let digits = int.iter().chain(frac).chain(pad);
+    let ml = digits.fold(0u64, |v, &c| v * 10 + u64::from(c - b'0'));
+    u16::try_from(ml).map_err(|_| TargetPayload::OutOfRange)
 }
 
 /// Button payload: exactly "PRESS" (HA default payload_press).

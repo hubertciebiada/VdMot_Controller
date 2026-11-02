@@ -89,6 +89,7 @@ fn connects_with_the_mac_client_id_lwt_online_first_wildcard_subscriptions() {
         subs(&[
             ("VdMot/valves/+/target/set", 1),
             ("VdMot/valves/+/target/set/set", 1),
+            ("VdMot/valves/+/flow/set", 1),
             ("VdMot/cmd/#", 0)
         ])
     );
@@ -161,9 +162,11 @@ fn a_configured_client_id_is_used_verbatim_ha_mode_subscriptions() {
         subs(&[
             ("VdMotFBH/valves/+/target/set", 1),
             ("VdMotFBH/valves/+/target/set/set", 1),
+            ("VdMotFBH/valves/+/flow/set", 1),
             ("VdMotFBH/cmd/#", 0),
             ("VdMotFBH/valves/Bad/WC/target/set", 1),
             ("VdMotFBH/valves/Bad/WC/target/set/set", 1),
+            ("VdMotFBH/valves/Bad/WC/flow/set", 1),
             ("homeassistant/status", 1),
             ("ha/status", 1)
         ])
@@ -244,10 +247,11 @@ fn clean_session_only_after_a_topic_config_change() {
     assert!(rig.clean_session());
     let all = rig.subscribed();
     assert_eq!(
-        all[all.len() - 3..].to_vec(),
+        all[all.len() - 4..].to_vec(),
         subs(&[
             ("VdMot/valves/+/target", 1),
             ("VdMot/valves/+/target/set", 1),
+            ("VdMot/valves/+/flow/set", 1),
             ("VdMot/cmd/#", 0)
         ])
     );

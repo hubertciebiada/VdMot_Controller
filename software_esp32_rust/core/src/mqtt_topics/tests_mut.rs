@@ -31,15 +31,17 @@ fn build_subscriptions_a_ha_prefix_whose_status_topic_is_exactly_topic_max_long(
     // reused entries: every filter is replaced as a whole
     let mut out: [Subscription; 8] = core::array::from_fn(|_| filled(b'x'));
     let n = build_subscriptions(&c, MqttMode::MqttHa, &prefix, None, &mut out);
-    assert_eq!(n, 5);
+    assert_eq!(n, 6);
     assert_text(&out[0].filter, "VdMotFBH/valves/+/target/set");
     assert_text(&out[1].filter, "VdMotFBH/valves/+/target/set/set");
-    assert_text(&out[2].filter, "VdMotFBH/cmd/#");
-    assert_text(&out[3].filter, "homeassistant/status");
-    assert_text(&out[4].filter, status_of(&prefix));
-    assert_eq!(out[4].qos, 1);
+    assert_text(&out[2].filter, "VdMotFBH/valves/+/flow/set");
+    assert_eq!(out[2].qos, 1);
+    assert_text(&out[3].filter, "VdMotFBH/cmd/#");
+    assert_text(&out[4].filter, "homeassistant/status");
+    assert_text(&out[5].filter, status_of(&prefix));
+    assert_eq!(out[5].qos, 1);
     // the entries past the last one are left alone
-    assert_eq!(out[5], filled(b'x'));
+    assert_eq!(out[6], filled(b'x'));
 }
 
 #[test]
@@ -49,10 +51,10 @@ fn build_subscriptions_a_ha_prefix_one_char_too_long_adds_no_entry() {
     let mut out: [Subscription; 8] = Default::default();
     assert_eq!(
         build_subscriptions(&c, MqttMode::MqttHa, &prefix, None, &mut out),
-        4
+        5
     );
-    assert_text(&out[3].filter, "homeassistant/status");
-    assert!(out[4].filter.is_empty());
+    assert_text(&out[4].filter, "homeassistant/status");
+    assert!(out[5].filter.is_empty());
 }
 
 #[test]
@@ -68,10 +70,11 @@ fn build_subscriptions_a_configured_segment_with_slash_of_the_full_segment_lengt
     // C++ a null HA prefix: the empty prefix gives the same
     assert_eq!(
         build_subscriptions(&c, MqttMode::Mqtt, b"", Some(&seg), &mut out),
-        5
+        7
     );
-    assert_text(&out[3].filter, "VdMotFBH/valves/abcd/fghij/target");
-    assert_text(&out[4].filter, "VdMotFBH/valves/abcd/fghij/target/set");
+    assert_text(&out[4].filter, "VdMotFBH/valves/abcd/fghij/target");
+    assert_text(&out[5].filter, "VdMotFBH/valves/abcd/fghij/target/set");
+    assert_text(&out[6].filter, "VdMotFBH/valves/abcd/fghij/flow/set");
 }
 
 #[test]
