@@ -8,7 +8,10 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
-## 2.2.11-revamped (unreleased)
+## 2.2.11-revamped
+
+This release also carries 2.2.8, 2.2.9 and 2.2.10 below, which had no release of their own. The
+STM32 code is that of 2.2.9; only its version number changes.
 
 ### ESP32: the flow layer positions on the stroke, with one move, without the drift
 
