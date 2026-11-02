@@ -924,6 +924,21 @@ fn dead_band_and_interval_hold_a_new_target_back_the_latest_wins() {
 }
 
 #[test]
+fn a_new_target_exactly_the_dead_band_away_is_served() {
+    let mut c = curve();
+    c.min_interval_s = 0;
+    let held = counts_flow(&c, target_counts(&c, 37));
+    c.deadband_ml = pct_flow(&c, 39).abs_diff(held) as u16;
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37);
+    position(&mut stm, &mut f, 0, false, 4800, 809);
+    stm.target(0, 39);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
+}
+
+#[test]
 fn the_reference_close_is_repeated_up_to_three_times_then_the_positioning_fails() {
     let c = curve();
     let mut f = layer(&c, &[0]);

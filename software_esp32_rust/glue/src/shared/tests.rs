@@ -229,6 +229,29 @@ fn health_found_tasks_and_the_smallest_largest_block() {
 }
 
 #[test]
+fn brake_an_answer_is_taken_once_and_only_by_its_attempt() {
+    // Rust 2.2.8: the web waits for the answer to its own sbrak
+    let a = AppShared::new();
+    assert_eq!(a.take_brake_result(7), None);
+    a.post_brake_result(2, 7, false, 5);
+    assert_eq!(
+        a.take_brake_result(7),
+        Some(BrakeResult {
+            attempt: 7,
+            valve: 2,
+            ok: false,
+            code: 5
+        })
+    );
+    assert_eq!(a.take_brake_result(7), None);
+    // a newer answer replaces an untaken one, and another attempt drops it
+    a.post_brake_result(2, 7, true, 0);
+    a.post_brake_result(3, 8, true, 0);
+    assert_eq!(a.take_brake_result(7), None);
+    assert_eq!(a.take_brake_result(8), None);
+}
+
+#[test]
 fn boot_the_app_thread_running_is_kept_once_marked() {
     // Rust addition: the boot deadline reads it (GLUE-DESIGN-ESP.md 6.3)
     let a = AppShared::new();
