@@ -498,10 +498,25 @@ a measured curve itself (API.md "Flow layer"):
 - The snapshot carries `FlowView` per valve; `position` of an enabled valve
   is the flow percentage of the held position (0 while unknown), so MQTT,
   Home Assistant and the dashboard see flow percentages without a change.
-- The configuration (`FlowConfig`, 12 x 81 B) lives in NVS `flow`
+- The configuration (`FlowConfig`, 12 x 84 B) lives in NVS `flow` and `flowx`
   (section 9), loaded next to the config at boot, published with a revision
   the stm thread follows (`StmLinkHost::flow_revision`), written by
   `POST /api/valves/{n}/flow`.
+- Drift (Rust 2.2.10, API.md "Drift"): each valve has a clock, `clock_ms`, set
+  by `drift_clock` at the start of a sequence, from the phase it replaces: a
+  held valve keeps it unless it was held for `HELD_RESET_MS` (`CLOSED_RESET_MS`
+  at the closed end stop), every other phase starts it again. `FlowLayer` takes
+  the limit as a member, so tests run both outcomes; the value is that one
+  constant, and `u32::MAX` means a positioning never starts it again.
+  `drift_tenths` is the shift in 0.1 pulses from the table `DRIFT_LOG` (the core
+  has no libm), `comp` the pulses a positioning adds on top of the target,
+  `held_comp` those of the held position, so `lpm` and `actual` are the target
+  without them also while a refresh runs. `drift_due` is checked in
+  `start_if_due`, with the desired target unchanged in `desired`: a refresh is
+  a positioning to the same target. A valve set by `/flow/counts` is `exact`:
+  no comp, no refresh until its next target. Failed of the layer sets
+  `HEALTH_FLOW_FAILED` on the published valve, which `valve_problem` reads; it
+  has no name in the `health` list of `/api/valves`.
 
 ## 7. Config schema
 
@@ -677,6 +692,7 @@ NVS namespace `vdmrev`:
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
 | `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it |
+| `flowx` | blob 21 | Rust 2.2.10: "VDMX", version 1, 12 x driftD (0.1 pulses per e), CRC32. Written only when a drift changes; absent: no drift, and `flow` stays what 2.2.8 reads. One that cannot be read gives no drift and event 124 with arg2 1; saves go on and the next change of a drift rewrites it |
 
 Config load order (`loadConfigBlobs`): `cfg` + `cfgx` from NVS; a missing or
 undecodable `cfg` falls back to the backup files (`config_restored`); a
@@ -981,7 +997,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 120 | config_newer_schema | Warning | W | - | base schema / unknown ext records |
 | 121 | files_removed | Info | - | - | files / KiB / name or `legacy images` |
 | 122 | heap_critical | Error | W | - | free / largest block (the heap guard's restart follows, section 16) |
-| 124 | flow_config_unreadable | Error | W | - | Rust 2.2.8: 1 NVS not open, 2 no memory, 3 a bad blob (NVS `flow`, section 9) |
+| 124 | flow_config_unreadable | Error | W | - | Rust 2.2.8: 1 NVS not open, 2 no memory, 3 a bad blob / 0 NVS `flow`, 1 NVS `flowx` (section 9) |
 | 200 | net_up | Info | W | - | 1 eth, 2 wifi / - / IP |
 | 201 | net_down | Warning | W | - | interface |
 | 202 | mqtt_connected | Info | W | - | |

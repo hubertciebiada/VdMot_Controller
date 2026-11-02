@@ -117,6 +117,7 @@ parse them must be checked.
 | Topic | QoS | Payload | Action |
 |---|---|---|---|
 | separate on: `<main>valves/<V>/target/set` (`.../target/set/set` also accepted for ioBroker); separate off: `<main>valves/<V>/target` or `.../target/set` | 1 | `0`..`100`, optionally with a fraction (`.` or `,`, e.g. `43.7`, `43,7`), rounded half up; `OPEN` = 100, `CLOSE` = 0; `STOP` (STM 2.1: stops the valve where it is) | target of the valve |
+| `<main>valves/<V>/flow/set` (with and without separate) | 1 | the flow in l/min: digits, optionally `.` or `,` and 1..3 digits, e.g. `2.5`, `2,5`, `0.125` | target of the valve with the flow layer: 0..qmax l/min as a percentage of `qmax` (Rust 2.2.10) |
 | `<main>cmd/valves/<V>/calibrate` | 0 | `PRESS` | calibrate the valve |
 | `<main>cmd/calibrate` | 0 | `PRESS` | calibrate all valves |
 | `<main>cmd/detect` | 0 | `PRESS` | valve detection |
@@ -166,7 +167,8 @@ before).
 | `<main>valves/<V>/requested` | requested (desired) target | yes | setting | active valve with a target |
 | `<main>valves/<V>/sync` | target delivery: `unknown`, `synced`, `pending`, `await_ack`, `await_verify`, `failed` | yes | setting | active valve |
 | `<main>valves/<V>/failsafe` | `off`, `lease` (regulator silent), `blocked` (blocked valve at its failsafe position) | yes | setting | active valve |
-| `<main>valves/<V>/problem` | `1` when the valve is blocked, failed, without contact, stale, its target is not confirmed or a temperature failed, else `0` | yes | setting | active valve |
+| `<main>valves/<V>/problem` | `1` when the valve is blocked, failed, without contact, stale, its target is not confirmed, a temperature failed or its flow layer failed to position it, else `0` | yes | setting | active valve |
+| `<main>valves/<V>/flow` | `{"holdMin":60,"estLpm":0.973}`: minutes on the drift clock and the estimated flow of this loop in l/min, both `null` while the held position is not known (API.md "Drift") | yes | setting | active valve with the flow layer, every full publish and, with **on change**, when the estimate moves, at most once a minute |
 | `<main>diag/valves/<V>/lastMove` | `{"dir":"open","req":408,"cnt":395,"stop":"endstop","peak":299,"ms":15784}` | no | setting | v2, after each move |
 | `<main>diag/valves/<V>/earlyStops` | count since STM start (early stops the next move did not recover) | no | setting | v2, on change |
 | `<main>diag/valves/<V>/cmdRejected` | count since STM start | no | setting | v2, on change |
@@ -221,6 +223,14 @@ API.md) takes and reports percentages of its flow band: `valves/<V>/target`
 `synced` as soon as the layer holds the target. The Home Assistant entities
 of the valve carry the same values; `failsafe` and the failsafe position stay
 stroke percentages.
+
+Since Rust 2.2.10 such a valve also takes its target in l/min on
+`valves/<V>/flow/set`. It is the percentage of `qmax` from there on, so
+`target`, `requested` and `actual` move as usual. The ESP clears a retained
+message on the topic, as on `target/set`. Without the layer running on the valve
+the command is rejected `unsupported`, above `qmax` it is a payload reject with
+detail 3 (out of range). The estimate `valves/<V>/flow` has no Home Assistant
+entity.
 
 ## Events
 

@@ -297,7 +297,8 @@ class Device:
                                 # the flow layer (Rust 2.2.8): its configuration and held position
                                 "flow": {"enabled": False, "qmax": 2.7, "refmA": 34, "openmA": 30, "fallbackPct": 15,
                                          "minIntervalS": 300, "deadbandLpm": 0.05, "offset": 0, "gain": 1.0,
-                                         "refSide": "closed", "strokeCounts": 0, "preClose": False, "points": []},
+                                         "refSide": "closed", "strokeCounts": 0, "preClose": False, "driftD": 0.0,
+                                         "points": []},
                                 "flowCounts": None})
         for i, (name, blocked) in enumerate(STATIONS[self.station]):
             v = self.valves[i]
@@ -773,6 +774,18 @@ class Device:
         return {"enabled": True, "state": "held", "counts": counts, "targetCounts": counts, "lpm": round(lpm, 3),
                 "ms": counts * 7, "peak": 12.3}
 
+    def flow_document(self, i, v):
+        """GET and POST /api/valves/{n}/flow: the `flow` member with the drift clock and the estimate.
+
+        The mock stands at minute 30, where the curve was measured: the estimate is the flow."""
+        flow = {}
+        for key, value in self.flow_view(v).items():
+            flow[key] = value
+            if key == "lpm":
+                flow["holdMin"] = None if value is None else 30
+                flow["estLpm"] = value
+        return {"valve": i + 1, "config": v["flow"], "flow": flow, "refDelta": None}
+
     def flow_target_counts(self, cfg, pct):
         """The pulses of a target (the firmware's target_counts)."""
         pts = cfg["points"]
@@ -794,7 +807,7 @@ class Device:
     def flow_patch(self, cfg, doc):
         """Applies a flow configuration patch; returns an error detail or None (the firmware's rules)."""
         keys = {"enabled", "qmax", "refmA", "openmA", "fallbackPct", "minIntervalS", "deadbandLpm", "offset", "gain",
-                "refSide", "strokeCounts", "preClose", "points"}
+                "refSide", "strokeCounts", "preClose", "driftD", "points"}
         for k in doc:
             if k not in keys:
                 return "invalid", "unknown key"
@@ -812,7 +825,9 @@ class Device:
                  ("offset", lambda x: self.integer(x) and -10000 <= x <= 10000, "offset -10000..10000"),
                  ("gain", lambda x: self.number(x) and 0.1 <= x <= 10, "gain 0.1..10"),
                  ("strokeCounts", lambda x: self.integer(x) and 0 <= x <= 10000,
-                  "strokeCounts 0..10000 (refSide open needs 1..10000)")]
+                  "strokeCounts 0..10000 (refSide open needs 1..10000)"),
+                 ("driftD", lambda x: self.number(x) and 0 <= x <= 25.5 and abs(x * 10 - round(x * 10)) < 1e-6,
+                  "driftD 0..25.5")]
         for key, ok, detail in rules:
             if not ok(new[key]):
                 return "out_of_range", detail
@@ -1420,7 +1435,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method, path, q):
         d = self.dev
-        m = re.fullmatch(r"/api/valves/([1-9]|1[0-2])/([a-z-]+(?:/counts)?)", path)
+        m = re.fullmatch(r"/api/valves/([1-9]|1[0-2])/([a-z-]+(?:/counts|/target)?)", path)
         if m:
             return self.valve_route(method, int(m.group(1)) - 1, m.group(2))
         known = self.KNOWN.get(path)
@@ -1591,7 +1606,7 @@ class Handler(BaseHTTPRequestHandler):
         v = d.valves[i]
         routes = {"target": "POST", "calibrate": "POST", "assembly": "POST", "service-move": "POST",
                   "sensors": "POST", "profile": ("GET", "POST"), "stop": "POST", "flow": ("GET", "POST"),
-                  "flow/counts": "POST", "brake": "POST"}
+                  "flow/counts": "POST", "flow/target": "POST", "brake": "POST"}
         if what not in routes:
             self.drain()
             return self.error(404, "not_found", self.path)
@@ -1603,7 +1618,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(404, "not_found", "no profile")
             return self.send_json(200, {"valve": i + 1, "count": len(v["profile"]), "samples": v["profile"]})
         if what == "flow" and method == "GET":
-            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v), "refDelta": None})
+            return self.send_json(200, d.flow_document(i, v))
         doc = self.json_body()
         if doc is None:
             return
@@ -1616,7 +1631,7 @@ class Handler(BaseHTTPRequestHandler):
                 v["flowCounts"] = d.flow_target_counts(v["flow"], v["target"])
             if not v["flow"]["enabled"]:
                 v["flowCounts"] = None
-            return self.send_json(200, {"valve": i + 1, "config": v["flow"], "flow": d.flow_view(v), "refDelta": None})
+            return self.send_json(200, d.flow_document(i, v))
         if what == "flow/counts":
             if self.stm_refused():
                 return
@@ -1632,6 +1647,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(503, "queue_full", "STM command queue full")
             v["flowCounts"] = n
             return self.accepted()
+        if what == "flow/target":
+            # the flow through the curve to a target, then as a target in percent
+            if self.stm_refused():
+                return
+            state = d.flow_view(v)["state"]
+            if state == "off":
+                return self.error(409, "flow_off", "flow layer not enabled")
+            if state == "unsupported":
+                return self.error(409, "unsupported", "STM 2.2.8 required")
+            cfg = v["flow"]
+            if set(doc) != {"lpm"}:
+                return self.error(400, "invalid", "unknown key")
+            lpm = doc["lpm"]
+            if not d.number(lpm) or not 0 <= lpm <= cfg["qmax"]:
+                return self.error(400, "out_of_range", "lpm 0..qmax")
+            if not active:
+                return self.error(409, "inactive", "valve not active")
+            if d.queue_full():
+                return self.error(503, "queue_full", "STM command queue full")
+            pct = d.flow_pct(cfg, lpm)
+            d.set_target(i, pct)
+            reached = round(d.flow_lpm(cfg, d.flow_target_counts(cfg, pct)), 3)
+            return self.send_json(202, {"valve": i + 1, "lpm": reached, "target": pct,
+                                        "clipped": lpm > cfg["points"][-1][1]})
         if what == "brake":
             # STM 2.2.9 `sbrak`: the STM's answer is returned (the mock STM accepts every value)
             if self.stm_refused(v3=True):

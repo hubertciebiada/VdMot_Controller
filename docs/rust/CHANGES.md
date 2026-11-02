@@ -8,6 +8,30 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.10-revamped (unreleased)
+
+### ESP32: a target in l/min and the drift of a held position
+
+- `POST /api/valves/{n}/flow/target` `{"lpm":2.5}` and the MQTT topic `valves/<V>/flow/set`
+  (`2.5` or `2,5`, up to three decimals) set the target of a valve with the flow layer in l/min:
+  a percentage of `qmax` from there on, on the same path as a target in percent. The answer of
+  the POST gives the flow reached, the target and `clipped`. A valve without a running layer
+  refuses: `409 flow_off` / `409 unsupported`, MQTT reject `unsupported`
+  ([API.md](../revamped/API.md), [MQTT.md](../revamped/MQTT.md)).
+- `driftD` per valve (0.1 pulses per e, NVS `flowx`, default 0) turns on the drift model: the
+  estimate of the held flow, `estLpm` with the clock `holdMin` in `GET /api/valves/{n}/flow` and
+  the new MQTT topic `valves/<V>/flow` (no Home Assistant entity; not in `/api/valves`). When the
+  estimate falls `deadbandLpm` below the target and `minIntervalS` passed, the valve is positioned
+  again. `/flow/counts` stays exact: no correction, no refresh. With `driftD` 0 a valve behaves as
+  in 2.2.9, and a rollback to 2.2.8 reads NVS `flow` unchanged
+  ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs)).
+- MQTT `valves/<V>/problem` is 1 while the flow layer failed to position the valve; `common/state`
+  shows `info` then.
+- The ESP subscribes to `valves/+/flow/set` too, and to the spelled-out filter of a segment with
+  a `/` (42 subscriptions at most).
+- Event 124 `flow_config_unreadable` has arg2 1 for NVS `flowx`, and then the set stays loaded:
+  saves go on.
+
 ## 2.2.9-revamped (unreleased)
 
 ### STM32: a brake at the end of a service move

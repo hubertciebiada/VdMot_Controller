@@ -228,7 +228,8 @@ imported (the new failsafe starts with 60 min / 50 %).
 | POST | `/api/stm/safe-mode/leave` | – | 202 (STM 2.1) |
 | GET | `/api/valves/{n}/flow` | – | `{"valve":n,"config":{...},"flow":{...},"refDelta":n\|null}` (Rust 2.2.8, below) |
 | POST | `/api/valves/{n}/flow` | a patch of the config members (below) | 200 with the document of the GET; `400 malformed` / `invalid` (unknown key) / `out_of_range` with the rule as the detail, nothing changed; `500 nvs` `flow config not saved` (the write failed) or `stored flow config unreadable` (NVS `flow` is there but could not be read, event 124 `flow_config_unreadable`: the save would put the defaults over the other valves) |
-| POST | `/api/valves/{n}/flow/counts` | `{"counts":0..10000}` | 202; positions the valve to the corrected pulses at once (0 = closed), outside the dead band and the interval; `409 flow_off` / `409 unsupported` while the layer does not run on the valve |
+| POST | `/api/valves/{n}/flow/counts` | `{"counts":0..10000}` | 202; positions the valve to the corrected pulses at once (0 = closed), outside the dead band and the interval, with no drift correction and no refresh until the next target; `409 flow_off` / `409 unsupported` while the layer does not run on the valve |
+| POST | `/api/valves/{n}/flow/target` | `{"lpm":2.5}`, 0..`qmax`, plain decimal, at most three decimals | 202 `{"valve":n,"lpm":2.512,"target":93,"clipped":false}`: the target the flow became, and what the curve gives at it (Rust 2.2.10, below); `409 flow_off` / `409 unsupported` while the layer does not run on the valve; `400 out_of_range` `lpm 0..qmax`, `malformed`, `invalid` (another key); then the refusals of a target (`409 inactive`, `503 queue_full`) |
 | POST | `/api/valves/{n}/brake` | `{"maxMs":0..100,"gapMs":0..100,"mult":0..10}` (both times 0 = off; `mult` optional, sent to the STM only when above 0; `maxMs` above 0 needs `gapMs` or `mult`) | the STM's answer to `sbrak` (STM 2.2.9, plug braking at the end of a counted move; RAM only): `200 {"valve":n,"result":"ok"}`, `400 stm_rejected` with the error code, `504 stm_timeout` after 3 s without an answer. Refused without sending: `400 out_of_range` for a value outside the ranges, `400 invalid` for `maxMs` above 0 with neither `gapMs` nor `mult` (a brake by time alone drives the stopped motor backwards), `409 stm_unsupported` below protocol 3 and below STM 2.2.9 (`STM 2.2.9 required`, also while the STM version is unknown). The server serves nothing else while it waits (Rust 2.2.8) |
 
 Calibrate, assembly, service move and profile are accepted for inactive valves
@@ -250,10 +251,10 @@ configuration and the `flow` block of the valve entry:
 {"valve":1,
  "config":{"enabled":true,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,
            "minIntervalS":300,"deadbandLpm":0.050,"offset":0,"gain":1.000,
-           "refSide":"closed","strokeCounts":0,"preClose":false,
+           "refSide":"closed","strokeCounts":0,"preClose":false,"driftD":5.5,
            "points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]},
  "flow":{"enabled":true,"state":"held","counts":809,"targetCounts":809,"lpm":1.000,
-         "ms":5663,"peak":12.3},
+         "holdMin":60,"estLpm":0.973,"ms":5663,"peak":12.3},
  "refDelta":24}
 ```
 - `refDelta` (null until measured, also on a disabled valve): with `refSide`
@@ -276,7 +277,8 @@ configuration and the `flow` block of the valve entry:
   of the valve from the closed end stop (1..10000 with `open`: the final
   closing move is `strokeCounts` minus the target counts); `preClose` (closed
   reference only): a warm-up of the end stop before the final move (close,
-  open 300 pulses, close again).
+  open 300 pulses, close again); `driftD` 0..25.5, 0.1 pulses per e, the drift
+  of the valve (below; default 0: no drift model).
 - `points`: 2..16 pairs `[counts, lpm]`, pulses from the closed end stop
   (whatever `refSide`) strictly increasing (the first may be 0, every one at
   most 10000), the flow non-decreasing. A target t maps to the first position
@@ -287,8 +289,9 @@ configuration and the `flow` block of the valve entry:
   (counted from the closed end stop on both sides), / qmax x 100, rounded.
 - Numbers are plain decimals with at most three decimals; `POST` applies the
   members it names (`points` replaces every point) and checks the result;
-  the set is stored in NVS (`flow`) and survives restarts; a factory reset
-  drops it. The config import/export (`/api/config`) does not carry it.
+  the set is stored in NVS (`flow`, `driftD` in `flowx`) and survives
+  restarts; a factory reset drops it. The config import/export (`/api/config`)
+  does not carry it.
 - Positioning (every change, from the reference end stop): a close of the
   held pulses + 500 (the stroke when unknown) at `refmA` that must end at an
   end stop (two more closes of 800 otherwise, then `failed`), one opening move
@@ -315,6 +318,41 @@ configuration and the `flow` block of the valve entry:
   failsafe position of a flow valve is not a flow.
 - Events 416 `flow_positioned`, 417 `flow_position_failed`, 418
   `flow_hold_lost` (DESIGN.md section 13).
+
+##### A target in l/min (Rust 2.2.10)
+
+`POST /api/valves/{n}/flow/target` is `POST /api/valves/{n}/target` with the
+percentage worked out from `qmax`: the same command, the same target, the same
+target shown everywhere else; a target stays a whole percent of `qmax`. `lpm` of
+the answer is the flow of the curve at the pulses of that target, `target` the
+percentage. `clipped` is true for a flow above the last point of the curve (at
+most `qmax`): the valve stops at the last point. A legacy valve, without the
+layer, answers `409 flow_off`.
+
+##### Drift (Rust 2.2.10)
+
+A valve positioned from the end stop gives more flow in the first minutes and
+then less and less. With `driftD` above 0 the layer keeps a clock of the
+held position, `holdMin`, and works with the shift of the position in pulses,
+`driftD` x ln((1 + t) / 31), t in minutes up to 480: 0 at minute 30, where the
+curves are measured.
+
+- `estLpm` is the flow of the curve at the held pulses minus the shift, of this
+  one loop, without the other loops on the manifold; `lpm` stays the flow of
+  the target. With `driftD` 0 they are the same.
+- When the estimate lies `deadbandLpm` or more below the target and
+  `minIntervalS` passed, the valve is positioned again (event 416): `lpm`,
+  `target` and `actual` stay.
+- A positioning with the clock past minute 30 opens the valve by the shift of
+  that moment on top of the target pulses.
+- The clock starts with a positioning and runs on through the positionings of
+  a held valve. It starts again at a positioning of a valve that was closed for
+  240 s or held for `HELD_RESET_MS`
+  ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs)), and at
+  the first one after a restart, a lost hold, a calibration or a lease failsafe.
+- `holdMin` and `estLpm` are null while the held position is not known. They
+  are in this document and the MQTT topic `valves/<V>/flow`, not in the `flow`
+  block of `/api/valves`.
 
 ### Configuration
 
