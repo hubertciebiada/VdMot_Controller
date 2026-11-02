@@ -877,6 +877,7 @@ fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
     let v = r.port().last.valves[0];
     assert_eq!((v.desired, v.flow_target()), (37, Some(1000)));
     assert_eq!(v.source, TargetSource::Web);
+    assert_eq!(r.port().last.flow[0].target_ml, Some(1000));
     // A flow in the same whole % is a target of its own.
     r.now = r.now.wrapping_add(300_000);
     t.flow_ml = Some(1060);
@@ -900,6 +901,7 @@ fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
     r.run(10_000);
     let v = r.port().last.valves[0];
     assert_eq!((v.desired, v.flow_target()), (40, None));
+    assert_eq!(r.port().last.flow[0].target_ml, None);
     // (a close of this STM always meets the end stop: the positioning goes on from there)
     assert_eq!(
         r.stm().lines_of("svmov")[4..],
@@ -974,6 +976,15 @@ fn flow_layer_a_new_curve_gives_a_target_in_l_min_the_percent_of_its_stroke() {
     let v = r.port().last.valves[0];
     assert_eq!((v.desired, v.flow_target()), (18, Some(1000)));
     assert_eq!(v.source, TargetSource::Web);
+    assert_eq!(r.port().last.flow[0].target_ml, Some(1000));
+    // Without the layer the valve shows no flow target, and keeps it for its return.
+    r.s.apply_flow_config(&flow_configs(0, false));
+    r.run(10_000);
+    assert_eq!(r.port().last.flow[0].target_ml, None);
+    assert_eq!(r.port().last.valves[0].flow_target(), Some(1000));
+    r.s.apply_flow_config(&longer);
+    r.run(30_000);
+    assert_eq!(r.port().last.flow[0].target_ml, Some(1000));
     // A target in % stays what it was asked for.
     let t = r.target(0, 25, TargetSource::Web);
     r.command(&t);

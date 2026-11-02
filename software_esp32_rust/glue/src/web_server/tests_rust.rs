@@ -790,7 +790,7 @@ fn upload_into_a_full_store_names_the_image_it_removed() {
 /// The flow member of a valve without the layer.
 const FLOW_OFF: &str = concat!(
     r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"#,
-    r#""lpm":null,"ms":null,"peak":null}"#
+    r#""lpm":null,"targetLpm":null,"ms":null,"peak":null}"#
 );
 
 #[test]
@@ -805,7 +805,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":false,"qmax":2.700,"#));
     assert!(t.ends_with(concat!(
         r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"#,
-        r#""ms":null,"peak":null},"refDelta":null}"#
+        r#""targetLpm":null,"ms":null,"peak":null},"refDelta":null}"#
     )));
     let before = st.shared().flow_revision();
     let body = concat!(
@@ -925,6 +925,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
         last_ms: 5684,
         last_peak: 123,
         ref_delta: None,
+        target_ml: Some(1250),
         ..FlowView::default()
     };
     rig.state().snapshot.valves[0].position = 37;
@@ -932,7 +933,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
     let t = text(&r);
     assert!(t.contains(concat!(
         r#""flow":{"enabled":true,"state":"held","counts":812,"targetCounts":809,"#,
-        r#""lpm":1.012,"ms":5684,"peak":12.3}},{"idx":2,"#
+        r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"peak":12.3}},{"idx":2,"#
     )));
     assert!(t.contains(r#","pos":37,"#));
     assert_eq!(count_of(&t, FLOW_OFF), 11);

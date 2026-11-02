@@ -1592,6 +1592,7 @@ impl<P: StmSessionPort> StmSession<P> {
             // A flow valve reports the % of its stroke it holds (0 while unknown).
             if !matches!(f.state, FlowState::Off | FlowState::Unsupported) {
                 v.position = f.pct;
+                f.target_ml = v.flow_target();
             }
             if f.state == FlowState::Failed {
                 v.health += HEALTH_FLOW_FAILED;

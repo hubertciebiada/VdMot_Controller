@@ -573,6 +573,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         target_counts: crate::flow_layer::FLOW_COUNTS_MAX,
         flow_ml: u32::from(u16::MAX),
         pct: 100,
+        target_ml: Some(crate::flow_layer::FLOW_QMAX_MAX_ML),
         last_valid: true,
         last_ms: u32::MAX,
         last_peak: u16::MAX,
@@ -601,7 +602,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     let doc = String::from_utf8(jw.as_bytes().to_vec()).expect("UTF-8");
     let block = concat!(
         r#""flow":{"enabled":true,"state":"positioning","counts":10000,"targetCounts":10000,"#,
-        r#""lpm":65.535,"ms":4294967295,"peak":6553.5}"#
+        r#""lpm":65.535,"targetLpm":20.000,"ms":4294967295,"peak":6553.5}"#
     );
     assert_eq!(doc.matches(block).count(), 12);
     for member in [
@@ -617,8 +618,8 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     }
     assert_eq!(doc.matches(r#""health":["blocked","#).count(), 12);
     assert_eq!(doc.matches(r#""temp":-3276.8}"#).count(), 24);
-    // 313 B below RESPONSE_SIZE.
-    assert_eq!(jw.length(), 16_071);
+    // 85 B below RESPONSE_SIZE.
+    assert_eq!(jw.length(), 16_299);
 }
 
 // ---------------------------------------------------------------- profile, sensors, events
@@ -925,7 +926,7 @@ const D: HttpMethod = HttpMethod::Delete;
 /// The flow member of a valve without the layer (Rust 2.2.8).
 const FLOW_OFF: &str = concat!(
     r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"#,
-    r#""lpm":null,"ms":null,"peak":null}"#
+    r#""lpm":null,"targetLpm":null,"ms":null,"peak":null}"#
 );
 
 const CASES: [(HttpMethod, &str, ApiRoute); 48] = [
@@ -1589,6 +1590,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         target_counts: 809,
         flow_ml: 1012,
         pct: 37,
+        target_ml: Some(1250),
         last_valid: true,
         last_ms: 5684,
         last_peak: 123,
@@ -1601,7 +1603,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         String::from_utf8_lossy(jw.as_bytes()),
         concat!(
             r#"{"enabled":true,"state":"held","counts":812,"targetCounts":809,"#,
-            r#""lpm":1.012,"ms":5684,"peak":12.3}"#
+            r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"peak":12.3}"#
         )
     );
     // Unknown after a positioning: the position is gone, the last move stays.
@@ -1619,7 +1621,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         String::from_utf8_lossy(jw.as_bytes()),
         concat!(
             r#"{"enabled":true,"state":"unknown","counts":null,"targetCounts":809,"#,
-            r#""lpm":null,"ms":5684,"peak":12.3}"#
+            r#""lpm":null,"targetLpm":1.250,"ms":5684,"peak":12.3}"#
         )
     );
     let mut jw = JsonWriter::new(&mut buf);
@@ -1645,13 +1647,13 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
     assert!(j.contains(r#""points":[[593,0.000],[1100,2.700]]},"flow":{"enabled":true,"#));
-    assert!(j.contains(r#""lpm":1.012,"ms":5684,"#));
+    assert!(j.contains(r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"#));
     assert!(j.ends_with(r#""peak":12.3},"refDelta":-24}"#));
     check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());
     let mut jw = JsonWriter::new(&mut buf);
     assert!(write_valve_flow_json(&mut jw, 2, &c, &unknown));
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
-    assert!(j.contains(r#""lpm":null,"ms":5684,"#));
+    assert!(j.contains(r#""lpm":null,"targetLpm":1.250,"ms":5684,"#));
     let none = FlowView::default();
     let mut jw = JsonWriter::new(&mut buf);
     assert!(write_valve_flow_json(&mut jw, 2, &c, &none));

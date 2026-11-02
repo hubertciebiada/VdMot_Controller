@@ -888,6 +888,8 @@ pub struct FlowView {
     pub flow_ml: u32,
     /// `counts` in % of the stroke: the position the valve reports
     pub pct: u8,
+    /// ml/min of the desired target when it is a flow and the layer runs (the session adds it)
+    pub target_ml: Option<u16>,
     /// a positioning completed since the start: `last_ms` and `last_peak` are the final move's
     pub last_valid: bool,
     /// duration of the final move of the last positioning (ms)
@@ -1600,6 +1602,7 @@ impl FlowLayer {
             } else {
                 0
             },
+            target_ml: None,
             last_valid: running && fv.last_valid,
             last_ms: fv.last_ms,
             last_peak: fv.last_peak,

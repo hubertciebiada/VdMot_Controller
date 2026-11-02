@@ -627,6 +627,7 @@ static NO_FLOW: FlowView = FlowView {
     target_counts: 0,
     flow_ml: 0,
     pct: 0,
+    target_ml: None,
     last_valid: false,
     last_ms: 0,
     last_peak: 0,
@@ -634,10 +635,11 @@ static NO_FLOW: FlowView = FlowView {
 };
 
 /// `{"enabled":..,"state":"off|unsupported|unknown|positioning|held|failed","counts":n|null,
-/// "targetCounts":n,"lpm":1.000|null,"ms":n|null,"peak":12.3|null}`: the held position
-/// (pulses from the reference end stop, the flow of the curve there) while it is known, the
-/// pulses of the current or last positioning, the duration and the peak current (mA, one
-/// decimal) of the final move of the last positioning.
+/// "targetCounts":n,"lpm":1.000|null,"targetLpm":1.000|null,"ms":n|null,"peak":12.3|null}`: the
+/// held position (pulses from the reference end stop, the flow of the curve there) while it is
+/// known, the pulses of the current or last positioning, the target in l/min (null: a target in
+/// %), the duration and the peak current (mA, one decimal) of the final move of the last
+/// positioning.
 pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
     jw.begin_object();
     jw.kv("enabled", f.enabled);
@@ -649,6 +651,11 @@ pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
         jw.fixed(f.flow_ml.min(i32::MAX as u32) as i32, 3);
     } else {
         jw.null_value();
+    }
+    jw.key("targetLpm");
+    match f.target_ml {
+        Some(ml) => jw.fixed(i32::from(ml), 3),
+        None => jw.null_value(),
     }
     jw.kv("ms", f.last_valid.then_some(f.last_ms));
     jw.key("peak");
