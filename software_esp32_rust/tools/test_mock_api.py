@@ -495,26 +495,31 @@ class ImageEviction(unittest.TestCase):  # M25
 
 
 class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
-    OFF = {"enabled": False, "state": "off", "counts": None, "targetCounts": 0, "lpm": None, "ms": None,
-           "peak": None}
+    OFF = {"enabled": False, "state": "off", "counts": None, "targetCounts": 0, "lpm": None, "targetLpm": None,
+           "ms": None, "peak": None}
+    CURVE = {"enabled": True, "strokeCounts": 2187, "points": [[593, 0], [809, 1.0], [1100, 2.7]]}
 
     def test_config_document_and_patch(self):
         device(proto=3)
         r = req("GET", "/api/valves/1/flow")
         self.assertEqual(r.status, 200)
         self.assertEqual(list(r.json), ["valve", "config", "flow", "refDelta"])
-        self.assertEqual(r.json["flow"], {**self.OFF, "holdMin": None, "estLpm": None})
+        self.assertEqual(r.json["flow"], self.OFF)
         self.assertEqual(r.json["config"]["qmax"], 2.7)
-        self.assertEqual(r.json["config"]["driftD"], 0.0)
+        self.assertEqual(r.json["config"]["minIntervalS"], 60)
+        self.assertNotIn("driftD", r.json["config"])
         self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"], self.OFF)
-        r = req("POST", "/api/valves/1/flow", {"enabled": True, "points": [[593, 0], [809, 1.0], [1100, 2.7]]})
+        r = req("POST", "/api/valves/1/flow", {"enabled": True, "points": [[593, 0], [1100, 2.7]]})
+        self.assertEqual((r.status, r.json["detail"]),
+                         (400, "strokeCounts 0..10000 (enabled or refSide open needs 1..)"))
+        r = req("POST", "/api/valves/1/flow", self.CURVE)
         self.assertEqual(r.status, 200)
         self.assertTrue(r.json["config"]["enabled"])
         self.assertEqual(r.json["config"]["points"], [[593, 0], [809, 1.0], [1100, 2.7]])
         for body, detail in [({"x": 1}, "unknown key"), ({"qmax": 0}, "qmax 0.01..20 l/min"),
                              ({"points": [[1, 0], [1, 1]]}, "points counts 0..10000, increasing"),
                              ({"refSide": "up"}, "refSide closed|open"), ({"enabled": 1}, "enabled true|false"),
-                             ({"driftD": 25.6}, "driftD 0..25.5"), ({"driftD": 0.05}, "driftD 0..25.5")]:
+                             ({"driftD": 1}, "unknown key")]:
             r = req("POST", "/api/valves/1/flow", body)
             self.assertEqual((r.status, r.json["detail"]), (400, detail), body)
         self.assertEqual(req("DELETE", "/api/valves/1/flow").status, 405)
@@ -525,7 +530,7 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
         d.stm_version = "2.2.7-revamped_C2"
         r = req("POST", "/api/valves/1/flow/counts", {"counts": 700})
         self.assertEqual((r.status, r.json["error"]), (409, "flow_off"))
-        req("POST", "/api/valves/1/flow", {"enabled": True, "points": [[593, 0], [809, 1.0], [1100, 2.7]]})
+        req("POST", "/api/valves/1/flow", self.CURVE)
         r = req("POST", "/api/valves/1/flow/counts", {"counts": 700})
         self.assertEqual((r.status, r.json["error"]), (409, "unsupported"))
         self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["state"], "unsupported")
@@ -535,30 +540,20 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
         self.assertEqual(req("POST", "/api/valves/1/flow/counts", {"counts": 700}).status, 202)
         v = req("GET", "/api/valves").json["valves"][0]
         self.assertEqual((v["flow"]["state"], v["flow"]["counts"], v["flow"]["lpm"]), ("held", 700, 0.495))
-        self.assertEqual(v["pos"], 18)
-        # a target in flow percent: the curve's pulses, the position follows
+        self.assertEqual(v["pos"], 32)
+        # a target is a percentage of the stroke, the position follows
         self.assertEqual(req("POST", "/api/valves/1/target", {"target": 37}).status, 202)
         v = req("GET", "/api/valves").json["valves"][0]
         self.assertEqual((v["target"], v["flow"]["counts"], v["pos"]), (37, 809, 37))
+        self.assertEqual(v["flow"]["targetLpm"], None)
         self.assertTrue(any(e["code"] == 416 for e in req("GET", "/api/events").json["events"]))
-
-    def test_estimate_stands_in_the_flow_document_only(self):
-        d = device(proto=3)
-        d.stm_version = "2.2.8-revamped_C2"
-        r = req("POST", "/api/valves/1/flow", {"enabled": True, "driftD": 5.5,
-                                               "points": [[593, 0], [809, 1.0], [1100, 2.7]]})
-        self.assertEqual(r.json["config"]["driftD"], 5.5)
-        req("POST", "/api/valves/1/flow/counts", {"counts": 809})
-        f = req("GET", "/api/valves/1/flow").json["flow"]
-        self.assertEqual((f["lpm"], f["holdMin"], f["estLpm"]), (1.0, 30, 1.0))
-        self.assertNotIn("holdMin", req("GET", "/api/valves").json["valves"][0]["flow"])
 
     def test_flow_target(self):
         d = device(proto=3)
         d.stm_version = "2.2.7-revamped_C2"
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 1})
         self.assertEqual((r.status, r.json["error"]), (409, "flow_off"))
-        req("POST", "/api/valves/1/flow", {"enabled": True, "qmax": 2.7,
+        req("POST", "/api/valves/1/flow", {"enabled": True, "qmax": 2.7, "strokeCounts": 2187,
                                            "points": [[593, 0], [809, 1.0], [1016, 2.5]]})
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 1})
         self.assertEqual((r.status, r.json["error"]), (409, "unsupported"))
@@ -566,11 +561,15 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 1.0})
         self.assertEqual((r.status, r.json["valve"], r.json["target"], r.json["clipped"]), (202, 1, 37, False))
         v = req("GET", "/api/valves").json["valves"][0]
-        self.assertEqual((v["target"], v["flow"]["state"]), (37, "held"))
+        self.assertEqual((v["target"], v["flow"]["state"], v["flow"]["targetLpm"]), (37, "held", 1.0))
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 2.7})
-        self.assertEqual((r.status, r.json), (202, {"valve": 1, "lpm": 2.5, "target": 100, "clipped": True}))
+        self.assertEqual((r.status, r.json), (202, {"valve": 1, "lpm": 2.5, "target": 46, "clipped": True}))
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 2.71})
-        self.assertEqual((r.status, r.json), (400, {"error": "out_of_range", "detail": "lpm 0..qmax"}))
+        self.assertEqual((r.status, r.json), (202, {"valve": 1, "lpm": 2.5, "target": 46, "clipped": True}))
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["targetLpm"], 2.7)
+        r = req("POST", "/api/valves/1/flow/target", {"lpm": -0.1})
+        self.assertEqual((r.status, r.json),
+                         (400, {"error": "out_of_range", "detail": "lpm a plain number from 0"}))
         r = req("POST", "/api/valves/1/flow/target", {"x": 1})
         self.assertEqual((r.status, r.json), (400, {"error": "invalid", "detail": "unknown key"}))
         self.assertEqual(req("GET", "/api/valves/1/flow/target").status, 405)

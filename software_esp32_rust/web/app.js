@@ -619,6 +619,7 @@ function buildCard(i) {
   c.cal = h("span", { class: "chip info", hidden: true, text: "calibrating", tabindex: 0 });
   c.sync = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
   c.pos = h("span", { class: "big num" });
+  c.stroke = h("span", { class: "muted num", hidden: true });
   c.tgt = h("span", { class: "muted" });
   c.bar = h("i");
   c.mark = h("b");
@@ -642,6 +643,12 @@ function buildCard(i) {
     "aria-label": "Target for valve " + i + " in percent" });
   c.input.addEventListener("input", () => { c.dirty = true; });
   c.input.addEventListener("keydown", (e) => { if (e.key === "Enter") setTarget(c); });
+  c.flowIn = h("input", { id: "fl-" + i, type: "number", inputmode: "decimal", min: 0, step: 0.1,
+    "aria-label": "Flow target for valve " + i + " in litres per minute" });
+  c.flowIn.addEventListener("input", () => { c.flowDirty = true; });
+  c.flowIn.addEventListener("keydown", (e) => { if (e.key === "Enter") setTarget(c); });
+  c.pctRow = h("span", { class: "row" }, c.input, h("span", { "aria-hidden": "true" }, "%"));
+  c.flowRow = h("span", { class: "row", hidden: true }, c.flowIn, h("span", { "aria-hidden": "true" }, "l/min"));
   c.setBtn = h("button", { type: "button", class: "primary", onclick: () => setTarget(c) }, "Set");
   c.btns = [
     c.setBtn,
@@ -656,11 +663,10 @@ function buildCard(i) {
     h("div", { class: "vhead" },
       h("h3", { id: "vt-" + i }, h("span", { class: "idx", text: "#" + i }), c.name),
       c.state, c.cal, c.sync, c.fs),
-    h("div", { class: "pos" }, c.pos, c.tgt),
+    h("div", { class: "pos" }, c.pos, c.stroke, c.tgt),
     h("div", { class: "meter", role: "presentation" }, c.bar, c.mark),
     c.temps, dl, c.last, c.flags,
-    h("div", { class: "actions" }, h("span", { class: "row" }, c.input, h("span", { "aria-hidden": "true" }, "%")),
-      c.btns));
+    h("div", { class: "actions" }, c.pctRow, c.flowRow, c.btns));
   return c;
 }
 
@@ -684,8 +690,15 @@ function updateCard(c, v) {
     setTip(c.sync, SYNC_TIP[v.sync]);
   }
   const pos = isNum(v.pos) ? Math.max(0, Math.min(100, v.pos)) : null;
-  setText(c.pos, pos === null ? "–" : pos + " %");
-  setText(c.tgt, isNum(v.target) ? "target " + v.target + " %" + (v.targetSource && v.targetSource !== "none" ?
+  // A valve with a running flow layer: l/min first, its position in % of the stroke beside them.
+  const f = v.flow && typeof v.flow === "object" ? v.flow : null;
+  c.flow = !!f && f.enabled === true && f.state !== "off" && f.state !== "unsupported";
+  if (c.flow && !isNum(c.qmax)) loadQmax(c);
+  setText(c.pos, c.flow ? fmt(f.lpm, 1, "l/min") : pos === null ? "–" : pos + " %");
+  c.stroke.hidden = !c.flow || !isNum(f.counts) || pos === null;
+  setText(c.stroke, pos + " % stroke");
+  const goal = c.flow && isNum(f.targetLpm) ? Number(f.targetLpm.toFixed(3)) + " l/min" : v.target + " %";
+  setText(c.tgt, isNum(v.target) ? "target " + goal + (v.targetSource && v.targetSource !== "none" ?
     " (" + v.targetSource + ")" : "") : "no target");
   c.bar.style.width = (pos || 0) + "%";
   c.mark.hidden = !isNum(v.target);
@@ -743,9 +756,13 @@ function updateCard(c, v) {
   c.el.classList.toggle("bad", !!v.active && (key === "blocked" || key === "failed"));
   c.el.classList.toggle("off", !v.active);
   if (!c.dirty && document.activeElement !== c.input) c.input.value = isNum(v.target) ? v.target : "";
+  c.pctRow.hidden = c.flow;
+  c.flowRow.hidden = !c.flow;
+  if (c.flow && !c.flowDirty && document.activeElement !== c.flowIn) c.flowIn.value = isNum(f.targetLpm) ? f.targetLpm : "";
   const proto2 = S && S.stm && S.stm.proto >= 2;
   for (const b of c.btns) b.disabled = !v.active;
   c.input.disabled = !v.active;
+  c.flowIn.disabled = !v.active;
   c.moveBtn.disabled = !v.active || !proto2;
   c.moveBtn.title = proto2 ? "" : "Needs STM firmware 2.x";
   c.profBtn.disabled = !proto2;
@@ -802,8 +819,44 @@ function renderSummary() {
   setText(box, parts.join(" · "));
 }
 
+// qmax does not fit in /api/valves: one flow document per valve, one after the other.
+let qmaxLoad = Promise.resolve();
+function loadQmax(c) {
+  if (c.qmaxPending) return;
+  c.qmaxPending = true;
+  qmaxLoad = qmaxLoad.then(async () => {
+    try {
+      const d = await api("GET", "/api/valves/" + c.i + "/flow");
+      if (d && d.config && isNum(d.config.qmax)) {
+        c.qmax = d.config.qmax;
+        c.flowIn.max = c.qmax;
+      }
+    } catch { /* the next poll asks again */ }
+    c.qmaxPending = false;
+  });
+}
+
+async function setFlow(c) {
+  const t = c.flowIn.valueAsNumber;
+  if (!isNum(t) || t < 0 || t > c.qmax) {
+    c.flowIn.setAttribute("aria-invalid", "true");
+    toast("Flow must be a number from 0 to " + fmt(c.qmax, 1, "l/min"), true);
+    c.flowIn.focus();
+    return;
+  }
+  c.flowIn.removeAttribute("aria-invalid");
+  await busy(c.setBtn, async () => {
+    const r = await api("POST", "/api/valves/" + c.i + "/flow/target", { lpm: Number(t.toFixed(3)) });
+    c.flowDirty = false;
+    const at = r && isNum(r.lpm) ? r.lpm : t;
+    toast(valveLabel(c.i) + ": flow " + fmt(at, 1, "l/min") + (r && r.clipped ? " (the top of its curve)" : " sent"));
+    kick(pValves);
+  });
+}
+
 // Decimals with '.' or ',' are rounded by the device (43.5 -> 44).
 async function setTarget(c) {
+  if (c.flow) return setFlow(c);
   const raw = c.input.value.trim().replace(",", ".");
   const t = Number(raw);
   if (!/^\d{1,3}(\.\d+)?$/.test(raw) || t > 100) {
