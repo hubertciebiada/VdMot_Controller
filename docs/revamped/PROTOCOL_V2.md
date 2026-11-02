@@ -169,7 +169,7 @@ of the valve: on the stopping pulse the direction output flips with the motor
 still enabled, so the motor is driven against its motion (the common of the
 motors sits at half the supply; the brake current is about twice the stall
 current and is not judged by the end-stop limits), for at most `maxMs`
-(0..100, 0 = no brake; 60 after a start) or until no pulse came for more than
+(0..100, 0 = no brake; 35 after a start) or until no pulse came for more than
 `gapMs` (0..100, 0 = off) or for more than `mult` times the interval between
 the two last pulses before the stopping pulse (0..10, 0 = off; measured in
 ms, so two pulses in one ms switch it off for that brake), whichever comes

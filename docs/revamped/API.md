@@ -346,7 +346,8 @@ curves are measured.
 - A positioning with the clock past minute 30 opens the valve by the shift of
   that moment on top of the target pulses.
 - The clock starts with a positioning and runs on through the positionings of
-  a held valve, however long the hold lasted. It starts again at a positioning
+  a held valve, however long the hold lasted (measured on the sum of seven
+  loops, holds of 60 and 20 min). It starts again at a positioning
   of a valve that was closed for 240 s, and at the first one after a restart, a
   lost hold, a calibration or a lease failsafe.
 - `holdMin` and `estLpm` are null while the held position is not known. They
