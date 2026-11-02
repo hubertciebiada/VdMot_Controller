@@ -30,7 +30,7 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 - The API does not change. A flow document is read when a row opens or on Read all curves, one
   request after the other; the Stored tab reads its documents one after the other, once a minute
   while it is open. The panel grows by about 4.4 KB of gzip; the image budget of 1,228,800 B has about
-  1 KB left ([PORTING.md](PORTING.md)).
+  1 KB left without the nano printf below ([PORTING.md](PORTING.md)).
 
 ### ESP32: MQTT and Home Assistant of the flow layer
 
@@ -42,6 +42,13 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   `sync` of a valve with the layer says nothing about the positioning, and no topic reports the
   flow. New: restart and broker loss, and which flow events reach MQTT.
 - [API.md](../revamped/API.md): `targetLpm` in the example of the valve entry.
+
+### ESP32: newlib's nano printf
+
+- `CONFIG_LIBC_NEWLIB_NANO_FORMAT=y`: `printf` and `scanf` of ESP-IDF and its libraries come from
+  newlib's `libc_nano.a` to make the image smaller. Nano has no 64-bit, C99 or positional formats:
+  three log texts of the WiFi and PHY libraries show wrong numbers on the serial log, nothing else
+  in the image uses such a format ([GLUE-DESIGN-ESP.md](GLUE-DESIGN-ESP.md) 7, item 7).
 
 ## 2.2.12-revamped
 

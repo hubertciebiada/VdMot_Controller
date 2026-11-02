@@ -54,11 +54,15 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=40960
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2560
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=2560
 
-# Size: optimise for size, no assert texts, IDF logs only from warnings up, no error-name table
+# Size: optimise for size, no assert texts, IDF logs only from warnings up, no error-name table.
+# newlib's nano printf and scanf: from libc_nano.a in flash, ESP-IDF 5.5 links no ROM printf on the
+# ESP32 (the ROM has a 32-bit time_t). No 64-bit, C99 or positional formats (GLUE-DESIGN-ESP.md 7
+# item 7: only log texts of the WiFi and PHY libraries have them, without a %s after them).
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+CONFIG_LIBC_NEWLIB_NANO_FORMAT=y
 # CONFIG_ESP_ERR_TO_NAME_LOOKUP is not set
 # CONFIG_HTTPD_WS_SUPPORT is not set
 

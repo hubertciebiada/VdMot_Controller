@@ -74,7 +74,8 @@ ESP-IDF 4.4 era, no app rollback) and the partition table stay. Binding for the 
   (`format_if_mount_failed` 0); the glue formats only after a failed mount, as the C++
   `beginFs` did (`LittleFS.begin(false)`, then `format()`).
 - The image stays below 1,228,800 B: std is built without its default features (no backtrace
-  symbolizer) and the release profile uses `opt-level = "z"` (GLUE-DESIGN-ESP.md 7, item 7).
+  symbolizer), the release profile uses `opt-level = "z"` and newlib's printf is the nano one
+  (GLUE-DESIGN-ESP.md 7, item 7).
 
 ## Contract parity
 

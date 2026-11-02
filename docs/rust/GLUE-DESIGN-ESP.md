@@ -899,8 +899,21 @@ image for the interop run.
 
    Largest parts of 3: the Rust object (core, glue, std, esp-idf-svc; one LTO unit) about 500 KB
    with 42.6 KB of gzipped dashboard, libnet80211 117 KB, mbedcrypto 71 KB, libpp 69 KB, lwIP
-   58 KB, libc 54 KB. Left without functional loss: `CONFIG_NEWLIB_NANO_FORMAT` (the ROM printf).
+   58 KB, libc 54 KB.
    The finished firmware with option 3: 1,187,456 B (headroom 41,344 B); without WiFi 823,104 B.
+
+   Since the release after 2.2.12: `CONFIG_LIBC_NEWLIB_NANO_FORMAT=y` (the ESP-IDF 5.5 name,
+   `CONFIG_NEWLIB_NANO_FORMAT` is its deprecated alias). `printf` and `scanf` come from newlib's
+   `libc_nano.a` in flash: on the ESP32 ESP-IDF 5.5 links no ROM printf, the ROM has a 32-bit
+   `time_t`. A probe link of the entry points of the image has 65,035 B of code with the full
+   library and 31,217 B with nano, about 33.8 KB less; `tools/rust/esp/docker.sh size` measures the
+   image. Float formats stay (`newlib_init.c` links `_printf_float` and `_scanf_float` under nano).
+   Lost: 64-bit (`%lld`, `%llu`), C99 (`%zu`, `%hh`, `%j`, `%t`) and positional formats. A scan of
+   the ELF of 2026-11-02 and of the sources of its 446 objects finds three log texts with such a
+   format, all in blobs: CCMP replay in `libnet80211`, TBTT delay in `libpp`, the signal powers in
+   `libphy`. None has a `%s` after it, so their numbers are wrong and nothing reads a bad pointer.
+   `esp_http_server` prints `%zu` as `PRIu32` under nano (`esp_httpd_priv.h`), and the Rust code
+   calls no C `printf` or `scanf`. One caller matters: `tzset` parses `TZ` with the nano `siscanf`.
 8. **Risk: RAM.** The QEMU figures of §2.3 are indicative only; the acceptance of §2.3 on the
    device decides.
    The httpd header scratch is reallocated in 128 B steps per request (ESP-IDF 5.5), the only
