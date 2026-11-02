@@ -346,10 +346,9 @@ curves are measured.
 - A positioning with the clock past minute 30 opens the valve by the shift of
   that moment on top of the target pulses.
 - The clock starts with a positioning and runs on through the positionings of
-  a held valve. It starts again at a positioning of a valve that was closed for
-  240 s or held for `HELD_RESET_MS`
-  ([flow_layer.rs](../../software_esp32_rust/core/src/flow_layer.rs)), and at
-  the first one after a restart, a lost hold, a calibration or a lease failsafe.
+  a held valve, however long the hold lasted. It starts again at a positioning
+  of a valve that was closed for 240 s, and at the first one after a restart, a
+  lost hold, a calibration or a lease failsafe.
 - `holdMin` and `estLpm` are null while the held position is not known. They
   are in this document and the MQTT topic `valves/<V>/flow`, not in the `flow`
   block of `/api/valves`.

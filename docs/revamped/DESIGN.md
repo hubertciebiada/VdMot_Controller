@@ -507,7 +507,8 @@ a measured curve itself (API.md "Flow layer"):
   held valve keeps it unless it was held for `HELD_RESET_MS` (`CLOSED_RESET_MS`
   at the closed end stop), every other phase starts it again. `FlowLayer` takes
   the limit as a member, so tests run both outcomes; the value is that one
-  constant, and `u32::MAX` means a positioning never starts it again.
+  constant, `u32::MAX`: a positioning never starts it again, measured on seven
+  loops held for 60 and 20 min (the pump power did not rise).
   `drift_tenths` is the shift in 0.1 pulses from the table `DRIFT_LOG` (the core
   has no libm), `comp` the pulses a positioning adds on top of the target,
   `held_comp` those of the held position, so `lpm` and `actual` are the target

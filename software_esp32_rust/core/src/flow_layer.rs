@@ -1284,8 +1284,9 @@ pub const CALIB_RETRY_MS: u32 = 60_000;
 pub const FAILED_RETRY_MS: u32 = 300_000;
 /// Closed this long: the drift starts again at the next opening.
 const CLOSED_RESET_MS: u32 = 240_000;
-/// Held this long: a positioning starts the drift again; `u32::MAX`: it never does.
-const HELD_RESET_MS: u32 = 2_400_000;
+/// Held this long: a positioning starts the drift again; `u32::MAX`: it never does. Seven loops
+/// held for 60 min and then 20 min, repositioned to the same pulses: the pump power did not rise.
+const HELD_RESET_MS: u32 = u32::MAX;
 /// A request whose result has not come within this time counts as not queued (far beyond a
 /// queue wait with its attempts and the STM's start-up hold).
 pub const FLOW_REQ_TIMEOUT_MS: u32 = 30_000;
