@@ -122,8 +122,8 @@ label.inline { display: inline-flex; align-items: center; gap: 6px; }
 .vrow.off { opacity: .75; }
 .vn { margin: 0; min-width: 0; }
 .vn button { width: 100%; padding: 0; border: 0; background: none; font-weight: 600; white-space: nowrap; overflow: hidden; }
-.vn button::before { content: "\25B8"; color: var(--muted); }
-.vrow.open .vn button::before { content: "\25BE"; }
+.arrow::before { content: "\25B8"; color: var(--muted); }
+.vrow.open .arrow::before { content: "\25BE"; }
 .idx { color: var(--muted); font-weight: 400; }
 .vst { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
 .vst .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

@@ -606,10 +606,17 @@ function kvItem(label) {
   return [h("div", null, h("dt", { text: label }), dd), dd];
 }
 
-// Sensor 1 of a valve is the supply of its heating loop, sensor 2 the return. A cell without a
-// sensor stays, empty, so the columns of the rows hold.
+// A cell without a value stays, empty, so the columns of the rows hold, out of the tab order and
+// of what a screen reader reads.
+function cellOn(el, on) {
+  el.classList.toggle("none", !on);
+  if (on) { el.tabIndex = 0; el.removeAttribute("aria-hidden"); }
+  else { el.removeAttribute("tabindex"); el.setAttribute("aria-hidden", "true"); }
+}
+
+// Sensor 1 of a valve is the supply of its heating loop, sensor 2 the return.
 function showLoopTemp(el, x, role) {
-  el.classList.toggle("none", !x);
+  cellOn(el, !!x);
   if (!x) { setText(el, ""); setTip(el, ""); return; }
   const ok = isNum(x.temp);
   setText(el, ok ? x.temp.toFixed(1) + " °C" : "failed");
@@ -646,19 +653,21 @@ function buildRow(i) {
   const c = { i };
   c.name = h("span");
   c.head = h("button", { type: "button", "aria-expanded": "false", "aria-controls": "vd-" + i, onclick: () => toggleRow(c) },
-    h("span", { class: "idx", text: "#" + i }), c.name);
+    h("span", { class: "arrow", "aria-hidden": "true" }), h("span", { class: "idx", text: "#" + i }), c.name);
   c.state = h("span", { class: "chip", tabindex: 0 });
   c.cal = h("span", { class: "chip info", hidden: true, text: "calibrating", tabindex: 0 });
   c.sync = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
   c.fs = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
   c.flowSt = h("span", { class: "chip", hidden: true, tabindex: 0 });
   c.warn = h("span", { class: "chip", hidden: true, tabindex: 0 });
-  c.lpm = h("span", { class: "big num" });
-  c.tgt = h("span", { class: "small muted num", tabindex: 0 });
-  c.pos = h("span", { class: "num" });
+  // The column heads are hidden from a screen reader: each cell names its column.
+  const named = (label) => ({ role: "group", "aria-label": label });
+  c.lpm = h("span", { class: "big num", ...named("Flow") });
+  c.tgt = h("span", { class: "small muted num", tabindex: 0, ...named("Target") });
+  c.pos = h("span", { class: "num", ...named("Position") });
   c.bar = h("i");
   c.mark = h("b");
-  const cell = (label) => h("span", { class: "vt num", "data-l": label, tabindex: 0 });
+  const cell = (label) => h("span", { class: "vt num", "data-l": label, ...named(label) });
   c.tSup = cell("Supply");
   c.tRet = cell("Return");
   c.tDelta = cell("ΔT");
@@ -766,7 +775,7 @@ function updateRow(c, v) {
   showLoopTemp(c.tSup, sup, "Supply");
   showLoopTemp(c.tRet, ret, "Return");
   const delta = sup && ret && isNum(sup.temp) && isNum(ret.temp);
-  c.tDelta.classList.toggle("none", !delta);
+  cellOn(c.tDelta, delta);
   setText(c.tDelta, delta ? (sup.temp - ret.temp).toFixed(1) + " K" : "");
   setTip(c.tDelta, delta ? "Supply minus return of the loop (1 K = 1 °C)." : "");
   const flags = Array.isArray(v.health) ? v.health.filter((n) => HEALTH[n]) : [];
@@ -868,18 +877,16 @@ function loadFlow(c) {
   c.flowBusy = true;
   flowQueue = flowQueue.then(async () => {
     try {
-      c.doc = await api("GET", "/api/valves/" + c.i + "/flow");
-      c.docErr = "";
-      if (c.doc && c.doc.config && isNum(c.doc.config.qmax)) {
-        c.qmax = c.doc.config.qmax;
-        c.flowIn.max = c.qmax;
-      }
-    } catch (e) { c.docErr = e.message; }  // a poll or the next opening asks again
-    c.flowBusy = false;
-    c.ck = "";
-    if (!c.det.hidden) renderCurve(c);
-    if (view === "stored") renderStored();
-  });
+      try {
+        c.doc = await api("GET", "/api/valves/" + c.i + "/flow");
+        c.docErr = "";
+        if (c.doc && c.doc.config && isNum(c.doc.config.qmax)) c.qmax = c.doc.config.qmax;
+      } catch (e) { c.docErr = e.message; }  // a poll or the next opening asks again
+      c.ck = "";
+      if (!c.det.hidden) renderCurve(c);
+      if (view === "stored") renderStored();
+    } finally { c.flowBusy = false; }
+  }).catch(console.warn);  // the next valve still gets its turn
 }
 
 // The curve in the corrected pulses of a held position: gain x counts + offset.
@@ -903,7 +910,7 @@ function renderCurve(c) {
   const key = [c.docErr, f.counts, f.lpm, !!cf].join();
   if (c.ck === key) return;
   c.ck = key;
-  const box = c.curve;
+  const box = c.curve, table = box.querySelector("details");
   box.replaceChildren(h("h4", { text: "Flow curve" }));
   if (!cf) { box.append(h("p", { class: "small muted", text: c.docErr || "Loading…" })); return; }
   const pts = Array.isArray(cf.points) ? cf.points : [];
@@ -919,15 +926,15 @@ function renderCurve(c) {
     ["Fallback", cf.fallbackPct + " % of the STM scale, at least " + cf.minIntervalS + " s between positionings"],
     ["Correction", "offset " + cf.offset + ", gain " + cf.gain + ", refDelta " + (isNum(c.doc.refDelta) ? c.doc.refDelta : "–")],
   ]);
-  box.append(curveChart(cf, f), dl, h("details", null, h("summary", { class: "small", text: pts.length + " points as a table" }),
+  box.append(curveChart(cf, f), dl, h("details", { open: !!table && table.open }, h("summary", { class: "small", text: pts.length + " points as a table" }),
     dataTable(["Pulses", "l/min"], pts.map((p) => [p[0], p[1].toFixed(3)]))));
 }
 
 async function setFlow(c) {
   const t = c.flowIn.valueAsNumber;
-  if (!isNum(t) || t < 0 || t > c.qmax) {
+  if (!isNum(t) || t < 0) {  // the device clips the top and says so
     c.flowIn.setAttribute("aria-invalid", "true");
-    toast("Flow must be a number from 0 to " + fmt(c.qmax, 1, "l/min"), true);
+    toast("Flow must be a number from 0", true);
     c.flowIn.focus();
     return;
   }
@@ -936,14 +943,20 @@ async function setFlow(c) {
     const r = await api("POST", "/api/valves/" + c.i + "/flow/target", { lpm: Number(t.toFixed(3)) });
     c.flowDirty = false;
     const at = r && isNum(r.lpm) ? r.lpm : t;
-    toast(valveLabel(c.i) + ": flow " + fmt(at, 1, "l/min") + (r && r.clipped ? " (the top of its curve)" : " sent"));
+    toast(valveLabel(c.i) + ": flow " + fmt(at, 1, "l/min") + (r && r.clipped ? " (clipped to the limit of the valve)" : " sent"));
     kick(pValves);
   });
 }
 
-// Decimals with '.' or ',' are rounded by the device (43.5 -> 44).
+// One target of a valve in flight: Enter in a field does not pass the disabled Set.
 async function setTarget(c) {
-  if (c.flow) return setFlow(c);
+  if (c.sending) return;
+  c.sending = true;
+  try { await (c.flow ? setFlow(c) : setPercent(c)); } finally { c.sending = false; }
+}
+
+// Decimals with '.' or ',' are rounded by the device (43.5 -> 44).
+async function setPercent(c) {
   const raw = c.input.value.trim().replace(",", ".");
   const t = Number(raw);
   if (!/^\d{1,3}(\.\d+)?$/.test(raw) || t > 100) {
@@ -1057,12 +1070,12 @@ function niceStep(max, n) {
 function plot(xMax, yTop, xName, yName, label) {
   const W = 560, H = 240, L = 40, R = 12, T = 12, B = 30;
   const yStep = niceStep(yTop, 4), xStep = niceStep(xMax, 4);
-  const yMax = Math.ceil(yTop / yStep) * yStep;
+  const yMax = Math.ceil(yTop / yStep) * yStep, yDec = Math.max(0, Math.ceil(-Math.log10(yStep)));
   const X = (x) => L + (x / xMax) * (W - L - R), Y = (y) => T + (1 - y / yMax) * (H - T - B);
   const svg = s("svg", { viewBox: "0 0 " + W + " " + H, class: "chart", role: "img", "aria-label": label });
   for (let y = 0; y <= yMax + 1e-9; y += yStep) {
     svg.append(s("line", { class: "gl", x1: L, x2: W - R, y1: Y(y), y2: Y(y) }));
-    svg.append(s("text", { x: L - 6, y: Y(y) + 4, "text-anchor": "end" }, String(+y.toFixed(1))));
+    svg.append(s("text", { x: L - 6, y: Y(y) + 4, "text-anchor": "end" }, String(+y.toFixed(yDec))));
   }
   for (let x = 0; x <= xMax + 1e-9; x += xStep) {
     svg.append(s("text", { x: X(x), y: H - 12, "text-anchor": "middle" }, String(Math.round(x))));
@@ -1173,6 +1186,7 @@ const panel = (title, note, ...kids) => h("div", { class: "panel" }, h("h3", { t
   h("p", { class: "small muted", text: note }), kids);
 
 let stored = null;  // the documents of the last loadStored
+let readingCurves = false;  // every flow document asked for: each renders the tab, and its button anew
 async function loadStored() {
   await pollValves();
   await flowQueue;  // that poll may have queued flow documents
@@ -1193,10 +1207,14 @@ function storedCurves() {
       [label, cf.enabled ? "on" : "off", pts.length, pts[0][0] + " to " + end[0], fmt(pts[0][1], 1) + " to " + fmt(end[1], 1),
         cf.strokeCounts, cf.refSide, fmt(c.doc.refDelta)]);
   });
-  const read = h("button", { type: "button", onclick: (e) => busy(e.currentTarget, async () => {
+  const read = h("button", { type: "button", disabled: readingCurves, onclick: async () => {
+    readingCurves = true;
+    renderStored();
     for (const c of vrows) if (c) loadFlow(c);
     await flowQueue;
-  }) }, "Read all curves");
+    readingCurves = false;
+    renderStored();
+  } }, "Read all curves");
   return panel("Flow curves", "In the ESP flash (NVS key flow), one set per valve. The STM holds no curve: it gets moves in pulses. A row under Valves shows the chart.",
     dataTable(["Valve", "Layer", "Points", "Pulses", "l/min", "Stroke", "Reference", "refDelta"], data), h("div", { class: "row", style: "margin-top:8px" }, read));
 }
