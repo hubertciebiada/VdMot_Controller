@@ -25,5 +25,11 @@ software_esp32_rust/firmware/target/
 software_stm32_rust/firmware/target/
 tools/rust/mutation/*.report.json
 
+## What the tools of tools/flowbench write: the data of one installation ########
+*.jsonl
+*.db
+flowbench.csv
+curves.json
+
 ## Claude Code local state ########
 .claude/

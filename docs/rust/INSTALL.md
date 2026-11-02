@@ -313,6 +313,28 @@ dashboard are enough: no bench unit, no spare BlackPill and no logic analyzer.
    release notes say when the STM firmware did not change and the flash only keeps the versions
    of the two MCUs equal.
 
+### 5.1 Back to 2.2.7
+
+Upload the ESP image of 2.2.7 and flash its STM image the same way; the ESP image runs on trial
+with the running image as its fallback. Nobody has run this way back on a device. What follows
+comes from the code of 2.2.7:
+
+- Settings: `cfg` and `cfgx` have the same format, and the STM EEPROM layout is the same.
+- NVS `flow`, `flowtgt` and `flowx`: 2.2.7 asks for its keys by name and never lists them, so it
+  does not use, change or remove these three. A later update finds them again; a factory reset
+  erases them.
+- RTC: the first 104 B of the block keep their layout, and 2.2.7 does not read the record of the
+  targets in l/min behind them. Every record has its own check, and one that fails counts as
+  absent: the targets then come from NVS `targets`.
+- Targets: 2.2.7 has no flow layer. A valve gets the whole % of its last target from either copy,
+  now a % of the STM's scale and no longer of the stroke, so it can move. Set the targets you want
+  after the switch.
+- A kept position (`skeep`) ends with the next `stgtp`. 2.2.7 sends one only when the restored
+  target differs from the target of the STM. Otherwise the valve stays until you set a target or
+  the STM restarts.
+- MQTT and Home Assistant: 2.2.7 knows neither `valves/<V>/flow` nor the three entities of the
+  layer, so it does not clear them. Their retained messages stay at the broker.
+
 ## 6. From the original firmware 1.4.x
 
 The way to Rust leads through C++ 2.1.7, the image the boot guard of the first Rust image falls
