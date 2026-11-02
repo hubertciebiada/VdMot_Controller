@@ -8,7 +8,27 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
-## Next (unreleased)
+## 2.2.13-revamped
+<!-- release-notes: through 2.2.8-revamped -->
+
+This release also carries 2.2.8, 2.2.9, 2.2.10, 2.2.11 and 2.2.12 below, which had no release of
+their own. The STM32 code is that of 2.2.9; only its version number changes, and the flash only
+keeps the versions of the two MCUs equal.
+
+### ESP32: a failed positioning waits longer
+
+- A failed positioning of the flow layer was tried again every 5 min without end, each try a
+  sequence through the end stop. It now waits 5, 10, 20 min, then every 60 min. A new target goes
+  out at once and starts the waits again, as do a success, `/flow/counts`, a changed curve, a new
+  STM session and a restart of the ESP: the count lives in RAM. Event 417 and `HEALTH_FLOW_FAILED`
+  do not change ([DESIGN.md](../revamped/DESIGN.md)).
+
+### ESP32: the retained target of a valve with a flow target
+
+- Without **separate** a retained `valves/<V>/target` older than a target in l/min turned that
+  target into its % after a connect. The first message on that topic after a connect on such a
+  valve is now ignored, whatever its value. `target/set` works as before
+  ([MQTT.md](../revamped/MQTT.md)).
 
 ### ESP32: the dashboard lists the valves in rows and shows what is stored
 
@@ -29,8 +49,15 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   plug brake of a valve and the unused fields of the 1.x EEPROM layout.
 - The API does not change. A flow document is read when a row opens or on Read all curves, one
   request after the other; the Stored tab reads its documents one after the other, once a minute
-  while it is open. The panel grows by about 4.4 KB of gzip; the image budget of 1,228,800 B has about
-  1 KB left without the nano printf below ([PORTING.md](PORTING.md)).
+  while it is open. The panel grows by about 4.4 KB of gzip; with the nano printf below the image
+  stays about 21 KB under its budget of 1,228,800 B.
+- The field of a flow target has no upper limit in the browser: the limit it knew could be older
+  than the curve. The device clips the flow and the message says so. Below 0 stays refused.
+- Enter in a target field sends one target at a time, and Read all curves stays disabled until
+  its last document came. A document that cannot be shown no longer stops those after it.
+- A screen reader hears the name of each column in a row, and no arrow in the name of a valve. An
+  empty cell of a row is no tab stop. An open table of points stays open when the held position
+  changes. The axis of a small curve shows 0.05 where it showed 0.1 twice.
 
 ### ESP32: MQTT and Home Assistant of the flow layer
 
@@ -60,12 +87,19 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   newlib's `libc_nano.a` to make the image smaller. Nano has no 64-bit, C99 or positional formats:
   three log texts of the WiFi and PHY libraries show wrong numbers on the serial log, nothing else
   in the image uses such a format ([GLUE-DESIGN-ESP.md](GLUE-DESIGN-ESP.md) 7, item 7).
+- With it ESP-IDF no longer adds 512 B to four task stacks. `sys_evt` and `tiT` keep their 3072 B
+  through `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE` and `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE`. `main`
+  has 40 960 B instead of 41 472 B and `esp_timer` 3584 B instead of 4096 B
+  ([GLUE-DESIGN-ESP.md](GLUE-DESIGN-ESP.md#21-threads-d3)).
+
+### Documentation and tools
+
+- [INSTALL.md section 5.1](INSTALL.md#51-back-to-227): the way back to 2.2.7, as far as its code
+  confirms it.
+- `tools/mock_api.py`: the stations are `1` and `2`, with 8 and 11 loops named `Loop n`.
+- `.gitignore`: the output of the flow tools (`*.jsonl`, `*.db`, `flowbench.csv`, `curves.json`).
 
 ## 2.2.12-revamped
-
-This release also carries 2.2.8, 2.2.9, 2.2.10 and 2.2.11 below, which had no release of their
-own. The STM32 code is that of 2.2.9; only its version number changes, and the flash only keeps
-the versions of the two MCUs equal.
 
 ### ESP32: the stack of `main`
 
@@ -112,7 +146,7 @@ the versions of the two MCUs equal.
   beside it, and its field sets l/min in steps of 0.1 up to `qmax`. A legacy valve looks as before.
 - The longest `/api/valves` answer is 16 299 B (16 071 before), the response buffer 16 384 B.
 
-## 2.2.10-revamped (unreleased)
+## 2.2.10-revamped
 
 ### ESP32: a target in l/min and the drift of a held position
 
@@ -136,7 +170,7 @@ the versions of the two MCUs equal.
 - Event 124 `flow_config_unreadable` has arg2 1 for NVS `flowx`, and then the set stays loaded:
   saves go on.
 
-## 2.2.9-revamped (unreleased)
+## 2.2.9-revamped
 
 ### STM32: a brake at the end of a service move
 
@@ -159,7 +193,7 @@ the versions of the two MCUs equal.
   8 brake pulses). `sbrak` changes it in RAM until the next STM reset ([PROTOCOL_V2.md](../revamped/PROTOCOL_V2.md),
   [pulse.rs](../../software_stm32_rust/glue/src/motor/pulse.rs)).
 
-## 2.2.8-revamped (unreleased)
+## 2.2.8-revamped
 
 ### STM32: a service hold that does not run out
 
