@@ -233,10 +233,34 @@ the ESP keeps the old target as desired, and the ESP sends only a changed target
 goes over another target first (5 % on the way to 0 %). A valve that does not get back is named on
 the page. Stopping the tool with Ctrl-C does the same; killing it leaves the layers on.
 
-An entry of the curves file can also carry `refSide` (`"closed"` or `"open"`), `strokeCounts`,
-`offset` and `gain`; `upload` writes them with the points. With `"open"` the controller references
-each positioning at the open end stop and closes `strokeCounts − counts`: the open end repeats
-within 2 pulses, the closed end stop at `refmA` within 6..33.
+The curves file holds one entry per loop, `"NAME IDX": {"curve": [[counts, lpm], ...]}`: `NAME` of
+`--controller`, the valve number, 2..16 points with the counts from the closed end stop. An entry of
+another controller is skipped. [curves.example.json](curves.example.json) has invented curves for
+the `--sim` controllers:
+
+```sh
+python tools/flowbench/flowcheck.py --sim upload tools/flowbench/curves.example.json
+```
+
+An entry can also carry `refSide` (`"closed"` or `"open"`), `strokeCounts`, `qmax`, `offset` and
+`gain`; `upload` writes them with the points. `strokeCounts` is required to enable the layer. With
+`"open"` the controller references each positioning at the open end stop and closes
+`strokeCounts − counts`: the open end repeats within 2 pulses, the closed end stop at `refmA` within
+6..33.
+
+From a measurement: "Pobierz CSV" on the flowbench page saves the points of the session, and
+
+```sh
+python tools/flowbench/flowcheck.py curves flowbench.csv curves.json
+```
+
+writes one entry per loop, keyed by the controller and the valve of the session. It takes the
+opening readings with a `pos_est` by position: `Nie płynie` counts as 0 and `Powyżej skali` is left
+out, so the curve ends at the last reading on the scale. A flow that falls between neighbours (the
+sweeps scatter) merges them into their mean, of the zeros only the last one stays (the onset), and
+more than 16 points are thinned by dropping the point that changes the curve least. A loop with
+fewer than 2 points is left out. Add `strokeCounts` and the other members by hand; the `ruler` phase
+of `endstop_test.py` measures the stroke.
 
 Sessions (buttons on the page):
 

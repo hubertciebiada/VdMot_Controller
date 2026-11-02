@@ -57,7 +57,7 @@ The full list is in [CHANGELOG.md](CHANGELOG.md) (ESP) and
 - **Short and inrush detection** (STM): a presence-test short and an inrush
   above the limit are detected and reported (`gvlvy` fault 3 / 5). By default
   they are **report-only**: the valve keeps its status. Enforcement is one build
-  switch (`kProtectEnforce` in `software_stm32/lib/core/include/vdm/protection_guard.h`),
+  switch (`PROTECT_ENFORCE` in `software_stm32_rust/core/src/protection_guard.rs`),
   to be enabled after a hardware measurement of the limits.
 - **STM safe mode:** 3 watchdog resets within 10 min stop the motors until
   `ssafe 0`, a power-on, or 30 min of uptime.

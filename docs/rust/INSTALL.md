@@ -1,6 +1,6 @@
 # VdMot Revamped in Rust: first flash and rollout
 
-> Unofficial firmware (fork of VdMot_Controller). Version **2.2.12-revamped**, the Rust port of
+> Unofficial firmware (fork of VdMot_Controller). Version **2.2.13-revamped**, the Rust port of
 > VdMot Revamped 2.1.7 for the ESP32 and the STM32 ([README.md](README.md)). Read this page
 > completely before flashing.
 
@@ -10,18 +10,28 @@ mention works as in 2.1.7 and is described in the C++ procedure
 the network trial, the recovery table, syslog. What differs from 2.1.7 is listed in
 [CHANGES.md](CHANGES.md).
 
+Where to start:
+
+| The controller runs | Path |
+|---|---|
+| an earlier Rust release (2.2.x) | [section 5](#5-update-from-an-earlier-rust-release), two uploads from the dashboard |
+| C++ 2.1.7 | sections 1 to 4 |
+| the original firmware 1.4.x | [section 6](#6-from-the-original-firmware-14x), then sections 1 to 4 |
+
+The flow layer is optional and comes after the update: [section 7](#7-the-flow-layer).
+
 ## 1. Files
 
-The release `v2.2.12-revamped` contains:
+The release `v2.2.13-revamped` contains:
 
 | File | For |
 |---|---|
-| `VdMot-Revamped_2.2.12-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
-| `VdMot-Revamped_2.2.12-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it |
-| `VdMot-Revamped_2.2.12-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
-| `VdMot-Revamped_2.2.12-revamped_STM32F411_C1.bin` | F411, hardware C1 |
-| `VdMot-Revamped_2.2.12-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
-| `VdMot-Revamped_2.2.12-revamped_STM32F401_C1.bin` | F401, hardware C1 |
+| `VdMot-Revamped_2.2.13-revamped_ESP32-WT32-ETH01.bin` | ESP32 (WT32-ETH01), application image. **Use this one.** |
+| `VdMot-Revamped_2.2.13-revamped_ESP32-WT32-ETH01_nodigest.bin` | the same image without the appended SHA-256 digest, for tools that need it |
+| `VdMot-Revamped_2.2.13-revamped_STM32F411_C2.bin` | STM32 BlackPill **F411**, controller hardware **C2** (also C3/C4) |
+| `VdMot-Revamped_2.2.13-revamped_STM32F411_C1.bin` | F411, hardware C1 |
+| `VdMot-Revamped_2.2.13-revamped_STM32F401_C2.bin` | BlackPill **F401**, hardware C2 (also C3/C4) |
+| `VdMot-Revamped_2.2.13-revamped_STM32F401_C1.bin` | F401, hardware C1 |
 | `SHA256SUMS`, `manifest.json` | checksums and asset list |
 
 Check the download: `sha256sum -c SHA256SUMS --ignore-missing`. The STM image is chosen as for
@@ -30,15 +40,16 @@ Check the download: `sha256sum -c SHA256SUMS --ignore-missing`. The STM image is
 Keep the files of the way back at hand, from the release `v2.1.7-revamped`: the ESP image
 `VdMot-Revamped_2.1.7-revamped_ESP32-WT32-ETH01.bin` and the STM image of your chip and board.
 
-Give the STM images short names before you upload them, e.g. `stm2212.bin` for 2.2.12 and
+Give the STM images short names before you upload them, e.g. `stm2213.bin` for 2.2.13 and
 `stm217.bin` for the C++ 2.1.7 image. The dashboard keeps at most 31 characters of a name (a
 longer one becomes its first 27 characters and `.bin`), so the four release names all arrive as
-`VdMot-Revamped_2.2.12-revam.bin`, without chip and board.
+`VdMot-Revamped_2.2.13-revam.bin`, without chip and board.
 
 ## 2. Order
 
 1. ESP32: a bench unit first if you have one (section 3.1), then the controller (3.2 to 3.4).
-2. STM32: the bench proof on a spare BlackPill (section 4.1, required), then the controller (4.2).
+2. STM32: the bench proof on a spare BlackPill if you can (section 4.1, recommended for the first
+   move to Rust), then the controller (4.2).
 
 The ESP comes first: the Rust ESP flasher writes sector 0 of the STM image last (decision D9,
 section 4.3), and the Rust ESP runs with the C++ 2.1.7 STM as well as with the Rust one. Do the
@@ -76,12 +87,12 @@ section 3.3 is built for it.
 ### 3.2 Upload
 
 Dashboard → Maintenance → **ESP firmware update**: upload
-`VdMot-Revamped_2.2.12-revamped_ESP32-WT32-ETH01.bin`. The C++ firmware checks the image, writes it
+`VdMot-Revamped_2.2.13-revamped_ESP32-WT32-ETH01.bin`. The C++ firmware checks the image, writes it
 into the other app slot and restarts after 1 s. When the STM link is up at the upload, the trial
 of the new image requires it (section 3.3).
 
-After the restart the header shows ESP `2.2.12-revamped`, and the event log shows
-`boot (reset sw, count …, fw 2.2.12-revamped)`.
+After the restart the header shows ESP `2.2.13-revamped`, and the event log shows
+`boot (reset sw, count …, fw 2.2.13-revamped)`.
 
 ### 3.3 The trial
 
@@ -166,7 +177,7 @@ QEMU cannot show it: it cannot run a restart after the first minute of uptime
 | 3.2 to 3.3 | the controller does not answer for a few minutes | wait: the boot limit switches back within a few boots, the start-up deadline after 60 s per boot, the health limit after 15 min |
 | 3.3 | back on `2.1.7-revamped` | the trial failed. Note the time, the C++ event log and the header chips, report them. An image that failed its trial gets a new trial when it is uploaded again |
 | 3.3 | not confirmed, `ota.checks` shows a check `false` | fix that cause (network, HTTP, STM link); after 15 min the guard switches back |
-| 3.4 step 2 | the switch back is not answered `202`, or the controller stays on `2.2.12-revamped` | stop the rollout, report; the image stays confirmed and runs |
+| 3.4 step 2 | the switch back is not answered `202`, or the controller stays on `2.2.13-revamped` | stop the rollout, report; the image stays confirmed and runs |
 | 3.4 step 3 | the upload from the C++ dashboard is refused, or the new trial fails | the C++ image runs; report the text or the C++ event log |
 | 3.4 steps 5, 6 | no dashboard and no ping 5 minutes after the restart or the power cycle | the image loops before `main`. USB-UART: write the C++ 2.1.7 image to `0x10000` and erase otadata, as in "ESP does not boot at all" ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)). The settings stay |
 | any time | the Rust image misbehaves while its HTTP API answers | switch back (section 3.3) and report |
@@ -193,7 +204,18 @@ flash needs no access to the BlackPill, except in the cases of section 4.3. Flas
 **normal**, as in [docs/revamped/INSTALL.md](../revamped/INSTALL.md#step-2-stm); never power off
 the controller while the STM is flashed (the valves do not move meanwhile).
 
-### 4.1 Bench proof (required, D10)
+### 4.1 Bench proof (recommended for the first move to Rust, D10)
+
+This proof is a recommendation for the first Rust STM image over C++ 2.1.7. It is no condition of
+an update:
+
+- From an earlier Rust release the uploads from the dashboard are enough (section 5): no spare
+  BlackPill, no second board, no logic analyzer.
+- From C++ 2.1.7 the flash also runs from the dashboard alone (section 4.2). Without this proof the
+  controller is the first board that shows the warm restore across a flash and the 1-Wire and I2C
+  timing, and a failure there needs its BOOT0 button (section 4.4).
+- The proof counts most for an image that has not run on hardware. Of the four, only
+  `STM32F411_C2` has; the others pass Renode.
 
 Before the first controller ([GLUE-DESIGN-STM.md §5.9](GLUE-DESIGN-STM.md#59-proof-on-hardware)):
 a spare BlackPill with the controller's chip (F401CC or F411CE) on a second controller board with
@@ -201,18 +223,18 @@ jumper X20 fitted, its ESP on the Rust firmware (the bench unit of section 3.1 s
 
 1. Flash C++ 2.1.7 (`stm217.bin`); a blank BlackPill needs mode blank with BOOT0 held
    ([docs/revamped/INSTALL.md §6](../revamped/INSTALL.md#6-recovery)). Set a few targets.
-2. Flash Rust (`stm220.bin`).
+2. Flash Rust (`stm2213.bin`).
 3. Flash C++ 2.1.7 again.
 4. Flash Rust again.
 5. Power-cycle: a cold start.
-6. A logic analyzer on the 1-Wire line (PB10: reset and presence, write and read slots) and on
-   I2C (PB6, PB7: the EEPROM), once with C++ 2.1.7 and once with Rust. The Rust 1-Wire read samples
-   earlier after the falling edge than the C++ (risk R5,
+6. If you have a logic analyzer: on the 1-Wire line (PB10: reset and presence, write and read
+   slots) and on I2C (PB6, PB7: the EEPROM), once with C++ 2.1.7 and once with Rust. The Rust 1-Wire
+   read samples earlier after the falling edge than the C++ (risk R5,
    [GLUE-DESIGN-STM.md §8](GLUE-DESIGN-STM.md#risks)); compare the slots with sensors on the bus.
 
 After each flash (steps 1 to 4) check:
 
-- `gvers`: Maintenance → STM32 shows the new firmware (`2.2.12-revamped` or `2.1.7-revamped`),
+- `gvers`: Maintenance → STM32 shows the new firmware (`2.2.13-revamped` or `2.1.7-revamped`),
   the board and protocol `v3`;
 - the warm restore: the valves keep their status, position and target; no presence test and no
   calibration starts ([GLUE-DESIGN-STM.md §3.2](GLUE-DESIGN-STM.md#32-warm-state-and-reset-cells-in-no-init-ram)).
@@ -226,9 +248,9 @@ sector 0 and once for sectors 1 and up: sector 0 first for a Rust image, last fo
 
 ### 4.2 The controller
 
-1. Conditions: the bench proof passed for the controller's chip; the controller's ESP runs the
-   Rust firmware and passed its checklist (section 3.4).
-2. Upload `stm227.bin` (and keep `stm217.bin` in the image list: the known-good image to go
+1. Conditions: the controller's ESP runs the Rust firmware and passed its checklist (section 3.4).
+   If you ran the bench proof (section 4.1), it passed for the controller's chip.
+2. Upload `stm2213.bin` (and keep `stm217.bin` in the image list: the known-good image to go
    back to). Flash it.
 3. Check `gvers` and the warm restore as in 4.1, then valves and sensors as in
    [docs/revamped/INSTALL.md §4](../revamped/INSTALL.md#4-after-the-upgrade-checklist).
@@ -277,15 +299,126 @@ images keep it at the same addresses (decision D3).
 
 ## 5. Update from an earlier Rust release
 
-The steps of sections 3.2, 3.3 and 4.2 with the files of the new release:
+The steps of sections 3.2, 3.3 and 4.2 with the files of the new release. The two uploads from the
+dashboard are enough: no bench unit, no spare BlackPill and no logic analyzer.
 
 1. ESP32: upload the new ESP image. It runs on trial with the running Rust image as its fallback
    and is confirmed after 120 s of health (section 3.3). The upload writes the other app slot:
    when that slot held the C++ 2.1.7 image (the fallback of the first Rust image), the C++ image
    is gone from the controller, and the way back to it is its upload (section 3.6).
-2. STM32: upload the new STM image under a short name (`stm2212.bin` for 2.2.12) and flash it,
+2. STM32: upload the new STM image under a short name (`stm2213.bin` for 2.2.13) and flash it,
    mode normal; keep `stm217.bin` in the list. With three images stored, an ESP from 2.2.7 on
    removes one when the upload completes: the release image with the lowest version, never the
    lowest of all (`stm217`) nor the running one ([CHANGES.md](CHANGES.md#227-revamped)). The
    release notes say when the STM firmware did not change and the flash only keeps the versions
    of the two MCUs equal.
+
+## 6. From the original firmware 1.4.x
+
+The way to Rust leads through C++ 2.1.7, the image the boot guard of the first Rust image falls
+back to. The steps are in one place here, the details in the C++ guide
+[docs/revamped/INSTALL.md](../revamped/INSTALL.md).
+
+1. Read [Before you start](../revamped/INSTALL.md#before-you-start): note your settings, and check
+   the things that change for the broker and for scripts.
+2. From the release `v2.1.7-revamped` take the ESP image and the STM image of your chip and board
+   ([§1](../revamped/INSTALL.md#1-which-files)). From this release take the files of section 1.
+3. ESP: upload the image through the web UI of the original firmware,
+   `http://<device>/update` ([Step 1](../revamped/INSTALL.md#step-1-esp)). The ESP restarts, imports
+   the original settings once and runs on trial. Wait for the event `app_marked_valid`.
+4. STM: Maintenance → STM firmware, upload the image as `stm217.bin` and flash it, mode normal
+   ([Step 2](../revamped/INSTALL.md#step-2-stm)). Every valve calibrates once.
+5. Set the failsafe as you want it: it is on after the update
+   ([§3.2](../revamped/INSTALL.md#32-failsafe)).
+6. Run the checklist ([§4](../revamped/INSTALL.md#4-after-the-upgrade-checklist)).
+7. Go on with section 1 of this page.
+
+The way back to the original firmware:
+[§5](../revamped/INSTALL.md#5-rollback-and-downgrade).
+
+## 7. The flow layer
+
+The flow layer positions a valve by a measured curve of its loop, and the valve then takes its
+target in l/min or in % of its whole stroke. It is optional and off by default: a valve without it
+works as before. It needs ESP and STM from 2.2.8 on and a calibrated valve. The limits of the
+measurement are in the release notes. The firmware has no flow sensor: the l/min it shows is
+calculated from the curve.
+
+The rules of every setting are in
+[API.md](../revamped/API.md#flow-layer-rust-228-stm-228). The tools need Python 3.10 and a checkout
+of this repository; their pages are in Polish
+([tools/flowbench/README.md](../../tools/flowbench/README.md)).
+
+### 7.1 Measure the curve
+
+You need a float rotameter on each loop you measure, usually the flow meters of the manifold, and
+a phone in the same network. Set the pump to the mode and head you will use: the flow at a position
+depends on the head. Stop what sets targets or switches the pump, as listed in
+[Before you start](../../tools/flowbench/README.md#before-you-start).
+
+```sh
+python tools/flowbench/flowbench.py --controller main=<device>
+```
+
+Open the printed address on the phone. The tool closes the other loops, opens one loop in steps and
+asks what the float shows. "Pobierz CSV" saves the points. Turn them into a curves file of 2 to 16
+points per loop:
+
+```sh
+python tools/flowbench/flowcheck.py curves flowbench.csv curves.json
+```
+
+An entry of `curves.json` is named `NAME IDX`: the `NAME` of `--controller` and the valve number.
+[tools/flowbench/curves.example.json](../../tools/flowbench/curves.example.json) shows the format
+with invented curves. Add to each entry:
+
+| Member | Meaning |
+|---|---|
+| `strokeCounts` | the counted open stroke of the valve from the closed end stop, required. `endstop_test.py` measures it (below) |
+| `refSide` | the end stop a positioning starts from: `open` or `closed` (default). The open end stop repeated better in the reference measurement |
+| `qmax` | the highest flow a target in l/min asks for, 2.7 l/min by default |
+
+The stroke, as the median of `ruler` per valve:
+
+```sh
+python tools/flowbench/endstop_test.py --controller main=<device> --phases ruler --out stroke.jsonl
+python tools/flowbench/endstop_test.py --summary --out stroke.jsonl
+```
+
+### 7.2 Upload the curves
+
+```sh
+python tools/flowbench/flowcheck.py --controller main=<device> upload curves.json
+```
+
+This writes the points and the members above and leaves the layer off. Check them under Stored →
+Flow curves. Before you use a curve for control, you can compare it with the rotameter: run
+`flowcheck.py --controller main=<device>` without `upload`. Its page positions the valves and asks
+for readings, and it can store a correction of the curve.
+
+### 7.3 Enable the layer
+
+Per valve, or for every valve of the file with `upload curves.json --enable`:
+
+```sh
+curl -X POST -H 'X-VdMot: 1' -H 'Content-Type: application/json' \
+  -d '{"enabled":true}' http://<device>/api/valves/<n>/flow
+```
+
+The valve positions itself once. `{"enabled":false}` hands it back to the normal target delivery.
+
+`minIntervalS` is the least time between two positionings of a valve, 60 s by default and 0 to
+3600 s in the same `POST`. A new target waits for it, and the latest target wins. A target of 0 and
+the first positioning after a start do not wait. Raise it when a regulator sends targets more often
+than the valve should move.
+
+### 7.4 What the dashboard shows
+
+- Valves: a row shows the flow in l/min with its target and the position in % of the stroke, and
+  its field sets l/min in steps of 0.1 up to `qmax`. A chip shows a valve that is not held:
+  `positioning`, `position unknown`, `positioning failed`, or `needs STM 2.2.8` on an older STM.
+- An open row: the chart of the curve with the held position, and the stored settings.
+- Stored: every curve, read only.
+
+Over MQTT the target goes to `valves/<V>/flow/set`, in Home Assistant to the number
+`valves_flowTarget_<R>` ([MQTT.md](../revamped/MQTT.md)).

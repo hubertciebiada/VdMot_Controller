@@ -1,5 +1,26 @@
 > This fork ships **VdMot Revamped** (unofficial), firmware in Rust since 2.2.0 — see [docs/revamped/README.md](docs/revamped/README.md) and [docs/rust/README.md](docs/rust/README.md)
 
+## VdMot Revamped: this fork
+
+VdMot Revamped is an unofficial, independently maintained firmware for the VdMot Controller: the
+ESP32 (WT32-ETH01) and the STM32 BlackPill (F401, F411), in Rust since 2.2.0. It is a fork of
+VdMot_Controller by Lenti84 and SurfGargano. The upstream project does not support it.
+
+- **Download:** [latest release](https://github.com/hubertciebiada/VdMot_Controller/releases/latest)
+- **Install, update, way back:** [docs/rust/INSTALL.md](docs/rust/INSTALL.md)
+- **What it adds:**
+  - valve targets in l/min from a measured flow curve per loop, optional and off by default;
+  - a failsafe position when the regulator goes silent, on the STM, also with a dead ESP;
+  - targets and calibrations that survive restarts;
+  - a new dashboard with an event log and diagnostics;
+  - a trial of every new ESP image with a way back, a checked STM flash from the dashboard;
+  - MQTT and Home Assistant discovery, compatible with the legacy topics.
+- **What it does not build:** RS485, Modbus, CAN and the DS2482 are not part of VdMot Revamped. The
+  PI controller, the window logic and the alarms of the original ESP firmware are gone too.
+
+The rest of this page is the description of the upstream project. It holds for the hardware; notes
+mark what differs in VdMot Revamped.
+
 # VdMot_Controller
 This is a controller for HmIP-VdMot actuators.
 
@@ -20,7 +41,7 @@ I wanted a pure offline system (no cloud connection) and to be free of the const
 - valve current is evaluated and can be monitored
 - interfaces
   - actual: MQTT, JSON
-  - optional: MODBUS-RTU via RS485, CAN via external MCP2515
+  - optional: MODBUS-RTU via RS485, CAN via external MCP2515 (not built in VdMot Revamped)
 - integrated 1-wire master
   - a lot of additional temperature sensors like DS18B20 could be connected
   - sensor values can be linked to a valve for combined data evaluation
@@ -48,7 +69,7 @@ I wanted a pure offline system (no cloud connection) and to be free of the const
 - find description of hardware here [hardware/hardware.md](./hardware/hardware.md)
 
 ## Software
-For details please see [software.md](./software.md)
+For details please see [software.md](./software.md) (upstream firmware; VdMot Revamped is in Rust, see above)
 - written in C / C++
 - uses great arduino libraries
 - developed using PlatformIO
@@ -58,7 +79,7 @@ For details please see [software.md](./software.md)
     - counting motor revolutions by back-EMF
     - state detection
   - controlls 1-wire devices via GPIO
-    - optional via DS2482-100 1-wire bus master ic
+    - optional via DS2482-100 1-wire bus master ic (not built in VdMot Revamped)
   - 
 - ESP32 / WT32-ETH01
   - communication with MQTT broker or JSON interface
@@ -70,6 +91,9 @@ For details please see [software.md](./software.md)
 
 Latest Software can be found here :
 https://github.com/SurfGargano/VdMot_Controller/releases/latest
+
+That link is the official upstream firmware. VdMot Revamped is not there, its releases are at
+https://github.com/hubertciebiada/VdMot_Controller/releases/latest
 
 Hardware can be found here:
 **Hardware for VdMot_Controller is available via mail. Please write to vdmot@storbecknet.de. **

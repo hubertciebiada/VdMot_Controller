@@ -21,8 +21,10 @@ writes it into the controller on request (POST /api/valves/{n}/flow).
   python tools/flowbench/flowcheck.py --controller west=192.168.1.51 --controller east=192.168.1.52
   python tools/flowbench/flowcheck.py --sim [--sim-auto]
   python tools/flowbench/flowcheck.py --controller ... upload curves.json   (points, layer off)
+  python tools/flowbench/flowcheck.py curves flowbench.csv curves.json      (points from a flowbench CSV)
 """
 import argparse
+import csv
 import json
 import os
 import random
@@ -881,10 +883,65 @@ def make_handler(engine, page):
     return H
 
 
+def clean_curve(curve):
+    """At most 16 points, counts strictly increasing, flow non-decreasing."""
+    clean = []
+    for p, q in curve:
+        p, q = max(0, int(p)), round(float(q), 3)
+        if clean and p <= clean[-1][0]:
+            continue
+        clean.append([p, max(q, clean[-1][1] if clean else 0.0)])
+    while len(clean) > 16:
+        # drop the point that changes the curve least
+        k = min(range(1, len(clean) - 1), key=lambda j: abs(
+            clean[j][1] - curve_flow([clean[j - 1], clean[j + 1]], clean[j][0])))
+        clean.pop(k)
+    return clean
+
+
+def csv_curves(path):
+    """The curves of a flowbench CSV: per loop the opening readings on the scale, by pos_est. The
+    sweeps scatter, so where the flow falls between neighbours they merge into their mean; of the
+    zeros only the last stays, the onset."""
+    loops = {}
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f, delimiter=";"):
+            if r.get("direction") == "open" and r.get("kind") in ("value", "zero") and r.get("pos_est"):
+                loops.setdefault(f"{r['ctrl']} {r['valve']}", []).append(
+                    (int(r["pos_est"]), float(r["flow_lpm"].replace(",", "."))))
+    curves = {}
+    for key, readings in loops.items():
+        merged = []  # [counts, lpm, readings]
+        for p, q in sorted(readings):
+            n = 1
+            while merged and merged[-1][1] > q:
+                p0, q0, n0 = merged.pop()
+                p, q, n = (p0 * n0 + p * n) / (n0 + n), (q0 * n0 + q * n) / (n0 + n), n0 + n
+            merged.append([p, q, n])
+        while len(merged) > 1 and merged[1][1] <= 0:
+            merged.pop(0)
+        curves[key] = clean_curve([p, q] for p, q, _ in merged)
+    return curves
+
+
+def write_curves(csv_path, json_path):
+    curves = csv_curves(csv_path)
+    short = [key for key, pts in curves.items() if len(pts) < 2]
+    for key in short:
+        print(f"{key}: fewer than 2 points, left out")
+        del curves[key]
+    if not curves:
+        sys.exit(f"{csv_path}: no loop with 2 opening readings that have a pos_est")
+    for key, pts in curves.items():
+        print(f"{key}: {len(pts)} points, top {pts[-1]}")
+    text = json.dumps({k: {"curve": v} for k, v in curves.items()}, indent=2)
+    Path(json_path).write_text(text + "\n", encoding="utf-8")
+
+
 def upload(esps, path, enable=False):
     """Writes the points of a curves file ({"NAME IDX": {"curve": [[counts, lpm], ...]}}) into the
-    controllers, with "refSide", "strokeCounts", "offset" and "gain" when an entry has them; the
-    rest of the flow config stays."""
+    controllers, with "refSide", "strokeCounts", "qmax", "offset" and "gain" when an entry has them;
+    the rest of the flow config stays."""
     curves = json.loads(Path(path).read_text(encoding="utf-8"))
     by = {e.name: e for e in esps}
     for key, c in curves.items():
@@ -892,20 +949,9 @@ def upload(esps, path, enable=False):
         esp = by.get(name)
         if not esp:
             continue
-        pts = [[max(0, int(p)), round(float(q), 3)] for p, q in c["curve"]]
-        # 2..16 points, counts strictly increasing, flow non-decreasing
-        clean = []
-        for p, q in pts:
-            if clean and p <= clean[-1][0]:
-                continue
-            clean.append([p, max(q, clean[-1][1] if clean else 0.0)])
-        while len(clean) > 16:
-            # drop the point that changes the curve least
-            k = min(range(1, len(clean) - 1), key=lambda j: abs(
-                clean[j][1] - curve_flow([clean[j - 1], clean[j + 1]], clean[j][0])))
-            clean.pop(k)
+        clean = clean_curve(c["curve"])
         cfg = flow_cfg(esp, int(idx))
-        extra = {k: c[k] for k in ("refSide", "strokeCounts", "offset", "gain") if k in c}
+        extra = {k: c[k] for k in ("refSide", "strokeCounts", "qmax", "offset", "gain") if k in c}
         cfg = {**cfg, **extra, "points": clean, "enabled": bool(enable or cfg.get("enabled"))}
         esp.post(f"/api/valves/{idx}/flow", cfg)
         print(f"{key}: {len(clean)} points, top {clean[-1]}")
@@ -928,9 +974,13 @@ def main():
                     help="the top of the flow meter's scale: the highest stop and the value of a reading above it (default %(default)s)")
     ap.add_argument("--pick", default="", metavar="KEYS",
                     help="loops marked for the repeat session, comma-separated: 'west 3,east 7'")
-    ap.add_argument("cmd", nargs="*", help="upload CURVES.json [--enable]")
+    ap.add_argument("cmd", nargs="*", help="upload CURVES.json [--enable], or curves POINTS.csv CURVES.json")
     ap.add_argument("--enable", action="store_true")
     a = ap.parse_args()
+    if a.cmd[:1] == ["curves"]:
+        if len(a.cmd) != 3:
+            ap.error("curves POINTS.csv CURVES.json")
+        return write_curves(a.cmd[1], a.cmd[2])
     esps, sims = [], {}
     if a.sim:
         for i, (name, n) in enumerate((("sim-a", 2), ("sim-b", 2))):
