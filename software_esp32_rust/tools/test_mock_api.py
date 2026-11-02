@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of tools/mock_api.py: the mock answers like the firmware (rows M1-M25).
+"""Tests of tools/mock_api.py: the mock answers like the firmware (rows M1-M26).
 
     python3 tools/test_mock_api.py
 
@@ -594,6 +594,58 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
         device(proto=2)
         r = req("POST", "/api/valves/1/brake", {"maxMs": 0, "gapMs": 0})
         self.assertEqual((r.status, r.json["error"]), (409, "stm_unsupported"))
+
+
+class FlowScenario(unittest.TestCase):  # M26, what the dashboard's curve and Stored view read
+    VALVE_KEYS = ["idx", "name", "active", "known", "state", "stateKey", "calibrating", "pos", "target",
+                  "targetSource", "sync", "stmTarget", "meanCur", "moves", "oc", "cc", "dc", "cr", "health", "age",
+                  "sensors", "ext", "failsafe", "calibrationEnd", "flow"]
+
+    def test_valves_keep_their_members(self):
+        # /api/valves has about 300 B left of the 16 KiB of the firmware: new data goes elsewhere
+        device(proto=3, scenarios=("flow",))
+        for v in req("GET", "/api/valves").json["valves"]:
+            self.assertEqual(list(v), self.VALVE_KEYS)
+
+    def test_curves(self):
+        d = device(proto=3, scenarios=("flow",))
+        active = [i for i, v in enumerate(d.valves) if v["active"]]
+        self.assertEqual(len(active), 7)
+        for i in active[:-1]:
+            doc = req("GET", f"/api/valves/{i + 1}/flow").json
+            pts = doc["config"]["points"]
+            self.assertEqual((doc["config"]["enabled"], doc["config"]["refSide"], len(pts)), (True, "open", 14))
+            self.assertLess(pts[-1][0], doc["config"]["strokeCounts"])
+            self.assertEqual(pts[0][1], 0)
+            self.assertLessEqual(pts[-1][1], doc["config"]["qmax"])
+            # the firmware's rules hold: a curve it would refuse shows nothing real
+            self.assertIsNone(d.flow_patch(dict(doc["config"]), {"points": pts}))
+        last = req("GET", f"/api/valves/{active[-1] + 1}/flow").json
+        self.assertEqual((last["config"]["enabled"], last["config"]["points"], last["flow"]["state"]),
+                         (False, [], "off"))
+
+    def test_states_of_the_rows(self):
+        device(proto=3, scenarios=("flow",))
+        vs = req("GET", "/api/valves").json["valves"]
+        self.assertEqual((vs[0]["flow"]["state"], vs[0]["flow"]["targetLpm"]), ("held", 0.4))
+        self.assertAlmostEqual(vs[0]["flow"]["lpm"], 0.4, delta=0.01)
+        self.assertEqual((vs[1]["flow"]["state"], vs[1]["flow"]["targetLpm"], vs[1]["pos"]), ("held", None, 30))
+        self.assertEqual((vs[2]["flow"]["state"], vs[2]["flow"]["counts"], vs[2]["flow"]["lpm"]),
+                         ("failed", None, None))
+        self.assertEqual(req("GET", "/api/valves/1/flow").json["refDelta"], 18)
+
+    def test_version_order_is_numeric(self):
+        # "2.2.12" sorts below "2.2.8" as text: the layer of an STM 2.2.12 is not unsupported
+        d = device(proto=3, scenarios=("flow",))
+        self.assertEqual(d.stm_version, mock_api.STM_VERSION_FLOW)
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["state"], "held")
+        d.stm_version = "2.2.7-revamped_C2"
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["state"], "unsupported")
+
+    def test_the_scenario_is_for_protocol_3(self):
+        d = device(proto=2, scenarios=("flow",))
+        self.assertEqual(d.stm_version, mock_api.STM_VERSION_V2)
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["state"], "unsupported")
 
 
 if __name__ == "__main__":

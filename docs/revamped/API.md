@@ -473,10 +473,12 @@ python3 software_esp32_rust/tools/mock_api.py --port 8080            # protocol 
 python3 software_esp32_rust/tools/mock_api.py --proto 1              # legacy STM 1.4.x
 python3 software_esp32_rust/tools/mock_api.py --proto 3              # STM 2.1: failsafe lease, stop, safe mode
 python3 software_esp32_rust/tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
+python3 software_esp32_rust/tools/mock_api.py --proto 3 --scenario flow    # the flow layer with made-up curves
 python3 software_esp32_rust/tools/mock_api.py --import-report        # a legacy import report
 python3 software_esp32_rust/tools/mock_api.py --station west --station-name "Dom Północ"
 ```
 
 Scenarios: `health` (stale, unconfirmed target, failed temperature), `busy`
 (503 busy), `queue` (every second valve action answers 503 queue_full), `failsafe` (lease expired), `safemode`,
-`tooold` (STM below 1.4.0), `haoffline` (HA reports offline).
+`tooold` (STM below 1.4.0), `haoffline` (HA reports offline), `flow` (protocol 3 only: STM 2.2.12, made-up curves on
+the active valves but the last, flow targets, one target in %, one failed positioning).

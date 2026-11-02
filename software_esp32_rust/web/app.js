@@ -248,7 +248,7 @@ function tipPlace() {
   tipBox.style.left = Math.max(8, Math.min(r.left + r.width / 2 - b.width / 2, vw - b.width - 8)) + "px";
   tipBox.style.top = (up ? r.top - 6 - b.height : r.bottom + 6) + "px";
 }
-// An open bubble follows the text (valve cards refresh every 3 s).
+// An open bubble follows the text (valve rows refresh every 3 s).
 function setTip(el, t) {
   if (el.dataset.tip === t) return;
   el.dataset.tip = t;
@@ -334,7 +334,7 @@ document.addEventListener("visibilitychange", () => {
 
 // ------------------------------------------------------------------ views
 
-const VIEWS = ["valves", "sensors", "events", "settings", "maintenance"];
+const VIEWS = ["valves", "sensors", "stored", "events", "settings", "maintenance"];
 let view = "";
 const visible = (v) => () => view === v;
 function showView() {
@@ -530,7 +530,7 @@ function restarted(st) {
 // ------------------------------------------------------------------ valves
 
 let V = [];              // last /api/valves entries (index = idx - 1)
-const cards = [];
+const vrows = [];
 const STATE_CLS = { idle: "ok", opening: "info", closing: "info", connected: "info", fullopen: "info",
   failed: "err", blocked: "err", invalid: "err", novalve: "warn", unknown: "warn", nodata: "" };
 const STATE_TXT = { nodata: "no data", fullopen: "full open", novalve: "no valve" };
@@ -586,6 +586,11 @@ const HEALTH = { blocked: ["blocked", "err", STATE_TIP.blocked], failed: ["faile
     "reason. Calibrate tries again."],
   strokeShort: ["stroke close to minCounts: calibration may fail", "warn", "The shorter calibration stroke is under " +
     "1.2 × minCounts. A calibration whose strokes stay under minCounts marks the valve blocked."] };
+// The flow layer's states that need a look; "held" shows as a flow, "off" as a valve without one.
+const FLOW_CHIP = { positioning: ["positioning", "info", "The flow layer is moving the valve to its position."],
+  unknown: ["position unknown", "warn", "The flow layer holds no position, after a restart or a lost hold: it positions the valve once the valve is free."],
+  failed: ["positioning failed", "err", "The last positioning failed. The layer tries again after 5 min or with the next target."],
+  unsupported: ["needs STM 2.2.8", "warn", "The flow layer is enabled, but this STM cannot keep a position: the valve stays in normal mode."] };
 const STOP_TXT = { none: "–", target: "target reached", endstop: "end stop", early_endstop: "early end stop",
   timeout: "timeout", undercurrent: "no motor current", safety_overcurrent: "over-current limit", aborted: "aborted" };
 const SYNC_TXT = { pending: "target pending", await_ack: "sending target", await_verify: "verifying target",
@@ -601,45 +606,67 @@ function kvItem(label) {
   return [h("div", null, h("dt", { text: label }), dd), dd];
 }
 
-// Sensor 1 of a valve is the supply of its heating loop, sensor 2 the return.
-function showLoopTemp(t, x, role) {
-  t.div.hidden = !x;
-  if (!x) return;
+// Sensor 1 of a valve is the supply of its heating loop, sensor 2 the return. A cell without a
+// sensor stays, empty, so the columns of the rows hold.
+function showLoopTemp(el, x, role) {
+  el.classList.toggle("none", !x);
+  if (!x) { setText(el, ""); setTip(el, ""); return; }
   const ok = isNum(x.temp);
-  setText(t.dd, ok ? x.temp.toFixed(1) + " °C" : "no reading");
-  t.dd.classList.toggle("bad", !ok);
-  setTip(t.div, (ok ? "" : "No valid reading: " + TEMP_BAD + ". ") + role + " of the loop: sensor " + x.sensor +
+  setText(el, ok ? x.temp.toFixed(1) + " °C" : "failed");
+  el.classList.toggle("bad", !ok);
+  setTip(el, (ok ? "" : "No valid reading: " + TEMP_BAD + ". ") + role + " of the loop: sensor " + x.sensor +
     " of this valve, " + (x.name || "unnamed") + " (slot " + x.slot + ")" + (ok ? "; the reading includes the slot's offset." : "."));
 }
 
-function buildCard(i) {
+// The diagnostics of a row: [label, (valve, ext, its v3 block, flow block) -> text].
+const VALVE_KV = [
+  ["Target from", (v) => v.targetSource || "–"],
+  ["STM target", (v) => fmt(v.stmTarget, 0, "%")],
+  ["Drive target", (v, e, x) => (x ? fmt(x.drive, 0, "%") : "–")],
+  ["Mean current", (v) => fmt(v.meanCur, 0, "mA")],
+  ["Open/close", (v) => fmt(v.oc) + " / " + fmt(v.cc)],
+  ["Dead zone", (v) => fmt(v.dc)],
+  ["Retries", (v) => fmt(v.cr)],
+  ["Moves", (v) => fmt(v.moves)],
+  ["Early stops", (v, e) => (e ? fmt(e.earlyStops) : "–")],
+  ["Rejected", (v, e) => (e ? fmt(e.cmdRejected) : "–")],
+  // learned coast of an opening / a closing step, motor pulses (null below STM 2.2.4)
+  ["Coast", (v, e) => (e && isNum(e.coastOpen) ? fmt(e.coastOpen) + " / " + fmt(e.coastClose) : "–")],
+  ["Data age", (v) => fmtAge(v.age)],
+  ["Failsafe", (v) => (v.failsafe ? (isNum(v.failsafe.pct) ? v.failsafe.pct + " %" : "hold") : "–")],
+  ["Fault", (v, e, x) => (x ? x.fault : "–")],
+  ["Auto retries", (v, e, x) => (x ? fmt(x.retries) + (x.retryS ? ", next in " + fmtAge(x.retryS) : "") : "–")],
+  ["Calibrated", (v) => (v.calibrationEnd ? v.calibrationEnd.replace("T", " ") : "–")],
+  ["Held", (v, e, x, f) => (f && isNum(f.counts) ? f.counts + " pulses" : "–")],
+  ["Positioned in", (v, e, x, f) => (f && isNum(f.ms) ? fmt(f.ms / 1000, 1, "s") + ", peak " + fmt(f.peak, 1, "mA") : "–")],
+  ["STM flags", (v, e, x) => (x && Array.isArray(x.flags) && x.flags.length ? x.flags.join(", ") : "–")],
+];
+
+function buildRow(i) {
   const c = { i };
   c.name = h("span");
+  c.head = h("button", { type: "button", "aria-expanded": "false", "aria-controls": "vd-" + i, onclick: () => toggleRow(c) },
+    h("span", { class: "idx", text: "#" + i }), c.name);
   c.state = h("span", { class: "chip", tabindex: 0 });
   c.cal = h("span", { class: "chip info", hidden: true, text: "calibrating", tabindex: 0 });
   c.sync = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
-  c.pos = h("span", { class: "big num" });
-  c.stroke = h("span", { class: "muted num", hidden: true });
-  c.tgt = h("span", { class: "muted" });
+  c.fs = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
+  c.flowSt = h("span", { class: "chip", hidden: true, tabindex: 0 });
+  c.warn = h("span", { class: "chip", hidden: true, tabindex: 0 });
+  c.lpm = h("span", { class: "big num" });
+  c.tgt = h("span", { class: "small muted num", tabindex: 0 });
+  c.pos = h("span", { class: "num" });
   c.bar = h("i");
   c.mark = h("b");
-  const items = [["Mean current", "mean"], ["Open/close", "occ"], ["Dead zone", "dc"], ["Retries", "cr"],
-    ["Moves", "moves"], ["Early stops", "early"], ["Rejected", "rej"], ["Coast", "coast"], ["Data age", "age"]];
+  const cell = (label) => h("span", { class: "vt num", "data-l": label, tabindex: 0 });
+  c.tSup = cell("Supply");
+  c.tRet = cell("Return");
+  c.tDelta = cell("ΔT");
   const dl = h("dl", { class: "kv" });
-  for (const [label, key] of items) { const [div, dd] = kvItem(label); dl.append(div); c[key] = dd; }
+  c.kv = VALVE_KV.map(([label]) => { const [div, dd] = kvItem(label); dl.append(div); return dd; });
   c.last = h("p", { class: "lastmove" });
-  c.temps = h("dl", { class: "kv temps" });
-  for (const [label, key] of [["Supply", "tSup"], ["Return", "tRet"], ["ΔT", "tDelta"]]) {
-    const [div, dd] = kvItem(label);
-    div.setAttribute("tabindex", 0);
-    c.temps.append(div);
-    c[key] = { div, dd };
-  }
-  setTip(c.tDelta.div, "Supply minus return of the loop (1 K = 1 °C).");
   c.flags = h("div", { class: "flags" });
-  const inId = "tg-" + i;
-  c.fs = h("span", { class: "chip warn", hidden: true, tabindex: 0 });
-  c.input = h("input", { id: inId, type: "text", inputmode: "decimal", min: 0, max: 100, step: "any",
+  c.input = h("input", { id: "tg-" + i, type: "text", inputmode: "decimal", min: 0, max: 100, step: "any",
     "aria-label": "Target for valve " + i + " in percent" });
   c.input.addEventListener("input", () => { c.dirty = true; });
   c.input.addEventListener("keydown", (e) => { if (e.key === "Enter") setTarget(c); });
@@ -659,18 +686,30 @@ function buildCard(i) {
     c.stopBtn = h("button", { type: "button", onclick: (e) => simpleAction(e.currentTarget, null, "POST", "/api/valves/" + i + "/stop",
       undefined, valveLabel(i) + ": stop requested", () => kick(pValves)) }, "Stop"),
   ];
-  c.el = h("article", { class: "card", "aria-labelledby": "vt-" + i },
-    h("div", { class: "vhead" },
-      h("h3", { id: "vt-" + i }, h("span", { class: "idx", text: "#" + i }), c.name),
-      c.state, c.cal, c.sync, c.fs),
-    h("div", { class: "pos" }, c.pos, c.stroke, c.tgt),
-    h("div", { class: "meter", role: "presentation" }, c.bar, c.mark),
-    c.temps, dl, c.last, c.flags,
-    h("div", { class: "actions" }, c.pctRow, c.flowRow, c.btns));
+  c.curve = h("div");
+  c.det = h("div", { class: "vdet", id: "vd-" + i, hidden: true },
+    h("div", null, c.flags, h("div", { class: "actions" }, c.btns.slice(1)), dl, c.last), c.curve);
+  c.el = h("article", { class: "vrow", "aria-labelledby": "vt-" + i },
+    h("div", { class: "vmain" },
+      h("h3", { class: "vn", id: "vt-" + i }, c.head),
+      h("div", { class: "vst" }, c.state, c.cal, c.sync, c.fs, c.flowSt, c.warn),
+      h("div", { class: "vf" }, c.lpm, c.tgt),
+      h("div", { class: "vp" }, c.pos, h("div", { class: "meter", role: "presentation" }, c.bar, c.mark)),
+      c.tSup, c.tRet, c.tDelta,
+      h("div", { class: "vset" }, c.pctRow, c.flowRow, c.setBtn)),
+    c.det);
   return c;
 }
 
-function updateCard(c, v) {
+function toggleRow(c) {
+  const open = c.det.hidden;
+  c.det.hidden = !open;
+  c.head.setAttribute("aria-expanded", open ? "true" : "false");
+  c.el.classList.toggle("open", open);
+  if (open) { renderCurve(c); loadFlow(c); }
+}
+
+function updateRow(c, v) {
   const key = typeof v.stateKey === "string" ? v.stateKey : "invalid";
   setText(c.name, v.name || "Valve " + c.i);
   setChip(c.state, v.active ? STATE_TXT[key] || key : "inactive", v.active ? STATE_CLS[key] || "" : "");
@@ -693,26 +732,23 @@ function updateCard(c, v) {
   // A valve with a running flow layer: l/min first, its position in % of the stroke beside them.
   const f = v.flow && typeof v.flow === "object" ? v.flow : null;
   c.flow = !!f && f.enabled === true && f.state !== "off" && f.state !== "unsupported";
-  if (c.flow && !isNum(c.qmax)) loadQmax(c);
-  setText(c.pos, c.flow ? fmt(f.lpm, 1, "l/min") : pos === null ? "–" : pos + " %");
-  c.stroke.hidden = !c.flow || !isNum(f.counts) || pos === null;
-  setText(c.stroke, pos + " % stroke");
-  const goal = c.flow && isNum(f.targetLpm) ? Number(f.targetLpm.toFixed(3)) + " l/min" : v.target + " %";
-  setText(c.tgt, isNum(v.target) ? "target " + goal + (v.targetSource && v.targetSource !== "none" ?
-    " (" + v.targetSource + ")" : "") : "no target");
-  c.bar.style.width = (pos || 0) + "%";
+  if (c.flow && !isNum(c.qmax)) loadFlow(c);
+  const chip = f && f.enabled ? FLOW_CHIP[f.state] : undefined;
+  c.flowSt.hidden = !chip;
+  if (chip) { setChip(c.flowSt, chip[0], chip[1]); setTip(c.flowSt, chip[2]); }
+  setText(c.lpm, c.flow ? fmt(f.lpm, 1, "l/min") : "–");
+  // the layer reports 0 % while it holds no position
+  const at = c.flow && !isNum(f.counts) ? null : pos;
+  setText(c.pos, at === null ? "–" : at + " %");
+  const byFlow = c.flow && isNum(f.targetLpm);
+  setText(c.tgt, !isNum(v.target) ? "no target" : "→ " + (byFlow ? f.targetLpm.toFixed(1) : v.target + " %"));
+  setTip(c.tgt, !isNum(v.target) ? "No target yet." : "Target " + (byFlow ? Number(f.targetLpm.toFixed(3)) + " l/min" : v.target + " % of the stroke") +
+    (v.targetSource && v.targetSource !== "none" ? ", from " + v.targetSource : ""));
+  c.bar.style.width = (at || 0) + "%";
   c.mark.hidden = !isNum(v.target);
   if (isNum(v.target)) c.mark.style.left = Math.max(0, Math.min(100, v.target)) + "%";
-  setText(c.mean, fmt(v.meanCur, 0, "mA"));
-  setText(c.occ, fmt(v.oc) + " / " + fmt(v.cc));
-  setText(c.dc, fmt(v.dc));
-  setText(c.cr, fmt(v.cr));
-  setText(c.moves, fmt(v.moves));
-  setText(c.early, ext ? fmt(ext.earlyStops) : "–");
-  setText(c.rej, ext ? fmt(ext.cmdRejected) : "–");
-  // learned coast of an opening / a closing step, motor pulses (null below STM 2.2.4)
-  setText(c.coast, ext && isNum(ext.coastOpen) ? fmt(ext.coastOpen) + " / " + fmt(ext.coastClose) : "–");
-  setText(c.age, fmtAge(v.age));
+  const x = ext && ext.v3 && typeof ext.v3 === "object" ? ext.v3 : null;
+  VALVE_KV.forEach(([, get], k) => setText(c.kv[k], get(v, ext, x, f)));
   const lm = ext && ext.lastMove;
   if (lm && typeof lm === "object") {
     setText(c.last, "Last move: " + (lm.dir === "close" ? "close" : "open") + " " + fmt(lm.cnt) + " of " +
@@ -725,32 +761,36 @@ function updateCard(c, v) {
     c.last.className = "lastmove muted";
   }
   const sensors = Array.isArray(v.sensors) ? v.sensors : [];
-  const sup = sensors.find((x) => x.sensor !== 2), ret = sensors.find((x) => x.sensor === 2);
+  const sup = sensors.find((t) => t.sensor !== 2), ret = sensors.find((t) => t.sensor === 2);
   showLoopTemp(c.tSup, sup, "Supply");
   showLoopTemp(c.tRet, ret, "Return");
-  c.tDelta.div.hidden = !sup || !ret;
-  setText(c.tDelta.dd, sup && ret && isNum(sup.temp) && isNum(ret.temp) ? (sup.temp - ret.temp).toFixed(1) + " K" : "–");
-  c.temps.hidden = !sensors.length;
-  const flags = Array.isArray(v.health) ? v.health.filter((f) => HEALTH[f]) : [];
+  const delta = sup && ret && isNum(sup.temp) && isNum(ret.temp);
+  c.tDelta.classList.toggle("none", !delta);
+  setText(c.tDelta, delta ? (sup.temp - ret.temp).toFixed(1) + " K" : "");
+  setTip(c.tDelta, delta ? "Supply minus return of the loop (1 K = 1 °C)." : "");
+  const flags = Array.isArray(v.health) ? v.health.filter((n) => HEALTH[n]) : [];
   if (ext && ext.calEarlyStop === true) flags.push("calEarlyStop");
   if (ext && ext.calLastFailed === true) flags.push("calLastFailed");
   const fk = flags.join();
   if (c.fk !== fk) {
     c.fk = fk;
     c.flags.textContent = "";
-    for (const f of flags) {
-      c.flags.append(h("span", { class: "chip " + HEALTH[f][1], text: HEALTH[f][0], tabindex: 0, "data-tip": HEALTH[f][2] }));
+    for (const n of flags) {
+      c.flags.append(h("span", { class: "chip " + HEALTH[n][1], text: HEALTH[n][0], tabindex: 0, "data-tip": HEALTH[n][2] }));
     }
+    setChip(c.warn, flags.length + (flags.length > 1 ? " warnings" : " warning"),
+      flags.some((n) => HEALTH[n][1] === "err") ? "err" : "warn");
+    setTip(c.warn, flags.map((n) => HEALTH[n][0]).join(", "));
   }
-  c.flags.hidden = !flags.length;
+  c.flags.hidden = c.warn.hidden = !flags.length;
   const fs = v.failsafe && typeof v.failsafe === "object" ? v.failsafe : null;
   c.fs.hidden = !fs || (fs.state !== "lease" && fs.state !== "blocked");
   if (!c.fs.hidden) {
     setChip(c.fs, "failsafe " + (fs.state === "blocked" ? "(blocked) " : "") + (isNum(fs.pct) ? fs.pct + " %" : "hold"),
       fs.state === "blocked" ? "err" : "warn");
-    const at = isNum(fs.pct) ? "goes to its failsafe position, " + fs.pct + " %" : "stays where it is (failsafe hold)";
-    setTip(c.fs, fs.state === "blocked" ? "The valve is blocked, so it " + at + ", instead of following its target." :
-      "No live regulator (MQTT broker or Home Assistant) for longer than the failsafe timeout, so the valve " + at +
+    const to = isNum(fs.pct) ? "goes to its failsafe position, " + fs.pct + " %" : "stays where it is (failsafe hold)";
+    setTip(c.fs, fs.state === "blocked" ? "The valve is blocked, so it " + to + ", instead of following its target." :
+      "No live regulator (MQTT broker or Home Assistant) for longer than the failsafe timeout, so the valve " + to +
       ". Its target applies again once the regulator is back.");
   }
   c.el.classList.toggle("bad", !!v.active && (key === "blocked" || key === "failed"));
@@ -770,6 +810,7 @@ function updateCard(c, v) {
   const proto3 = S && S.stm && S.stm.proto >= 3;
   c.stopBtn.hidden = !proto3;
   c.stopBtn.disabled = !v.active;
+  if (!c.det.hidden) renderCurve(c);
 }
 
 async function pollValves() {
@@ -785,9 +826,9 @@ function renderValves() {
   V.forEach((v, n) => {
     if (!v || typeof v !== "object") return;
     const i = n + 1;
-    if (!cards[i]) { cards[i] = buildCard(i); list.append(cards[i].el); }
-    updateCard(cards[i], v);
-    cards[i].el.hidden = !v.active && !showAll;
+    if (!vrows[i]) { vrows[i] = buildRow(i); list.append(vrows[i].el); }
+    updateRow(vrows[i], v);
+    vrows[i].el.hidden = !v.active && !showAll;
   });
   if (!V.some((v) => v && v.active) && !showAll && !$("no-active")) {
     list.append(h("p", { id: "no-active", class: "muted" }, "No active valves. Enable valves under Settings, or tick Show inactive."));
@@ -796,7 +837,7 @@ function renderValves() {
   }
   updateValveFilterNames();
   renderSummary();
-  if (tipFor) tipPlace();  // its chip may be gone or hidden, or the cards moved
+  if (tipFor) tipPlace();  // its chip may be gone or hidden, or the rows moved
 }
 $("show-inactive").addEventListener("change", () => { lsSet("vdm.inactive", $("show-inactive").checked ? "1" : ""); renderValves(); });
 $("show-inactive").checked = lsGet("vdm.inactive") === "1";
@@ -819,21 +860,66 @@ function renderSummary() {
   setText(box, parts.join(" · "));
 }
 
-// qmax does not fit in /api/valves: one flow document per valve, one after the other.
-let qmaxLoad = Promise.resolve();
-function loadQmax(c) {
-  if (c.qmaxPending) return;
-  c.qmaxPending = true;
-  qmaxLoad = qmaxLoad.then(async () => {
+// The flow document does not fit in /api/valves: one per valve, one request after the other.
+let flowQueue = Promise.resolve();
+function loadFlow(c) {
+  if (c.flowBusy) return;
+  c.flowBusy = true;
+  flowQueue = flowQueue.then(async () => {
     try {
-      const d = await api("GET", "/api/valves/" + c.i + "/flow");
-      if (d && d.config && isNum(d.config.qmax)) {
-        c.qmax = d.config.qmax;
+      c.doc = await api("GET", "/api/valves/" + c.i + "/flow");
+      c.docErr = "";
+      if (c.doc && c.doc.config && isNum(c.doc.config.qmax)) {
+        c.qmax = c.doc.config.qmax;
         c.flowIn.max = c.qmax;
       }
-    } catch { /* the next poll asks again */ }
-    c.qmaxPending = false;
+    } catch (e) { c.docErr = e.message; }  // a poll or the next opening asks again
+    c.flowBusy = false;
+    c.ck = "";
+    if (!c.det.hidden) renderCurve(c);
+    if (view === "stored") renderStored();
   });
+}
+
+// The curve in the corrected pulses of a held position: gain x counts + offset.
+function curveChart(cf, f) {
+  const pts = cf.points.map((p) => [Math.round(cf.offset + cf.gain * p[0]), p[1]]);
+  const end = pts[pts.length - 1], at = isNum(f.counts) ? f.counts : null;
+  const q = isNum(f.lpm) ? f.lpm : 0;
+  const { svg, X, Y } = plot(Math.max(end[0] * 1.05, at || 0), Math.max(end[1], q, 0.1), "pulses", "l/min",
+    "Flow curve of " + pts.length + " points up to " + end[1] + " l/min at " + end[0] + " pulses" +
+    (at === null ? "" : "; held at " + at + " pulses"));
+  svg.append(s("path", { class: "ln", d: pts.map((p, k) => (k ? "L" : "M") + X(p[0]).toFixed(1) + " " + Y(p[1]).toFixed(1)).join("") }));
+  for (const p of pts) svg.append(s("circle", { class: "pt", r: 3, cx: X(p[0]), cy: Y(p[1]) }));
+  if (at !== null) {
+    svg.append(s("line", { class: "ref", x1: X(at), x2: X(at), y1: Y(0), y2: Y(q) }), s("circle", { class: "dot", r: 5, cx: X(at), cy: Y(q) }));
+  }
+  return svg;
+}
+
+function renderCurve(c) {
+  const cf = c.doc && c.doc.config, v = V[c.i - 1], f = (v && v.flow) || {};
+  const key = [c.docErr, f.counts, f.lpm, !!cf].join();
+  if (c.ck === key) return;
+  c.ck = key;
+  const box = c.curve;
+  box.replaceChildren(h("h4", { text: "Flow curve" }));
+  if (!cf) { box.append(h("p", { class: "small muted", text: c.docErr || "Loading…" })); return; }
+  const pts = Array.isArray(cf.points) ? cf.points : [];
+  box.append(h("p", { class: "small muted", text: "In the ESP flash (NVS), not on the STM." }));
+  if (!pts.length) { box.append(h("p", { class: "small", text: "No curve stored for this valve." })); return; }
+  const dl = h("dl", { class: "info" });
+  infoList(dl, [
+    ["Layer", cf.enabled ? "on" : "off"],
+    ["Held", isNum(f.counts) ? f.counts + " pulses, " + fmt(f.lpm, 3, "l/min") : "no position"],
+    ["Stroke", fmt(cf.strokeCounts, 0, "pulses") + ", reference " + cf.refSide + " end stop"],
+    ["Flow limit", fmt(cf.qmax, 3, "l/min") + ", dead band " + fmt(cf.deadbandLpm, 3, "l/min")],
+    ["End-stop current", "open " + fmt(cf.openmA, 0, "mA") + ", close " + fmt(cf.refmA, 0, "mA") + (cf.preClose ? ", warm-up close" : "")],
+    ["Fallback", cf.fallbackPct + " % of the STM scale, at least " + cf.minIntervalS + " s between positionings"],
+    ["Correction", "offset " + cf.offset + ", gain " + cf.gain + ", refDelta " + (isNum(c.doc.refDelta) ? c.doc.refDelta : "–")],
+  ]);
+  box.append(curveChart(cf, f), dl, h("details", null, h("summary", { class: "small", text: pts.length + " points as a table" }),
+    dataTable(["Pulses", "l/min"], pts.map((p) => [p[0], p[1].toFixed(3)]))));
 }
 
 async function setFlow(c) {
@@ -966,18 +1052,13 @@ function niceStep(max, n) {
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
 
-// Single-series line chart: counts (x) vs motor current in mA (y).
-function chart(pts, mean) {
+// The frame of a chart: grid, tick labels, the names of the axes.
+function plot(xMax, yTop, xName, yName, label) {
   const W = 560, H = 240, L = 40, R = 12, T = 12, B = 30;
-  const xMax = Math.max(1, ...pts.map((p) => p[0]));
-  const peak = pts.reduce((a, p) => (p[1] > a[1] ? p : a), pts[0]);
-  const yStep = niceStep(Math.max(peak[1], mean || 0, 1), 4);
-  const yMax = Math.ceil(Math.max(peak[1], mean || 0, 1) / yStep) * yStep;
-  const xStep = niceStep(xMax, 4);
+  const yStep = niceStep(yTop, 4), xStep = niceStep(xMax, 4);
+  const yMax = Math.ceil(yTop / yStep) * yStep;
   const X = (x) => L + (x / xMax) * (W - L - R), Y = (y) => T + (1 - y / yMax) * (H - T - B);
-  const svg = s("svg", { viewBox: "0 0 " + W + " " + H, class: "chart", role: "img", tabindex: "0",
-    "aria-label": "Motor current over " + pts.length + " samples; peak " + peak[1].toFixed(1) + " mA at count " +
-      peak[0] + ". Use arrow keys to read samples." });
+  const svg = s("svg", { viewBox: "0 0 " + W + " " + H, class: "chart", role: "img", "aria-label": label });
   for (let y = 0; y <= yMax + 1e-9; y += yStep) {
     svg.append(s("line", { class: "gl", x1: L, x2: W - R, y1: Y(y), y2: Y(y) }));
     svg.append(s("text", { x: L - 6, y: Y(y) + 4, "text-anchor": "end" }, String(+y.toFixed(1))));
@@ -985,8 +1066,19 @@ function chart(pts, mean) {
   for (let x = 0; x <= xMax + 1e-9; x += xStep) {
     svg.append(s("text", { x: X(x), y: H - 12, "text-anchor": "middle" }, String(Math.round(x))));
   }
-  svg.append(s("text", { x: W - R, y: H - 1, "text-anchor": "end" }, "counts"));
-  svg.append(s("text", { x: 2, y: 10 }, "mA"));
+  svg.append(s("text", { x: W - R, y: H - 1, "text-anchor": "end" }, xName));
+  svg.append(s("text", { x: 2, y: 10 }, yName));
+  return { svg, X, Y, W, H, L, R, T, B };
+}
+
+// Single-series line chart: counts (x) vs motor current in mA (y).
+function chart(pts, mean) {
+  const xMax = Math.max(1, ...pts.map((p) => p[0]));
+  const peak = pts.reduce((a, p) => (p[1] > a[1] ? p : a), pts[0]);
+  const { svg, X, Y, W, H, L, R, T, B } = plot(xMax, Math.max(peak[1], mean || 0, 1), "counts", "mA",
+    "Motor current over " + pts.length + " samples; peak " + peak[1].toFixed(1) + " mA at count " +
+      peak[0] + ". Use arrow keys to read samples.");
+  svg.setAttribute("tabindex", "0");
   if (isNum(mean) && mean > 0) {
     svg.append(s("line", { class: "ref", x1: L, x2: W - R, y1: Y(mean), y2: Y(mean) }));
     svg.append(s("text", { x: W - R, y: Y(mean) - 4, "text-anchor": "end" }, "mean " + mean + " mA"));
@@ -1070,6 +1162,112 @@ $("scan-bus").addEventListener("click", async (e) => {
     kick(pSensors);
   });
 });
+
+// ------------------------------------------------------------------ stored
+
+const dataTable = (heads, data) => h("div", { class: "tbl-wrap" }, h("table", null,
+  h("thead", null, h("tr", null, heads.map((x) => h("th", { text: x })))),
+  h("tbody", null, data.map((r) => h("tr", null, r.map((x) => h("td", { text: x })))))));
+const panel = (title, note, ...kids) => h("div", { class: "panel" }, h("h3", { text: title }),
+  h("p", { class: "small muted", text: note }), kids);
+
+let stored = null;  // the documents of the last loadStored
+async function loadStored() {
+  await pollValves();
+  await flowQueue;  // that poll may have queued flow documents
+  const get = (path) => api("GET", path).catch(() => null);  // a table stays empty without its part
+  stored = { motor: await get("/api/stm/motor"), sensors: await get("/api/sensors"), config: await get("/api/config"),
+    images: await get("/api/stm/images"), health: await get("/api/health") };
+  renderStored();
+}
+$("stored-reload").addEventListener("click", () => kick(pStored));
+
+function storedCurves() {
+  const data = [];
+  V.forEach((v, n) => {
+    const c = vrows[n + 1], cf = c && c.doc && c.doc.config, pts = cf && Array.isArray(cf.points) ? cf.points : [];
+    if (!v || (!v.active && !pts.length)) return;
+    const end = pts[pts.length - 1], label = "#" + (n + 1) + " " + (v.name || "");
+    data.push(!cf ? [label, "not read"] : !pts.length ? [label, "no curve"] :
+      [label, cf.enabled ? "on" : "off", pts.length, pts[0][0] + " to " + end[0], fmt(pts[0][1], 1) + " to " + fmt(end[1], 1),
+        cf.strokeCounts, cf.refSide, fmt(c.doc.refDelta)]);
+  });
+  const read = h("button", { type: "button", onclick: (e) => busy(e.currentTarget, async () => {
+    for (const c of vrows) if (c) loadFlow(c);
+    await flowQueue;
+  }) }, "Read all curves");
+  return panel("Flow curves", "In the ESP flash (NVS key flow), one set per valve. The STM holds no curve: it gets moves in pulses. A row under Valves shows the chart.",
+    dataTable(["Valve", "Layer", "Points", "Pulses", "l/min", "Stroke", "Reference", "refDelta"], data), h("div", { class: "row", style: "margin-top:8px" }, read));
+}
+
+function storedValves() {
+  const data = V.filter((v) => v && v.active).map((v) => {
+    const x = v.ext && v.ext.v3;
+    return ["#" + v.idx + " " + (v.name || ""), fmt(v.oc), fmt(v.cc), fmt(v.meanCur, 0, "mA"),
+      v.failsafe ? (isNum(v.failsafe.pct) ? v.failsafe.pct + " %" : "hold") : "–", x && x.flags ? x.flags.join(", ") : "–"];
+  });
+  return panel("Calibration on the STM", "In the STM EEPROM: the strokes and the mean current of the last calibration, the failsafe position.",
+    dataTable(["Valve", "Open", "Close", "Mean", "Failsafe", "STM flags"], data));
+}
+
+function storedSensors() {
+  const temps = (stored.sensors && stored.sensors.temps) || [], slots = (stored.config && stored.config.temps) || [];
+  const data = [];
+  for (const v of V) {
+    for (const x of (v && v.sensors) || []) {
+      const t = temps.find((r) => r.slot === x.slot), o = slots[x.slot - 1];
+      data.push(["#" + v.idx + " " + (v.name || ""), x.sensor === 2 ? "return" : "supply", x.slot, x.name || "", t ? t.id : "",
+        t && isNum(t.raw) ? (t.raw / 10).toFixed(1) : "–", o && isNum(o.offset) ? o.offset.toFixed(1) : "–", fmt(x.temp, 1)]);
+    }
+  }
+  return panel("Sensors of the valves", "The STM EEPROM holds the 1-Wire ids of each valve. Slot, name and offset are in the ESP configuration. Temp = raw + offset, in °C.",
+    dataTable(["Valve", "Role", "Slot", "Name", "1-Wire id", "Raw", "Offset", "Temp"], data));
+}
+
+function storedStm() {
+  const stm = (S && S.stm) || {}, g = stm.status || {}, b = stm.lease || {}, d = stored.motor || {}, m = d.motor, k = d.breakaway;
+  const dl = h("dl", { class: "info" });
+  infoList(dl, [
+    m ? ["End-stop factors", m.lowC + " / " + m.highC + " × 0.1 of the mean current"] : null,
+    m ? ["After a start", "position " + m.startOnPower + " %"] : null,
+    m ? ["Calibration", "at least " + m.noOfMinCount + " counts, " + m.maxCalReps + " retries"] : null,
+    ["Recalibrate after", fmt(d.learnMovements) + " moves, " + fmt(stm.learnTime, 0, "s") + " (0 = off)"],
+    k ? ["Breakaway", (k.enable ? "on, " : "off, ") + k.stepPct + " % per retry, up to " + k.maxmA + " mA"] : null,
+    ["Lease", fmt(g.leaseTimeoutMin, 0, "min") + ", " + (b.state || "–") + ", regulator " + (b.regulator || "–") + ", config " + (b.configSynced ? "synced" : "not synced")],
+    ["EEPROM", fmt(g.eepWrites) + " writes, state " + fmt(g.eepState) + ", flags " + ((g.cfgFlags || []).join(", ") || "none") + ", " + fmt(g.cfgEvents) + " events"],
+    ["Start", "boot reason " + fmt(g.bootReason) + ", " + fmt(g.wdgResets) + " watchdog resets"],
+    ["UART", fmt(g.uartOre) + " overrun, " + fmt(g.uartFe) + " framing, " + fmt(g.uartNe) + " noise, " + fmt(g.rxDropped) + " dropped"],
+    ["1-Wire", "read " + fmtAge(g.tempAgeS) + " ago, scanned " + fmtAge(g.owScanAgeS) + " ago"],
+  ]);
+  return panel("STM parameters", "In the STM EEPROM, with its live counters.", dl);
+}
+
+function storedEsp() {
+  const st = S || {}, n = st.net || {}, q = st.mqtt || {}, l = (st.stm && st.stm.stats) || {}, c = st.config || {};
+  const he = stored.health || {}, hn = he.net || {}, lg = he.log || {};
+  const dl = h("dl", { class: "info" });
+  infoList(dl, [
+    ["Configuration", (c.source || "–") + ", schema " + fmt(stored.config && stored.config.schema) + ", repairs " + fmt(c.repairs)],
+    ["Host name", n.hostname || "–"],
+    ["MQTT client", (q.clientId || "–") + ", rc " + fmt(q.rc) + ", HA " + (q.haStatus || "–")],
+    ["Next calibration", st.calibration && st.calibration.next ? st.calibration.next.replace("T", " ") : "–"],
+    ["STM link", fmt(l.answered) + " answered, " + fmt(l.failedRequests) + " failed, " + fmt(l.strayLines) + " stray, " + fmt(l.queueFull) + " queue full, " + fmt(l.evictions) + " evicted"],
+    ["Stacks free", Array.isArray(he.tasks) ? he.tasks.map((t) => t.name + " " + t.minFree).join(", ") : "–"],
+    ["Network proof", (hn.evidence || "–") + ", " + fmtAge(hn.evidenceAgeS) + " ago, " + fmt(hn.ifaceRestarts) + " restarts"],
+    ["Log", fmt(lg.backlog) + " waiting, " + fmt(lg.flushes) + " flushes, " + fmt(lg.lost) + " lost, " + fmt(lg.failures) + " failures"],
+  ]);
+  return panel("ESP", "Its settings are under Settings, its files under Maintenance.", dl);
+}
+
+function renderStored() {
+  if (!stored) return;
+  const images = Array.isArray(stored.images) ? stored.images : [];
+  $("stored-body").replaceChildren(storedCurves(), storedValves(), storedSensors(),
+    h("div", { class: "cols" }, storedStm(), storedEsp()),
+    panel("STM images", "In the ESP flash (LittleFS). The STM holds only the firmware it runs.",
+      dataTable(["Image", "Version", "Board", "Size", "CRC32"], images.map((x) => [x.name, x.version || "–", x.hw || "–", fmtBytes(x.size), x.crc32 || "–"]))),
+    h("p", { class: "small muted", text: "Not readable: the plug brake of a valve (STM RAM, it only takes values), the unused fields of the old STM EEPROM layout (description, extra sensor slots)." }));
+}
 
 // ------------------------------------------------------------------ events
 
@@ -2243,6 +2441,7 @@ $("files-reload").addEventListener("click", (e) => busy(e.currentTarget, loadFil
 
 const pStatus = poller(pollStatus, 5000);
 const pValves = poller(pollValves, 3000, () => view === "valves");
+const pStored = poller(loadStored, 60000, visible("stored"));
 const pSensors = poller(pollSensors, 10000, visible("sensors"));
 const pEvents = poller(pollEvents, 3000, visible("events"));
 const pFlash = poller(pollFlash, 1000, () => flashActive || view === "maintenance");

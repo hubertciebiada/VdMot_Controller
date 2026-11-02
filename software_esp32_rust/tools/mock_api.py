@@ -10,7 +10,7 @@ progress, and restarts make the device briefly unreachable.
     python3 tools/mock_api.py --station west --port 8081
     python3 tools/mock_api.py --proto 1           # legacy STM 1.4.x (no gvlvx/gprof/svmov)
     python3 tools/mock_api.py --proto 3           # STM protocol 3: failsafe lease, stop, safe mode
-    python3 tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
+    python3 tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline,flow
     python3 tools/mock_api.py --import-report     # a legacy import report (notice N2)
     python3 tools/mock_api.py --station-name "Dom Północ"
 
@@ -40,6 +40,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
 ESP_VERSION = "2.1.0-revamped-dev"
 STM_VERSION_V3 = "2.1.0-revamped_C2"
+STM_VERSION_FLOW = "2.2.12-revamped_C2"  # scenario flow: an STM that keeps a held position
 STM_VERSION_V2 = "2.0.0-revamped_C2"
 STM_VERSION_V1 = "1.4.9_Dev_C2"
 STM_VERSION_OLD = "1.3.9_C2"
@@ -51,8 +52,8 @@ ESP_APP_MAX = 0x140000
 # name, blocked calibration (oc, cc, cr) or None
 STATIONS = {
     "east": [("Korytarz1", None), ("Pokoj1", None), ("Pokoj2", None), ("Korytarz2", None),
-             ("Lazienka", None), ("Garderoba", (67, 82, 3)), ("Sypialnia", None)],
-    "west": [("Toaleta", (72, 100, 3)), ("Kuchnia", None), ("Salon", None), ("Wiatrolap", None),
+             ("Strefa1", None), ("Strefa2", (67, 82, 3)), ("Strefa3", None)],
+    "west": [("Strefa4", (72, 100, 3)), ("Strefa5", None), ("Strefa6", None), ("Strefa7", None),
              ("Gabinet", None), ("Pokoj3", None)],
 }
 
@@ -231,6 +232,7 @@ class Device:
         self.esp_version = ESP_VERSION
         self.esp_build = int(time.time()) - 86400 * 2
         self.stm_version = (STM_VERSION_OLD if "tooold" in self.scenarios else
+                            STM_VERSION_FLOW if "flow" in self.scenarios and proto >= 3 else
                             STM_VERSION_V3 if proto >= 3 else STM_VERSION_V2 if proto >= 2 else STM_VERSION_V1)
         self.import_report = copy.deepcopy(DEMO_IMPORT_REPORT) if import_report else None
         self.trial = None           # {"until": wall time, "previous": net config} while a network trial runs
@@ -331,6 +333,25 @@ class Device:
         vid = one_wire_id(rng, 0x26)
         self.config["volts"][0].update(name="Supply", active=True, offset=0.0, factor=1.0, unit="V", id=vid)
         self.volts.append({"slot": 1, "id": vid, "base": 1208})
+        if "flow" in self.scenarios:
+            self._flow_station(n)
+
+    def _flow_station(self, active):
+        """Scenario flow: made-up curves on the active valves, the last one without a curve. A flow
+        target on most of them, a target in % on the second, a failed positioning on the third."""
+        for i in range(active - 1):
+            v = self.valves[i]
+            start, top = 560 + 43 * i, 2.3 + 0.07 * i
+            points = [[start + 42 * k, round(top * (1 - 0.8 ** (k * k / 13)) / 0.98, 3)] for k in range(14)]
+            v["flow"].update(enabled=True, refSide="open", strokeCounts=4100 + 110 * i, points=points)
+            if v["blocked"]:
+                continue
+            v["flowTarget"] = None if i == 1 else round(0.4 + 0.3 * i, 1)
+            v["flowCounts"] = self.flow_target_counts(v["flow"], 30) if i == 1 else \
+                self.flow_counts(v["flow"], v["flowTarget"])
+            v["target"] = self.stroke_pct(v["flow"], v["flowCounts"])
+            v["flowFailed"] = i == 2
+            v["refDelta"] = 18 + i
 
     def _history(self):
         t0 = self.boot_wall
@@ -764,20 +785,21 @@ class Device:
         if not f["enabled"]:
             return {"enabled": False, "state": "off", "counts": None, "targetCounts": 0, "lpm": None,
                     "targetLpm": None, "ms": None, "peak": None}
-        if self.proto < 3 or self.stm_version < "2.2.8":
+        m = re.match(r"(\d+)\.(\d+)\.(\d+)", self.stm_version)
+        if self.proto < 3 or not m or tuple(int(x) for x in m.groups()) < (2, 2, 8):
             return {"enabled": True, "state": "unsupported", "counts": None, "targetCounts": 0, "lpm": None,
                     "targetLpm": None, "ms": None, "peak": None}
         counts = v["flowCounts"]
-        if counts is None:
-            return {"enabled": True, "state": "unknown", "counts": None, "targetCounts": 0, "lpm": None,
-                    "targetLpm": v["flowTarget"], "ms": None, "peak": None}
+        if counts is None or v.get("flowFailed"):
+            return {"enabled": True, "state": "failed" if v.get("flowFailed") else "unknown", "counts": None,
+                    "targetCounts": counts or 0, "lpm": None, "targetLpm": v["flowTarget"], "ms": None, "peak": None}
         lpm = self.flow_lpm(f, counts)
         return {"enabled": True, "state": "held", "counts": counts, "targetCounts": counts, "lpm": round(lpm, 3),
                 "targetLpm": v["flowTarget"], "ms": counts * 7, "peak": 12.3}
 
     def flow_document(self, i, v):
         """GET and POST /api/valves/{n}/flow."""
-        return {"valve": i + 1, "config": v["flow"], "flow": self.flow_view(v), "refDelta": None}
+        return {"valve": i + 1, "config": v["flow"], "flow": self.flow_view(v), "refDelta": v.get("refDelta")}
 
     @staticmethod
     def flow_target_counts(cfg, pct):
@@ -1903,12 +1925,12 @@ def main():
     ap.add_argument("--proto", type=int, choices=(1, 2, 3), default=2,
                     help="STM protocol: 1 = legacy 1.4.x, 2 = revamped 2.0, 3 = revamped 2.1")
     ap.add_argument("--scenario", default="", help="comma-separated: health, busy, queue, failsafe, safemode, tooold, "
-                                                   "haoffline")
+                                                   "haoffline, flow (STM protocol 3 only)")
     ap.add_argument("--import-report", action="store_true", help="show a legacy import report")
     ap.add_argument("--station-name", help="station name (UTF-8 allowed)")
     args = ap.parse_args()
     scenarios = [x for x in args.scenario.split(",") if x]
-    unknown = set(scenarios) - {"health", "busy", "queue", "failsafe", "safemode", "tooold", "haoffline"}
+    unknown = set(scenarios) - {"health", "busy", "queue", "failsafe", "safemode", "tooold", "haoffline", "flow"}
     if unknown:
         ap.error("unknown scenario: " + ", ".join(sorted(unknown)))
     Handler.dev = Device(args.station, args.proto, scenarios, args.import_report, args.station_name)

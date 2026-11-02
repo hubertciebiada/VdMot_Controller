@@ -30,6 +30,7 @@
 <nav class="tabs" aria-label="Sections">
   <a href="#valves">Valves</a>
   <a href="#sensors">Sensors</a>
+  <a href="#stored">Stored</a>
   <a href="#events">Events<span class="dot" id="ev-dot" hidden><span class="sr"> (new)</span></span></a>
   <a href="#settings">Settings</a>
   <a href="#maintenance">Maintenance</a>
@@ -45,7 +46,8 @@
     <span class="grow"></span>
     <label class="inline small"><input type="checkbox" id="show-inactive"> Show inactive</label>
   </div>
-  <div id="valve-list" class="cards"></div>
+  <div class="vhead" aria-hidden="true"><span>Valve</span><span>State</span><span>Flow</span><span>Position</span><span>Supply</span><span>Return</span><span>&Delta;T</span><span>Set target</span></div>
+  <div id="valve-list"></div>
 </section>
 
 <section id="v-sensors" aria-labelledby="h-sensors" hidden>
@@ -64,6 +66,13 @@
     <thead><tr><th>Slot</th><th>Name</th><th class="r">Value</th><th>State</th><th class="r">Raw</th><th class="r">Age</th><th>1-Wire id</th></tr></thead>
     <tbody id="volts-body"></tbody>
   </table></div>
+</section>
+
+<section id="v-stored" aria-labelledby="h-stored" hidden>
+  <div class="bar"><h2 id="h-stored">Stored</h2><span class="grow"></span>
+    <button type="button" id="stored-reload">Refresh</button></div>
+  <p class="small muted">Read only: what the controllers keep and where it lies. Settings and Maintenance change it.</p>
+  <div id="stored-body"></div>
 </section>
 
 <section id="v-events" aria-labelledby="h-events" hidden>

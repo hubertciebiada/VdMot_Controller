@@ -138,7 +138,7 @@ Recommended order: **ESP first, then STM.**
    flashing. If the STM does not answer at 115200 baud, one more session runs
    at 57600 baud.
 3. Afterwards the header shows STM `2.1.7-revamped` (Maintenance → System
-   adds the board `C2` or `C1` and protocol `v3`), and the valve cards show
+   adds the board `C2` or `C1` and protocol `v3`), and the valve rows show
    the extended data (last move, early stops, rejected commands, flags,
    failsafe). The image is kept as `last_good.bin`.
 4. On its first start after 1.x or 2.0.0 the STM takes over the motor

@@ -8,6 +8,30 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## Next (unreleased)
+
+### ESP32: the dashboard lists the valves in rows and shows what is stored
+
+- Valves is one row per valve: name, state, flow in l/min with its target, position in % of the
+  stroke, supply, return, delta T, the target field. Below 1000 px wide a row takes three lines
+  and the target field appears when the row is open. The state of the flow layer shows as a chip
+  while the valve is not held (`positioning`, `position unknown`, `positioning failed`, `needs
+  STM 2.2.8`); before this nothing showed a failed positioning. The position shows `–` while the
+  layer holds none, not the 0 % the API reports then.
+- A row opens to its actions, its diagnostics and the chart of its flow curve with the points, the
+  held position and the stored flow settings. New in a row: where the target came from, the STM
+  and drive targets, failsafe position, fault, automatic retries, last calibration, held pulses,
+  the last positioning and the STM flags.
+- New tab Stored, read only, each block named with the place it lies: flow curves (ESP NVS),
+  calibration and failsafe (STM EEPROM), the sensors of the valves with raw, offset and temperature,
+  the STM parameters, the ESP configuration state, stacks, log and link counters from
+  `/api/status` and `/api/health`, the STM images (ESP LittleFS). It also names what cannot be read: the
+  plug brake of a valve and the unused fields of the 1.x EEPROM layout.
+- The API does not change. A flow document is read when a row opens or on Read all curves, one
+  request after the other; the Stored tab reads its documents one after the other, once a minute
+  while it is open. The panel grows by about 4.4 KB of gzip; the image budget of 1,228,800 B has about
+  1 KB left ([PORTING.md](PORTING.md)).
+
 ## 2.2.12-revamped
 
 This release also carries 2.2.8, 2.2.9, 2.2.10 and 2.2.11 below, which had no release of their
