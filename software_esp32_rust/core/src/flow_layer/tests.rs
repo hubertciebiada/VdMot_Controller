@@ -2340,6 +2340,21 @@ fn a_target_at_the_held_pulses_is_served_without_a_move() {
 }
 
 #[test]
+fn a_target_at_the_held_pulses_is_the_target_shown() {
+    let (mut stm, mut f) = held_open(&open_curve());
+    to_857(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    // 11 pulses short of the target
+    direct_done(&mut stm, &mut f, MoveDir::Open, 48, 37);
+    assert_eq!((f.view(0).counts, f.view(0).target_counts), (846, 857));
+    stm.now += 300_000;
+    stm.target(0, 18); // 846 pulses
+    assert_eq!(stm.next(&mut f), None);
+    assert_eq!((f.view(0).counts, f.view(0).target_counts), (846, 846));
+    assert_eq!(f.v[0].target_pct, 18);
+}
+
+#[test]
 fn a_target_in_percent_moves_the_valve_above_the_top_of_the_curve_too() {
     let mut c = curve();
     c.min_interval_s = 0;

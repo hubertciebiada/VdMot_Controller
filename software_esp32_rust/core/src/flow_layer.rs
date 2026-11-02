@@ -1680,10 +1680,15 @@ fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, counts: u16, now_
         seq.step_seq = move_seq;
         seq.from_held = Some(fv.held_counts);
     }
+    serve(fv, s, counts);
+    fv.pending_raw = None;
+}
+
+/// The desired target at `counts` is the one the valve works to, or stands at, from now on.
+fn serve(fv: &mut FlowValve, s: &ValveState, counts: u16) {
     fv.target_pct = s.desired;
     fv.target_counts = counts;
     fv.served = Served::of(s);
-    fv.pending_raw = None;
 }
 
 /// Starts a positioning to exactly `counts` corrected pulses.
@@ -1745,7 +1750,7 @@ fn start_if_due(
     }
     if counts == fv.held_counts && direct_seq(fv, cfg, s, counts).is_some() {
         // the valve stands there already
-        fv.served = Served::of(s);
+        serve(fv, s, counts);
         return None;
     }
     start(fv, cfg, s, counts, now_ms);
