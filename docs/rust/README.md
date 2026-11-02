@@ -73,7 +73,11 @@ The packaging takes the STM32 images of `docker.sh fw` and the ESP32 images of
 `esp/docker.sh export`. It refuses a tag that is not the version of the Rust firmware
 (`software_stm32_rust/Cargo.toml`, `VDM_VERSION` in `software_esp32_rust/firmware/.cargo/config.toml`
 and the version of `software_esp32_rust/firmware/Cargo.toml`) and images that do not carry that
-version, and writes the asset set of the C++ releases under the same names.
+version, and writes the asset set of the C++ releases under the same names. From 2.2.13 on it also
+refuses a release without `docs/rust/release/<version>.md`, the Highlights and Known limits of its
+notes. The notes carry the section of the version in [CHANGES.md](CHANGES.md); a marker under its
+heading, `<!-- release-notes: through 2.2.8-revamped -->`, adds the older sections down to that
+version.
 
 ## CI
 
