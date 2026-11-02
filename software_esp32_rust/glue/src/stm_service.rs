@@ -27,7 +27,8 @@ use vdm_esp_core::lease_client::{
 };
 use vdm_esp_core::stm_types::{StmCommand, StmCommandType};
 use vdm_esp_core::target_store::{
-    choose_targets, decode_targets, encode_targets, PersistedTargets, RestoreSource, TargetSaver,
+    choose_flow_targets, choose_targets, decode_flow_targets, decode_targets, encode_flow_targets,
+    encode_targets, PersistedTargets, RestoreSource, TargetSaver, PERSISTED_FLOW_SIZE,
     PERSISTED_TARGETS_SIZE,
 };
 
@@ -38,6 +39,8 @@ use crate::shared::CalibInfo;
 pub const CALIBRATION_TICK_MS: u32 = 10_000;
 /// Size of the RTC record of the desired targets (the NVS `targets` format).
 pub const RTC_TARGETS_LEN: usize = PERSISTED_TARGETS_SIZE;
+/// Size of the RTC record of the targets in l/min (the NVS `flowtgt` format).
+pub const RTC_FLOW_TARGETS_LEN: usize = PERSISTED_FLOW_SIZE;
 /// Size of the RTC record of the ESP failsafe emulation.
 pub const RTC_LEASE_LEN: usize = LEASE_RECORD_SIZE;
 
@@ -46,13 +49,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Places of the two RTC records in the firmware's RTC layout.
+/// Places of the RTC records in the firmware's RTC layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RtcRecords {
     /// [`RTC_TARGETS_LEN`] bytes: the desired targets.
     pub targets: usize,
     /// [`RTC_LEASE_LEN`] bytes: the ESP failsafe emulation.
     pub lease: usize,
+    /// [`RTC_FLOW_TARGETS_LEN`] bytes: the targets in l/min.
+    pub flow_targets: usize,
 }
 
 /// The result of a scheduled `staln` (C++ `CalibResult`).
@@ -124,6 +129,9 @@ impl<'a, R: Rtc> StmServiceLink<'a, R> {
         let mut bytes = [0u8; RTC_TARGETS_LEN];
         encode_targets(t, &mut bytes);
         self.rtc.store(self.records.targets, &bytes);
+        let mut flow = [0u8; RTC_FLOW_TARGETS_LEN];
+        encode_flow_targets(t, &mut flow);
+        self.rtc.store(self.records.flow_targets, &flow);
         lock(&self.shared.hand).targets = Some(*t);
     }
 
@@ -182,6 +190,10 @@ pub trait StmServiceHost {
     fn load_targets(&mut self, out: &mut [u8]) -> usize;
     /// C++ `storage::saveTargets(data, len)`.
     fn save_targets(&mut self, data: &[u8]) -> bool;
+    /// The stored targets in l/min, their length (0: none).
+    fn load_flow_targets(&mut self, out: &mut [u8]) -> usize;
+    /// Stores the targets in l/min.
+    fn save_flow_targets(&mut self, data: &[u8]) -> bool;
     /// C++ `net::localTime()`: valid only once SNTP set the clock.
     fn local_time(&mut self) -> LocalTime;
 }
@@ -254,8 +266,17 @@ impl<'a, P: Platform, H: StmServiceHost> StmService<'a, P, H> {
         self.rtc.load(self.records.targets, &mut rtc);
         let mut targets = PersistedTargets::default();
         let source = choose_targets(&rtc, &nvs[..n], &mut targets);
+        let mut nvs_flow = [0u8; PERSISTED_FLOW_SIZE];
+        let n_flow = self
+            .host
+            .load_flow_targets(&mut nvs_flow)
+            .min(nvs_flow.len());
+        let mut rtc_flow = [0u8; RTC_FLOW_TARGETS_LEN];
+        self.rtc.load(self.records.flow_targets, &mut rtc_flow);
+        choose_flow_targets(source, &rtc_flow, &nvs_flow[..n_flow], &mut targets);
         let mut stored = PersistedTargets::default();
         decode_targets(&nvs[..n], &mut stored);
+        decode_flow_targets(&nvs_flow[..n_flow], &mut stored);
         self.saver.prime_stored(&stored);
         // targets newer than NVS (a restart without a flush): NVS catches up
         if source == RestoreSource::Rtc {
@@ -406,7 +427,8 @@ impl<'a, P: Platform, H: StmServiceHost> StmService<'a, P, H> {
     }
 
     fn save_targets(&mut self, now_ms: u32) {
-        let ok = self.host.save_targets(self.saver.bytes());
+        let ok = self.host.save_targets(self.saver.bytes())
+            && self.host.save_flow_targets(self.saver.flow_bytes());
         self.saver.saved(ok, now_ms);
     }
 

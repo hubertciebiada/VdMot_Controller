@@ -352,6 +352,7 @@ fn constants_are_the_cpp_ones() {
         KEY_LAST_CALIB,
         KEY_HA_CLEANUP,
         KEY_TARGETS,
+        KEY_FLOW_TARGETS,
         KEY_NET_TRIAL,
         KEY_FACTORY_LATCH,
         KEY_OTA_STM,
@@ -361,7 +362,7 @@ fn constants_are_the_cpp_ones() {
         keys,
         [
             "vdmrev", "cfg", "cfgx", "imported", "boots", "calSlot", "lastCal", "haDrop",
-            "targets", "netTrial", "frLatch", "otaStm", "haLayout"
+            "targets", "flowtgt", "netTrial", "frLatch", "otaStm", "haLayout"
         ]
     );
     assert_eq!(

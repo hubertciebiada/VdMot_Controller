@@ -729,6 +729,24 @@ fn restore_desired_no_push_before_the_read_back_equal_read_back_is_synced_withou
 }
 
 #[test]
+fn restore_flow_a_target_in_l_min_comes_back_with_the_rules_of_a_restored_target() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x001);
+    let rev = m.desired_revision();
+    assert!(m.restore_flow(0, 37, 1000, TargetSource::Web));
+    let v = *m.valve(0);
+    assert_eq!((v.desired, v.flow_target()), (37, Some(1000)));
+    assert_eq!(v.source, TargetSource::Restored);
+    assert_eq!(v.sync, TargetSync::Pending);
+    assert_eq!(m.desired_revision(), rev + 1);
+    assert!(!m.restore_flow(1, 37, 1000, TargetSource::Web));
+    assert!(!m.restore_flow(0, 101, 1000, TargetSource::Web));
+    assert!(m.restore_desired(0, 37, TargetSource::Web));
+    assert_eq!(m.valve(0).flow_target(), None);
+    assert_eq!(m.valve(0).desired_ml, 0);
+}
+
+#[test]
 fn restore_desired_a_web_target_before_the_read_back_wins() {
     let mut m = ValveModel::default();
     m.set_active_mask(0x001);

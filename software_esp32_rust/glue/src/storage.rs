@@ -69,6 +69,8 @@ pub const KEY_LAST_CALIB: &str = "lastCal";
 pub const KEY_HA_CLEANUP: &str = "haDrop";
 /// blob, the desired targets (stm_service)
 pub const KEY_TARGETS: &str = "targets";
+/// The targets in l/min beside `targets` (Rust 2.2.11).
+pub const KEY_FLOW_TARGETS: &str = "flowtgt";
 /// blob, the network trial record (net)
 pub const KEY_NET_TRIAL: &str = "netTrial";
 /// u8 1 = factory reset done, pin still set
@@ -974,6 +976,24 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
         let _cfg = self.cfg_lock();
         self.prefs()
             .map_or(0, |ns| load_bytes(&ns, KEY_TARGETS, out))
+    }
+
+    /// Stores the targets in l/min as encoded by their owner; false for no bytes or a failed
+    /// write.
+    pub fn save_flow_targets(&self, data: &[u8]) -> bool {
+        let _cfg = self.cfg_lock();
+        !data.is_empty()
+            && self
+                .prefs()
+                .is_some_and(|mut ns| ns.set_blob(KEY_FLOW_TARGETS, data))
+    }
+
+    /// The stored targets in l/min into `out`; 0 when none are stored or they are larger than
+    /// `out`.
+    pub fn load_flow_targets(&self, out: &mut [u8]) -> usize {
+        let _cfg = self.cfg_lock();
+        self.prefs()
+            .map_or(0, |ns| load_bytes(&ns, KEY_FLOW_TARGETS, out))
     }
 
     /// The network trial record (raw bytes, the format belongs to net); 0 when none is stored

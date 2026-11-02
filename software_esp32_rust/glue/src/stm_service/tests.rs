@@ -13,15 +13,18 @@ use crate::testkit::{lock as tlock, Device, FakeBoard, Reset};
 use vdm_esp_core::event_log::Severity;
 use vdm_esp_core::valve_model::TargetSource;
 
-/// Where the cases keep the two RTC records.
+/// Where the cases keep the RTC records.
 const RECORDS: RtcRecords = RtcRecords {
     targets: 100,
     lease: 160,
+    flow_targets: 300,
 };
 const CET: &str = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 /// The C++ sibling fakes of app, storage, net and logger.
 struct HostState {
+    flow_targets: Vec<u8>,
+    save_flow_targets_result: bool,
     // scripted
     submit_result: bool,
     calib: CalibInfo,
@@ -41,6 +44,7 @@ struct HostState {
     saved_last_calibs: Vec<i64>,
     target_saves: u32,
     target_loads: u32,
+    flow_target_saves: u32,
 }
 
 impl Default for HostState {
@@ -62,6 +66,9 @@ impl Default for HostState {
             saved_last_calibs: Vec::new(),
             target_saves: 0,
             target_loads: 0,
+            flow_target_saves: 0,
+            flow_targets: Vec::new(),
+            save_flow_targets_result: true,
         }
     }
 }
@@ -150,6 +157,23 @@ impl StmServiceHost for FakeHost {
             return false;
         }
         s.targets = data.to_vec();
+        true
+    }
+    fn load_flow_targets(&mut self, out: &mut [u8]) -> usize {
+        let s = self.s();
+        if s.flow_targets.is_empty() || s.flow_targets.len() > out.len() {
+            return 0;
+        }
+        out[..s.flow_targets.len()].copy_from_slice(&s.flow_targets);
+        s.flow_targets.len()
+    }
+    fn save_flow_targets(&mut self, data: &[u8]) -> bool {
+        let mut s = self.s();
+        s.flow_target_saves += 1;
+        if !s.save_flow_targets_result {
+            return false;
+        }
+        s.flow_targets = data.to_vec();
         true
     }
     fn local_time(&mut self) -> LocalTime {
@@ -551,6 +575,144 @@ fn a_desired_target_change_is_written_to_nvs_5_min_later() {
         host.s().targets,
         encoded(&targets(0, 42, TargetSource::Mqtt))
     );
+}
+
+/// 37 % on valve 0 as 1.06 l/min.
+fn flow_target() -> PersistedTargets {
+    let mut t = targets(0, 37, TargetSource::Web);
+    t.flow_ml[0] = Some(1060);
+    t
+}
+
+fn encoded_flow(t: &PersistedTargets) -> Vec<u8> {
+    let mut b = [0u8; PERSISTED_FLOW_SIZE];
+    encode_flow_targets(t, &mut b);
+    b.to_vec()
+}
+
+#[test]
+fn a_target_in_l_min_goes_to_rtc_at_once_and_to_nvs_with_the_targets() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    let shared = StmServiceShared::new();
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    s.begin();
+    s.link().store_desired_targets(&flow_target());
+    let mut rtc = [0u8; RTC_FLOW_TARGETS_LEN];
+    Rtc::load(&dev.rtc, RECORDS.flow_targets, &mut rtc);
+    assert_eq!(rtc.to_vec(), encoded_flow(&flow_target()));
+    s.service(1000);
+    s.service(1000 + 299_999);
+    assert!(host.s().flow_targets.is_empty());
+    s.service(1000 + 300_000);
+    assert_eq!(host.s().flow_targets, encoded_flow(&flow_target()));
+    assert_eq!(host.s().targets, encoded(&flow_target()));
+    // Only the flow changes: both go out, the rhythm is the one of the saver.
+    let mut other = flow_target();
+    other.flow_ml[0] = Some(1100);
+    s.link().store_desired_targets(&other);
+    s.service(400_000);
+    s.service(700_000);
+    assert_eq!(host.s().flow_targets, encoded_flow(&other));
+    assert_eq!(host.s().flow_target_saves, 2);
+}
+
+#[test]
+fn a_failed_write_of_the_flows_is_retried_5_min_later() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    let shared = StmServiceShared::new();
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    s.begin();
+    host.s().save_flow_targets_result = false;
+    s.link().store_desired_targets(&flow_target());
+    s.service(0);
+    s.service(300_000);
+    assert_eq!(host.s().flow_target_saves, 1);
+    host.s().save_flow_targets_result = true;
+    s.service(599_999);
+    assert_eq!(host.s().flow_target_saves, 1);
+    s.service(600_000);
+    assert_eq!(host.s().flow_targets, encoded_flow(&flow_target()));
+    // A failed write of the targets does not write the flows.
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    s.begin();
+    host.s().save_targets_result = false;
+    s.link()
+        .store_desired_targets(&targets(0, 1, TargetSource::Web));
+    s.service(0);
+    s.service(300_000);
+    assert_eq!(host.s().flow_target_saves, 0);
+}
+
+#[test]
+fn a_target_in_l_min_comes_back_from_rtc_after_a_restart() {
+    let board = FakeBoard::new();
+    {
+        let dev = board.boot();
+        let shared = StmServiceShared::new();
+        let host = FakeHost::default();
+        let s = service(&dev, &shared, &host);
+        s.link().store_desired_targets(&flow_target());
+        board.reset(Reset::Software);
+    }
+    let dev = board.boot();
+    let shared = StmServiceShared::new();
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    s.begin();
+    let (t, src) = s.link().boot_targets();
+    assert_eq!(src, RestoreSource::Rtc);
+    assert_eq!(t, flow_target());
+    // NVS catches up with the flow as well.
+    s.flush_for_restart();
+    assert_eq!(host.s().flow_targets, encoded_flow(&flow_target()));
+}
+
+#[test]
+fn a_target_in_l_min_comes_back_from_nvs_after_power_on_and_is_not_written_again() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    let shared = StmServiceShared::new();
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    host.s().targets = encoded(&flow_target());
+    host.s().flow_targets = encoded_flow(&flow_target());
+    s.begin();
+    let (t, src) = s.link().boot_targets();
+    assert_eq!(src, RestoreSource::Nvs);
+    assert_eq!(t, flow_target());
+    s.flush_for_restart();
+    assert_eq!(host.s().target_saves, 0);
+    assert_eq!(host.s().flow_target_saves, 0);
+}
+
+#[test]
+fn without_a_good_flow_record_the_target_in_percent_comes_back() {
+    let board = FakeBoard::new();
+    let dev = board.boot();
+    let shared = StmServiceShared::new();
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    host.s().targets = encoded(&flow_target());
+    let mut bad = encoded_flow(&flow_target());
+    bad[20] ^= 1;
+    host.s().flow_targets = bad;
+    s.begin();
+    let (t, src) = s.link().boot_targets();
+    assert_eq!(src, RestoreSource::Nvs);
+    assert_eq!(t.pos[0], 37);
+    assert_eq!(t.flow_ml[0], None);
+    // A record longer than the buffer of the boot is no record either.
+    let host = FakeHost::default();
+    let mut s = service(&dev, &shared, &host);
+    host.s().targets = encoded(&flow_target());
+    host.s().flow_targets = vec![0; PERSISTED_FLOW_SIZE + 1];
+    s.begin();
+    assert_eq!(s.link().boot_targets().0.flow_ml[0], None);
 }
 
 #[test]

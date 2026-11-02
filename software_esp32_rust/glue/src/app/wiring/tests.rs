@@ -708,6 +708,10 @@ fn wire_stm_service_host_reads_and_writes_app_storage_and_time() {
         assert_eq!(StmServiceHost::load_targets(&mut w, &mut buf), 0);
         assert!(StmServiceHost::save_targets(&mut w, b"targets"));
         assert_eq!(StmServiceHost::load_targets(&mut w, &mut buf), 7);
+        assert_eq!(StmServiceHost::load_flow_targets(&mut w, &mut buf), 0);
+        assert!(StmServiceHost::save_flow_targets(&mut w, b"flows"));
+        assert_eq!(StmServiceHost::load_flow_targets(&mut w, &mut buf), 5);
+        assert_eq!(&buf[..5], b"flows");
         assert!(!StmServiceHost::local_time(&mut w).valid);
         dev.wall.set(1_790_121_600);
         assert!(StmServiceHost::local_time(&mut w).valid);

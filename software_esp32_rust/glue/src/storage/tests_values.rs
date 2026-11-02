@@ -136,6 +136,8 @@ fn values_nvs_that_cannot_be_opened_reads_as_zero_and_refuses_the_reset() {
     assert_eq!(st.ha_layout(), 0);
     let mut out = [0u8; 8];
     assert_eq!(st.load_targets(&mut out), 0);
+    assert!(!st.save_flow_targets(&[1]));
+    assert_eq!(st.load_flow_targets(&mut out), 0);
     assert!(!st.factory_reset());
     assert_eq!(nvs_int(&rig.dev, NAMESPACE, KEY_BOOT_COUNT), 7);
 }
@@ -158,6 +160,14 @@ fn values_flags_targets_the_network_trial_record_the_calibration_time() {
     assert_eq!(out[0], 7);
     // C++ loadTargets(nullptr, 8): no Rust form; the empty output takes nothing
     assert_eq!(st.load_targets(&mut []), 0);
+    // The targets in l/min beside them.
+    assert_eq!(st.load_flow_targets(&mut out), 0);
+    assert!(!st.save_flow_targets(&t[..0]));
+    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_TARGETS));
+    assert!(st.save_flow_targets(&t[1..]));
+    assert_eq!(st.load_flow_targets(&mut out), 2);
+    assert_eq!(out[..2], [8, 9]);
+    assert_eq!(st.load_flow_targets(&mut out[..1]), 0);
     assert!(st.save_net_trial_blob(&t));
     assert_eq!(
         rig.dev.nvs.get_blob(NAMESPACE, KEY_NET_TRIAL),

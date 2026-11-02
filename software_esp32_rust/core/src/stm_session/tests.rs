@@ -908,6 +908,38 @@ fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
 }
 
 #[test]
+fn flow_layer_a_target_in_l_min_survives_a_restart_of_the_stm_and_of_the_esp() {
+    let mut r = flow_rig();
+    let mut t = r.target(0, 0, TargetSource::Web);
+    t.flow_ml = Some(1060);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(r.stm().lines_of("svmov")[1..], ["svmov 0 0 819 30"]);
+    let stored = *r.port().targets.last().expect("stored");
+    assert_eq!((stored.pos[0], stored.flow_ml[0]), (37, Some(1060)));
+    // The STM restarts: the flow is positioned again, not its whole %.
+    let now = r.now;
+    r.stm_mut().reset(u64::from(now));
+    r.run(60_000);
+    let svmov = r.stm().lines_of("svmov");
+    assert_eq!(svmov[svmov.len() - 1], "svmov 0 0 819 30");
+    assert_eq!(r.port().last.valves[0].flow_target(), Some(1060));
+    // The ESP restarts.
+    let mut r = Rig::new(3, 0x001);
+    r.stm_mut().version = String::from("2.2.8-revamped_C2 1712345678 ");
+    r.start_with(&stored, RestoreSource::Rtc, None);
+    r.s.apply_flow_config(&flow_configs(0, true));
+    r.run(40_000);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (37, Some(1060)));
+    assert_eq!(v.source, TargetSource::Restored);
+    assert_eq!(
+        r.stm().lines_of("svmov"),
+        ["svmov 0 1 3350 34", "svmov 0 0 819 30"]
+    );
+}
+
+#[test]
 fn flow_layer_a_target_in_l_min_needs_the_layer_on_the_valve() {
     let mut r = flow_rig();
     r.s.apply_flow_config(&flow_configs(0, false));

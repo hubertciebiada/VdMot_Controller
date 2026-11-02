@@ -777,15 +777,18 @@ fn rtc_layout_one_record_after_the_other() {
         (RTC_TARGETS, crate::stm_service::RTC_TARGETS_LEN),
         (RTC_LEASE, crate::stm_service::RTC_LEASE_LEN),
         (RTC_HA_STATUS, crate::mqtt_client::HA_STATUS_RECORD_LEN),
+        (RTC_FLOW_TARGETS, crate::stm_service::RTC_FLOW_TARGETS_LEN),
     ];
     assert_eq!(
         table,
-        [(0, 28), (28, 8), (36, 46), (82, 14), (96, 8)],
-        "boot guard 0..28, net watchdog 28..36, targets 36..82, lease 82..96, HA status 96..104"
+        [(0, 28), (28, 8), (36, 46), (82, 14), (96, 8), (104, 58)],
+        "boot guard 0..28, net watchdog 28..36, targets 36..82, lease 82..96, HA status 96..104, \
+         flow targets 104..162"
     );
-    assert_eq!(RTC_LEN, 104);
+    assert_eq!(RTC_LEN, 162);
     assert_eq!(RTC_STM_SERVICE.targets, RTC_TARGETS);
     assert_eq!(RTC_STM_SERVICE.lease, RTC_LEASE);
+    assert_eq!(RTC_STM_SERVICE.flow_targets, RTC_FLOW_TARGETS);
     // the fake RTC block holds the layout
     const { assert!(RTC_LEN <= crate::testkit::system::RTC_SIZE) };
 }

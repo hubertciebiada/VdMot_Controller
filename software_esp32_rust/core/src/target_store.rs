@@ -1,7 +1,9 @@
 //! Desired targets that survive an ESP restart: the 46-byte record kept in RTC slow memory
 //! (software restarts, panics, watchdog resets) and in NVS `vdmrev/targets` (power loss), the
-//! boot choice between the two and the debounced NVS saver (port of `vdm/target_store.h`).
-//! Hardware-free.
+//! boot choice between the two and the debounced NVS saver (port of `vdm/target_store.h`). A
+//! target in l/min (Rust 2.2.11) needs its ml/min as well: a 58-byte record of its own beside
+//! the first, in RTC and in NVS `vdmrev/flowtgt`, so that record and the RTC layout before it
+//! stay as they are. Hardware-free.
 
 use crate::common::{elapsed_ms, VALVE_COUNT};
 use crate::config::crc32;
@@ -19,6 +21,13 @@ const ENTRIES_AT: usize = 6;
 const CRC_AT: usize = ENTRIES_AT + 3 * N;
 const _: () = assert!(CRC_AT + 4 == PERSISTED_TARGETS_SIZE);
 
+pub const PERSISTED_FLOW_SIZE: usize = 58;
+
+const FLOW_MAGIC: [u8; 4] = *b"VDFT";
+/// 54
+const FLOW_CRC_AT: usize = ENTRIES_AT + 4 * N;
+const _: () = assert!(FLOW_CRC_AT + 4 == PERSISTED_FLOW_SIZE);
+
 #[derive(Clone, Copy, Debug, Default, Eq)]
 pub struct PersistedTargets {
     pub valid: [bool; N],
@@ -26,15 +35,20 @@ pub struct PersistedTargets {
     pub pos: [u8; N],
     /// None..Assembly
     pub source: [TargetSource; N],
+    /// ml/min of a target in l/min, `pos` is its %
+    pub flow_ml: [Option<u16>; N],
 }
 
 impl PartialEq for PersistedTargets {
     /// Invalid entries carry no value (encoded as 0, 0, 0): only `valid` is compared for them.
     fn eq(&self, other: &Self) -> bool {
-        let a = self.valid.iter().zip(self.pos.iter().zip(&self.source));
-        let b = other.valid.iter().zip(other.pos.iter().zip(&other.source));
-        a.zip(b)
-            .all(|((va, (pa, sa)), (vb, (pb, sb)))| va == vb && (!va || (pa == pb && sa == sb)))
+        (0..N).all(|i| {
+            self.valid[i] == other.valid[i]
+                && (!self.valid[i]
+                    || (self.pos[i] == other.pos[i]
+                        && self.source[i] == other.source[i]
+                        && self.flow_ml[i] == other.flow_ml[i]))
+        })
     }
 }
 
@@ -94,30 +108,83 @@ pub fn decode_targets(data: &[u8], out: &mut PersistedTargets) -> bool {
     true
 }
 
+/// Layout: "VDFT" (4), version 1 (1), count 12 (1), 12 x {flags bit0 flow, pos, ml/min little
+/// endian} (48), CRC-32 (crc32 over bytes 0..53, little endian) (4) = 58 bytes. Entries without a
+/// flow are written as 0, 0, 0, 0. Returns 58.
+pub fn encode_flow_targets(t: &PersistedTargets, out: &mut [u8; PERSISTED_FLOW_SIZE]) -> usize {
+    out[..4].copy_from_slice(&FLOW_MAGIC);
+    out[4] = VERSION;
+    out[5] = VALVE_COUNT;
+    let values = t.valid.iter().zip(t.pos.iter().zip(&t.flow_ml));
+    let (entries, _) = out[ENTRIES_AT..FLOW_CRC_AT].as_chunks_mut::<4>();
+    for (e, (&valid, (&pos, &flow))) in entries.iter_mut().zip(values) {
+        *e = match flow.filter(|_| valid) {
+            Some(ml) => {
+                let [low, high] = ml.to_le_bytes();
+                [1, pos, low, high]
+            }
+            None => [0; 4],
+        };
+    }
+    let sum = crc32(&out[..FLOW_CRC_AT], 0);
+    out[FLOW_CRC_AT..].copy_from_slice(&sum.to_le_bytes());
+    PERSISTED_FLOW_SIZE
+}
+
+/// The flows of the record on the targets `t` holds: an entry counts only where `t` has a target
+/// of the same %, so a record older than the targets leaves that valve its target in %. false
+/// (`t` as it was) for a length other than 58, a bad magic/version/count/CRC or flag bits other
+/// than bit0.
+pub fn decode_flow_targets(data: &[u8], t: &mut PersistedTargets) -> bool {
+    let Ok(b) = <&[u8; PERSISTED_FLOW_SIZE]>::try_from(data) else {
+        return false;
+    };
+    let (body, crc) = b.split_at(FLOW_CRC_AT);
+    if body[..4] != FLOW_MAGIC || body[4] != VERSION || body[5] != VALVE_COUNT {
+        return false;
+    }
+    if crc != crc32(body, 0).to_le_bytes().as_slice() {
+        return false;
+    }
+    let (entries, _) = body[ENTRIES_AT..].as_chunks::<4>();
+    if entries.iter().any(|e| e[0] > 1) {
+        return false;
+    }
+    let slots = t.valid.iter().zip(t.pos.iter().zip(t.flow_ml.iter_mut()));
+    for (&[flags, pos, low, high], (&valid, (&held, flow))) in entries.iter().zip(slots) {
+        if flags == 1 && valid && pos == held {
+            *flow = Some(u16::from_le_bytes([low, high]));
+        }
+    }
+    true
+}
+
 /// Every valve with a desired target.
 pub fn capture_targets(m: &ValveModel, out: &mut PersistedTargets) {
     *out = PersistedTargets::default();
-    let slots = out
-        .valid
-        .iter_mut()
-        .zip(out.pos.iter_mut().zip(out.source.iter_mut()));
-    for (v, (valid, (pos, source))) in (0..VALVE_COUNT).zip(slots) {
+    for (v, i) in (0..VALVE_COUNT).zip(0..N) {
         let s = m.valve(v);
         if !s.desired_valid {
             continue;
         }
-        *valid = true;
-        *pos = s.desired;
-        *source = s.source;
+        out.valid[i] = true;
+        out.pos[i] = s.desired;
+        out.source[i] = s.source;
+        out.flow_ml[i] = s.flow_target();
     }
 }
 
-/// `restore_desired()` per valid entry; returns the number of valves restored.
+/// `restore_desired()` or `restore_flow()` per valid entry; returns the number of valves
+/// restored.
 pub fn restore_targets(m: &mut ValveModel, t: &PersistedTargets) -> u8 {
     let mut n = 0;
-    let entries = t.valid.iter().zip(t.pos.iter().zip(&t.source));
-    for (v, (&valid, (&pos, &source))) in (0..VALVE_COUNT).zip(entries) {
-        if valid && m.restore_desired(v, pos, source) {
+    for (v, i) in (0..VALVE_COUNT).zip(0..N) {
+        let (pos, source) = (t.pos[i], t.source[i]);
+        let restored = match t.flow_ml[i] {
+            Some(ml) => t.valid[i] && m.restore_flow(v, pos, ml, source),
+            None => t.valid[i] && m.restore_desired(v, pos, source),
+        };
+        if restored {
             n += 1;
         }
     }
@@ -156,6 +223,22 @@ pub fn choose_targets(rtc: &[u8], nvs: &[u8], out: &mut PersistedTargets) -> Res
     RestoreSource::None
 }
 
+/// The flows of the record from where [`choose_targets`] took the targets; without a good record
+/// they stay targets in %.
+pub fn choose_flow_targets(
+    source: RestoreSource,
+    rtc: &[u8],
+    nvs: &[u8],
+    t: &mut PersistedTargets,
+) {
+    let record = if source == RestoreSource::Rtc {
+        rtc
+    } else {
+        nvs
+    };
+    decode_flow_targets(record, t);
+}
+
 // ---------------------------------------------------------------- TargetSaver
 
 /// NVS copy, written by the app task: 5 min after the last change, at most 30 min after the
@@ -165,6 +248,7 @@ pub struct TargetSaver {
     stored: PersistedTargets,
     current: PersistedTargets,
     bytes: [u8; PERSISTED_TARGETS_SIZE],
+    flow_bytes: [u8; PERSISTED_FLOW_SIZE],
     dirty: bool,
     last_change_ms: u32,
     first_change_ms: u32,
@@ -177,6 +261,7 @@ impl Default for TargetSaver {
             stored: PersistedTargets::default(),
             current: PersistedTargets::default(),
             bytes: [0; PERSISTED_TARGETS_SIZE],
+            flow_bytes: [0; PERSISTED_FLOW_SIZE],
             dirty: false,
             last_change_ms: 0,
             first_change_ms: 0,
@@ -188,11 +273,16 @@ impl TargetSaver {
     pub const DEBOUNCE_MS: u32 = 300000;
     pub const MAX_DELAY_MS: u32 = 1800000;
 
+    fn encode(&mut self) {
+        encode_targets(&self.current, &mut self.bytes);
+        encode_flow_targets(&self.current, &mut self.flow_bytes);
+    }
+
     /// Boot: what NVS holds.
     pub fn prime_stored(&mut self, t: &PersistedTargets) {
         self.stored = *t;
         self.current = *t;
-        encode_targets(&self.current, &mut self.bytes);
+        self.encode();
         self.dirty = false;
     }
 
@@ -203,7 +293,7 @@ impl TargetSaver {
             return;
         }
         self.current = *t;
-        encode_targets(&self.current, &mut self.bytes);
+        self.encode();
         if self.current == self.stored {
             self.dirty = false;
             return;
@@ -228,6 +318,11 @@ impl TargetSaver {
     /// The encoded current value.
     pub fn bytes(&self) -> &[u8; PERSISTED_TARGETS_SIZE] {
         &self.bytes
+    }
+
+    /// The encoded flows of the current value.
+    pub fn flow_bytes(&self) -> &[u8; PERSISTED_FLOW_SIZE] {
+        &self.flow_bytes
     }
 
     /// ok: stored := current, clean; !ok: the next attempt DEBOUNCE_MS later.

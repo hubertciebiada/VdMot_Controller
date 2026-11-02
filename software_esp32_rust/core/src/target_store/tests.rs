@@ -223,6 +223,196 @@ fn targets_capture_and_restore_through_the_model() {
     assert_eq!(restore_targets(&mut n, &PersistedTargets::default()), 0);
 }
 
+// ---------------------------------------------------------------- targets in l/min (2.2.11)
+
+/// golden() with 1.25 l/min on valve 0.
+fn flows() -> PersistedTargets {
+    let mut t = golden();
+    t.flow_ml[0] = Some(1250);
+    t
+}
+
+fn flow_bytes(t: &PersistedTargets) -> [u8; PERSISTED_FLOW_SIZE] {
+    let mut b = [0xEE; PERSISTED_FLOW_SIZE];
+    assert_eq!(encode_flow_targets(t, &mut b), PERSISTED_FLOW_SIZE);
+    b
+}
+
+/// The flows of `b` on golden(): whether it decoded, and the targets.
+fn decode_flows(b: &[u8]) -> (bool, PersistedTargets) {
+    let mut t = golden();
+    let ok = decode_flow_targets(b, &mut t);
+    (ok, t)
+}
+
+#[test]
+fn flow_targets_layout_and_round_trip() {
+    let b = flow_bytes(&flows());
+    assert_eq!(&b[..6], b"VDFT\x01\x0C");
+    assert_eq!(b[6..10], [1, 42, 0xE2, 0x04]); // 1250 ml/min, 42 %
+    assert!(b[10..54].iter().all(|x| *x == 0));
+    assert_eq!(b[54..], crc32(&b[..54], 0).to_le_bytes());
+    assert_eq!(decode_flows(&b), (true, flows()));
+    // Every valve, the ends of the range, no flow beside a flow.
+    let mut full = PersistedTargets::default();
+    for i in 0..12usize {
+        full.valid[i] = true;
+        full.pos[i] = 7 * i as u8;
+        full.flow_ml[i] = (i != 4).then_some(if i == 0 { 0 } else { u16::MAX - i as u16 });
+    }
+    let mut back = full;
+    back.flow_ml = [None; 12];
+    assert!(decode_flow_targets(&flow_bytes(&full), &mut back));
+    assert_eq!(back.flow_ml, full.flow_ml);
+    assert_eq!(back, full);
+    // An invalid entry carries nothing.
+    let mut t = flows();
+    t.valid[0] = false;
+    assert!(flow_bytes(&t)[6..54].iter().all(|x| *x == 0));
+}
+
+#[test]
+fn flow_targets_a_flow_differs_where_there_is_a_target() {
+    assert_ne!(flows(), golden());
+    let mut other = flows();
+    other.flow_ml[0] = Some(1251);
+    assert_ne!(flows(), other);
+    let mut a = flows();
+    a.valid[0] = false;
+    let mut b = a;
+    b.flow_ml[0] = None;
+    assert_eq!(a, b);
+}
+
+#[test]
+fn flow_targets_a_bad_record_leaves_the_targets_in_percent() {
+    let good = flow_bytes(&flows());
+    for byte in 0..PERSISTED_FLOW_SIZE {
+        for bit in 0..8 {
+            let mut b = good;
+            b[byte] ^= 1 << bit;
+            assert_eq!(decode_flows(&b), (false, golden()), "{byte} {bit}");
+        }
+    }
+    assert_eq!(decode_flows(&good[..57]), (false, golden()));
+    assert_eq!(decode_flows(&[]), (false, golden()));
+    let mut long = [0u8; PERSISTED_FLOW_SIZE + 1];
+    long[..PERSISTED_FLOW_SIZE].copy_from_slice(&good);
+    assert_eq!(decode_flows(&long), (false, golden()));
+    // The fields, with a correct CRC.
+    for (at, value) in [(0, b'X'), (3, b'G'), (4, 2), (5, 11), (6, 2), (50, 3)] {
+        let mut b = good;
+        b[at] = value;
+        let crc = crc32(&b[..54], 0);
+        b[54..].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_flows(&b), (false, golden()), "{at}");
+    }
+}
+
+#[test]
+fn flow_targets_a_flow_counts_only_on_a_target_of_the_same_percent() {
+    let b = flow_bytes(&flows());
+    // The record is older than the targets.
+    let mut t = golden();
+    t.pos[0] = 43;
+    assert!(decode_flow_targets(&b, &mut t));
+    assert_eq!(t.flow_ml, [None; 12]);
+    let mut t = PersistedTargets::default();
+    assert!(decode_flow_targets(&b, &mut t));
+    assert_eq!(t.flow_ml, [None; 12]);
+    let mut t = flows();
+    t.flow_ml[3] = Some(7);
+    t.valid[3] = true;
+    assert!(decode_flow_targets(&b, &mut t));
+    assert_eq!(t.flow_ml[3], Some(7));
+}
+
+#[test]
+fn flow_targets_come_from_where_the_targets_came_from() {
+    let rtc = flow_bytes(&flows());
+    let mut newer = flows();
+    newer.flow_ml[0] = Some(1300);
+    let nvs = flow_bytes(&newer);
+    let mut t = golden();
+    choose_flow_targets(RestoreSource::Rtc, &rtc, &nvs, &mut t);
+    assert_eq!(t.flow_ml[0], Some(1250));
+    let mut t = golden();
+    choose_flow_targets(RestoreSource::Nvs, &rtc, &nvs, &mut t);
+    assert_eq!(t.flow_ml[0], Some(1300));
+    // A bad record of that source: no flow, whatever the other one says.
+    let mut t = golden();
+    choose_flow_targets(RestoreSource::Rtc, &[0; PERSISTED_FLOW_SIZE], &nvs, &mut t);
+    assert_eq!(t, golden());
+    let mut t = golden();
+    choose_flow_targets(RestoreSource::Nvs, &rtc, &[], &mut t);
+    assert_eq!(t, golden());
+    let mut t = PersistedTargets::default();
+    choose_flow_targets(RestoreSource::None, &rtc, &nvs, &mut t);
+    assert_eq!(t, PersistedTargets::default());
+}
+
+#[test]
+fn flow_targets_capture_and_restore_through_the_model() {
+    let mut m = ValveModel::default();
+    m.set_active_mask(0x007);
+    assert!(m.set_desired_flow(0, 37, 1000, TargetSource::Web, 0));
+    assert!(m.set_desired_target(1, 40, TargetSource::Mqtt, 0));
+    let mut t = PersistedTargets::default();
+    t.flow_ml[5] = Some(9); // cleared by the capture
+    capture_targets(&m, &mut t);
+    assert_eq!(
+        t.flow_ml,
+        [
+            Some(1000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        ]
+    );
+    let mut n = ValveModel::default();
+    n.set_active_mask(0x007);
+    assert_eq!(restore_targets(&mut n, &t), 2);
+    let v = n.valve(0);
+    assert_eq!((v.desired, v.flow_target()), (37, Some(1000)));
+    assert_eq!(v.source, TargetSource::Restored);
+    assert_eq!(v.sync, TargetSync::Pending);
+    assert_eq!(n.valve(1).flow_target(), None);
+    // No target, an inactive valve: no flow, not counted.
+    t.valid[0] = false;
+    t.valid[3] = true;
+    t.flow_ml[3] = Some(500);
+    let mut n = ValveModel::default();
+    n.set_active_mask(0x007);
+    assert_eq!(restore_targets(&mut n, &t), 1);
+    assert!(!n.valve(0).desired_valid);
+    assert!(!n.valve(3).desired_valid);
+    assert_eq!(n.valve(3).flow_target(), None);
+}
+
+#[test]
+fn saver_a_flow_alone_is_a_change_and_its_bytes_go_with_it() {
+    let mut s = TargetSaver::default();
+    assert_eq!(*s.flow_bytes(), [0; PERSISTED_FLOW_SIZE]);
+    s.prime_stored(&golden());
+    assert_eq!(*s.flow_bytes(), flow_bytes(&golden()));
+    s.update(&flows(), 100);
+    assert!(s.dirty());
+    assert_eq!(*s.flow_bytes(), flow_bytes(&flows()));
+    assert_eq!(*s.bytes(), GOLDEN);
+    s.saved(true, 200);
+    assert!(!s.dirty());
+    s.update(&flows(), 300);
+    assert!(!s.dirty());
+}
+
 #[test]
 fn restore_source_values() {
     assert_eq!(RestoreSource::from_raw(0), Some(RestoreSource::None));

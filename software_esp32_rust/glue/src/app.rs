@@ -127,12 +127,16 @@ pub const RTC_LEASE: usize = RTC_TARGETS + crate::stm_service::RTC_TARGETS_LEN;
 /// The last Home Assistant status of mqtt_client, [`crate::mqtt_client::HA_STATUS_RECORD_LEN`]
 /// bytes.
 pub const RTC_HA_STATUS: usize = RTC_LEASE + crate::stm_service::RTC_LEASE_LEN;
+/// The targets in l/min of stm_service, [`crate::stm_service::RTC_FLOW_TARGETS_LEN`] bytes: the
+/// last record, so the places of the others stay.
+pub const RTC_FLOW_TARGETS: usize = RTC_HA_STATUS + crate::mqtt_client::HA_STATUS_RECORD_LEN;
 /// Bytes of the RTC block the firmware reserves.
-pub const RTC_LEN: usize = RTC_HA_STATUS + crate::mqtt_client::HA_STATUS_RECORD_LEN;
-/// The two records of stm_service.
+pub const RTC_LEN: usize = RTC_FLOW_TARGETS + crate::stm_service::RTC_FLOW_TARGETS_LEN;
+/// The records of stm_service.
 pub const RTC_STM_SERVICE: crate::stm_service::RtcRecords = crate::stm_service::RtcRecords {
     targets: RTC_TARGETS,
     lease: RTC_LEASE,
+    flow_targets: RTC_FLOW_TARGETS,
 };
 
 // ---------------------------------------------------------------- hosts

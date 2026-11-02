@@ -1310,6 +1310,16 @@ impl ValveModel {
     /// (Assembly stays Assembly); sync Pending and no push before the first read-back (equal ->
     /// Synced without a push). False for an invalid valve/pos or an inactive valve.
     pub fn restore_desired(&mut self, valve: u8, pos: u8, src: TargetSource) -> bool {
+        self.restore(valve, pos, None, src)
+    }
+
+    /// Rust 2.2.11: [`restore_desired`](Self::restore_desired) of a target in l/min, `flow_ml`,
+    /// with the % it had.
+    pub fn restore_flow(&mut self, valve: u8, pos: u8, flow_ml: u16, src: TargetSource) -> bool {
+        self.restore(valve, pos, Some(flow_ml), src)
+    }
+
+    fn restore(&mut self, valve: u8, pos: u8, flow_ml: Option<u16>, src: TargetSource) -> bool {
         let i = usize::from(valve);
         if i >= N || pos > 100 || !self.is_active(i) {
             return false;
@@ -1318,6 +1328,8 @@ impl ValveModel {
         let v = &mut self.v[i];
         v.desired_valid = true;
         v.desired = pos;
+        v.desired_ml = flow_ml.unwrap_or(0);
+        v.desired_flow = flow_ml.is_some();
         v.source = if src == TargetSource::Assembly {
             TargetSource::Assembly
         } else {

@@ -250,6 +250,12 @@ impl<P: Platform> StmServiceHost for Wire<'_, P> {
     fn save_targets(&mut self, data: &[u8]) -> bool {
         self.storage.save_targets(data)
     }
+    fn load_flow_targets(&mut self, out: &mut [u8]) -> usize {
+        self.storage.load_flow_targets(out)
+    }
+    fn save_flow_targets(&mut self, data: &[u8]) -> bool {
+        self.storage.save_flow_targets(data)
+    }
     fn local_time(&mut self) -> LocalTime {
         net::local_time(self.ports.wall)
     }
