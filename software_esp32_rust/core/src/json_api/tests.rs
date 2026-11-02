@@ -1629,6 +1629,27 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     let mut jw = JsonWriter::new(&mut buf);
     write_flow_json(&mut jw, &FlowView::default());
     assert_eq!(String::from_utf8_lossy(jw.as_bytes()), &FLOW_OFF[7..]);
+    // MQTT valves/<V>/flow: the state and the two flows, one line.
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_state_json(&mut jw, &held);
+    assert!(jw.complete());
+    assert_eq!(
+        String::from_utf8_lossy(jw.as_bytes()),
+        r#"{"state":"held","lpm":1.012,"targetLpm":1.250}"#
+    );
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_state_json(
+        &mut jw,
+        &FlowView {
+            target_ml: None,
+            ..unknown
+        },
+    );
+    assert!(jw.complete());
+    assert_eq!(
+        String::from_utf8_lossy(jw.as_bytes()),
+        r#"{"state":"unknown","lpm":null,"targetLpm":null}"#
+    );
     // The document of GET /api/valves/{n}/flow.
     let mut c = FlowConfig {
         enabled: true,

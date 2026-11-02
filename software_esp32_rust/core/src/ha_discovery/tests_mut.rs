@@ -17,10 +17,10 @@ fn contract_constants() {
     assert_eq!(IP_TEXT_MAX, 15);
     assert_eq!(SW_VERSION_MAX, 31);
     assert_eq!(HW_VERSION_MAX, 3);
-    assert_eq!(ENTITY_COUNT, 345);
-    assert_eq!(TEMPS_FIRST, 280);
-    assert_eq!(VOLTS_FIRST, 314);
-    assert_eq!(TAIL_FIRST, 322);
+    assert_eq!(ENTITY_COUNT, 369);
+    assert_eq!(TEMPS_FIRST, 304);
+    assert_eq!(VOLTS_FIRST, 338);
+    assert_eq!(TAIL_FIRST, 346);
     assert_eq!(DiscoveryRun::LINES_PER_STEP, 8);
     let plan = DiscoveryPlan::default();
     assert!(plan.prune);
@@ -74,7 +74,7 @@ fn event_payload(c: &mut DiscoveryContext, fields: &Fields) -> Option<Vec<u8>> {
     let mut m = DiscoveryMessage::default();
     let mut buf = vec![0u8; 4096];
     let mut jw = JsonWriter::new(&mut buf);
-    for _ in 0..345 {
+    for _ in 0..369 {
         let got = it.next(c, &mut m, &mut jw);
         if m.topic == EVENT_TOPIC.as_bytes() {
             if got {
@@ -173,7 +173,7 @@ fn a_refused_station_exhausts_the_drop_list_until_restart() {
     let mut d = DiscoveryIterator::new();
     copy_string(&mut c.topics.station, b"a+b");
     assert!(!d.next_topic(&c, &mut m));
-    assert_eq!(d.position(), 345);
+    assert_eq!(d.position(), 369);
     copy_string(&mut c.topics.station, b"VdMot");
     assert!(!d.next_topic(&c, &mut m));
 }

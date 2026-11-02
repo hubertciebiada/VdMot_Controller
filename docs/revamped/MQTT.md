@@ -153,8 +153,7 @@ before).
 
 ### No longer published
 `common/heatControl`, `common/parkPosition`, `valves/<V>/tTarget`,
-`valves/<V>/tValue`, `valves/<V>/control/*`, `valves/<V>/window/*`, and
-`valves/<V>/flow`, which only Rust 2.2.10 published.
+`valves/<V>/tValue`, `valves/<V>/control/*`, `valves/<V>/window/*`.
 
 The firmware does not clear them. A retained message of the old firmware stays
 at the broker until someone publishes an empty retained message to its topic.
@@ -174,6 +173,7 @@ None of these topics is a command topic, so that moves no valve.
 | `<main>valves/<V>/sync` | target delivery: `unknown`, `synced`, `pending`, `await_ack`, `await_verify`, `failed` | yes | setting | active valve |
 | `<main>valves/<V>/failsafe` | `off`, `lease` (regulator silent), `blocked` (blocked valve at its failsafe position) | yes | setting | active valve |
 | `<main>valves/<V>/problem` | `1` when the valve is blocked, failed, without contact, stale, its target is not confirmed, a temperature failed or its flow layer failed to position it, else `0` | yes | setting | active valve |
+| `<main>valves/<V>/flow` | `{"state":"held","lpm":1.000,"targetLpm":1.000}`, see "Feedback for regulators"; empty when the valve has no layer | yes | setting, the empty message always | active valve with the flow layer, with the valve data |
 | `<main>diag/valves/<V>/lastMove` | `{"dir":"open","req":408,"cnt":395,"stop":"endstop","peak":299,"ms":15784}` | no | setting | v2, after each move |
 | `<main>diag/valves/<V>/earlyStops` | count since STM start (early stops the next move did not recover) | no | setting | v2, on change |
 | `<main>diag/valves/<V>/cmdRejected` | count since STM start | no | setting | v2, on change |
@@ -243,9 +243,28 @@ the command is rejected `unsupported`, a payload that is no number is a payload
 reject. Without **separate** the retained `target` a broker hands back after a
 connect is the echo of a target in l/min and does not end it.
 
-No topic reports the flow, the target in l/min or the state of the layer: they are
-`flow.lpm`, `flow.targetLpm` and `flow.state` in `GET /api/valves`. A positioning
-that failed shows as `problem` = 1 and event 417.
+`valves/<V>/flow` reports the layer in one line of JSON, the values of `flow.state`,
+`flow.lpm` and `flow.targetLpm` in `GET /api/valves`:
+
+```json
+{"state":"held","lpm":1.000,"targetLpm":1.000}
+```
+
+- `state`: `unsupported`, `unknown`, `positioning`, `held`, `failed`;
+- `lpm`: the flow of the curve at the held position in l/min, `null` while the
+  position is not known;
+- `targetLpm`: the target in l/min, `null` for a target in %.
+
+It goes out with the valve data: on every full publish, and when one of the three
+changes at most every `minDelayS`. With **separate** the topic is
+`valves/<V>/flow/value`. A positioning that failed shows as `problem` = 1 and
+event 417.
+
+Only an active valve with the layer enabled publishes the topic. Any other valve
+the STM reports gets one empty retained message on it per connection, whatever
+**retained** says, so a layer switched off leaves no state at the broker, also one
+switched off while the ESP was away, and a retained message of Rust 2.2.10 goes as
+well. A subscriber of the topic must take the empty payload: it means no layer.
 
 ## Restart and broker loss
 
@@ -356,12 +375,18 @@ Per valve:
 | sensor (diagnostic) | `diag_calState_<R>` | ESP + STM | newDiag |
 | sensor (diagnostic, measurement) | `diag_coastOpen_<R>`, `diag_coastClose_<R>` (no unit, motor pulses) | ESP + STM | newDiag |
 | number | `valves_flowTarget_<R>` (flow target, L/min) | ESP + STM | flow layer enabled on the valve |
+| sensor (measurement) | `valves_flow_<R>` (flow of the curve, L/min) | ESP + STM | flow layer enabled on the valve |
+| sensor (diagnostic, enum) | `valves_flowState_<R>` (state of the layer) | ESP + STM | flow layer enabled on the valve |
 
 `valves_flowTarget_<R>` writes `valves/<V>/flow/set` with QoS 1: `min` 0, `max` the
 `qmax` of the valve, `step` 0.1, `device_class: volume_flow_rate`, `mode: box`,
-`command_template: {{ '%.3f' | format(value) }}`. No topic reports the flow, so the
-entity has no `state_topic`: it shows what Home Assistant sent last, not a target set
-elsewhere. `valves_target_<R>` stays the % of the stroke, and a value there ends the
+`command_template: {{ '%.3f' | format(value) }}`. It reads `targetLpm` from
+`valves/<V>/flow`, so it also shows a target set elsewhere, and unknown for a target
+in %. `valves_flow_<R>` (`lpm`, `device_class: volume_flow_rate`) and
+`valves_flowState_<R>` (`state`, `device_class: enum`) read the same topic. All three
+use `value_template: {{ value_json.<field> if value else None }}`: `null` and the
+empty message of a layer switched off are unknown in Home Assistant, not a template
+error. `valves_target_<R>` stays the % of the stroke, and a value there ends the
 target in l/min.
 
 Per device:

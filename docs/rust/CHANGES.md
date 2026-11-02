@@ -34,13 +34,24 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
 ### ESP32: MQTT and Home Assistant of the flow layer
 
-- Home Assistant gets the number `valves_flowTarget_<R>` on a valve with the flow layer: it writes
-  `valves/<V>/flow/set`, 0..`qmax` in steps of 0.1 L/min, QoS 1. No topic reports the flow, so it
-  has no state topic and shows what Home Assistant sent last. Discovery has at most 345 entities
-  (333 before), and a change of the layer of a valve (enabled, `qmax`) starts a run.
-- [MQTT.md](../revamped/MQTT.md) corrected: `valves/<V>/flow` is listed as no longer published,
-  `sync` of a valve with the layer says nothing about the positioning, and no topic reports the
-  flow. New: restart and broker loss, and which flow events reach MQTT.
+- New read topic `valves/<V>/flow` on a valve with the flow layer, one line of JSON:
+  `{"state":"held","lpm":1.000,"targetLpm":1.000}`. `lpm` is the flow of the curve at the held
+  position, `targetLpm` the target in l/min, each `null` while there is none. It goes out with
+  the valve data, on every full publish and on a change at most every `minDelayS`, retained by the
+  **retained** setting, with the `/value` suffix under **separate** like the data topics of a
+  valve. 2.2.11 removed the topic of 2.2.10 with the drift model; `estLpm` and `holdMin` do not
+  return.
+- A valve the STM reports that does not show the topic (no layer, or inactive) gets one empty
+  retained message on it per MQTT session, whatever **retained** says: a layer switched off leaves
+  no state at the broker, also one switched off while the ESP was away, and a retained message of
+  2.2.10 goes as well. That is at most 12 empty messages per connect.
+- Home Assistant gets three entities on a valve with the flow layer. The number
+  `valves_flowTarget_<R>` writes `valves/<V>/flow/set`, 0..`qmax` in steps of 0.1 L/min, QoS 1, and
+  reads the target from `valves/<V>/flow`; the sensors `valves_flow_<R>` (L/min) and
+  `valves_flowState_<R>` (diagnostic, enum) read the same topic. Discovery has at most 369
+  entities (333 before), and a change of the layer of a valve (enabled, `qmax`) starts a run.
+- [MQTT.md](../revamped/MQTT.md) corrected: `sync` of a valve with the layer says nothing about
+  the positioning. New: restart and broker loss, and which flow events reach MQTT.
 - [API.md](../revamped/API.md): `targetLpm` in the example of the valve entry.
 
 ### ESP32: newlib's nano printf

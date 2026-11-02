@@ -34,12 +34,12 @@ use vdm_esp_core::event_log::{
 use vdm_esp_core::failsafe::{
     failsafe_kind_name, lease_state_name, HaStatus, LeaseState, RegulatorInput,
 };
-use vdm_esp_core::flow_layer::FlowState;
+use vdm_esp_core::flow_layer::{FlowState, FlowView};
 use vdm_esp_core::ha_discovery::{
     build_discovery_context, discovery_input_key, DiscoveryContext, DiscoveryInputs, DiscoveryPlan,
     DiscoveryPort, DiscoveryRun, DiscoveryRunPhase, DISCOVERY_PAYLOAD_MAX,
 };
-use vdm_esp_core::json_api::{write_profile_json, MqttState};
+use vdm_esp_core::json_api::{write_flow_state_json, write_profile_json, MqttState};
 use vdm_esp_core::json_writer::JsonWriter;
 use vdm_esp_core::link_policy::{link_state_name, LinkState};
 use vdm_esp_core::mqtt_policy::{
@@ -55,8 +55,8 @@ use vdm_esp_core::mqtt_topics::{
 };
 use vdm_esp_core::mqtt_values::{
     active_valve_mask, find_temp_bus, find_volt_bus, published_target, sensor_topic_segment,
-    slot_temp_tenths, slot_volt_value, stm_online, system_state, temp_published, valve_compat_key,
-    valve_problem, volt_published_mqtt, CalibEndTracker, SystemFlags,
+    slot_temp_tenths, slot_volt_value, stm_online, system_state, temp_published, valve_problem,
+    valve_publish_key, volt_published_mqtt, CalibEndTracker, SystemFlags,
 };
 use vdm_esp_core::stm_codec::{
     stop_reason_name, MoveDir, Profile, ProfileSample, PROFILE_MAX_SAMPLES,
@@ -144,6 +144,9 @@ const MESSAGE_BUF: usize = MESSAGE_MAX + 1;
 /// writeProfileJson() of PROFILE_MAX_SAMPLES samples with the largest values:
 /// {"valve":12,"count":32,"samples":[[4294967295,65535],...]} is 643 bytes.
 const PROFILE_JSON_MAX: usize = 643;
+/// write_flow_state_json() with the longest state and flow:
+/// {"state":"positioning","lpm":65.535,"targetLpm":65.535} is 55 bytes.
+const FLOW_JSON_MAX: usize = 55;
 /// The read buffer of the list file (C++ `storage::kFileBufferSize`, its stdio buffer).
 const LIST_BUFFER: usize = 512;
 /// HA discovery layout of 2.1 (storage `haLayout`).
@@ -461,9 +464,11 @@ struct StmPub {
 
 /// The last published values of the compat slots and the system slot.
 struct Published {
-    /// per valve the key of its compat fields (valve_compat_key), not the whole ValveState
+    /// per valve the key of what it publishes (valve_publish_key), not the whole ValveState
     valve_key: [u32; N_VALVES],
     valve_valid: [bool; N_VALVES],
+    /// per valve: the broker may hold valves/<V>/flow (after a connect every valve)
+    flow_held: [bool; N_VALVES],
     volts: [SensorPub; N_VOLTS],
     state: Option<u8>,
     uptime: Option<u32>,
@@ -485,6 +490,7 @@ impl Default for Published {
         Self {
             valve_key: [0; N_VALVES],
             valve_valid: [false; N_VALVES],
+            flow_held: [true; N_VALVES],
             volts: [SensorPub::EMPTY; N_VOLTS],
             state: None,
             uptime: None,
@@ -502,7 +508,7 @@ impl Default for Published {
 }
 
 impl Published {
-    /// Valve `i` went out with these compat fields.
+    /// Valve `i` went out with these fields.
     fn valve_published(&mut self, i: usize, key: u32) {
         if let Some(k) = self.valve_key.get_mut(i) {
             *k = key;
@@ -653,12 +659,16 @@ impl<C: Clock, N: TcpConnector, W: Watchdog> Out<'_, C, N, W> {
     /// `segment` for the per-item topics ("" otherwise); false also when the topic cannot be
     /// built.
     fn publish(&mut self, t: Topic, segment: &[u8], payload: &[u8]) -> bool {
+        self.publish_flagged(t, segment, payload, topic_retained(t, self.retained))
+    }
+
+    /// [`publish`](Self::publish) with the retain flag given.
+    fn publish_flagged(&mut self, t: Topic, seg: &[u8], payload: &[u8], retained: bool) -> bool {
         let mut topic = [0u8; TOPIC_BUF];
-        let n = build_topic(&self.topics, t, segment, &mut topic);
+        let n = build_topic(&self.topics, t, seg, &mut topic);
         if n == 0 {
             return false;
         }
-        let retained = topic_retained(t, self.retained);
         self.publish_raw(topic.get(..n).unwrap_or_default(), payload, retained)
     }
 
@@ -699,6 +709,23 @@ impl<C: Clock, N: TcpConnector, W: Watchdog> Out<'_, C, N, W> {
         let n = format_valve_state(v.status, plain_text, &mut buf);
         self.publish(Topic::ValveState, seg, buf.get(..n).unwrap_or_default());
         self.publish_uint(Topic::ValveActual, seg, u32::from(v.position));
+    }
+
+    /// valves/<V>/flow: the JSON of a valve that `shows` the layer. Any other valve gets one empty
+    /// retained message while the broker may `hold` the topic, with whatever **retained** says:
+    /// no state of a layer stays behind, also when it was switched off without a session. Returns
+    /// whether the broker may hold the topic now.
+    fn valve_flow(&mut self, f: &FlowView, seg: &[u8], shows: bool, hold: bool) -> bool {
+        if shows {
+            let mut json = [0u8; FLOW_JSON_MAX + 1];
+            let mut jw = JsonWriter::new(&mut json);
+            write_flow_state_json(&mut jw, f);
+            if jw.complete() {
+                self.publish(Topic::ValveFlow, seg, jw.as_bytes());
+            }
+            return true;
+        }
+        hold && !self.publish_flagged(Topic::ValveFlow, seg, b"", true)
     }
 
     /// The end of the last calibration of valve `i` (when one was seen since boot) and the
@@ -1667,14 +1694,21 @@ where
     }
 
     fn publish_valve(&mut self, i: usize) {
-        let Some(v) = self.snap.valves.get(i) else {
+        let (Some(v), Some(f)) = (self.snap.valves.get(i), self.snap.flow.get(i)) else {
             return;
         };
-        self.published.valve_published(i, valve_compat_key(v));
-        if !self.cfg.valves.get(i).is_some_and(|c| c.active) || !v.known {
+        self.published.valve_published(i, valve_publish_key(v, f));
+        if !v.known {
             return;
         }
         let seg = segment(&self.segments, i);
+        let active = self.cfg.valves.get(i).is_some_and(|c| c.active);
+        if let Some(hold) = self.published.flow_held.get_mut(i) {
+            *hold = self.out.valve_flow(f, seg, active && f.enabled, *hold);
+        }
+        if !active {
+            return;
+        }
         let m = &self.cfg.mqtt;
         // The STM's target of a flow valve is the fallback of the layer: the target is the desired.
         let running = self
@@ -1816,8 +1850,8 @@ where
             let valid = self.published.valve_valid.get(i).copied().unwrap_or(false);
             let key = self.published.valve_key.get(i).copied().unwrap_or(0);
             let dirty = lock(&self.out.shared.calib).dirty(v);
-            let state = self.snap.valves.get(i);
-            return !valid || dirty || state.is_some_and(|s| valve_compat_key(s) != key);
+            let state = self.snap.valves.get(i).zip(self.snap.flow.get(i));
+            return !valid || dirty || state.is_some_and(|(s, f)| valve_publish_key(s, f) != key);
         }
         if slot < SLOT_VOLT0 {
             let i = slot - SLOT_TEMP0;
@@ -2244,6 +2278,7 @@ where
     fn reset_published_state(&mut self) {
         let p = &mut self.published;
         p.valve_valid = [false; N_VALVES];
+        p.flow_held = [true; N_VALVES];
         p.volts = [SensorPub::EMPTY; N_VOLTS];
         p.stm = StmPub::default();
         p.state = None;

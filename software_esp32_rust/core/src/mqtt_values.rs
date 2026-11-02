@@ -11,6 +11,7 @@ use crate::common::{
     VALVE_COUNT, VOLT_SLOT_COUNT,
 };
 use crate::config::{crc32, item_segment, Config, ItemKind};
+use crate::flow_layer::FlowView;
 use crate::link_policy::LinkState;
 use crate::valve_model::{
     temp_raw_valid, vad_valid, TargetSource, TargetSync, TempReading, ValveState, VoltReading,
@@ -301,6 +302,16 @@ pub fn valve_compat_key(v: &ValveState) -> u32 {
         ],
         c,
     )
+}
+
+/// [`valve_compat_key`] over what `valves/<V>/flow` shows as well: the valve goes out on change
+/// when the state of its layer, its held flow or its target in l/min moved. A valve without the
+/// layer has the same default view every time.
+pub fn valve_publish_key(v: &ValveState, f: &FlowView) -> u32 {
+    let c = crc32(&[f.state as u8, u8::from(f.known)], valve_compat_key(v));
+    let c = crc32(&f.flow_ml.to_le_bytes(), c);
+    let target = f.target_ml.map_or(0, |ml| u32::from(ml) + 1);
+    crc32(&target.to_le_bytes(), c)
 }
 
 /// Display name of valve `idx0` for new HA entity names: the configured name as it is (UTF-8,

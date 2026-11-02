@@ -188,7 +188,8 @@ Valve entry (`/api/valves`):
   final move of the last positioning, null before the first. With the layer
   enabled, `pos` is the held position in % of `strokeCounts` (0 while unknown),
   `target` the target in % of the stroke, and `stmTarget` the STM's own target,
-  which is the layer's `fallbackPct`.
+  which is the layer's `fallbackPct`. `state`, `lpm` and `targetLpm` also go out
+  on the MQTT topic `valves/<V>/flow` (MQTT.md).
 
 Flasher state (`GET /api/stm/flash`): `phase`, `status` (legacy code),
 `percent`, `bytesDone`, `bytesTotal`, `bootloaderVersion`, `attempt`,

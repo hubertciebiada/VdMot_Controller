@@ -95,7 +95,7 @@ pub(super) struct Msg {
     pub(super) json: Vec<u8>,
 }
 
-/// Every message of a fresh iterator (at most the 345 entities).
+/// Every message of a fresh iterator (at most the 369 entities).
 pub(super) fn all(c: &DiscoveryContext) -> Vec<Msg> {
     let mut it = DiscoveryIterator::new();
     let mut out = Vec::new();
@@ -109,7 +109,7 @@ pub(super) fn all(c: &DiscoveryContext) -> Vec<Msg> {
             topic: m.topic.to_vec(),
             json: jw.as_bytes().to_vec(),
         });
-        assert!(out.len() <= 345, "the iterator makes progress");
+        assert!(out.len() <= 369, "the iterator makes progress");
     }
     assert!(jw.ok()); // ended because the list is exhausted
     out
@@ -121,7 +121,7 @@ pub(super) fn topics(c: &DiscoveryContext) -> Vec<Vec<u8>> {
     let mut m = DiscoveryMessage::default();
     while it.next_topic(c, &mut m) {
         out.push(m.topic.to_vec());
-        assert!(out.len() <= 345, "the iterator makes progress");
+        assert!(out.len() <= 369, "the iterator makes progress");
     }
     assert!(m.topic.is_empty());
     out
@@ -995,7 +995,7 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
         if it.v20_topic(&c, &mut old) {
             olds.insert(m.topic.to_vec(), old.topic.to_vec());
         }
-        assert!(olds.len() <= 345);
+        assert!(olds.len() <= 369);
     }
     let old_of = |t: &str| olds.get(t.as_bytes()).cloned().unwrap_or_default();
     assert_text(
@@ -1019,7 +1019,7 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
         produced += 1;
         assert!(!same.v20_topic(&c, &mut old));
         assert!(old.topic.is_empty());
-        assert!(produced <= 345);
+        assert!(produced <= 369);
     }
     assert!(produced > 20);
     // Another prefix: the legacy prefix differs.
@@ -1171,11 +1171,11 @@ fn discovery_skips_an_entity_that_cannot_be_built_and_continues() {
     let mut rest = 0;
     while it.next(&c, &mut m, &mut jw) {
         rest += 1;
-        assert!(rest <= 345);
+        assert!(rest <= 369);
     }
     assert_eq!(rest, 8 + 7);
     assert!(jw.ok());
-    assert_eq!(it.position(), 345);
+    assert_eq!(it.position(), 369);
     assert!(!it.next(&c, &mut m, &mut jw));
     // next_topic passes unbuildable entities over.
     assert_eq!(topics(&c).len(), 3 + 9 + 7);
@@ -1243,7 +1243,7 @@ fn discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2() {
         );
     }
     let v = all(&c);
-    assert_eq!(v.len(), 345);
+    assert_eq!(v.len(), 369);
     let mut longest = 0;
     for m in &v {
         longest = longest.max(m.json.len());
@@ -1259,6 +1259,17 @@ fn discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2() {
         .len(),
         longest
     );
+    // The longest config of a valve: the number with its two topics and two templates.
+    let config = |kind: &str, id: &str| {
+        let t = format!(
+            "abcdefghijklmnopqrstuvwxyz012345/{kind}/abcdefghijklmnopqrst/{id}_Valve_0011/config"
+        );
+        json(&v, &t).len()
+    };
+    let number = config("number", "valves_flowTarget");
+    assert_eq!(number, NUMBER_CONFIG_MAX);
+    assert!(config("sensor", "valves_flow") < number);
+    assert!(config("sensor", "valves_flowState") < number);
 }
 
 #[test]
@@ -2566,7 +2577,7 @@ fn v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity() {
     let mut bad = DiscoveryIterator::new();
     let mut m = DiscoveryMessage::default();
     assert!(!bad.next_topic(&c, &mut m));
-    assert_eq!(bad.position(), 345);
+    assert_eq!(bad.position(), 369);
     assert!(!bad.v20_topic(&c, &mut m));
     small(&mut c);
     set(&mut c.station, b"Dom 1");
@@ -2574,9 +2585,9 @@ fn v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity() {
     let mut n = 0;
     while it.next_topic(&c, &mut m) {
         n += 1;
-        assert!(n <= 345);
+        assert!(n <= 369);
     }
-    assert_eq!(it.position(), 345); // the last entity (leave safe mode) needs STM v3
+    assert_eq!(it.position(), 369); // the last entity (leave safe mode) needs STM v3
     assert!(!it.v20_topic(&c, &mut m));
 }
 
@@ -2664,26 +2675,32 @@ fn discovery_input_key_crc32_over_the_snapshot_parts_in_their_order() {
     assert_eq!(discovery_input_key(&input), crc32(&[1], crc));
 }
 
+/// The longest config of a flow target: every field of the case of
+/// `discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2`.
+const NUMBER_CONFIG_MAX: usize = 875;
+
 #[test]
 fn discovery_the_flow_target_is_a_number_of_a_valve_with_the_layer() {
     let mut c = small_ctx();
-    valve(&mut c, 0, "Bad", false, false, b"Bad");
-    valve(&mut c, 1, "Bad/WC", false, false, b"");
+    valve(&mut c, 0, "Loop", false, false, b"Loop");
+    valve(&mut c, 1, "Loop/2", false, false, b"");
     c.valves[1].flow_qmax_ml = 2700;
-    let number = "homeassistant/number/VdMot/valves_flowTarget_Bad_WC/config";
+    let number = "homeassistant/number/VdMot/valves_flowTarget_Loop_2/config";
     let v = all(&c);
     assert!(find(
         &v,
-        "homeassistant/number/VdMot/valves_flowTarget_Bad/config"
+        "homeassistant/number/VdMot/valves_flowTarget_Loop/config"
     )
     .is_none());
     assert_text(
         &json(&v, number),
         format!(
             "{{\"name\":\"Valve 2 flow target\",\
-             \"unique_id\":\"VdMot.valves.Bad/WC.flowTarget\",\
-             \"command_topic\":\"VdMot/valves/Bad/WC/flow/set\",\
+             \"unique_id\":\"VdMot.valves.Loop/2.flowTarget\",\
+             \"state_topic\":\"VdMot/valves/Loop/2/flow/value\",\
+             \"command_topic\":\"VdMot/valves/Loop/2/flow/set\",\
              \"command_template\":\"{{{{ '%.3f' | format(value) }}}}\",\
+             \"value_template\":\"{{{{ value_json.targetLpm if value else None }}}}\",\
              \"icon\":\"mdi:waves-arrow-right\",\"device_class\":\"volume_flow_rate\",\
              \"unit_of_measurement\":\"L/min\",\
              \"min\":0,\"max\":2.700,\"step\":0.1,\"mode\":\"box\",\"qos\":1,\
@@ -2692,13 +2709,18 @@ fn discovery_the_flow_target_is_a_number_of_a_valve_with_the_layer() {
     );
     assert!(topics(&c).contains(&number.as_bytes().to_vec()));
     assert_eq!(cls(&c, number.as_bytes()), TopicClass::Current);
-    // One topic with and without separate, qmax of the valve.
+    // One command topic with and without separate, the state topic by the suffix rule, qmax of
+    // the valve.
     c.topics.separate = false;
     c.valves[1].flow_qmax_ml = 10;
     let j = json(&all(&c), number);
     assert!(contains_bytes(
         &j,
-        b"\"command_topic\":\"VdMot/valves/Bad/WC/flow/set\""
+        b"\"command_topic\":\"VdMot/valves/Loop/2/flow/set\""
+    ));
+    assert!(contains_bytes(
+        &j,
+        b"\"state_topic\":\"VdMot/valves/Loop/2/flow\""
     ));
     assert!(contains_bytes(&j, b"\"max\":0.010,"));
     // The layer goes off: the config is stale, the run deletes it.
@@ -2709,6 +2731,80 @@ fn discovery_the_flow_target_is_a_number_of_a_valve_with_the_layer() {
     c.valves[1].flow_qmax_ml = 2700;
     c.valves[1].active = false;
     assert!(find(&all(&c), number).is_none());
+}
+
+#[test]
+fn discovery_the_flow_and_its_state_are_sensors_of_a_valve_with_the_layer() {
+    let mut c = small_ctx();
+    valve(&mut c, 0, "Loop", false, false, b"Loop");
+    valve(&mut c, 1, "Loop/2", false, false, b"");
+    c.valves[1].flow_qmax_ml = 2700;
+    let flow = "homeassistant/sensor/VdMot/valves_flow_Loop_2/config";
+    let state = "homeassistant/sensor/VdMot/valves_flowState_Loop_2/config";
+    let v = all(&c);
+    for without in ["valves_flow_Loop", "valves_flowState_Loop"] {
+        let t = format!("homeassistant/sensor/VdMot/{without}/config");
+        assert!(find(&v, &t).is_none());
+    }
+    assert_text(
+        &json(&v, flow),
+        format!(
+            "{{\"name\":\"Valve 2 flow\",\
+             \"unique_id\":\"VdMot.valves.Loop/2.flow\",\
+             \"state_topic\":\"VdMot/valves/Loop/2/flow/value\",\
+             \"value_template\":\"{{{{ value_json.lpm if value else None }}}}\",\
+             \"icon\":\"mdi:waves-arrow-right\",\"device_class\":\"volume_flow_rate\",\
+             \"state_class\":\"measurement\",\"unit_of_measurement\":\"L/min\",\
+             {ESP_STM}{DEVICE}"
+        ),
+    );
+    assert_text(
+        &json(&v, state),
+        format!(
+            "{{\"name\":\"Valve 2 flow state\",\
+             \"unique_id\":\"VdMot.valves.Loop/2.flowState\",\
+             \"state_topic\":\"VdMot/valves/Loop/2/flow/value\",\
+             \"value_template\":\"{{{{ value_json.state if value else None }}}}\",\
+             \"icon\":\"mdi:state-machine\",\"device_class\":\"enum\",\
+             \"options\":[\"unsupported\",\"unknown\",\"positioning\",\"held\",\"failed\"],\
+             \"entity_category\":\"diagnostic\",{ESP_STM}{DEVICE}"
+        ),
+    );
+    for t in [flow, state] {
+        assert!(topics(&c).contains(&t.as_bytes().to_vec()));
+        assert_eq!(cls(&c, t.as_bytes()), TopicClass::Current);
+    }
+    // Every state of a layer that shows is an option.
+    use crate::flow_layer::{flow_state_name, FlowState};
+    for s in [
+        FlowState::Unsupported,
+        FlowState::Unknown,
+        FlowState::Positioning,
+        FlowState::Held,
+        FlowState::Failed,
+    ] {
+        assert!(contains_bytes(
+            &json(&v, state),
+            format!("\"{}\"", flow_state_name(s)).as_bytes()
+        ));
+    }
+    // The state topic follows the suffix rule.
+    c.topics.separate = false;
+    assert!(contains_bytes(
+        &json(&all(&c), flow),
+        b"\"state_topic\":\"VdMot/valves/Loop/2/flow\""
+    ));
+    // The layer goes off: both configs are stale, the run deletes them.
+    c.valves[1].flow_qmax_ml = 0;
+    for t in [flow, state] {
+        assert!(find(&all(&c), t).is_none());
+        assert_eq!(cls(&c, t.as_bytes()), TopicClass::Stale);
+    }
+    // An inactive valve has none.
+    c.valves[1].flow_qmax_ml = 2700;
+    c.valves[1].active = false;
+    assert!(find(&all(&c), flow).is_none());
+    assert!(find(&all(&c), state).is_none());
 }
 
 #[test]

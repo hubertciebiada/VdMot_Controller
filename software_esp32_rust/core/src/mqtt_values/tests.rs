@@ -157,6 +157,70 @@ fn valve_compat_key_the_default_valve_and_the_padding() {
 }
 
 #[test]
+fn valve_publish_key_moves_with_the_valve_and_with_what_the_flow_topic_shows() {
+    use crate::flow_layer::{FlowState, FlowView};
+    let v = full_valve();
+    let held = FlowView {
+        enabled: true,
+        state: FlowState::Held,
+        known: true,
+        flow_ml: 1000,
+        target_ml: Some(1000),
+        ..FlowView::default()
+    };
+    let key = valve_publish_key(&v, &held);
+    assert_eq!(valve_publish_key(&full_valve(), &held), key);
+    let changes = [
+        FlowView {
+            state: FlowState::Positioning,
+            ..held
+        },
+        FlowView {
+            known: false,
+            ..held
+        },
+        FlowView {
+            flow_ml: 1001,
+            ..held
+        },
+        FlowView {
+            target_ml: Some(1001),
+            ..held
+        },
+        FlowView {
+            target_ml: None,
+            ..held
+        },
+    ];
+    for (i, f) in changes.iter().enumerate() {
+        assert_ne!(valve_publish_key(&v, f), key, "{i}");
+    }
+    // No target and a target of 0 are two things.
+    let none = FlowView {
+        target_ml: None,
+        ..held
+    };
+    let zero = FlowView {
+        target_ml: Some(0),
+        ..held
+    };
+    assert_ne!(valve_publish_key(&v, &none), valve_publish_key(&v, &zero));
+    // What the topic does not show moves nothing.
+    let same = FlowView {
+        counts: 7,
+        target_counts: 8,
+        pct: 9,
+        last_ms: 10,
+        ..held
+    };
+    assert_eq!(valve_publish_key(&v, &same), key);
+    // A compat field of the valve counts as before.
+    let mut moved = full_valve();
+    moved.position = moved.position.wrapping_add(1);
+    assert_ne!(valve_publish_key(&moved, &held), key);
+}
+
+#[test]
 fn system_state_cases() {
     let none = SystemFlags::default();
     // C++ systemState(link, nullptr, 0, 0): the empty slice.

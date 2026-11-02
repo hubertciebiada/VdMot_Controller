@@ -285,9 +285,12 @@ pub enum Topic {
     // ---- 2.2.12 ----
     /// `<main>valves/<V>/flow/set` a target in l/min: a command, with and without `separate`
     ValveFlowSet = 57,
+    // ---- 2.2.13 ----
+    /// `<main>valves/<V>/flow` JSON of the flow layer, suffix rule
+    ValveFlow = 58,
 }
 
-pub const TOPIC_COUNT: u8 = 58;
+pub const TOPIC_COUNT: u8 = 59;
 
 /// Every topic in number order.
 const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
@@ -349,6 +352,7 @@ const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
     Topic::DiagValveCoastOpen,
     Topic::DiagValveCoastClose,
     Topic::ValveFlowSet,
+    Topic::ValveFlow,
 ];
 
 impl Topic {
@@ -463,9 +467,10 @@ const TOPICS: [TopicDef; TOPIC_COUNT as usize] = [
     item(b"diag/valves/", b"/coastOpen", false, S),
     item(b"diag/valves/", b"/coastClose", false, S),
     item(b"valves/", b"/flow/set", false, N),
+    item(b"valves/", b"/flow", true, S),
 ];
 const _: () = assert!(
-    Topic::ValveFlowSet as u8 + 1 == TOPIC_COUNT,
+    Topic::ValveFlow as u8 + 1 == TOPIC_COUNT,
     "TOPICS out of sync"
 );
 
@@ -490,7 +495,7 @@ fn add_base(b: &mut Builder<'_>, ctx: &TopicContext, t: Topic, segment: &[u8]) {
 }
 
 /// True for topics that take the "/value" suffix with `separate`: the legacy tree plus
-/// valves/<V>/{requested,sync,failsafe,problem}.
+/// valves/<V>/{requested,sync,failsafe,problem,flow}.
 pub fn topic_is_compat(t: Topic) -> bool {
     topic_def(t).suffix
 }

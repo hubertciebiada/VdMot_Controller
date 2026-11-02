@@ -281,7 +281,7 @@ pub struct DiscoveryMessage {
 // ---------------------------------------------------------------- layout
 
 const COMMON_COUNT: usize = 4;
-const VALVE_KINDS: usize = 23;
+const VALVE_KINDS: usize = 25;
 const VALVES_FIRST: usize = COMMON_COUNT;
 const TEMPS_FIRST: usize = VALVES_FIRST + VALVE_COUNT as usize * VALVE_KINDS;
 const VOLTS_FIRST: usize = TEMPS_FIRST + TEMP_SLOT_COUNT as usize;
@@ -289,7 +289,7 @@ const TAIL_FIRST: usize = VOLTS_FIRST + VOLT_SLOT_COUNT as usize;
 const TAIL_COUNT: usize = 23;
 /// entity count (DESIGN.md)
 const ENTITY_COUNT: u16 = (TAIL_FIRST + TAIL_COUNT) as u16;
-const _: () = assert!(ENTITY_COUNT == 345, "entity count (DESIGN.md)");
+const _: () = assert!(ENTITY_COUNT == 369, "entity count (DESIGN.md)");
 
 const DROP_GLOBAL: usize = 2;
 const DROP_KINDS: usize = 7;
@@ -305,6 +305,7 @@ const LEGACY_PREFIX: &[u8] = b"homeassistant";
 const TOPIC_BUF: usize = 128;
 /// "°C"
 const DEGREES_C: &[u8] = b"\xC2\xB0C";
+const FLOW_UNIT: &[u8] = b"L/min";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -332,8 +333,12 @@ enum Kind {
     Sync,
     /// command only
     Button,
-    /// number in l/min on `flow/set`: command only, no topic reports the flow
+    /// number in l/min: `flow/set` commands it, `targetLpm` of `valves/<V>/flow` reports it
     FlowTarget,
+    /// sensor in l/min: `lpm` of `valves/<V>/flow`
+    Flow,
+    /// enum sensor: `state` of `valves/<V>/flow`
+    FlowState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,6 +442,8 @@ const VALVE_DEFS: [ValveDef; VALVE_KINDS] = {
         vdef(C::Sensor, Kind::Sync, Always, New, Esp, b"sync", b"target delivery", Topic::ValveSync, None),
         vdef(C::Button, Kind::Button, Always, New, EspStm, b"calibrate", b"calibrate", Topic::CmdValveCalibrate, Some("mdi:tune-vertical")),
         vdef(C::Number, Kind::FlowTarget, Flow, New, EspStm, b"flowTarget", b"flow target", Topic::ValveFlowSet, Some("mdi:waves-arrow-right")),
+        vdef(C::Sensor, Kind::Flow, Flow, New, EspStm, b"flow", b"flow", Topic::ValveFlow, Some("mdi:waves-arrow-right")),
+        vdef(C::Sensor, Kind::FlowState, Flow, New, EspStm, b"flowState", b"flow state", Topic::ValveFlow, Some("mdi:state-machine")),
     ]
 };
 
@@ -506,6 +513,9 @@ const STOP_OPTIONS: [&str; 8] = [
     "aborted",
 ];
 const FAILSAFE_OPTIONS: [&str; 3] = ["off", "lease", "blocked"];
+/// The states `valves/<V>/flow` shows: without the layer the topic is cleared, `off` never goes
+/// out.
+const FLOW_STATE_OPTIONS: [&str; 5] = ["unsupported", "unknown", "positioning", "held", "failed"];
 const SYNC_OPTIONS: [&str; 6] = [
     "unknown",
     "synced",
@@ -654,6 +664,10 @@ const TEMP_TEMPLATE: &str = "{{ value | replace(',', '.') | float(None) }}";
 const EMPTY_AS_NONE_TEMPLATE: &str = "{{ value if value else 'None' }}";
 /// The flow as `flow/set` takes it: at most three decimals, whatever float HA holds.
 const FLOW_COMMAND_TEMPLATE: &str = "{{ '%.3f' | format(value) }}";
+// `valves/<V>/flow`: the empty message that clears the topic is unknown, no template error.
+const FLOW_TARGET_TEMPLATE: &str = "{{ value_json.targetLpm if value else None }}";
+const FLOW_TEMPLATE: &str = "{{ value_json.lpm if value else None }}";
+const FLOW_STATE_TEMPLATE: &str = "{{ value_json.state if value else None }}";
 
 // ---------------------------------------------------------------- helpers
 
@@ -920,10 +934,12 @@ fn valve_entity(
         return Some(());
     }
     if d.kind == Kind::FlowTarget {
+        e.state = state_topic(ctx, Topic::ValveFlow, seg)?;
         e.command = topic_text(|out| build_topic(&ctx.topics, d.topic, seg, out))?;
         e.command_template = Some(FLOW_COMMAND_TEMPLATE);
+        e.value_template = Some(FLOW_TARGET_TEMPLATE);
         e.device_class = Some("volume_flow_rate");
-        e.unit = cat(&[b"L/min"])?;
+        e.unit = cat(&[FLOW_UNIT])?;
         e.number_max_ml = valve.flow_qmax_ml;
         e.qos1 = true;
         return Some(());
@@ -975,6 +991,18 @@ fn valve_entity(
         Kind::Sync => {
             e.device_class = Some("enum");
             e.options = &SYNC_OPTIONS;
+            e.category = Category::Diagnostic;
+        }
+        Kind::Flow => {
+            e.value_template = Some(FLOW_TEMPLATE);
+            e.device_class = Some("volume_flow_rate");
+            e.state_class = Some("measurement");
+            e.unit = cat(&[FLOW_UNIT])?;
+        }
+        Kind::FlowState => {
+            e.value_template = Some(FLOW_STATE_TEMPLATE);
+            e.device_class = Some("enum");
+            e.options = &FLOW_STATE_OPTIONS;
             e.category = Category::Diagnostic;
         }
         Kind::Button | Kind::FlowTarget => {}
@@ -1301,13 +1329,14 @@ fn config_topic_shape(ctx: &DiscoveryContext, t: &[u8]) -> bool {
 // ---------------------------------------------------------------- DiscoveryIterator
 
 /// Iterates the current entity set in a fixed order: common (state, message, uptime*, ip), per
-/// active valve 23 kinds (state, target, actual, temp1*, temp2*, calibration date and
+/// active valve 25 kinds (state, target, actual, temp1*, temp2*, calibration date and
 /// repetitions, diag x5*, early stops*, rejected commands*, last stop*, calibration state*,
 /// coast open*, coast close*, problem, failsafe, target delivery, calibrate button, flow
-/// target*), temps*, volts*, then the device entities (ESP/STM online, failsafe, lease*, safe
-/// mode*, link*, protocol*, version*, started*, resets*, overflows*, parse errors*, calibration
-/// running*, next calibration*, suppressed events*, rejected commands*, events*, buttons calibrate
-/// all, detect, stop*, reset STM, restart ESP, leave safe mode*). (* = gated.)
+/// target*, flow*, flow state*), temps*, volts*, then the device entities (ESP/STM online,
+/// failsafe, lease*, safe mode*, link*, protocol*, version*, started*, resets*, overflows*, parse
+/// errors*, calibration running*, next calibration*, suppressed events*, rejected commands*,
+/// events*, buttons calibrate all, detect, stop*, reset STM, restart ESP, leave safe mode*).
+/// (* = gated.)
 ///
 /// Node id = build_ha_id(station), object ids from build_ha_id(segment); names and unique_ids
 /// ("<station with ' ' -> '_'>.<uid>") keep the raw segment. KEEP entities (legacy component,

@@ -647,6 +647,19 @@ pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
     jw.kv("state", flow_state_name(f.state));
     jw.kv("counts", f.known.then_some(f.counts));
     jw.kv("targetCounts", f.target_counts);
+    write_flow_lpm(jw, f);
+    jw.kv("ms", f.last_valid.then_some(f.last_ms));
+    jw.key("peak");
+    if f.last_valid {
+        jw.fixed(i32::from(f.last_peak), 1); // 0.1 mA -> mA
+    } else {
+        jw.null_value();
+    }
+    jw.end_object();
+}
+
+/// `"lpm":1.000|null,"targetLpm":1.000|null`.
+fn write_flow_lpm(jw: &mut JsonWriter<'_>, f: &FlowView) {
     jw.key("lpm");
     if f.known {
         jw.fixed(f.flow_ml.min(i32::MAX as u32) as i32, 3);
@@ -658,13 +671,14 @@ pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
         Some(ml) => jw.fixed(i32::from(ml), 3),
         None => jw.null_value(),
     }
-    jw.kv("ms", f.last_valid.then_some(f.last_ms));
-    jw.key("peak");
-    if f.last_valid {
-        jw.fixed(i32::from(f.last_peak), 1); // 0.1 mA -> mA
-    } else {
-        jw.null_value();
-    }
+}
+
+/// MQTT `valves/<V>/flow`: `{"state":"held","lpm":1.000,"targetLpm":1.000}`, the members of
+/// [`write_flow_json`] an automation reads.
+pub fn write_flow_state_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
+    jw.begin_object();
+    jw.kv("state", flow_state_name(f.state));
+    write_flow_lpm(jw, f);
     jw.end_object();
 }
 

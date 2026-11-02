@@ -3,7 +3,8 @@
 //! periods, a broker restart, the will on a dropped connection; and the MQTT task end to end
 //! (`mqtt_client`: session with its last will, subscriptions, a target command and its retained
 //! clear, a button confirmed by the broker's echo, the HA status, discovery runs, a QoS 1 command
-//! kept by the persistent session while the task was away). Ignored by default (needs the
+//! kept by the persistent session while the task was away; a flow on `valves/<V>/flow/set`, the
+//! retained `valves/<V>/flow`, its entities and its clear). Ignored by default (needs the
 //! `mosquitto` binary of the tools/rust image); run it with
 //!
 //! ```text
@@ -26,10 +27,12 @@ use vdm_esp_core::event_log::{
     event_default_severity, make_event, Event, EventCode, EventFilter, EventLog,
 };
 use vdm_esp_core::failsafe::HaStatus;
+use vdm_esp_core::flow_layer::{FlowState, FlowView};
 use vdm_esp_core::json_api::MqttState;
 use vdm_esp_core::link_policy::LinkState;
 use vdm_esp_core::stm_codec::Profile;
 use vdm_esp_core::stm_types::{StmCommand, StmCommandType, StmSnapshot};
+use vdm_esp_core::valve_model::TargetSource;
 use vdm_esp_glue::mqtt_client::{MqttClient, MqttHost, MqttPorts, MqttShared, LIST_FILE};
 use vdm_esp_glue::mqtt_conn::{
     ConnectArgs, MqttConn, Will, MQTT_CONNECTED, MQTT_CONNECTION_LOST, MQTT_CONNECTION_TIMEOUT,
@@ -570,6 +573,7 @@ impl TcpConnector for CuttableTcp {
 struct HostState {
     cfg: Config,
     snap: StmSnapshot,
+    snap_revision: u32,
     log: EventLog<64>,
     submitted: Vec<StmCommand>,
     ha_layout: u8,
@@ -602,6 +606,7 @@ impl Host {
             s: Mutex::new(HostState {
                 cfg,
                 snap,
+                snap_revision: 1,
                 log: EventLog::new(),
                 submitted: Vec::new(),
                 ha_layout: 2,
@@ -610,6 +615,12 @@ impl Host {
     }
     fn submitted(&self) -> Vec<StmCommand> {
         self.s.lock().unwrap().submitted.clone()
+    }
+    /// The STM task publishes a snapshot with the view of the flow layer on valve 1.
+    fn set_flow(&self, f: FlowView) {
+        let mut s = self.s.lock().unwrap();
+        s.snap.flow[0] = f;
+        s.snap_revision += 1;
     }
     fn discovery_runs(&self) -> usize {
         let s = self.s.lock().unwrap();
@@ -633,7 +644,7 @@ impl MqttHost for Host {
         true
     }
     fn stm_snapshot_revision(&self) -> u32 {
-        1
+        self.s.lock().unwrap().snap_revision
     }
     fn read_stm_snapshot(&self, out: &mut StmSnapshot) {
         out.clone_from(&self.s.lock().unwrap().snap);
@@ -844,4 +855,175 @@ fn the_mqtt_task_end_to_end() {
         &|_| { host.submitted().iter().any(|c| c.pos == 17) }
     ));
     assert_eq!(shared.status().reconnects, 2);
+}
+
+/// `valves/1/flow` with **separate**, on, as every data topic of a valve.
+const FLOW: &[u8] = b"VdMot/valves/1/flow/value";
+const FLOW_SET: &[u8] = b"VdMot/valves/1/flow/set";
+const FLOW_HELD: &[u8] = br#"{"state":"held","lpm":1.000,"targetLpm":1.000}"#;
+const NUMBER_CONFIG: &[u8] = b"homeassistant/number/VdMot/valves_flowTarget_1/config";
+const FLOW_CONFIG: &[u8] = b"homeassistant/sensor/VdMot/valves_flow_1/config";
+const STATE_CONFIG: &[u8] = b"homeassistant/sensor/VdMot/valves_flowState_1/config";
+
+/// The retained messages a new client gets under `filter`.
+fn retained_under(port: u16, filter: &[u8]) -> Vec<Msg> {
+    let mut late = client(60);
+    assert!(late.connect("127.0.0.1", port, &args(b"late", None, true)));
+    assert!(late.subscribe(filter, 0));
+    let got = collect(&mut late, 300);
+    late.disconnect();
+    got
+}
+
+/// The newest non-empty payload of `topic`.
+fn payload_of(seen: &[Msg], topic: &[u8]) -> String {
+    let p = seen.iter().rev().find(|(t, p)| t == topic && !p.is_empty());
+    String::from_utf8_lossy(p.map_or(&[][..], |(_, p)| p)).into_owned()
+}
+
+#[test]
+#[ignore = "needs mosquitto: see the module doc"]
+fn the_flow_set_command_and_the_flow_topic_on_the_broker() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let broker = Broker::start();
+    let mut watcher = client(60);
+    assert!(watcher.connect("127.0.0.1", broker.port, &args(b"watcher", None, true)));
+    assert!(watcher.subscribe(b"VdMot/#", 0));
+    assert!(watcher.subscribe(b"homeassistant/#", 0));
+    collect(&mut watcher, 200);
+    let clock = StdClock(Instant::now());
+    let fs = MemFs::default();
+    let tcp = CuttableTcp::default();
+    let rtc = MemRtc(Mutex::new(vec![0; 64]));
+    let host = Host::new(broker.port);
+    host.s.lock().unwrap().cfg.mqtt.retained = true;
+    let held = FlowView {
+        enabled: true,
+        qmax_ml: 2700,
+        state: FlowState::Held,
+        known: true,
+        flow_ml: 1000,
+        target_ml: Some(1000),
+        ..FlowView::default()
+    };
+    host.set_flow(held);
+    let shared = MqttShared::default();
+    let ports = MqttPorts {
+        clock: &clock,
+        fs: &fs,
+        tcp: &tcp,
+        gate: &Grant,
+        rtc: &rtc,
+        rtc_offset: 0,
+        mac: [0x24, 0x0A, 0xC4, 0x12, 0x34, 0x56],
+    };
+    let mut task: Task<'_> = MqttClient::new(ports, &host, &shared);
+    task.begin();
+    task.start(NoWatchdog);
+    let mut seen = Vec::new();
+
+    // The topic goes out with the valve and stays at the broker; the three entities read it.
+    assert!(run_task(
+        &mut task,
+        &mut watcher,
+        &mut seen,
+        15_000,
+        &|m| host.discovery_runs() == 1 && saw(m, FLOW, FLOW_HELD)
+    ));
+    assert_eq!(
+        retained_under(broker.port, FLOW),
+        vec![(FLOW.to_vec(), FLOW_HELD.to_vec())]
+    );
+    let state_topic = "\"state_topic\":\"VdMot/valves/1/flow/value\"";
+    let number = payload_of(&seen, NUMBER_CONFIG);
+    assert!(number.contains(state_topic), "{number}");
+    assert!(number.contains("\"command_topic\":\"VdMot/valves/1/flow/set\""));
+    assert!(number.contains("value_json.targetLpm"), "{number}");
+    let flow = payload_of(&seen, FLOW_CONFIG);
+    assert!(flow.contains(state_topic), "{flow}");
+    assert!(
+        flow.contains("value_json.lpm") && flow.contains("L/min"),
+        "{flow}"
+    );
+    let state = payload_of(&seen, STATE_CONFIG);
+    assert!(state.contains(state_topic), "{state}");
+    assert!(state.contains("value_json.state"), "{state}");
+
+    // A retained flow/set: submitted as a target in l/min, its retained message cleared. The
+    // watcher sees the clear: the broker has it before a new client asks for what it holds.
+    seen.clear();
+    publish_qos1_with(broker.port, FLOW_SET, b"1,25", 21, true);
+    assert!(run_task(&mut task, &mut watcher, &mut seen, 3000, &|m| {
+        !host.submitted().is_empty() && saw(m, FLOW_SET, b"")
+    }));
+    let cmd = &host.submitted()[0];
+    assert_eq!(
+        (cmd.kind, cmd.valve, cmd.flow_ml, cmd.source),
+        (StmCommandType::SetTarget, 0, Some(1250), TargetSource::Mqtt)
+    );
+    assert!(retained_under(broker.port, FLOW_SET).is_empty());
+
+    // No number: rejected, nothing submitted, cleared as well.
+    seen.clear();
+    publish_qos1_with(broker.port, FLOW_SET, b"-1", 22, true);
+    assert!(run_task(&mut task, &mut watcher, &mut seen, 3000, &|m| {
+        shared.status().commands_rejected == 1 && saw(m, FLOW_SET, b"")
+    }));
+    assert_eq!(host.submitted().len(), 1);
+    assert!(retained_under(broker.port, FLOW_SET).is_empty());
+
+    // The new target of the snapshot goes out on change.
+    let moving = br#"{"state":"positioning","lpm":null,"targetLpm":1.250}"#;
+    host.set_flow(FlowView {
+        state: FlowState::Positioning,
+        known: false,
+        flow_ml: 0,
+        target_ml: Some(1250),
+        ..held
+    });
+    assert!(run_task(&mut task, &mut watcher, &mut seen, 12_000, &|m| {
+        saw(m, FLOW, moving)
+    }));
+    assert_eq!(
+        retained_under(broker.port, FLOW),
+        vec![(FLOW.to_vec(), moving.to_vec())]
+    );
+
+    // A QoS 1 flow/set while the task is away: kept by the persistent session.
+    host.set_flow(held);
+    tcp.cut();
+    let will = collect(&mut watcher, 1000);
+    assert!(saw(&will, b"VdMot/status", b"offline"), "{will:?}");
+    publish_qos1(broker.port, FLOW_SET, b"2.5", 23);
+    assert!(run_task(
+        &mut task,
+        &mut watcher,
+        &mut seen,
+        10_000,
+        &|_| { host.submitted().iter().any(|c| c.flow_ml == Some(2500)) }
+    ));
+
+    // The layer goes off: no state stays at the broker, the entities go, flow/set is refused.
+    let runs = host.discovery_runs();
+    seen.clear();
+    host.set_flow(FlowView::default());
+    assert!(run_task(
+        &mut task,
+        &mut watcher,
+        &mut seen,
+        20_000,
+        &|m| saw(m, FLOW, b"") && host.discovery_runs() > runs
+    ));
+    assert!(retained_under(broker.port, FLOW).is_empty());
+    for config in [NUMBER_CONFIG, FLOW_CONFIG, STATE_CONFIG] {
+        assert!(saw(&seen, config, b""), "{config:?} not deleted");
+        assert!(retained_under(broker.port, config).is_empty());
+    }
+    let rejected = shared.status().commands_rejected;
+    let submitted = host.submitted().len();
+    publish_qos1(broker.port, FLOW_SET, b"1", 24);
+    assert!(run_task(&mut task, &mut watcher, &mut seen, 3000, &|_| {
+        shared.status().commands_rejected == rejected + 1
+    }));
+    assert_eq!(host.submitted().len(), submitted);
 }

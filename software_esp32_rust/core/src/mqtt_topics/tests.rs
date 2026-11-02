@@ -439,6 +439,12 @@ fn compat_and_new_topics_byte_exact() {
             "VdMot/diag/valves/Bad/WC/coastClose",
         ),
         new_row(Topic::ValveFlowSet, b"3", "VdMot/valves/3/flow/set"),
+        row(
+            Topic::ValveFlow,
+            b"Loop/2",
+            "VdMot/valves/Loop/2/flow/value",
+            "VdMot/valves/Loop/2/flow",
+        ),
     ];
     // every topic covered: the array type has TOPIC_COUNT entries
     for (i, r) in rows.iter().enumerate() {

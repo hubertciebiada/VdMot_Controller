@@ -867,6 +867,8 @@ Topic tables, payloads, subscriptions, retained handling and broker settings:
   `kValveCompatMask`) differs from the key of its last publish; the task
   keeps 4 B per valve instead of the published `ValveState` (a CRC
   collision, 2^-32 per change, leaves that change to the next full publish).
+  The Rust key (`valve_publish_key`) also covers what `valves/<V>/flow` shows:
+  the state of the layer, the flow and the target.
 - Values: `systemState` for `common/state`, `publishedTarget` for
   `valves/<V>/target` (separate: the STM read-back, nothing while a restored
   target is not synced, the desired target during the emulation),
@@ -879,9 +881,9 @@ Topic tables, payloads, subscriptions, retained handling and broker settings:
 
 Entity tables and the user view: `docs/revamped/MQTT.md`. The table in
 `ha_discovery.cpp` is the source (`kEntityCount` 309). The Rust table
-(`core/src/ha_discovery.rs`) has 345: 23 kinds per valve instead of 20, the two
-coast sensors after the calibration state and the flow target of a valve with the
-flow layer as the last kind.
+(`core/src/ha_discovery.rs`) has 369: 25 kinds per valve instead of 20, the two
+coast sensors after the calibration state and, on a valve with the flow layer, the
+flow target, the flow and the flow state as the last kinds.
 
 - Runs in mode 2; manual runs (`POST /api/mqtt/discovery`) also in mode 1
   (publish/republish need `separate`; delete does not). Triggers: every
@@ -928,7 +930,9 @@ flow layer as the last kind.
   `value_template` `{{ value | replace(',', '.') | float(None) }}` and
   `expire_after` max(3 x publishIntervalS, 60). Next calibration gets
   `value_template` `{{ value if value else 'None' }}` (its empty payload is
-  unknown in HA, not an invalid timestamp). The valve entity gets
+  unknown in HA, not an invalid timestamp). The three flow entities read one
+  JSON topic with `{{ value_json.<field> if value else None }}` (the empty
+  message that clears it is unknown in HA as well). The valve entity gets
   `qos: 1` and, with protocol 3, `payload_stop: STOP`. The event entity lists
   `eventMqttNames()`. Payloads up to 2047 B.
 - The first-run cleanup of mode 1 does not wait for settled STM data (it

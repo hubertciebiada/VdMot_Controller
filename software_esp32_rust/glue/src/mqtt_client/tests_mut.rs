@@ -8,7 +8,8 @@
 use super::rig::{s, Client, Rig, Track, PORT};
 use super::*;
 use crate::mqtt_conn::MQTT_CONNECT_UNAUTHORIZED;
-use vdm_esp_core::common::{contains_bytes, OneWireId, TEMP_READ_ERROR, VAD_FAILED};
+use crate::testkit::broker::Publish;
+use vdm_esp_core::common::{OneWireId, TEMP_READ_ERROR, VAD_FAILED};
 use vdm_esp_core::event_log::{make_event, EVENT_TEXT_MAX};
 use vdm_esp_core::flow_layer::FlowView;
 use vdm_esp_core::stm_codec::StopReason;
@@ -511,7 +512,9 @@ fn values_valve_state_diag_counters_no_calibration_date_inactive_valves() {
     assert_eq!(rig.last("VdMot/valves/1/diag/closeCount/value"), "7");
     assert_eq!(rig.last("VdMot/valves/1/diag/deadZoneCount/value"), "-4");
     assert_eq!(rig.count("VdMot/valves/1/calibration/date/value"), 0);
-    assert_eq!(rig.count_prefix("VdMot/valves/2/", 0), 0);
+    // An inactive valve publishes nothing but the clear of a flow it may have left behind.
+    assert_eq!(rig.count_prefix("VdMot/valves/2/", 0), 1);
+    assert_eq!(rig.payloads("VdMot/valves/2/flow/value"), vec![""]);
 }
 
 #[test]
@@ -1718,26 +1721,207 @@ fn inbound_a_flow_on_an_inactive_or_unknown_valve_is_rejected_and_cleared() {
     );
 }
 
-#[test]
-fn no_topic_reports_the_flow_the_full_publish_stays_on_the_percentages() {
-    let rig = Rig::new();
-    let mut c = rig.client();
+const FLOW_TOPIC: &str = "VdMot/valves/1/flow/value";
+const FLOW_HELD: &str = r#"{"state":"held","lpm":1.000,"targetLpm":1.000}"#;
+
+/// Valve 1 known with the layer on: the flow of the curve and the target are 1 l/min.
+fn flow_rig(rig: &Rig) {
     rig.use_mqtt(MqttMode::Mqtt);
     rig.snap(|s| {
         s.valves[0].known = true;
-        s.flow[0] = held_flow();
+        s.flow[0] = FlowView {
+            flow_ml: 1000,
+            target_ml: Some(1000),
+            ..held_flow()
+        };
     });
     rig.publish_snap();
+}
+
+fn flow_messages(rig: &Rig) -> Vec<Publish> {
+    let mut all = rig.published();
+    all.retain(|p| p.topic == FLOW_TOPIC.as_bytes());
+    all
+}
+
+#[test]
+fn the_flow_goes_out_with_the_valve_retained_as_the_setting_says() {
+    for retained in [false, true] {
+        let rig = Rig::new();
+        let mut c = rig.client();
+        flow_rig(&rig);
+        rig.cfg(|c| c.mqtt.retained = retained);
+        rig.settle(&mut c, 50);
+        let m = flow_messages(&rig);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].payload, FLOW_HELD.as_bytes());
+        assert_eq!(m[0].retain, retained);
+        assert_eq!(rig.count("VdMot/valves/1/actual/value"), 1);
+    }
+    // Without separate the suffix goes, as on every data topic of a valve.
+    let rig = Rig::new();
+    let mut c = rig.client();
+    flow_rig(&rig);
+    rig.cfg(|c| c.mqtt.separate = false);
     rig.settle(&mut c, 50);
-    let published = rig.published();
-    let valve = |tail: &str| {
-        let t = format!("VdMot/valves/1/{tail}");
-        published.iter().any(|p| p.topic == t.as_bytes())
-    };
-    assert!(valve("actual/value") && valve("state/value"));
-    assert!(!published
-        .iter()
-        .any(|p| contains_bytes(&p.topic, b"/flow") || contains_bytes(&p.payload, b"Lpm")));
+    assert_eq!(rig.last("VdMot/valves/1/flow"), FLOW_HELD);
+    assert_eq!(rig.count(FLOW_TOPIC), 0);
+}
+
+#[test]
+fn the_flow_shows_null_while_the_position_or_the_target_is_not_known() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    flow_rig(&rig);
+    rig.snap(|s| {
+        s.flow[0] = FlowView {
+            state: FlowState::Unknown,
+            known: false,
+            flow_ml: 0,
+            target_ml: None,
+            ..s.flow[0]
+        };
+    });
+    rig.settle(&mut c, 50);
+    assert_eq!(
+        rig.last(FLOW_TOPIC),
+        r#"{"state":"unknown","lpm":null,"targetLpm":null}"#
+    );
+}
+
+#[test]
+fn the_longest_flow_fits_its_json_buffer() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    flow_rig(&rig);
+    rig.snap(|s| {
+        s.flow[0] = FlowView {
+            state: FlowState::Positioning,
+            flow_ml: u32::from(u16::MAX),
+            target_ml: Some(u16::MAX),
+            ..s.flow[0]
+        };
+    });
+    rig.settle(&mut c, 50);
+    let json = rig.last(FLOW_TOPIC);
+    assert_eq!(
+        json,
+        r#"{"state":"positioning","lpm":65.535,"targetLpm":65.535}"#
+    );
+    assert_eq!(json.len(), FLOW_JSON_MAX);
+}
+
+#[test]
+fn on_change_the_flow_goes_out_with_the_min_delay_of_the_valve() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    flow_rig(&rig);
+    rig.cfg(|c| {
+        c.mqtt.publish_interval_s = 30;
+        c.mqtt.min_delay_s = 20;
+    });
+    rig.settle(&mut c, 50);
+    assert_eq!(rig.count(FLOW_TOPIC), 1);
+    // A new target and the state of the layer, the % of the valve unchanged.
+    rig.snap(|s| {
+        s.flow[0].state = FlowState::Positioning;
+        s.flow[0].target_ml = Some(1250);
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 500); // 10 s: below min_delay_s
+    assert_eq!(rig.count(FLOW_TOPIC), 1);
+    rig.run(&mut c, 500);
+    assert_eq!(rig.count(FLOW_TOPIC), 2);
+    assert_eq!(
+        rig.last(FLOW_TOPIC),
+        r#"{"state":"positioning","lpm":1.000,"targetLpm":1.250}"#
+    );
+}
+
+#[test]
+fn a_valve_without_the_layer_clears_the_topic_once_per_session() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.link_up();
+    rig.settle(&mut c, 50);
+    rig.run(&mut c, 1000); // full publishes and heartbeats go on
+    let m = flow_messages(&rig);
+    assert_eq!(m.len(), 1);
+    assert!(m[0].payload.is_empty());
+    assert!(m[0].retain, "an empty message clears only when retained");
+    // The next session does not know what the broker holds.
+    rig.shared.request_reconnect();
+    rig.run(&mut c, 50);
+    assert_eq!(rig.connects(), 2);
+    assert_eq!(flow_messages(&rig).len(), 2);
+}
+
+#[test]
+fn a_valve_the_stm_does_not_report_yet_leaves_the_topic_alone() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.settle(&mut c, 50);
+    assert_eq!(rig.count(FLOW_TOPIC), 0);
+    rig.link_up();
+    rig.run(&mut c, 300);
+    assert_eq!(rig.count(FLOW_TOPIC), 1);
+}
+
+#[test]
+fn a_layer_switched_off_leaves_no_state_on_the_broker() {
+    for retained in [false, true] {
+        let rig = Rig::new();
+        let mut c = rig.client();
+        flow_rig(&rig);
+        rig.cfg(|c| c.mqtt.retained = retained);
+        rig.settle(&mut c, 50);
+        let before = flow_messages(&rig).len();
+        rig.snap(|s| s.flow[0] = FlowView::default());
+        rig.publish_snap();
+        rig.run(&mut c, 1000);
+        let m = flow_messages(&rig);
+        assert_eq!(m.len(), before + 1, "one message, then nothing");
+        let last = m.last().expect("the clear");
+        assert!(last.payload.is_empty() && last.retain);
+    }
+}
+
+#[test]
+fn a_valve_that_goes_inactive_clears_the_topic_and_the_layer_on_again_publishes() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    flow_rig(&rig);
+    rig.cfg(|c| {
+        c.valves[1].active = true;
+    });
+    rig.snap(|s| s.valves[1].known = true);
+    rig.publish_snap();
+    rig.settle(&mut c, 60);
+    rig.cfg(|c| c.valves[0].active = false);
+    rig.new_revision();
+    rig.run(&mut c, 600); // a full publish
+    assert_eq!(rig.last(FLOW_TOPIC), "");
+    let count = rig.count(FLOW_TOPIC);
+    // Back with its layer: the valve publishes, and a clear can follow again.
+    rig.cfg(|c| c.valves[0].active = true);
+    rig.new_revision();
+    rig.run(&mut c, 600);
+    assert_eq!(rig.last(FLOW_TOPIC), FLOW_HELD);
+    assert!(rig.count(FLOW_TOPIC) > count);
+}
+
+#[test]
+fn a_clear_that_failed_is_sent_in_the_next_session() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.link_up();
+    rig.script.get().fail_topic = Some(FLOW_TOPIC.as_bytes().to_vec());
+    rig.settle(&mut c, 400);
+    assert_eq!(rig.connects(), 2);
+    assert_eq!(rig.payloads(FLOW_TOPIC), vec![""]);
 }
 
 // ---------------------------------------------------------------- connection
@@ -2158,6 +2342,7 @@ fn the_contract_constants() {
         (INBOUND_SLOTS, INBOUND_PAYLOAD_MAX, PROFILE_JSON_MAX),
         (4, 33, 643)
     );
+    assert_eq!(FLOW_JSON_MAX, 55);
     assert_eq!(
         (
             FULL_SLOTS_PER_PASS,
