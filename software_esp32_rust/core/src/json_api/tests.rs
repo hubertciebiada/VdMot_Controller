@@ -573,6 +573,9 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         target_counts: crate::flow_layer::FLOW_COUNTS_MAX,
         flow_ml: u32::from(u16::MAX),
         pct: 100,
+        hold_min: u16::MAX,
+        est_ml: u32::from(u16::MAX),
+        qmax_ml: crate::flow_layer::FLOW_QMAX_MAX_ML,
         last_valid: true,
         last_ms: u32::MAX,
         last_peak: u16::MAX,
@@ -617,8 +620,10 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     }
     assert_eq!(doc.matches(r#""health":["blocked","#).count(), 12);
     assert_eq!(doc.matches(r#""temp":-3276.8}"#).count(), 24);
-    assert!(jw.length() > 12 * 1024);
-    std::println!("worst-case /api/valves: {} bytes", jw.length());
+    // 313 B below RESPONSE_SIZE: holdMin and estLpm of 12 valves stay out of this document.
+    assert!(!doc.contains("holdMin"));
+    assert!(!doc.contains("estLpm"));
+    assert_eq!(jw.length(), 16_071);
 }
 
 // ---------------------------------------------------------------- profile, sensors, events
@@ -928,7 +933,7 @@ const FLOW_OFF: &str = concat!(
     r#""lpm":null,"ms":null,"peak":null}"#
 );
 
-const CASES: [(HttpMethod, &str, ApiRoute); 47] = [
+const CASES: [(HttpMethod, &str, ApiRoute); 48] = [
     (G, "/api/status", ApiRoute::Status),
     (G, "/api/valves", ApiRoute::Valves),
     (P, "/api/valves/1/target", ApiRoute::ValveTarget),
@@ -975,6 +980,7 @@ const CASES: [(HttpMethod, &str, ApiRoute); 47] = [
     (G, "/api/valves/1/flow", ApiRoute::ValveFlow),
     (P, "/api/valves/1/flow", ApiRoute::ValveFlowSet),
     (P, "/api/valves/1/flow/counts", ApiRoute::ValveFlowCounts),
+    (P, "/api/valves/1/flow/target", ApiRoute::ValveFlowTarget),
     (P, "/api/valves/1/brake", ApiRoute::ValveBrake),
 ];
 
@@ -1531,6 +1537,7 @@ fn routes_of_the_flow_layer() {
     assert_eq!(ApiRoute::ValveFlowSet as u8, 47);
     assert_eq!(ApiRoute::ValveFlowCounts as u8, 48);
     assert_eq!(ApiRoute::ValveBrake as u8, 49);
+    assert_eq!(ApiRoute::ValveFlowTarget as u8, 50);
     assert_eq!(route(P, "/api/valves/12/brake").valve, 11);
     assert_eq!(
         route(G, "/api/valves/1/brake").route,
@@ -1547,6 +1554,9 @@ fn routes_of_the_flow_layer() {
         let m = route(P, &format!("/api/valves/{n}/flow/counts"));
         assert_eq!(m.route, ApiRoute::ValveFlowCounts);
         assert_eq!(m.valve, n - 1);
+        let m = route(P, &format!("/api/valves/{n}/flow/target"));
+        assert_eq!(m.route, ApiRoute::ValveFlowTarget);
+        assert_eq!(m.valve, n - 1);
     }
     assert_eq!(
         route(D, "/api/valves/1/flow").route,
@@ -1554,6 +1564,10 @@ fn routes_of_the_flow_layer() {
     );
     assert_eq!(
         route(G, "/api/valves/1/flow/counts").route,
+        ApiRoute::MethodNotAllowed
+    );
+    assert_eq!(
+        route(G, "/api/valves/1/flow/target").route,
         ApiRoute::MethodNotAllowed
     );
     for p in [
@@ -1580,6 +1594,9 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         target_counts: 809,
         flow_ml: 1012,
         pct: 37,
+        hold_min: 60,
+        est_ml: 973,
+        qmax_ml: 2700,
         last_valid: true,
         last_ms: 5684,
         last_peak: 123,
@@ -1636,8 +1653,26 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
     assert!(j.contains(r#""points":[[593,0.000],[1100,2.700]]},"flow":{"enabled":true,"#));
+    assert!(j.contains(r#""lpm":1.012,"holdMin":60,"estLpm":0.973,"ms":5684,"#));
     assert!(j.ends_with(r#""peak":12.3},"refDelta":-24}"#));
     check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());
+    let mut jw = JsonWriter::new(&mut buf);
+    assert!(write_valve_flow_json(&mut jw, 2, &c, &unknown));
+    let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
+    assert!(j.contains(r#""lpm":null,"holdMin":null,"estLpm":null,"ms":5684,"#));
+    // The MQTT topic valves/<V>/flow.
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_state_json(&mut jw, &held);
+    assert_eq!(
+        String::from_utf8_lossy(jw.as_bytes()),
+        r#"{"holdMin":60,"estLpm":0.973}"#
+    );
+    let mut jw = JsonWriter::new(&mut buf);
+    write_flow_state_json(&mut jw, &unknown);
+    assert_eq!(
+        String::from_utf8_lossy(jw.as_bytes()),
+        r#"{"holdMin":null,"estLpm":null}"#
+    );
     let none = FlowView::default();
     let mut jw = JsonWriter::new(&mut buf);
     assert!(write_valve_flow_json(&mut jw, 2, &c, &none));

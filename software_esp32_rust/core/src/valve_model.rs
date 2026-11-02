@@ -180,6 +180,9 @@ pub const HEALTH_TEMP_FAILED: u16 = 0x0100;
 pub const HEALTH_FAILSAFE: u16 = 0x0200;
 /// calibration stroke close to min_counts
 pub const HEALTH_STROKE_SHORT: u16 = 0x0400;
+/// the flow layer's last positioning failed: set on the snapshot by the session, no name in
+/// `health` of `/api/valves` (the block `flow` shows the state)
+pub const HEALTH_FLOW_FAILED: u16 = 0x0800;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ValveState {

@@ -463,6 +463,7 @@ fn valve_problem_and_stm_online() {
         HEALTH_STALE,
         HEALTH_TARGET_UNCONFIRMED,
         HEALTH_TEMP_FAILED,
+        HEALTH_FLOW_FAILED,
     ];
     for f in problems {
         v.health = f;
@@ -478,7 +479,7 @@ fn valve_problem_and_stm_online() {
         v.health = f;
         assert!(!valve_problem(&v), "{f:#x}");
     }
-    assert_eq!(PROBLEM_MASK, 0x01C7);
+    assert_eq!(PROBLEM_MASK, 0x09C7);
     assert!(stm_online(LinkState::Up));
     assert!(stm_online(LinkState::Degraded));
     for s in [

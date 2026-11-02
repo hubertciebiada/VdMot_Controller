@@ -34,7 +34,8 @@ use vdm_esp_core::config::{
 };
 use vdm_esp_core::event_log::EventCode;
 use vdm_esp_core::flow_layer::{
-    decode_flow_configs, encode_flow_configs, FlowConfig, FLOW_BLOB_SIZE,
+    decode_flow_configs, decode_flow_x, encode_flow_configs, encode_flow_x, FlowConfig,
+    FLOW_BLOB_SIZE, FLOW_X_BLOB_SIZE,
 };
 use vdm_esp_core::legacy_import::{import_legacy_config, ImportReport, LegacyNvsReader};
 
@@ -79,6 +80,8 @@ pub const KEY_OTA_STM: &str = "otaStm";
 pub const KEY_HA_LAYOUT: &str = "haLayout";
 /// blob, the flow layer configuration of the valves (core `encode_flow_configs`; Rust 2.2.8)
 pub const KEY_FLOW: &str = "flow";
+/// blob, the drift of the valves (core `encode_flow_x`; Rust 2.2.10); absent: no drift model
+pub const KEY_FLOW_X: &str = "flowx";
 
 /// LittleFS file of the base config blob backup.
 pub const BACKUP_BASE: &str = "/sys/cfg.bak";
@@ -833,9 +836,11 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
     /// but cannot be read (arg1 of the event FlowConfigUnreadable: 1 NVS not open, 2 no memory
     /// for the buffer, 3 a bad blob) gives the defaults too, and no flow configuration is
     /// saved until a load read it: a save writes the whole set, the defaults over every other
-    /// valve. The blob buffer (about 1 KB) is a transient heap block.
+    /// valve. The blob buffer (about 1 KB) is a transient heap block. NVS `flowx` adds the
+    /// drift: none without it; one that cannot be read is the event with arg1 3, arg2 1 and
+    /// no drift, and saves go on, the next one of a drift rewrites it.
     pub fn load_flow_configs(&self) -> bool {
-        let (decoded, reason) = {
+        let (decoded, reason, bad_x) = {
             let _cfg = self.cfg_lock();
             let mut bytes = try_bytes(&self.gate, FLOW_BLOB_SIZE);
             let ns = self.prefs();
@@ -849,16 +854,30 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
                 .as_deref()
                 .and_then(|b| b.get(..n))
                 .unwrap_or_default();
-            let decoded = self
-                .shared
-                .replace_flow_configs(|all| decode_flow_configs(blob, all));
-            (decoded, reason)
+            let mut x = [0u8; FLOW_X_BLOB_SIZE];
+            let stored_x = ns
+                .as_ref()
+                .is_some_and(|ns| ns.blob_len(KEY_FLOW_X).is_some());
+            let nx = ns
+                .as_ref()
+                .map_or(0, |ns| load_bytes(ns, KEY_FLOW_X, &mut x));
+            let mut read_x = false;
+            let decoded = self.shared.replace_flow_configs(|all| {
+                let ok = decode_flow_configs(blob, all);
+                read_x = decode_flow_x(x.get(..nx).unwrap_or_default(), all);
+                ok
+            });
+            (decoded, reason, stored_x && !read_x)
         };
         let loaded = decoded || reason == 0;
         self.shared.flow_loaded.store(loaded, Ordering::Relaxed);
         if !loaded {
             self.host
                 .log(EventCode::FlowConfigUnreadable, NO_VALVE, reason, 0, b"");
+        }
+        if bad_x {
+            self.host
+                .log(EventCode::FlowConfigUnreadable, NO_VALVE, 3, 1, b"");
         }
         decoded
     }
@@ -873,9 +892,9 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
     }
 
     /// `POST /api/valves/{n}/flow`: the flow configuration of `valve` replaced by `c`, the
-    /// whole set written to NVS `flow` and published; false (nothing published) for a valve
-    /// out of range, a set that is not what NVS holds (`flow_loaded`), no memory for the blob
-    /// buffer or a failed write.
+    /// whole set written to NVS `flow` (and `flowx` when the drift of the valve changed) and
+    /// published; false (nothing published) for a valve out of range, a set that is not what
+    /// NVS holds (`flow_loaded`), no memory for the blob buffer or a failed write.
     pub fn save_flow_config(&self, valve: u8, c: &FlowConfig) -> bool {
         if !self.shared.flow_loaded() {
             return false;
@@ -887,13 +906,19 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
         let Some(mut ns) = self.prefs() else {
             return false;
         };
+        let drift_changed = self.shared.flow_config(valve).drift_d10 != c.drift_d10;
         self.shared
             .update_flow_config(usize::from(valve), c, |all| {
                 let Ok(blob) = <&mut [u8; FLOW_BLOB_SIZE]>::try_from(bytes.as_mut_slice()) else {
                     return false;
                 };
                 encode_flow_configs(all, blob);
-                ns.set_blob(KEY_FLOW, blob)
+                if !ns.set_blob(KEY_FLOW, blob) {
+                    return false;
+                }
+                let mut x = [0u8; FLOW_X_BLOB_SIZE];
+                encode_flow_x(all, &mut x);
+                !drift_changed || ns.set_blob(KEY_FLOW_X, &x)
             })
     }
 

@@ -101,6 +101,7 @@ fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_5_min_dead_band_0_05() {
     assert_eq!(c.stroke_counts, 0);
     assert!(!c.pre_close);
     assert_eq!(c.count, 0);
+    assert_eq!(c.drift_d10, 0);
     assert!(c.points().is_empty());
     assert_eq!(validate_flow_config(&c), Ok(()));
     // The limits.
@@ -229,6 +230,8 @@ fn error_texts_name_the_key_and_its_range() {
             FlowError::StrokeCounts,
             "strokeCounts 0..10000 (refSide open needs 1..10000)",
         ),
+        (FlowError::DriftD, "driftD 0..25.5"),
+        (FlowError::Lpm, "lpm 0..qmax"),
     ];
     for (i, (e, text)) in all.iter().enumerate() {
         assert_eq!(*e as usize, i);
@@ -400,7 +403,7 @@ fn json_document_and_patch_round_trip() {
         concat!(
             r#"{"enabled":true,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"#,
             r#""minIntervalS":300,"deadbandLpm":0.050,"offset":0,"gain":1.000,"#,
-            r#""refSide":"closed","strokeCounts":0,"preClose":false,"#,
+            r#""refSide":"closed","strokeCounts":0,"preClose":false,"driftD":0.0,"#,
             r#""points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]}"#
         )
     );
@@ -415,7 +418,7 @@ fn json_document_and_patch_round_trip() {
     assert!(text.contains(r#""offset":-17,"gain":0.995,"#));
     assert!(text.contains(r#""deadbandLpm":0.005,"#));
     assert_eq!(patched(&FlowConfig::DEFAULT, &text), Ok(open));
-    assert_eq!(json(&FlowConfig::DEFAULT).len(), 198);
+    assert_eq!(json(&FlowConfig::DEFAULT).len(), 211);
     assert!(json(&FlowConfig::DEFAULT).ends_with(r#""points":[]}"#));
 }
 
@@ -717,8 +720,8 @@ fn new_layer_everything_off_nothing_sent_the_view_is_empty() {
     let mut f = FlowLayer::default();
     assert!(!f.supported());
     assert_eq!(f.active_mask(), 0);
-    assert_eq!(f.view(0), FlowView::default());
-    assert_eq!(f.view(12), FlowView::default());
+    assert_eq!(f.view(0, 0), FlowView::default());
+    assert_eq!(f.view(12, 0), FlowView::default());
     assert_eq!(*f.config(3), FlowConfig::DEFAULT);
     assert_eq!(*f.config(12), FlowConfig::DEFAULT);
     assert!(!f.busy(0));
@@ -762,8 +765,8 @@ fn unsupported_stm_the_enabled_valve_shows_unsupported_and_nothing_is_sent() {
     let mut f = FlowLayer::new();
     f.set_configs(&configs(&curve(), &[0]));
     assert!(f.take_dirty());
-    assert_eq!(f.view(0).state, FlowState::Unsupported);
-    assert!(f.view(0).enabled);
+    assert_eq!(f.view(0, 0).state, FlowState::Unsupported);
+    assert!(f.view(0, 0).enabled);
     assert_eq!(f.active_mask(), 0);
     let mut stm = Stm::new(0x001);
     stm.target(0, 50);
@@ -776,13 +779,13 @@ fn unsupported_stm_the_enabled_valve_shows_unsupported_and_nothing_is_sent() {
     assert!(f.supported());
     assert!(f.take_dirty());
     assert_eq!(f.active_mask(), 0x001);
-    assert_eq!(f.view(0).state, FlowState::Unknown);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
     assert_eq!(stm.next(&mut f), set_target(0, 15));
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     // Unsupported again (another STM): the request in flight is forgotten.
     f.set_supported(false);
     f.set_supported(false);
-    assert_eq!(f.view(0).state, FlowState::Unsupported);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unsupported);
     assert_eq!(f.active_mask(), 0);
     stm.result(&mut f, 0, FlowOutcome::Ok);
     f.set_supported(true);
@@ -801,8 +804,8 @@ fn first_positioning_fallback_target_close_to_the_end_stop_open_keep_held() {
     stm.poll(0);
     assert_eq!(stm.next(&mut f), set_target(0, 15));
     assert_eq!(stm.next(&mut f), None); // one request at a time
-    assert_eq!(f.view(0).state, FlowState::Positioning);
-    assert_eq!(f.view(0).target_counts, 809);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).target_counts, 809);
     assert!(f.take_dirty());
     stm.result(&mut f, 0, FlowOutcome::Ok);
     // The stroke (4800) closes it: the position is unknown.
@@ -827,14 +830,14 @@ fn first_positioning_fallback_target_close_to_the_end_stop_open_keep_held() {
     stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     stm.result(&mut f, 0, FlowOutcome::Ok);
     assert_eq!(stm.codes(), [EventCode::FlowPositioned]);
     assert_eq!(
         (stm.events[0].valve, stm.events[0].arg1, stm.events[0].arg2),
         (0, 809, 37)
     );
-    let v = f.view(0);
+    let v = f.view(0, stm.now);
     assert_eq!(v.state, FlowState::Held);
     assert!(v.known);
     assert_eq!(
@@ -847,7 +850,7 @@ fn first_positioning_fallback_target_close_to_the_end_stop_open_keep_held() {
     // Held: nothing more while the flag arrives; the same target is served.
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     assert_eq!(stm.next(&mut f), None);
     stm.target(0, 37);
     assert_eq!(stm.next(&mut f), None);
@@ -861,13 +864,13 @@ fn fallback_target_is_skipped_when_the_stm_target_is_it_already_and_sent_once() 
     stm.target(0, 50);
     // The STM target is 15 (the fallback): the close comes first; 1.35 l/min -> 857 pulses.
     position(&mut stm, &mut f, 0, false, 4800, 857);
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     // A new target far enough and after the interval: no stgtp again, the close counts from
     // the held position + 500; 0.54 l/min -> 750 pulses.
     stm.now += 300_000;
     stm.target(0, 20);
     position(&mut stm, &mut f, 0, false, 1357, 750);
-    assert_eq!(f.view(0).pct, 20);
+    assert_eq!(f.view(0, stm.now).pct, 20);
 }
 
 #[test]
@@ -877,7 +880,7 @@ fn closed_target_the_reference_close_alone_is_kept_the_position_is_0() {
     let mut stm = Stm::new(0x004);
     stm.target(2, 0);
     position(&mut stm, &mut f, 2, false, 4800, 0);
-    let v = f.view(2);
+    let v = f.view(2, stm.now);
     assert_eq!(v.state, FlowState::Held);
     assert_eq!((v.counts, v.flow_ml, v.pct, v.target_counts), (0, 0, 0, 0));
     assert!(v.known);
@@ -913,11 +916,11 @@ fn dead_band_and_interval_hold_a_new_target_back_the_latest_wins() {
     assert_eq!(stm.next(&mut f), None);
     stm.now = started + 59_998;
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
-    assert_eq!(f.view(0).target_counts, 895);
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).target_counts, 895);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     // While it positions, the held value stays reported.
-    assert_eq!(f.view(0).pct, 37);
-    assert!(f.view(0).known);
+    assert_eq!(f.view(0, stm.now).pct, 37);
+    assert!(f.view(0, stm.now).known);
 }
 
 #[test]
@@ -943,8 +946,8 @@ fn the_reference_close_is_repeated_up_to_three_times_then_the_positioning_fails(
     stm.moved(0, MoveDir::Close, 801, 801, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), None);
-    assert_eq!(f.view(0).state, FlowState::Failed);
-    assert!(!f.view(0).known);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
+    assert!(!f.view(0, stm.now).known);
     assert_eq!(stm.codes(), [EventCode::FlowPositionFailed]);
     let e = &stm.events[0];
     assert_eq!((e.arg1, e.arg2), (2, StopReason::Target as i32));
@@ -955,7 +958,7 @@ fn the_reference_close_is_repeated_up_to_three_times_then_the_positioning_fails(
     stm.now += 1_000;
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     stm.result(&mut f, 0, FlowOutcome::Rejected(1));
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     assert_eq!(stm.events[1].arg2, 1);
     assert_eq!(&stm.events[1].text[..], b"rejected");
     stm.target(0, 38);
@@ -987,7 +990,7 @@ fn an_unexpected_stop_of_a_move_fails_the_positioning_with_the_reason() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 4800, 12, StopReason::UnderCurrent);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     let e = &stm.events[0];
     assert_eq!((e.arg1, e.arg2), (2, 5));
     assert_eq!(&e.text[..], b"undercurrent");
@@ -999,7 +1002,7 @@ fn an_unexpected_stop_of_a_move_fails_the_positioning_with_the_reason() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Open, 813, 400, StopReason::Aborted);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     assert_eq!(stm.events[1].arg1, 5);
     assert_eq!(&stm.events[1].text[..], b"aborted");
     // An opening move that meets the open end stop is a position too.
@@ -1012,7 +1015,7 @@ fn an_unexpected_stop_of_a_move_fails_the_positioning_with_the_reason() {
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!(f.view(0).counts, 700);
+    assert_eq!(f.view(0, stm.now).counts, 700);
 }
 
 /// The close of a positioning that then awaits the opening move.
@@ -1036,9 +1039,9 @@ fn a_move_that_never_ends_times_out_after_120_s() {
     for _ in 0..119 {
         stm.tick(&mut f);
     }
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     assert_eq!((stm.events[0].arg1, stm.events[0].arg2), (2, -2));
     assert_eq!(&stm.events[0].text[..], b"timeout");
     assert_eq!(stm.next(&mut f), None);
@@ -1055,7 +1058,7 @@ fn busy_and_calibration_pending_rejections_retry_later() {
     stm.target(0, 37);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     stm.result(&mut f, 0, FlowOutcome::Rejected(2));
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     let at = stm.now;
     assert_eq!(stm.next(&mut f), None);
     stm.now = at + 2_990;
@@ -1085,7 +1088,7 @@ fn busy_and_calibration_pending_rejections_retry_later() {
         assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     }
     stm.result(&mut f, 0, FlowOutcome::Rejected(2));
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     assert_eq!(&stm.events[0].text[..], b"busy");
     assert_eq!(stm.events[0].arg2, 2);
 }
@@ -1098,7 +1101,7 @@ fn no_reply_and_a_rejected_keep_fail_the_positioning() {
     stm.target(0, 37);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     stm.result(&mut f, 0, FlowOutcome::NoReply);
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     assert_eq!((stm.events[0].arg1, stm.events[0].arg2), (2, -1));
     assert_eq!(&stm.events[0].text[..], b"no reply");
     stm.target(0, 38);
@@ -1110,7 +1113,7 @@ fn no_reply_and_a_rejected_keep_fail_the_positioning() {
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Rejected(1));
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     assert_eq!((stm.events[1].arg1, stm.events[1].arg2), (6, 1));
     // A fallback target without an answer fails at step 1.
     let mut f = layer(&c, &[1]);
@@ -1120,7 +1123,7 @@ fn no_reply_and_a_rejected_keep_fail_the_positioning() {
     stm.target(1, 37);
     assert_eq!(stm.next(&mut f), set_target(1, 15));
     stm.result(&mut f, 1, FlowOutcome::NoReply);
-    assert_eq!(f.view(1).state, FlowState::Failed);
+    assert_eq!(f.view(1, stm.now).state, FlowState::Failed);
     assert_eq!((stm.events[0].arg1, stm.events[0].arg2), (1, -1));
 }
 
@@ -1137,7 +1140,7 @@ fn a_dropped_request_is_tried_again_after_3_s() {
     assert_eq!(stm.next(&mut f), None);
     stm.now = at + 3_000;
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
 }
 
 #[test]
@@ -1163,7 +1166,7 @@ fn a_request_whose_result_never_comes_frees_the_layer_after_30_s() {
         f.next(&stm.m, inp, stm.now),
         mv(1, MoveDir::Close, 4800, 34)
     );
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     // A late result of the old request changes nothing.
     stm.result(&mut f, 0, FlowOutcome::Ok);
     assert!(stm.events.is_empty());
@@ -1184,7 +1187,7 @@ fn a_request_whose_result_never_comes_frees_the_layer_after_30_s() {
         f.next(&stm.m, inp, at + FLOW_REQ_TIMEOUT_MS),
         keep(0, false)
     );
-    assert_eq!(f.view(0).state, FlowState::Off);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Off);
 }
 
 #[test]
@@ -1229,7 +1232,7 @@ fn a_failed_positioning_is_tried_again_5_min_after_the_failure_to_the_ms() {
     stm.target(0, 37);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     stm.result(&mut f, 0, FlowOutcome::Rejected(1));
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     let at = stm.now;
     let inp = inputs(true, false);
     assert_eq!(f.next(&stm.m, inp, at + FAILED_RETRY_MS - 1), None);
@@ -1258,11 +1261,11 @@ fn the_record_of_the_final_move_counts_once_the_valve_stopped() {
     stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), None);
-    assert!(!f.view(0).last_valid);
+    assert!(!f.view(0, stm.now).last_valid);
     stm.ex[0].status = 1;
     stm.poll(0);
     stm.tick(&mut f);
-    assert!(f.view(0).last_valid);
+    assert!(f.view(0, stm.now).last_valid);
     assert_eq!(stm.next(&mut f), keep(0, true));
 }
 
@@ -1274,15 +1277,15 @@ fn hold_lost_by_the_flag_or_another_move_repositions_when_the_valve_is_free() {
     stm.target(0, 37);
     position(&mut stm, &mut f, 0, false, 4800, 809);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     // The flag is gone (a calibration, the lease): unknown, repositioned once the valve is
     // free; the event names the flags.
     stm.ex[0].calibrating = true;
     stm.flags(0, 0);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Unknown);
-    assert!(!f.view(0).known);
-    assert_eq!(f.view(0).pct, 0);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
+    assert!(!f.view(0, stm.now).known);
+    assert_eq!(f.view(0, stm.now).pct, 0);
     assert_eq!(
         stm.codes(),
         [EventCode::FlowPositioned, EventCode::FlowHoldLost]
@@ -1307,11 +1310,11 @@ fn hold_lost_by_the_flag_or_another_move_repositions_when_the_valve_is_free() {
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     // Another move of the valve (a user service move, a failsafe move): lost as well.
     stm.moved(0, MoveDir::Open, 50, 50, StopReason::Target);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Unknown);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
     assert_eq!(stm.codes().len(), 4);
 }
 
@@ -1332,11 +1335,11 @@ fn hold_the_flag_counts_only_from_a_poll_after_the_keep() {
     // The last poll predates the keep: its flags (without svcKeep) do not count.
     stm.tick(&mut f);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     // A poll after it without the flag: lost.
     stm.flags(0, STM_FLAG_SVC_HOLD);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Unknown);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
 }
 
 #[test]
@@ -1350,10 +1353,10 @@ fn stm_reboot_forgets_the_hold_and_the_request_in_flight_the_fallback_goes_first
     assert_eq!(stm.next(&mut f), mv(1, MoveDir::Close, 4800, 34));
     stm.rebooted(&mut f);
     assert!(f.take_dirty());
-    assert_eq!(f.view(0).state, FlowState::Unknown);
-    assert_eq!(f.view(1).state, FlowState::Unknown);
-    assert!(!f.view(0).known);
-    assert!(f.view(0).last_valid); // the last move stays on record
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
+    assert_eq!(f.view(1, stm.now).state, FlowState::Unknown);
+    assert!(!f.view(0, stm.now).known);
+    assert!(f.view(0, stm.now).last_valid); // the last move stays on record
     assert!(!f.busy(1));
     // The held valve lost its hold (event), the positioning valve silently.
     assert_eq!(
@@ -1365,7 +1368,7 @@ fn stm_reboot_forgets_the_hold_and_the_request_in_flight_the_fallback_goes_first
     // read-back (valve 0 first: the cursor moved past valve 1), then the close from the stroke.
     stm.m.on_stm_rebooted(stm.now);
     stm.result(&mut f, 1, FlowOutcome::NoReply); // the late answer of the old request
-    assert_eq!(f.view(1).state, FlowState::Unknown);
+    assert_eq!(f.view(1, stm.now).state, FlowState::Unknown);
     assert_eq!(stm.events.len(), 2); // no failure logged for it
     assert_eq!(stm.next(&mut f), set_target(0, 15));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1478,8 +1481,8 @@ fn counts_request_positions_at_once_and_counts_the_desired_target_as_served() {
     // 900 corrected pulses at once (the interval is not over), the view with its own %.
     assert!(f.position_counts(0, 900, Some(37), stm.now));
     assert!(f.take_dirty());
-    assert_eq!(f.view(0).state, FlowState::Positioning);
-    assert_eq!(f.view(0).target_counts, 900);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).target_counts, 900);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
@@ -1493,7 +1496,7 @@ fn counts_request_positions_at_once_and_counts_the_desired_target_as_served() {
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    let v = f.view(0);
+    let v = f.view(0, stm.now);
     assert_eq!((v.counts, v.flow_ml, v.pct), (900, 1659, 61));
     assert_eq!(stm.events.last().map(|e| e.arg2), Some(61));
     // The desired 37 is served: no positioning back, until it changes.
@@ -1516,7 +1519,7 @@ fn counts_request_positions_at_once_and_counts_the_desired_target_as_served() {
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1313, 34));
-    assert_eq!(f.view(0).target_counts, 10000);
+    assert_eq!(f.view(0, stm.now).target_counts, 10000);
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 1313, 100, StopReason::EndStop);
@@ -1529,10 +1532,10 @@ fn counts_request_positions_at_once_and_counts_the_desired_target_as_served() {
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    assert_eq!(f.view(0).pct, 100);
+    assert_eq!(f.view(0, stm.now).pct, 100);
     assert!(f.position_counts(0, 0, None, stm.now));
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 5200, 34));
-    assert_eq!(f.view(0).target_counts, 0);
+    assert_eq!(f.view(0, stm.now).target_counts, 0);
 }
 
 #[test]
@@ -1546,23 +1549,23 @@ fn disabling_releases_the_keep_the_curve_change_repositions() {
     assert!(f.take_dirty());
     f.set_configs(&configs(&c, &[0]));
     assert!(!f.take_dirty());
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     // The dead band only: nothing; the offset: positioned again, no interval.
     let mut c2 = c;
     c2.deadband_ml = 10;
     f.set_configs(&configs(&c2, &[0]));
-    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
     c2.offset = 5;
     f.set_configs(&configs(&c2, &[0]));
     assert!(f.take_dirty());
-    assert_eq!(f.view(0).state, FlowState::Unknown);
-    assert!(f.view(0).known); // the old position until the moves start
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
+    assert!(f.view(0, stm.now).known); // the old position until the moves start
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
-    assert_eq!(f.view(0).target_counts, 814);
+    assert_eq!(f.view(0, stm.now).target_counts, 814);
     // A change during the positioning: another one follows the keep.
     c2.gain_milli = 1001;
     f.set_configs(&configs(&c2, &[0]));
-    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 1309, 100, StopReason::EndStop);
@@ -1574,19 +1577,19 @@ fn disabling_releases_the_keep_the_curve_change_repositions() {
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!(f.view(0).state, FlowState::Unknown);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1314, 34));
-    assert_eq!(f.view(0).target_counts, 815);
+    assert_eq!(f.view(0, stm.now).target_counts, 815);
     // Disabled while positioning: the keep is released once, the state is off.
     f.set_configs(&configs(&FlowConfig::DEFAULT, &[0]));
-    assert_eq!(f.view(0).state, FlowState::Off);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Off);
     assert_eq!(f.active_mask(), 0);
     stm.result(&mut f, 0, FlowOutcome::Ok); // the close in flight: ignored
     assert_eq!(stm.next(&mut f), keep(0, false));
     stm.result(&mut f, 0, FlowOutcome::NoReply);
     assert_eq!(stm.next(&mut f), None);
-    assert_eq!(f.view(0).state, FlowState::Off);
-    assert!(!f.view(0).known);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Off);
+    assert!(!f.view(0, stm.now).known);
     // A dropped release goes out again.
     f.set_configs(&configs(&c, &[0]));
     stm.ex[0].target = 15;
@@ -1598,7 +1601,7 @@ fn disabling_releases_the_keep_the_curve_change_repositions() {
     assert_eq!(stm.next(&mut f), keep(0, false));
     // Disabled while unknown and idle: nothing to release.
     f.set_configs(&configs(&c, &[0]));
-    assert_eq!(f.view(0).state, FlowState::Unknown);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
     f.set_configs(&configs(&FlowConfig::DEFAULT, &[0]));
     assert_eq!(stm.next(&mut f), None);
 }
@@ -1629,7 +1632,7 @@ fn pre_close_warms_the_end_stop_before_the_opening_move() {
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!(f.view(0).counts, 809);
+    assert_eq!(f.view(0, stm.now).counts, 809);
     // The warm-up close that misses the end stop is repeated; a warm-up opening that meets
     // the open end stop goes on; a target of 0 skips the warm-up.
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
@@ -1656,7 +1659,7 @@ fn pre_close_warms_the_end_stop_before_the_opening_move() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Open, 857, 200, StopReason::UnderCurrent);
     stm.tick(&mut f);
-    assert_eq!(f.view(0).state, FlowState::Failed);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
     stm.target(0, 0);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1674,7 +1677,7 @@ fn pre_close_warms_the_end_stop_before_the_opening_move() {
     stm.tick(&mut f);
     stm.moved(1, MoveDir::Open, 300, 10, StopReason::Timeout);
     stm.tick(&mut f);
-    assert_eq!(f.view(1).state, FlowState::Failed);
+    assert_eq!(f.view(1, stm.now).state, FlowState::Failed);
     assert_eq!(stm.events.last().map(|e| e.arg1), Some(3));
     // With an open reference the warm-up does not apply.
     let mut open = open_curve();
@@ -1720,7 +1723,7 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    let v = f.view(0);
+    let v = f.view(0, stm.now);
     assert_eq!(v.state, FlowState::Held);
     assert_eq!((v.counts, v.flow_ml, v.pct), (809, 1000, 37)); // 4701 - 3892
     assert_eq!((v.last_ms, v.last_peak), (3892 * 7, 123));
@@ -1743,9 +1746,9 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    assert_eq!(f.view(0).counts, 701); // 4701 - 4000
-    assert_eq!(f.view(0).pct, 8); // 701 -> 0.225 l/min
-    assert_eq!(f.view(0).ref_delta, Some(0));
+    assert_eq!(f.view(0, stm.now).counts, 701); // 4701 - 4000
+    assert_eq!(f.view(0, stm.now).pct, 8); // 701 -> 0.225 l/min
+    assert_eq!(f.view(0, stm.now).ref_delta, Some(0));
     // A target of 0 closes to the closed reference as always.
     stm.target(0, 0);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1201, 34)); // 701 + 500
@@ -1755,9 +1758,9 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!((f.view(0).counts, f.view(0).pct), (0, 0));
+    assert_eq!((f.view(0, stm.now).counts, f.view(0, stm.now).pct), (0, 0));
     // The close to the reference measures nothing: the last measure stays, the event has none.
-    assert_eq!(f.view(0).ref_delta, Some(0));
+    assert_eq!(f.view(0, stm.now).ref_delta, Some(0));
     assert_eq!(stm.events.last().unwrap().text.as_slice(), b"");
 }
 
@@ -1782,7 +1785,7 @@ fn ref_delta_is_what_the_opening_counted_above_the_way_to_the_end_stop() {
         assert_eq!(stm.next(f), keep(0, true));
         stm.result(f, 0, FlowOutcome::Ok);
         stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-        f.view(0)
+        f.view(0, stm.now)
     };
     let v = go(&mut stm, &mut f, 37, 4000, StopReason::EndStop, 3892);
     assert_eq!((v.counts, v.ref_delta), (808, None));
@@ -1802,7 +1805,7 @@ fn ref_delta_needs_the_first_reference_move_from_a_held_position() {
     let mut stm = Stm::new(0x001);
     stm.target(0, 37);
     position_open(&mut stm, &mut f, 0, 3892);
-    assert_eq!(f.view(0).counts, 809);
+    assert_eq!(f.view(0, stm.now).counts, 809);
     // The first move stops short of the end stop: the count of the second one is only its end.
     stm.now += 300_000;
     stm.target(0, 10);
@@ -1823,13 +1826,13 @@ fn ref_delta_needs_the_first_reference_move_from_a_held_position() {
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!(f.view(0).ref_delta, None);
+    assert_eq!(f.view(0, stm.now).ref_delta, None);
     // A disabled layer shows none.
-    let mut measured = f.view(0);
+    let mut measured = f.view(0, stm.now);
     measured.ref_delta = Some(5);
-    assert_ne!(measured, f.view(0));
+    assert_ne!(measured, f.view(0, stm.now));
     f.set_configs(&configs(&c, &[]));
-    assert_eq!(f.view(0).ref_delta, None);
+    assert_eq!(f.view(0, stm.now).ref_delta, None);
 }
 
 #[test]
@@ -1863,7 +1866,7 @@ fn reference_counts_when_the_stroke_is_unknown_the_whole_range_at_the_limit_one_
     assert_eq!(stm.next(&mut f), keep(1, true));
     stm.result(&mut f, 1, FlowOutcome::Ok);
     stm.flags(1, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    assert_eq!(f.view(1).counts, 9800);
+    assert_eq!(f.view(1, stm.now).counts, 9800);
     stm.now += 300_000;
     stm.target(1, 38);
     assert_eq!(stm.next(&mut f), mv(1, MoveDir::Close, 10000, 34));
@@ -1979,7 +1982,7 @@ fn a_rejected_move_then_a_calibration_restarts_the_sequence_from_the_end_stop() 
         foreign_move(&mut stm, 0, 0);
         stm.tick(&mut f);
         assert_eq!(stm.next(&mut f), stroke_close(&stm), "step {}", moves + 2);
-        assert_eq!(f.view(0).state, FlowState::Positioning);
+        assert_eq!(f.view(0, stm.now).state, FlowState::Positioning);
         // The sequence runs again from there: the warm-up opening follows the end stop.
         stm.result(&mut f, 0, FlowOutcome::Ok);
         stm.tick(&mut f);
@@ -2016,7 +2019,7 @@ fn a_link_loss_between_moves_restarts_the_sequence_from_the_end_stop() {
         // Back: the model still shows the hold and the last record, which may predate the
         // loss (the hold ran out meanwhile).
         assert_eq!(stm.next(&mut f), stroke_close(&stm), "step {}", moves + 2);
-        assert!(!f.view(0).known);
+        assert!(!f.view(0, stm.now).known);
     }
     // A move in flight or running when the link goes is followed by its record as usual.
     for running in [false, true] {
@@ -2048,7 +2051,7 @@ fn a_held_valve_and_a_reference_retry_do_not_depend_on_the_last_move() {
     position(&mut stm, &mut f, 0, false, 4800, 809);
     stm.now += 2;
     assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
-    assert!(f.view(0).known);
+    assert!(f.view(0, stm.now).known);
     stm.now += 300_000;
     stm.target(0, 50);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
@@ -2117,7 +2120,7 @@ fn the_restart_closes_the_whole_stroke_not_a_retry_nor_the_held_position() {
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    assert!(f.view(0).known);
+    assert!(f.view(0, stm.now).known);
     // From the held 809: the close of 1309 misses the end stop, the retry of 800 meets it.
     stm.now += 300_000;
     stm.target(0, 50);
@@ -2131,9 +2134,712 @@ fn the_restart_closes_the_whole_stroke_not_a_retry_nor_the_held_position() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 800, 120, StopReason::EndStop);
     stm.tick(&mut f);
-    assert!(f.view(0).known); // the held value until the position is lost
-                              // The hold is gone before the warm-up: the stroke, neither 800 nor 809 + 500.
+    assert!(f.view(0, stm.now).known); // the held value until the position is lost
+                                       // The hold is gone before the warm-up: the stroke, neither 800 nor 809 + 500.
     stm.flags(0, 0);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
-    assert!(!f.view(0).known);
+    assert!(!f.view(0, stm.now).known);
+}
+
+// ================================================================ l/min and the drift (2.2.10)
+
+/// The drift example of the plan: 8 ml/min per pulse, 1.0 l/min at 625 pulses (target 25 %),
+/// driftD 5.0, 0.05 l/min, 5 min.
+fn slope8() -> FlowConfig {
+    let mut c = FlowConfig {
+        enabled: true,
+        count: 2,
+        qmax_ml: 4000,
+        drift_d10: 50,
+        ..FlowConfig::DEFAULT
+    };
+    c.points[0] = FlowPoint {
+        counts: 500,
+        flow_ml: 0,
+    };
+    c.points[1] = FlowPoint {
+        counts: 1000,
+        flow_ml: 4000,
+    };
+    c
+}
+
+/// Valve 0 held at 625 pulses since `stm.now` with the clock of `held_reset_ms`.
+fn held8(cfg: &FlowConfig, held_reset_ms: u32) -> (Stm, FlowLayer) {
+    let mut stm = Stm::new(1);
+    let mut f = layer(cfg, &[0]);
+    f.held_reset_ms = held_reset_ms;
+    stm.target(0, 25);
+    position(&mut stm, &mut f, 0, false, 4800, 625);
+    (stm, f)
+}
+
+/// Answers the positioning that `first` began: returns the pulses of its opening move.
+fn answer(stm: &mut Stm, f: &mut FlowLayer, first: Option<FlowRequest>) -> u16 {
+    let Some(FlowRequest::Move {
+        dir: MoveDir::Close,
+        counts: close,
+        ..
+    }) = first
+    else {
+        panic!("{first:?}");
+    };
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(0, MoveDir::Close, close, 97, StopReason::EndStop);
+    stm.tick(f);
+    let open = stm.next(f);
+    let Some(FlowRequest::Move {
+        dir: MoveDir::Open,
+        counts,
+        ..
+    }) = open
+    else {
+        panic!("{open:?}");
+    };
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(0, MoveDir::Open, counts, counts, StopReason::Target);
+    stm.tick(f);
+    assert_eq!(stm.next(f), keep(0, true));
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    counts
+}
+
+/// The positioning the next pass starts: the pulses it opened.
+fn answer_next(stm: &mut Stm, f: &mut FlowLayer) -> u16 {
+    stm.poll(0);
+    let first = stm.next(f);
+    answer(stm, f, first)
+}
+
+/// Runs the hold minute by minute up to `minutes` after `stm.now`: (minute, pulses opened) of
+/// every positioning the layer started on its own.
+fn run_hold(stm: &mut Stm, f: &mut FlowLayer, minutes: u32) -> Vec<(u32, u16)> {
+    let start = stm.now;
+    let mut refreshes = Vec::new();
+    for m in 1..=minutes {
+        stm.now = start.wrapping_add(m * 60_000);
+        stm.poll(0);
+        let first = stm.next(f);
+        if first.is_some() {
+            refreshes.push((m, answer(stm, f, first)));
+        }
+    }
+    refreshes
+}
+
+/// `stm.now` is `min` minutes on the drift clock of valve 0.
+fn clock_at(stm: &mut Stm, f: &FlowLayer, min: u32) {
+    stm.now = f.v[0].clock_ms.wrapping_add(min * 60_000);
+}
+
+/// When the hold of valve 0 began.
+fn held_since(f: &FlowLayer) -> u32 {
+    match f.v[0].phase {
+        Phase::Held { at_ms, .. } => at_ms,
+        phase => panic!("{phase:?}"),
+    }
+}
+
+#[test]
+fn flow_target_is_the_percent_of_qmax_the_reachable_flow_and_the_clip_at_the_top_of_the_curve() {
+    let c = curve();
+    let t = |ml| flow_target(&c, ml).unwrap();
+    // 1.25 l/min: 46 % (46.3), 1.242 on the curve, the nearest pulse gives 1.239.
+    assert_eq!(
+        t(1250),
+        FlowTarget {
+            pct: 46,
+            flow_ml: 1239,
+            clipped: false
+        }
+    );
+    assert_eq!(
+        t(0),
+        FlowTarget {
+            pct: 0,
+            flow_ml: 0,
+            clipped: false
+        }
+    );
+    // Below 0.5 % nothing moves.
+    assert_eq!(t(13).pct, 0);
+    assert_eq!(t(14).pct, 1);
+    // qmax itself, at the top of the curve.
+    assert_eq!(
+        t(2700),
+        FlowTarget {
+            pct: 100,
+            flow_ml: 2700,
+            clipped: false
+        }
+    );
+    assert_eq!(flow_target(&c, 2701), None);
+    // A curve that ends below qmax: the last point answers, one ml/min above it is clipped.
+    let mut low = curve();
+    low.count = 4;
+    let t = |ml| flow_target(&low, ml).unwrap();
+    assert_eq!(
+        t(2500),
+        FlowTarget {
+            pct: 93,
+            flow_ml: 2500,
+            clipped: false
+        }
+    );
+    assert_eq!(
+        t(2501),
+        FlowTarget {
+            pct: 93,
+            flow_ml: 2500,
+            clipped: true
+        }
+    );
+    // The pulses are read back through the correction.
+    let mut c2 = curve();
+    c2.offset = 40;
+    assert_eq!(flow_target(&c2, 1000).unwrap().flow_ml, 1000);
+    // No curve: everything lies above it, nothing is reachable.
+    assert_eq!(
+        flow_target(&FlowConfig::DEFAULT, 1),
+        Some(FlowTarget {
+            pct: 0,
+            flow_ml: 0,
+            clipped: true
+        })
+    );
+}
+
+#[test]
+fn the_view_turns_a_flow_into_the_target_with_the_qmax_of_the_valve() {
+    let v = FlowView {
+        qmax_ml: 2700,
+        ..FlowView::default()
+    };
+    assert_eq!(v.target_of(0), Some(0));
+    assert_eq!(v.target_of(1250), Some(46));
+    assert_eq!(v.target_of(2700), Some(100));
+    assert_eq!(v.target_of(2701), None);
+    assert_eq!(FlowView::default().target_of(1), None);
+}
+
+#[test]
+fn flow_target_json_one_member_in_0_to_qmax() {
+    let c = curve();
+    let ok = |s: &str| parse_flow_target_json(&c, s.as_bytes());
+    assert_eq!(ok(r#"{"lpm":1.25}"#).unwrap().pct, 46);
+    assert_eq!(ok(" {\t\"lpm\" :\n2.7 } \r\n").unwrap().pct, 100);
+    assert_eq!(ok(r#"{"lpm":0}"#).unwrap().pct, 0);
+    for (body, err) in [
+        ("", FlowError::Malformed),
+        ("[]", FlowError::Malformed),
+        ("{", FlowError::Malformed),
+        ("{}", FlowError::Malformed),
+        (r#"{"lpm" 1}"#, FlowError::Malformed),
+        (r#"{"lpm":1"#, FlowError::Malformed),
+        (r#"{"lpm":1,"x":2}"#, FlowError::Malformed),
+        (r#"{"lpm":1}x"#, FlowError::Malformed),
+        (r#"{"flow":1}"#, FlowError::UnknownKey),
+        (r#"{"lpm":"1"}"#, FlowError::Lpm),
+        (r#"{"lpm":null}"#, FlowError::Lpm),
+        (r#"{"lpm":1e0}"#, FlowError::Lpm),
+        (r#"{"lpm":1.2345}"#, FlowError::Lpm),
+        (r#"{"lpm":-0.001}"#, FlowError::Lpm),
+        (r#"{"lpm":2.701}"#, FlowError::Lpm),
+    ] {
+        assert_eq!(ok(body), Err(err), "{body}");
+    }
+}
+
+#[test]
+fn drift_d_is_a_config_member_in_tenths_outside_the_blob_flow() {
+    let c = curve();
+    assert_eq!(patched(&c, r#"{"driftD":5}"#).unwrap().drift_d10, 50);
+    assert_eq!(patched(&c, r#"{"driftD":5.0}"#).unwrap().drift_d10, 50);
+    assert_eq!(patched(&c, r#"{"driftD":0.1}"#).unwrap().drift_d10, 1);
+    assert_eq!(patched(&c, r#"{"driftD":25.5}"#).unwrap().drift_d10, 255);
+    let five = patched(&c, r#"{"driftD":5.2}"#).unwrap();
+    assert_eq!(patched(&five, r#"{"driftD":0}"#).unwrap().drift_d10, 0);
+    assert_eq!(patched(&five, r#"{"offset":1}"#).unwrap().drift_d10, 52);
+    assert!(json(&five).contains(r#""preClose":false,"driftD":5.2,"points":"#));
+    assert_eq!(patched(&FlowConfig::DEFAULT, &json(&five)), Ok(five));
+    for body in [
+        r#"{"driftD":25.6}"#,
+        r#"{"driftD":5.05}"#,
+        r#"{"driftD":-0.1}"#,
+        r#"{"driftD":-1}"#,
+        r#"{"driftD":"5"}"#,
+    ] {
+        assert_eq!(patched(&c, body), Err(FlowError::DriftD), "{body}");
+    }
+    // The blob `flow` a firmware before 2.2.10 reads is the same with and without it.
+    let (mut with, mut without) = ([0u8; FLOW_BLOB_SIZE], [0u8; FLOW_BLOB_SIZE]);
+    encode_flow_configs(&configs(&five, &[0, 3]), &mut with);
+    encode_flow_configs(&configs(&c, &[0, 3]), &mut without);
+    assert_eq!(with, without);
+    let mut back = [FlowConfig::DEFAULT; 12];
+    assert!(decode_flow_configs(&with, &mut back));
+    assert_eq!(back[3].drift_d10, 0);
+    // A change of it repositions nothing by itself.
+    let mut stm = Stm::new(1);
+    let mut f = layer(&c, &[0]);
+    stm.target(0, 37);
+    position(&mut stm, &mut f, 0, false, 4800, 809);
+    assert!(f.take_dirty());
+    f.set_configs(&configs(&five, &[0]));
+    assert!(!f.take_dirty());
+    assert_eq!(f.view(0, stm.now).state, FlowState::Held);
+    assert_eq!(f.config(0).drift_d10, 52);
+}
+
+/// `b` with a CRC that fits its bytes.
+fn resealed(mut b: [u8; FLOW_X_BLOB_SIZE]) -> [u8; FLOW_X_BLOB_SIZE] {
+    let sum = crc32(&b[..17], 0);
+    b[17..].copy_from_slice(&sum.to_le_bytes());
+    b
+}
+
+#[test]
+fn blob_flowx_holds_the_drift_of_every_valve() {
+    assert_eq!(FLOW_X_BLOB_SIZE, 21);
+    let mut all = [FlowConfig::DEFAULT; 12];
+    for (i, c) in (1u8..).zip(all.iter_mut()) {
+        c.drift_d10 = 10 * i;
+    }
+    let mut bytes = [0xEE; FLOW_X_BLOB_SIZE];
+    encode_flow_x(&all, &mut bytes);
+    assert_eq!(&bytes[..5], b"VDMX\x01");
+    assert_eq!(
+        &bytes[5..17],
+        &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
+    );
+    assert_eq!(bytes[17..], crc32(&bytes[..17], 0).to_le_bytes());
+    let mut back = [FlowConfig::DEFAULT; 12];
+    assert!(decode_flow_x(&bytes, &mut back));
+    assert_eq!(back, all);
+    // Only the drift of what is there changes.
+    let mut other = [curve(); 12];
+    assert!(decode_flow_x(&bytes, &mut other));
+    assert_eq!(other[1].drift_d10, 20);
+    assert_eq!(other[1].points, curve().points);
+    // Every refusal leaves the set alone.
+    let mut bad_crc = bytes;
+    bad_crc[5] ^= 1;
+    let mut bad_magic = bytes;
+    bad_magic[0] = b'X';
+    let mut bad_version = bytes;
+    bad_version[4] = 2;
+    let longer = [bytes.as_slice(), &[0]].concat();
+    let refused: [&[u8]; 6] = [
+        b"",
+        &bytes[..20],
+        &longer,
+        &bad_crc,
+        &resealed(bad_magic),
+        &resealed(bad_version),
+    ];
+    for data in refused {
+        let mut set = [FlowConfig::DEFAULT; 12];
+        assert!(!decode_flow_x(data, &mut set));
+        assert_eq!(set, [FlowConfig::DEFAULT; 12]);
+    }
+}
+
+#[test]
+fn the_drift_table_is_ln_of_1_plus_t_over_31() {
+    for &(t, g) in &DRIFT_LOG {
+        let exact = ((1.0 + f64::from(t)) / 31.0).ln() * 1000.0;
+        assert!((f64::from(g) - exact).abs() <= 0.5, "{t}: {g} {exact}");
+        assert_eq!(log_milli(u32::from(t)), i32::from(g));
+    }
+    // Linear between the points, its last value from minute 480 on.
+    assert_eq!(log_milli(3), -2335 + 693 / 3);
+    assert_eq!(log_milli(15), -1036 + 647 / 2);
+    assert_eq!(log_milli(90), 677 + 685 / 2);
+    assert_eq!(log_milli(481), 2742);
+    assert_eq!(log_milli(u32::MAX), 2742);
+}
+
+#[test]
+fn the_drift_in_tenths_of_a_pulse_and_the_pulses_a_positioning_adds() {
+    let c = slope8();
+    // The table of the plan, D 5.0: negative before minute 30, the flow above the curve.
+    assert_eq!(drift_tenths(&c, 1), -137);
+    assert_eq!(drift_tenths(&c, 30), 0);
+    assert_eq!(drift_tenths(&c, 60), 34);
+    assert_eq!(drift_tenths(&c, 480), 137);
+    assert_eq!(drift_tenths(&c, 10_000), 137);
+    assert_eq!(drift_tenths(&curve(), 480), 0);
+    // Rounded to the nearest tenth on both sides of 0.
+    let mut one = c;
+    one.drift_d10 = 1;
+    assert_eq!(drift_tenths(&one, 60), 1); // 0.677
+    assert_eq!(drift_tenths(&one, 1), -3); // -2.741
+    assert_eq!(drift_tenths(&one, 20), 0); // -0.389
+    let mut max = c;
+    max.drift_d10 = 255;
+    assert_eq!(drift_tenths(&max, 480), 699);
+    assert_eq!(drift_comp(&max, 480), 70);
+    assert_eq!(drift_comp(&c, 0), 0);
+    assert_eq!(drift_comp(&c, 29), 0);
+    assert_eq!(drift_comp(&c, 60), 3); // 3.4
+    assert_eq!(drift_comp(&c, 120), 7); // 6.8
+    assert_eq!(drift_comp(&c, 480), 14); // 13.7
+    let mut half = c;
+    half.drift_d10 = 2;
+    assert_eq!(drift_tenths(&half, 120), 3);
+    assert_eq!(drift_comp(&half, 120), 0);
+    half.drift_d10 = 4;
+    assert_eq!(drift_tenths(&half, 120), 5);
+    assert_eq!(drift_comp(&half, 120), 1);
+}
+
+#[test]
+fn the_estimate_is_the_curve_at_the_pulses_less_the_drift() {
+    let c = slope8();
+    // The table of the plan: 1.11, 1.00, 0.97, 0.95.
+    assert_eq!(estimate_ml(&c, 625, 1), 1110);
+    assert_eq!(estimate_ml(&c, 625, 30), 1000);
+    assert_eq!(estimate_ml(&c, 625, 60), 973);
+    assert_eq!(estimate_ml(&c, 625, 107), 951);
+    assert_eq!(estimate_ml(&c, 625, 480), 890);
+    assert_eq!(estimate_ml(&c, 625, 100_000), 890);
+    // Closed is closed, whatever the clock.
+    assert_eq!(estimate_ml(&c, 0, 1), 0);
+    assert_eq!(estimate_ml(&c, 0, 480), 0);
+    // The drift moves along the curve: flat below the first point and above the last.
+    assert_eq!(estimate_ml(&c, 505, 480), 0);
+    assert_eq!(estimate_ml(&c, 1, 1), 0);
+    assert_eq!(estimate_ml(&c, 1000, 1), 4000);
+    assert_eq!(estimate_ml(&c, FLOW_COUNTS_MAX, 1), 4000);
+    // Pulses in the correction go through it first.
+    let mut corrected = c;
+    corrected.offset = 40;
+    assert_eq!(estimate_ml(&corrected, 665, 60), 973);
+    corrected.offset = -2000;
+    corrected.gain_milli = 100; // raw counts beyond the position range
+    assert_eq!(estimate_ml(&corrected, FLOW_COUNTS_MAX, 480), 4000);
+    // No model: the curve.
+    assert_eq!(estimate_ml(&curve(), 809, 480), 1000);
+    assert_eq!(counts_flow(&c, 625), 1000);
+}
+
+#[test]
+fn a_new_layer_uses_the_constants_of_the_reset() {
+    assert_eq!(FlowLayer::new().held_reset_ms, HELD_RESET_MS);
+    assert_eq!(CLOSED_RESET_MS, 240_000);
+}
+
+#[test]
+fn the_view_shows_the_clock_and_the_estimate_of_a_known_position() {
+    let (mut stm, mut f) = held8(&slope8(), 2_400_000);
+    let start = f.v[0].clock_ms;
+    let v = f.view(0, start.wrapping_add(60 * 60_000 - 1));
+    assert_eq!((v.hold_min, v.est_ml), (59, 974));
+    assert_eq!(v.qmax_ml, 4000);
+    let v = f.view(0, start.wrapping_add(60 * 60_000));
+    assert_eq!((v.hold_min, v.est_ml), (60, 973));
+    assert_eq!((v.flow_ml, v.pct), (1000, 25));
+    // At most the type's maximum; the model ended at minute 480.
+    let v = f.view(0, start.wrapping_add(70_000 * 60_000));
+    assert_eq!((v.hold_min, v.est_ml), (u16::MAX, 890));
+    // Nothing while the position is not known.
+    stm.flags(0, 0);
+    stm.tick(&mut f);
+    let v = f.view(0, stm.now);
+    assert!(!v.known);
+    assert_eq!((v.hold_min, v.est_ml, v.flow_ml), (0, 0, 0));
+    assert_eq!(v.qmax_ml, 4000);
+    // A disabled valve shows no qmax.
+    let mut off = slope8();
+    off.enabled = false;
+    f.set_configs(&configs(&off, &[0]));
+    assert_eq!(f.view(0, stm.now).qmax_ml, 0);
+}
+
+#[test]
+fn a_positioning_that_starts_the_drift_again_gives_the_same_pulses_every_109_min() {
+    let (mut stm, mut f) = held8(&slope8(), 2_400_000);
+    let refreshes = run_hold(&mut stm, &mut f, 480);
+    assert_eq!(
+        refreshes,
+        vec![(109, 625), (218, 625), (327, 625), (436, 625)]
+    );
+    assert_eq!(f.v[0].comp, 0);
+    assert_eq!(stm.m.valve(0).desired, 25);
+    // Right after a refresh the flow is above the curve again.
+    let v = f.view(0, f.v[0].clock_ms.wrapping_add(60_000));
+    assert_eq!((v.hold_min, v.est_ml, v.counts), (1, 1110, 625));
+}
+
+#[test]
+fn a_clock_that_runs_on_adds_the_drift_to_the_target_refreshes_at_109_and_372_and_ends_at_480() {
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    let refreshes = run_hold(&mut stm, &mut f, 700);
+    assert_eq!(refreshes, vec![(109, 631), (372, 637)]);
+    // The report is the target, the estimate carries the rest.
+    let v = f.view(0, stm.now);
+    assert_eq!((v.counts, v.target_counts), (637, 637));
+    assert_eq!((v.flow_ml, v.pct), (1000, 25));
+    assert_eq!((v.est_ml, v.hold_min), (986, 700));
+}
+
+#[test]
+fn the_report_stays_on_the_target_while_a_refresh_runs() {
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    clock_at(&mut stm, &f, 110);
+    stm.poll(0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1125, 34));
+    let v = f.view(0, stm.now);
+    assert_eq!(v.state, FlowState::Positioning);
+    assert_eq!((v.counts, v.target_counts), (625, 631));
+    assert_eq!((v.flow_ml, v.pct), (1000, 25));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 1125, 97, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 631, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 631, 631, StopReason::Target);
+    stm.tick(&mut f);
+    let v = f.view(0, stm.now);
+    assert_eq!((v.counts, v.flow_ml), (631, 1000));
+}
+
+#[test]
+fn the_target_position_counts_from_the_pulses_the_move_really_counted() {
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    clock_at(&mut stm, &f, 110);
+    stm.poll(0);
+    assert!(stm.next(&mut f).is_some());
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 1125, 97, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 631, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 631, 628, StopReason::Target); // 3 pulses short
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    let v = f.view(0, stm.now);
+    assert_eq!((v.counts, v.flow_ml), (628, 976)); // 622 on the curve
+    assert_eq!(stm.next(&mut f), None);
+    // More pulses added than held: nothing to give back.
+    f.v[0].held_comp = 700;
+    assert_eq!(f.view(0, stm.now).flow_ml, 0);
+}
+
+#[test]
+fn a_new_target_on_a_running_clock_adds_the_drift_as_well() {
+    let (mut stm, mut f) = held8(&slope8(), 2_400_000);
+    // Before minute 30 the flow above the curve takes nothing away.
+    clock_at(&mut stm, &f, 20);
+    stm.target(0, 50);
+    assert_eq!(answer_next(&mut stm, &mut f), 750);
+    assert_eq!(f.v[0].comp, 0);
+    // Minute 35: the clock of the first positioning runs on.
+    clock_at(&mut stm, &f, 35);
+    stm.target(0, 25);
+    assert_eq!(answer_next(&mut stm, &mut f), 626);
+    assert_eq!(f.v[0].comp, 1);
+    assert_eq!(f.view(0, stm.now).flow_ml, 1000);
+    assert_eq!(f.view(0, stm.now).hold_min, 35);
+}
+
+#[test]
+fn the_correction_stays_inside_the_position_range_and_a_closed_valve_has_none() {
+    let mut c = slope8();
+    c.points[1].counts = FLOW_COUNTS_MAX;
+    let mut stm = Stm::new(1);
+    let mut f = layer(&c, &[0]);
+    f.held_reset_ms = u32::MAX;
+    stm.target(0, 50);
+    position(&mut stm, &mut f, 0, false, 4800, 5250);
+    // Minute 60: 3 pulses; at the top of the range none are left.
+    clock_at(&mut stm, &f, 60);
+    stm.target(0, 75);
+    assert_eq!(answer_next(&mut stm, &mut f), 7628);
+    assert_eq!(f.v[0].comp, 3);
+    clock_at(&mut stm, &f, 66);
+    stm.target(0, 100);
+    assert_eq!(answer_next(&mut stm, &mut f), FLOW_COUNTS_MAX);
+    assert_eq!(f.v[0].comp, 0);
+    // A target of 0 is a close, at any minute of the clock.
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    clock_at(&mut stm, &f, 200);
+    stm.target(0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1125, 34));
+    assert_eq!(f.view(0, stm.now).target_counts, 0);
+    assert_eq!(f.v[0].comp, 0);
+}
+
+/// Valve 0 closed 5 min after it was held at 625 pulses, the clock of that hold running on.
+fn closed8() -> (Stm, FlowLayer) {
+    let mut c = slope8();
+    c.min_interval_s = 0;
+    let (mut stm, mut f) = held8(&c, u32::MAX);
+    stm.now = stm.now.wrapping_add(300_000);
+    stm.target(0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1125, 34));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 1125, 700, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    (stm, f)
+}
+
+#[test]
+fn the_clock_of_a_closed_valve_starts_again_at_the_opening_after_240_s() {
+    let (mut stm, mut f) = closed8();
+    let clock = f.v[0].clock_ms;
+    assert_eq!(f.view(0, stm.now).est_ml, 0);
+    stm.now = held_since(&f).wrapping_add(240_000);
+    stm.target(0, 25);
+    stm.poll(0);
+    let now = stm.now.wrapping_add(2); // the time of stm.next
+    let first = stm.next(&mut f);
+    assert_ne!(f.v[0].clock_ms, clock);
+    assert_eq!(f.v[0].clock_ms, now);
+    assert_eq!(answer(&mut stm, &mut f, first), 625);
+    // A shorter close keeps it.
+    let (mut stm, mut f) = closed8();
+    let clock = f.v[0].clock_ms;
+    stm.now = held_since(&f).wrapping_add(239_990);
+    stm.target(0, 25);
+    answer_next(&mut stm, &mut f);
+    assert_eq!(f.v[0].clock_ms, clock);
+}
+
+#[test]
+fn the_clock_of_a_held_valve_starts_again_after_the_reset_time() {
+    let (mut stm, mut f) = held8(&slope8(), 1_000_000);
+    let clock = f.v[0].clock_ms;
+    stm.now = held_since(&f).wrapping_add(999_990);
+    stm.target(0, 50);
+    answer_next(&mut stm, &mut f);
+    assert_eq!(f.v[0].clock_ms, clock);
+    stm.now = held_since(&f).wrapping_add(1_000_000);
+    stm.target(0, 25);
+    answer_next(&mut stm, &mut f);
+    assert_ne!(f.v[0].clock_ms, clock);
+    assert_eq!(f.view(0, f.v[0].clock_ms).hold_min, 0);
+}
+
+#[test]
+fn a_positioning_from_anything_but_a_hold_starts_the_clock_again() {
+    // A lost hold.
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    let clock = f.v[0].clock_ms;
+    stm.now = stm.now.wrapping_add(10 * 60_000);
+    stm.flags(0, STM_FLAG_SVC_HOLD);
+    stm.tick(&mut f);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
+    answer_next(&mut stm, &mut f);
+    assert!(elapsed_ms(f.v[0].clock_ms, clock) >= 10 * 60_000);
+    assert_eq!(f.view(0, f.v[0].clock_ms).hold_min, 0);
+    // A change of the curve.
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    let clock = f.v[0].clock_ms;
+    stm.now = stm.now.wrapping_add(10 * 60_000);
+    let mut changed = slope8();
+    changed.offset = 1;
+    f.set_configs(&configs(&changed, &[0]));
+    assert_eq!(f.view(0, stm.now).state, FlowState::Unknown);
+    assert!(stm.next(&mut f).is_some());
+    assert!(elapsed_ms(f.v[0].clock_ms, clock) >= 10 * 60_000);
+    // A failure.
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    let clock = f.v[0].clock_ms;
+    stm.now = stm.now.wrapping_add(10 * 60_000);
+    stm.target(0, 50);
+    stm.poll(0);
+    assert!(stm.next(&mut f).is_some());
+    stm.result(&mut f, 0, FlowOutcome::NoReply);
+    assert_eq!(f.view(0, stm.now).state, FlowState::Failed);
+    stm.now = stm.now.wrapping_add(FAILED_RETRY_MS);
+    stm.poll(0);
+    assert!(stm.next(&mut f).is_some());
+    assert!(elapsed_ms(f.v[0].clock_ms, clock) >= FAILED_RETRY_MS);
+}
+
+#[test]
+fn no_refresh_without_a_model_before_the_interval_or_after_flow_counts() {
+    // No driftD.
+    let mut none = slope8();
+    none.drift_d10 = 0;
+    let (mut stm, mut f) = held8(&none, 2_400_000);
+    assert!(run_hold(&mut stm, &mut f, 600).is_empty());
+    assert_eq!(f.view(0, stm.now).est_ml, 1000);
+    // The estimate is due at minute 109, the interval 5 min later.
+    let (mut stm, mut f) = held8(&slope8(), 2_400_000);
+    f.v[0].last_start_ms = stm.now.wrapping_add(109 * 60_000);
+    assert_eq!(run_hold(&mut stm, &mut f, 115), vec![(114, 625)]);
+    // /flow/counts: the pulses stay until the target changes, whatever the estimate.
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    stm.now = stm.now.wrapping_add(300_000);
+    assert!(f.position_counts(0, 640, Some(25), stm.now));
+    assert_eq!(f.view(0, stm.now).target_counts, 640);
+    assert_eq!(answer_next(&mut stm, &mut f), 640);
+    assert_eq!(f.v[0].comp, 0);
+    assert!(f.v[0].exact);
+    assert!(run_hold(&mut stm, &mut f, 700).is_empty());
+    assert_eq!(f.view(0, stm.now).counts, 640);
+    // The next target is a target again.
+    stm.target(0, 50);
+    answer_next(&mut stm, &mut f);
+    assert!(!f.v[0].exact);
+}
+
+#[test]
+fn a_counts_request_during_a_positioning_is_exact_as_well() {
+    let (mut stm, mut f) = held8(&slope8(), u32::MAX);
+    clock_at(&mut stm, &f, 110);
+    stm.poll(0);
+    assert!(stm.next(&mut f).is_some()); // the refresh runs
+    assert!(f.position_counts(0, 640, Some(25), stm.now));
+    assert!(!f.v[0].exact);
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 1125, 97, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 631, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 631, 631, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    assert_eq!(f.view(0, stm.now).flow_ml, 1000);
+    assert_eq!(answer_next(&mut stm, &mut f), 640);
+    assert!(f.v[0].exact);
+    assert_eq!((f.v[0].comp, f.v[0].held_comp), (0, 0));
+    assert_eq!(f.view(0, stm.now).flow_ml, 1120);
+}
+
+#[test]
+fn a_dead_band_of_0_refreshes_only_when_the_estimate_is_below_the_target() {
+    let mut c = slope8();
+    c.deadband_ml = 0;
+    let (mut stm, mut f) = held8(&c, 2_400_000);
+    // The flow lies above the curve until minute 30.
+    assert_eq!(run_hold(&mut stm, &mut f, 31), vec![(31, 625)]);
+}
+
+#[test]
+fn a_new_target_inside_the_dead_band_does_not_stop_the_refresh() {
+    let (mut stm, mut f) = held8(&slope8(), 2_400_000);
+    stm.target(0, 26); // 40 ml/min more: inside the dead band, nothing serves it yet
+    assert_eq!(stm.next(&mut f), None);
+    assert_eq!(run_hold(&mut stm, &mut f, 115), vec![(109, 630)]);
+    assert_eq!(f.view(0, stm.now).pct, 26);
 }

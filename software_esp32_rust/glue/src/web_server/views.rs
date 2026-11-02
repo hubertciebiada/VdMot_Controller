@@ -7,7 +7,7 @@ use vdm_esp_core::common::{elapsed_ms, fmt_fit, VOLT_SLOT_COUNT};
 use vdm_esp_core::config::ValveConfig;
 use vdm_esp_core::event_log::parse_severity;
 use vdm_esp_core::file_manager::{write_files_json, FileEntry};
-use vdm_esp_core::flow_layer::{flow_error_text, patch_flow_config_json, FlowError, FlowView};
+use vdm_esp_core::flow_layer::{patch_flow_config_json, FlowView};
 use vdm_esp_core::json_api::{
     write_events_json, write_flash_status_json, write_health_json, write_motor_json,
     write_profile_json, write_sensors_json, write_status_json, write_valve_flow_json,
@@ -607,12 +607,7 @@ where
         }
         let mut cfg = self.storage.shared().flow_config(valve);
         if let Err(e) = patch_flow_config_json(&mut cfg, body) {
-            let error = match e {
-                FlowError::Malformed => "malformed",
-                FlowError::UnknownKey => "invalid",
-                _ => "out_of_range",
-            };
-            return send_error(req, 400, error, flow_error_text(e).as_bytes());
+            return send_flow_error(req, e);
         }
         if !self.storage.save_flow_config(valve, &cfg) {
             return send_error(req, 500, "nvs", b"flow config not saved");

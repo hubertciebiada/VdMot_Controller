@@ -12,7 +12,8 @@ use vdm_esp_core::flow_layer::{FlowState, FlowView};
 use vdm_esp_core::json_api::HttpMethod;
 use vdm_esp_core::stm_flasher::FlashPhase;
 use vdm_esp_core::stm_types::StmCommandType;
-use vdm_esp_core::version::parse_version;
+use vdm_esp_core::valve_model::TargetSource;
+use vdm_esp_core::version::{parse_version, StmSupport};
 
 use super::rig::*;
 use super::{
@@ -802,7 +803,10 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert_eq!(r.status, 200);
     let t = text(&r);
     assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":false,"qmax":2.700,"#));
-    assert!(t.ends_with(&format!("{FLOW_OFF},\"refDelta\":null}}")));
+    assert!(t.ends_with(concat!(
+        r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"#,
+        r#""holdMin":null,"estLpm":null,"ms":null,"peak":null},"refDelta":null}"#
+    )));
     let before = st.shared().flow_revision();
     let body = r#"{"enabled":true,"qmax":2.5,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
     let r = perform(&mut web, api_post("/api/valves/1/flow", body));
@@ -918,6 +922,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
         last_ms: 5684,
         last_peak: 123,
         ref_delta: None,
+        ..FlowView::default()
     };
     rig.state().snapshot.valves[0].position = 37;
     let r = perform(&mut web, get("/api/valves"));
@@ -938,6 +943,132 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
     assert_eq!(r.status, 409);
     assert_eq!(text(&r), error_body("flashing", "STM flash in progress"));
     assert_eq!(rig.submitted().len(), 3);
+}
+
+// ---------------------------------------------------------------- l/min (Rust 2.2.10)
+
+#[test]
+fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    assert!(!st.load_flow_configs());
+    let mut web = rig.web(&st);
+    let curve = r#"{"enabled":true,"qmax":2.7,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
+    assert_eq!(
+        perform(&mut web, api_post("/api/valves/1/flow", curve)).status,
+        200
+    );
+    let lpm = |b: &str| api_post("/api/valves/1/flow/target", b);
+    let r = perform(&mut web, lpm(r#"{"lpm":1}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("flow_off", "flow layer not enabled"));
+    rig.state().snapshot.flow[0] = FlowView {
+        enabled: true,
+        state: FlowState::Unsupported,
+        ..FlowView::default()
+    };
+    let r = perform(&mut web, lpm(r#"{"lpm":1}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("unsupported", "STM 2.2.8 required"));
+    rig.state().snapshot.flow[0].state = FlowState::Held;
+    let cases = [
+        (
+            r#"{"lpm":1.25}"#,
+            r#"{"valve":1,"lpm":1.245,"target":46,"clipped":false}"#,
+        ),
+        (
+            r#"{"lpm":0}"#,
+            r#"{"valve":1,"lpm":0.000,"target":0,"clipped":false}"#,
+        ),
+        (
+            r#"{"lpm":2.5}"#,
+            r#"{"valve":1,"lpm":2.500,"target":93,"clipped":false}"#,
+        ),
+        (
+            r#"{"lpm":2.7}"#,
+            r#"{"valve":1,"lpm":2.500,"target":100,"clipped":true}"#,
+        ),
+    ];
+    for (body, answer) in cases {
+        let r = perform(&mut web, lpm(body));
+        assert_eq!(r.status, 202, "{body}");
+        assert_eq!(text(&r), answer, "{body}");
+    }
+    let s = rig.submitted();
+    assert_eq!(s.len(), 4);
+    assert!(s.iter().all(|c| c.kind == StmCommandType::SetTarget
+        && c.valve == 0
+        && c.source == TargetSource::Web));
+    assert_eq!(
+        s.iter().map(|c| c.pos).collect::<Vec<_>>(),
+        [46, 0, 93, 100]
+    );
+    let refused = [
+        (r#"{"lpm":2.701}"#, "out_of_range", "lpm 0..qmax"),
+        (r#"{"lpm":-1}"#, "out_of_range", "lpm 0..qmax"),
+        (r#"{"lpm":"1"}"#, "out_of_range", "lpm 0..qmax"),
+        ("{", "malformed", "malformed JSON"),
+        (r#"{"x":1}"#, "invalid", "unknown key"),
+        (r#"{"lpm":1,"x":2}"#, "malformed", "malformed JSON"),
+    ];
+    for (body, code, detail) in refused {
+        let r = perform(&mut web, lpm(body));
+        assert_eq!(r.status, 400, "{body}");
+        assert_eq!(text(&r), error_body(code, detail), "{body}");
+    }
+    assert_eq!(rig.submitted().len(), 4);
+    // The refusals of a target in percent, and of a flash and a too-old STM.
+    rig.config(|c| c.valves[0].active = false);
+    let r = perform(&mut web, lpm(r#"{"lpm":1}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("inactive", "valve not active"));
+    rig.config(|c| c.valves[0].active = true);
+    rig.state().submit_result = false;
+    assert_eq!(perform(&mut web, lpm(r#"{"lpm":1}"#)).status, 503);
+    rig.state().submit_result = true;
+    rig.state().flash_active = true;
+    let r = perform(&mut web, lpm(r#"{"lpm":1}"#));
+    assert_eq!(r.status, 409);
+    assert_eq!(text(&r), error_body("flashing", "STM flash in progress"));
+    rig.state().flash_active = false;
+    rig.state().support = StmSupport::TooOld;
+    assert_eq!(perform(&mut web, lpm(r#"{"lpm":1}"#)).status, 409);
+    assert_eq!(rig.submitted().len(), 4);
+}
+
+#[test]
+fn the_estimate_stands_in_the_flow_document_and_not_in_the_valve_list() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    let mut web = rig.web(&st);
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert!(text(&r).contains(r#""lpm":null,"holdMin":null,"estLpm":null,"ms":null"#));
+    let body = r#"{"driftD":5.5}"#;
+    let r = perform(&mut web, api_post("/api/valves/1/flow", body));
+    assert_eq!(r.status, 200);
+    assert!(text(&r).contains(r#""driftD":5.5,"#));
+    assert!(rig.dev.nvs.has("vdmrev", "flowx"));
+    assert_eq!(st.shared().flow_config(0).drift_d10, 55);
+    let r = perform(
+        &mut web,
+        api_post("/api/valves/1/flow", r#"{"driftD":25.6}"#),
+    );
+    assert_eq!(r.status, 400);
+    assert_eq!(text(&r), error_body("out_of_range", "driftD 0..25.5"));
+    rig.state().snapshot.flow[0] = FlowView {
+        enabled: true,
+        state: FlowState::Held,
+        known: true,
+        flow_ml: 1000,
+        hold_min: 60,
+        est_ml: 973,
+        ..FlowView::default()
+    };
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert!(text(&r).contains(r#""lpm":1.000,"holdMin":60,"estLpm":0.973,"#));
+    let r = perform(&mut web, get("/api/valves"));
+    assert!(text(&r).contains(r#""lpm":1.000,"ms":"#));
+    assert!(!text(&r).contains("holdMin") && !text(&r).contains("estLpm"));
 }
 
 // ---------------------------------------------------------------- brake (STM 2.2.9)

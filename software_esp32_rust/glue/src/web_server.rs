@@ -51,7 +51,9 @@ use vdm_esp_core::config::{
 use vdm_esp_core::event_log::{
     event_default_severity, make_event, Event, EventCode, EventFilter, RebootReason,
 };
-use vdm_esp_core::flow_layer::{FlowState, FLOW_COUNTS_MAX};
+use vdm_esp_core::flow_layer::{
+    flow_error_text, parse_flow_target_json, FlowError, FlowState, FlowTarget, FLOW_COUNTS_MAX,
+};
 use vdm_esp_core::json_api::{
     match_api_route, write_error_json, ApiRoute, HealthSnapshot, HttpMethod, RouteMatch,
 };
@@ -476,6 +478,16 @@ fn send_error(req: &mut dyn HttpRequest, code: u16, error: &str, detail: &[u8]) 
 /// `202 {"result":"queued"}` (C++ `sendAccepted`).
 fn accepted(req: &mut dyn HttpRequest) {
     send(req, 202, JSON, b"{\"result\":\"queued\"}");
+}
+
+/// A refused flow request, 400 with the rule as the detail.
+fn send_flow_error(req: &mut dyn HttpRequest, e: FlowError) {
+    let error = match e {
+        FlowError::Malformed => "malformed",
+        FlowError::UnknownKey => "invalid",
+        _ => "out_of_range",
+    };
+    send_error(req, 400, error, flow_error_text(e).as_bytes());
 }
 
 /// A JSON document, not cached (C++ `sendSlot`), optionally as a download.
@@ -1482,6 +1494,7 @@ where
         body: &mut [u8],
     ) {
         match m.route {
+            ApiRoute::ValveFlowTarget => self.flow_target(req, w, m.valve, body),
             ApiRoute::MotorSet => self.motor_set(req, w, body),
             ApiRoute::StmReset => self.stm_reset(req, w, body),
             ApiRoute::StmSafeModeLeave => self.safe_mode_leave(req, w),
@@ -1638,6 +1651,51 @@ where
             return send_error(req, 400, "out_of_range", b"counts 0..10000");
         };
         self.submit_flow_counts(req, valve, counts as u16);
+    }
+
+    /// POST /api/valves/{n}/flow/target `{"lpm":2.5}` (Rust 2.2.10): the flow as a target through
+    /// the curve of the valve. Answers 202 with the flow the valve reaches and the target it
+    /// became; `clipped`: above the top of the curve. The 409s are those of `flow_counts`.
+    #[inline(never)]
+    fn flow_target(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8, body: &[u8]) {
+        if self.refuse_while_flashing(req)
+            || self.refuse_too_old(req, &mut w.snap)
+            || !self.flow_running(req, w, valve)
+        {
+            return;
+        }
+        let cfg = self.storage.shared().flow_config(valve);
+        match parse_flow_target_json(&cfg, body) {
+            Ok(t) => self.submit_flow_target(req, &w.cfg, valve, &t),
+            Err(e) => send_flow_error(req, e),
+        }
+    }
+
+    /// The target of a flow, answered 202 (or an error of `submit_target`).
+    #[inline(never)]
+    fn submit_flow_target(
+        &self,
+        req: &mut dyn HttpRequest,
+        cfg: &Config,
+        valve: u8,
+        t: &FlowTarget,
+    ) {
+        if !self.submit_target(req, cfg, valve, t.pct) {
+            return;
+        }
+        let mut buf = [0u8; 64];
+        let n = fmt_trunc(
+            &mut buf,
+            format_args!(
+                "{{\"valve\":{},\"lpm\":{}.{:03},\"target\":{},\"clipped\":{}}}",
+                u32::from(valve) + 1,
+                t.flow_ml / 1000,
+                t.flow_ml % 1000,
+                t.pct,
+                t.clipped
+            ),
+        );
+        send(req, 202, JSON, buf.get(..n).unwrap_or_default());
     }
 
     /// The flow layer runs on `valve` (the snapshot); else the 409 was answered.

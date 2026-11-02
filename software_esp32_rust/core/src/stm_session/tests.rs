@@ -7,7 +7,7 @@ use super::*;
 use crate::config::MqttMode;
 use crate::failsafe::{HaStatus, LeaseMode, LeaseState};
 use crate::test_support::session_rig::{cmd, cmd0, name, Rig};
-use crate::valve_model::{TargetSource, TargetSync};
+use crate::valve_model::{TargetSource, TargetSync, HEALTH_FLOW_FAILED};
 use std::cell::Cell;
 use std::format;
 use std::rc::Rc;
@@ -805,6 +805,8 @@ fn flow_layer_positions_a_valve_with_svmov_and_skeep_and_reports_the_flow_percen
     r.run(10_000);
     assert_eq!(r.count("svmov"), 2);
     assert_eq!(r.count("stgtp"), 1);
+    assert_eq!(r.port().last.flow[0].hold_min, 10); // the snapshot's time on the drift clock
+    assert_eq!(r.port().last.flow[0].est_ml, 1000); // no drift model
     assert_eq!(r.port().last.flow[0].state, FlowState::Held);
     // The target persisted is the flow target.
     let stored = r.port().targets.last().expect("stored").pos[0];
@@ -983,6 +985,20 @@ fn flow_layer_a_lost_keep_repositions_a_rejected_move_fails_the_positioning() {
     assert!(!f.known);
     assert_eq!(r.port().last.valves[0].position, 0);
     assert_eq!(r.port().last.valves[0].desired, 50);
+    // It reaches MQTT through the health of the valve: the problem topic, the on-change key.
+    assert_eq!(
+        r.port().last.valves[0].health & HEALTH_FLOW_FAILED,
+        HEALTH_FLOW_FAILED
+    );
+    assert!(crate::mqtt_values::valve_problem(&r.port().last.valves[0]));
+    // The next target that goes through clears it.
+    r.stm_mut().answers.remove("svmov");
+    let t = r.target(0, 37, TargetSource::Web);
+    r.now = r.now.wrapping_add(300_000);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(r.port().last.flow[0].state, FlowState::Held);
+    assert_eq!(r.port().last.valves[0].health & HEALTH_FLOW_FAILED, 0);
 }
 
 #[test]

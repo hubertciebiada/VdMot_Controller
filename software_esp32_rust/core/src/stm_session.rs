@@ -49,6 +49,7 @@ use crate::stm_types::{StmCommand, StmCommandType, StmSaveState, StmSnapshot};
 use crate::target_store::{capture_targets, restore_targets, PersistedTargets, RestoreSource};
 use crate::valve_model::{
     expect_sensor, temp_raw_valid, vad_valid, SensorModel, ValveModel, ValveState,
+    HEALTH_FLOW_FAILED,
 };
 use crate::version::{
     compare_version, format_version, min_stm_version, parse_version, StmSupport, Version,
@@ -1565,10 +1566,13 @@ impl<P: StmSessionPort> StmSession<P> {
         let views = self.snap.valves.iter_mut().zip(self.snap.flow.iter_mut());
         for (i, (v, f)) in (0u8..).zip(views) {
             *v = *self.model.valve(i);
-            *f = self.flow.view(i);
+            *f = self.flow.view(i, now_ms);
             // A flow valve reports its flow % as the position (0 while unknown).
             if !matches!(f.state, FlowState::Off | FlowState::Unsupported) {
                 v.position = f.pct;
+            }
+            if f.state == FlowState::Failed {
+                v.health += HEALTH_FLOW_FAILED;
             }
         }
         self.snap.temp_count = self.sensors.temp_count();
