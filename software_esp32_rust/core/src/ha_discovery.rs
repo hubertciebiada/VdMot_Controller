@@ -17,6 +17,7 @@ use crate::common::{
 };
 use crate::config::{crc32, item_segment, mqtt_root_topic, Config, ItemKind, TOPIC_PREFIX_MAX};
 use crate::event_log::event_mqtt_name;
+use crate::flow_layer::FlowView;
 use crate::json_writer::JsonWriter;
 use crate::mqtt_topics::{
     build_target_command_topic, build_topic, topic_segment_valid, Topic, TopicContext, SEGMENT_MAX,
@@ -57,6 +58,8 @@ pub struct DiscoveryContextValve {
     /// settled): has_temp1/2 are then a guess, and their configs are KeptUnknown (never
     /// deleted on a guess).
     pub temps_known: bool,
+    /// `qmax` of the flow layer, ml/min; 0: the layer is not enabled on the valve
+    pub flow_qmax_ml: u16,
 }
 
 impl Default for DiscoveryContextValve {
@@ -68,6 +71,7 @@ impl Default for DiscoveryContextValve {
             has_temp1: false,
             has_temp2: false,
             temps_known: true,
+            flow_qmax_ml: 0,
         }
     }
 }
@@ -177,6 +181,8 @@ pub struct DiscoveryInputs<'a> {
     pub cfg: Option<&'a Config>,
     /// [`VALVE_COUNT`] entries; C++ null: None
     pub valves: Option<&'a ValveSnapshot>,
+    /// the flow layer per valve (Rust only); a valve past the end has none
+    pub flow: &'a [FlowView],
     /// the temperature readings (C++ temps + tempCount)
     pub temps: &'a [TempReading],
     /// the voltage readings (C++ volts + voltCount)
@@ -196,6 +202,7 @@ impl Default for DiscoveryInputs<'_> {
         Self {
             cfg: None,
             valves: None,
+            flow: &[],
             temps: &[],
             volts: &[],
             sensors_settled: false,
@@ -274,7 +281,7 @@ pub struct DiscoveryMessage {
 // ---------------------------------------------------------------- layout
 
 const COMMON_COUNT: usize = 4;
-const VALVE_KINDS: usize = 22;
+const VALVE_KINDS: usize = 23;
 const VALVES_FIRST: usize = COMMON_COUNT;
 const TEMPS_FIRST: usize = VALVES_FIRST + VALVE_COUNT as usize * VALVE_KINDS;
 const VOLTS_FIRST: usize = TEMPS_FIRST + TEMP_SLOT_COUNT as usize;
@@ -282,7 +289,7 @@ const TAIL_FIRST: usize = VOLTS_FIRST + VOLT_SLOT_COUNT as usize;
 const TAIL_COUNT: usize = 23;
 /// entity count (DESIGN.md)
 const ENTITY_COUNT: u16 = (TAIL_FIRST + TAIL_COUNT) as u16;
-const _: () = assert!(ENTITY_COUNT == 333, "entity count (DESIGN.md)");
+const _: () = assert!(ENTITY_COUNT == 345, "entity count (DESIGN.md)");
 
 const DROP_GLOBAL: usize = 2;
 const DROP_KINDS: usize = 7;
@@ -325,6 +332,8 @@ enum Kind {
     Sync,
     /// command only
     Button,
+    /// number in l/min on `flow/set`: command only, no topic reports the flow
+    FlowTarget,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +343,8 @@ enum Gate {
     Temp2,
     Diag,
     NewDiag,
+    /// the flow layer is enabled on the valve
+    Flow,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -365,7 +376,7 @@ struct ValveDef {
     key: &'static [u8],
     /// legacy name / unique_id part, or the readable label
     dotted: &'static [u8],
-    /// state topic (command topic for buttons)
+    /// state topic (command topic for buttons and the flow target)
     topic: Topic,
     icon: Option<&'static str>,
 }
@@ -399,7 +410,7 @@ const fn vdef(
 #[rustfmt::skip]
 const VALVE_DEFS: [ValveDef; VALVE_KINDS] = {
     use Avail::{Esp, EspStm, None as NoAvail};
-    use Gate::{Always, Diag, NewDiag, Temp1, Temp2};
+    use Gate::{Always, Diag, Flow, NewDiag, Temp1, Temp2};
     use HaComponent as C;
     use Style::{Diag as DiagStyle, Legacy, New};
     [
@@ -425,6 +436,7 @@ const VALVE_DEFS: [ValveDef; VALVE_KINDS] = {
         vdef(C::Sensor, Kind::Failsafe, Always, New, EspStm, b"failsafe", b"failsafe", Topic::ValveFailsafe, Some("mdi:shield-alert-outline")),
         vdef(C::Sensor, Kind::Sync, Always, New, Esp, b"sync", b"target delivery", Topic::ValveSync, None),
         vdef(C::Button, Kind::Button, Always, New, EspStm, b"calibrate", b"calibrate", Topic::CmdValveCalibrate, Some("mdi:tune-vertical")),
+        vdef(C::Number, Kind::FlowTarget, Flow, New, EspStm, b"flowTarget", b"flow target", Topic::ValveFlowSet, Some("mdi:waves-arrow-right")),
     ]
 };
 
@@ -640,6 +652,8 @@ const TEMP_TEMPLATE: &str = "{{ value | replace(',', '.') | float(None) }}";
 /// Next calibration: HA logs the empty payload (no slot) as an invalid timestamp, "None" is
 /// unknown.
 const EMPTY_AS_NONE_TEMPLATE: &str = "{{ value if value else 'None' }}";
+/// The flow as `flow/set` takes it: at most three decimals, whatever float HA holds.
+const FLOW_COMMAND_TEMPLATE: &str = "{{ '%.3f' | format(value) }}";
 
 // ---------------------------------------------------------------- helpers
 
@@ -753,6 +767,7 @@ struct Entity {
     uid: Text<ID_MAX>,
     state: Text<TOPIC_MAX>,
     command: Text<TOPIC_MAX>,
+    command_template: Option<&'static str>,
     unit: Text<UNIT_MAX>,
     icon: Option<&'static str>,
     device_class: Option<&'static str>,
@@ -760,6 +775,8 @@ struct Entity {
     value_template: Option<&'static str>,
     options: &'static [&'static str],
     expire_after_s: u32,
+    /// a number from 0 to this in ml/min, step 0.1 l/min; 0: not a number
+    number_max_ml: u16,
     reports_position: bool,
     qos1: bool,
     payload_stop: bool,
@@ -852,6 +869,7 @@ fn describe_valve(ctx: &DiscoveryContext, v: u8, k: usize, e: &mut Entity, keep:
         }
         Gate::Diag => ctx.publish_diag,
         Gate::NewDiag => ctx.new_diag,
+        Gate::Flow => valve.flow_qmax_ml > 0,
     };
     if !shown {
         return Describe::Skip;
@@ -899,6 +917,15 @@ fn valve_entity(
     if d.kind == Kind::Button {
         e.command = topic_text(|out| build_topic(&ctx.topics, d.topic, seg, out))?;
         e.category = Category::Config;
+        return Some(());
+    }
+    if d.kind == Kind::FlowTarget {
+        e.command = topic_text(|out| build_topic(&ctx.topics, d.topic, seg, out))?;
+        e.command_template = Some(FLOW_COMMAND_TEMPLATE);
+        e.device_class = Some("volume_flow_rate");
+        e.unit = cat(&[b"L/min"])?;
+        e.number_max_ml = valve.flow_qmax_ml;
+        e.qos1 = true;
         return Some(());
     }
     e.state = state_topic(ctx, d.topic, seg)?;
@@ -950,7 +977,7 @@ fn valve_entity(
             e.options = &SYNC_OPTIONS;
             e.category = Category::Diagnostic;
         }
-        Kind::Button => {}
+        Kind::Button | Kind::FlowTarget => {}
     }
     Some(())
 }
@@ -1153,6 +1180,9 @@ fn write_entity(ctx: &DiscoveryContext, station: &[u8], e: &Entity, jw: &mut Jso
     if !e.command.is_empty() {
         jw.kv("command_topic", &e.command);
     }
+    if let Some(t) = e.command_template {
+        jw.kv("command_template", t);
+    }
     if let Some(t) = e.value_template {
         jw.kv("value_template", t);
     }
@@ -1178,6 +1208,14 @@ fn write_entity(ctx: &DiscoveryContext, station: &[u8], e: &Entity, jw: &mut Jso
     }
     if e.expire_after_s > 0 {
         jw.kv("expire_after", e.expire_after_s);
+    }
+    if e.number_max_ml > 0 {
+        jw.kv("min", 0u32);
+        jw.key("max");
+        jw.fixed(i32::from(e.number_max_ml), 3);
+        jw.key("step");
+        jw.fixed(1, 1);
+        jw.kv("mode", "box");
     }
     if e.reports_position {
         jw.kv("reports_position", true);
@@ -1263,13 +1301,13 @@ fn config_topic_shape(ctx: &DiscoveryContext, t: &[u8]) -> bool {
 // ---------------------------------------------------------------- DiscoveryIterator
 
 /// Iterates the current entity set in a fixed order: common (state, message, uptime*, ip), per
-/// active valve 22 kinds (state, target, actual, temp1*, temp2*, calibration date and
+/// active valve 23 kinds (state, target, actual, temp1*, temp2*, calibration date and
 /// repetitions, diag x5*, early stops*, rejected commands*, last stop*, calibration state*,
-/// coast open*, coast close*, problem, failsafe, target delivery, calibrate button), temps*,
-/// volts*, then the device entities (ESP/STM online, failsafe, lease*, safe mode*, link*,
-/// protocol*, version*, started*, resets*, overflows*, parse errors*, calibration running*, next
-/// calibration*, suppressed events*, rejected commands*, events*, buttons calibrate all, detect,
-/// stop*, reset STM, restart ESP, leave safe mode*). (* = gated.)
+/// coast open*, coast close*, problem, failsafe, target delivery, calibrate button, flow
+/// target*), temps*, volts*, then the device entities (ESP/STM online, failsafe, lease*, safe
+/// mode*, link*, protocol*, version*, started*, resets*, overflows*, parse errors*, calibration
+/// running*, next calibration*, suppressed events*, rejected commands*, events*, buttons calibrate
+/// all, detect, stop*, reset STM, restart ESP, leave safe mode*). (* = gated.)
 ///
 /// Node id = build_ha_id(station), object ids from build_ha_id(segment); names and unique_ids
 /// ("<station with ' ' -> '_'>.<uid>") keep the raw segment. KEEP entities (legacy component,
@@ -2088,6 +2126,11 @@ fn id_text(id: &OneWireId) -> Text<ONE_WIRE_ID_TEXT_LEN> {
     t
 }
 
+/// `qmax` of the flow layer on valve `i`, ml/min; 0 while the layer is not enabled on it.
+fn flow_qmax_ml(input: &DiscoveryInputs<'_>, i: usize) -> u16 {
+    input.flow.get(i).map_or(0, |f| f.qmax_ml)
+}
+
 /// Fills every field of `c` (false and an empty context without cfg).
 pub fn build_discovery_context(input: &DiscoveryInputs<'_>, c: &mut DiscoveryContext) -> bool {
     *c = DiscoveryContext::default();
@@ -2119,6 +2162,7 @@ pub fn build_discovery_context(input: &DiscoveryInputs<'_>, c: &mut DiscoveryCon
         v.segment = segment_text(|out| item_segment(cfg, ItemKind::Valve, i, out));
         copy_string(&mut v.name, &vc.name);
         [v.has_temp1, v.has_temp2, v.temps_known] = valve_sensors(input, usize::from(i));
+        v.flow_qmax_ml = flow_qmax_ml(input, usize::from(i));
     }
     for ((i, d), s) in (0..TEMP_SLOT_COUNT).zip(&mut c.temps).zip(&cfg.temps) {
         d.active = s.active && !is_zero(&s.id);
@@ -2143,8 +2187,8 @@ pub fn build_discovery_context(input: &DiscoveryInputs<'_>, c: &mut DiscoveryCon
 }
 
 /// CRC32 over the snapshot-dependent parts of the context (per valve has_temp1/has_temp2/
-/// temps_known, per sensor slot published/topic_known/topic segment, hw, stm_v3): the glue
-/// re-runs discovery when it changes. 0 without cfg.
+/// temps_known and `qmax` of the flow layer, per sensor slot published/topic_known/topic segment,
+/// hw, stm_v3): the glue re-runs discovery when it changes. 0 without cfg.
 pub fn discovery_input_key(input: &DiscoveryInputs<'_>) -> u32 {
     let Some(cfg) = input.cfg else {
         return 0;
@@ -2153,7 +2197,8 @@ pub fn discovery_input_key(input: &DiscoveryInputs<'_>) -> u32 {
     let mut crc = 0;
     for i in 0..usize::from(VALVE_COUNT) {
         let [t1, t2, known] = valve_sensors(input, i);
-        crc = crc32(&[u8::from(t1), u8::from(t2), u8::from(known)], crc);
+        let [q0, q1] = flow_qmax_ml(input, i).to_le_bytes();
+        crc = crc32(&[u8::from(t1), u8::from(t2), u8::from(known), q0, q1], crc);
     }
     for (kind, n) in [
         (ItemKind::Temp, TEMP_SLOT_COUNT),

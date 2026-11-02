@@ -621,6 +621,7 @@ pub struct ValveView<'a> {
 /// The flow view of a valve without the layer (a view without one).
 static NO_FLOW: FlowView = FlowView {
     enabled: false,
+    qmax_ml: 0,
     state: FlowState::Off,
     known: false,
     counts: 0,

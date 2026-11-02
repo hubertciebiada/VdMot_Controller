@@ -915,6 +915,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
     // The valve document shows the flow block of the snapshot (and the flow % as the position).
     rig.state().snapshot.flow[0] = FlowView {
         enabled: true,
+        qmax_ml: 2700,
         state: FlowState::Held,
         known: true,
         counts: 812,

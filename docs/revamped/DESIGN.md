@@ -879,13 +879,15 @@ Topic tables, payloads, subscriptions, retained handling and broker settings:
 
 Entity tables and the user view: `docs/revamped/MQTT.md`. The table in
 `ha_discovery.cpp` is the source (`kEntityCount` 309). The Rust table
-(`core/src/ha_discovery.rs`) has 333 since 2.2.4: 22 kinds per valve instead
-of 20, the two coast sensors after the calibration state.
+(`core/src/ha_discovery.rs`) has 345: 23 kinds per valve instead of 20, the two
+coast sensors after the calibration state and the flow target of a valve with the
+flow layer as the last kind.
 
 - Runs in mode 2; manual runs (`POST /api/mqtt/discovery`) also in mode 1
   (publish/republish need `separate`; delete does not). Triggers: every
   connect when `haDiscoveryOnConnect`, a change of `discoveryInputKey`
-  (sensor assignments, published sensor segments, board tag, protocol 3),
+  (sensor assignments, the `qmax` of the flow layer per valve, published sensor
+  segments, board tag, protocol 3),
   HA status Offline -> Online (not every `online`: a retained birth would run
   it on every connect), manual.
 - The automatic publish runs (connect, input change) wait for settled STM

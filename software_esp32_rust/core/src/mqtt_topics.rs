@@ -282,9 +282,12 @@ pub enum Topic {
     DiagValveCoastOpen = 55,
     /// `<main>diag/valves/<V>/coastClose`
     DiagValveCoastClose = 56,
+    // ---- 2.2.12 ----
+    /// `<main>valves/<V>/flow/set` a target in l/min: a command, with and without `separate`
+    ValveFlowSet = 57,
 }
 
-pub const TOPIC_COUNT: u8 = 57;
+pub const TOPIC_COUNT: u8 = 58;
 
 /// Every topic in number order.
 const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
@@ -345,6 +348,7 @@ const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
     Topic::CmdStmSafeExit,
     Topic::DiagValveCoastOpen,
     Topic::DiagValveCoastClose,
+    Topic::ValveFlowSet,
 ];
 
 impl Topic {
@@ -458,9 +462,10 @@ const TOPICS: [TopicDef; TOPIC_COUNT as usize] = [
     path(b"cmd/stmSafeExit", false, N),
     item(b"diag/valves/", b"/coastOpen", false, S),
     item(b"diag/valves/", b"/coastClose", false, S),
+    item(b"valves/", b"/flow/set", false, N),
 ];
 const _: () = assert!(
-    Topic::DiagValveCoastClose as u8 + 1 == TOPIC_COUNT,
+    Topic::ValveFlowSet as u8 + 1 == TOPIC_COUNT,
     "TOPICS out of sync"
 );
 
@@ -491,7 +496,7 @@ pub fn topic_is_compat(t: Topic) -> bool {
 }
 
 /// Retain flag: Status, StmStatus, Failsafe and DiagCalibrationActive are always retained;
-/// Events, DiagValveProfile and the cmd/ topics never; every other topic follows
+/// Events, DiagValveProfile, ValveFlowSet and the cmd/ topics never; every other topic follows
 /// `publish_retained`.
 pub fn topic_retained(t: Topic, publish_retained: bool) -> bool {
     match topic_def(t).retain {

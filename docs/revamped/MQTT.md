@@ -117,7 +117,7 @@ parse them must be checked.
 | Topic | QoS | Payload | Action |
 |---|---|---|---|
 | separate on: `<main>valves/<V>/target/set` (`.../target/set/set` also accepted for ioBroker); separate off: `<main>valves/<V>/target` or `.../target/set` | 1 | `0`..`100`, optionally with a fraction (`.` or `,`, e.g. `43.7`, `43,7`), rounded half up; `OPEN` = 100, `CLOSE` = 0; `STOP` (STM 2.1: stops the valve where it is) | target of the valve |
-| `<main>valves/<V>/flow/set` (with and without separate) | 1 | the flow in l/min: digits, optionally `.` or `,` and 1..3 digits, e.g. `2.5`, `2,5`, `0.125` | target of the valve with the flow layer in l/min, above `qmax` clipped to it (Rust 2.2.10) |
+| `<main>valves/<V>/flow/set` (with and without separate) | 1 | the flow in l/min: digits, optionally `.` or `,` and 1..3 digits, e.g. `2.5`, `2,5`, `0.125`; blanks around allowed, no sign or exponent, at most 16 bytes | target in l/min of a valve with a running flow layer, above `qmax` clipped to it, `0` closes (Rust 2.2.10) |
 | `<main>cmd/valves/<V>/calibrate` | 0 | `PRESS` | calibrate the valve |
 | `<main>cmd/calibrate` | 0 | `PRESS` | calibrate all valves |
 | `<main>cmd/detect` | 0 | `PRESS` | valve detection |
@@ -126,8 +126,9 @@ parse them must be checked.
 | `<main>cmd/stop` | 0 | `PRESS` | stop every valve (STM 2.1) |
 | `<main>cmd/stmSafeExit` | 0 | `PRESS` | leave the STM safe mode (STM 2.1) |
 
-Payload rules: digits with at most one `.` or `,` separator, blanks around
-allowed, no sign or exponent, at most 16 bytes; the value must lie in 0..100.
+Payload rules of a target in %: digits with at most one `.` or `,` separator,
+blanks around allowed, no sign or exponent, at most 16 bytes; the value must lie
+in 0..100.
 `<V>` may be the configured segment (also a multi-level override) or the valve
 number 1..12.
 
@@ -152,7 +153,12 @@ before).
 
 ### No longer published
 `common/heatControl`, `common/parkPosition`, `valves/<V>/tTarget`,
-`valves/<V>/tValue`, `valves/<V>/control/*`, `valves/<V>/window/*`.
+`valves/<V>/tValue`, `valves/<V>/control/*`, `valves/<V>/window/*`, and
+`valves/<V>/flow`, which only Rust 2.2.10 published.
+
+The firmware does not clear them. A retained message of the old firmware stays
+at the broker until someone publishes an empty retained message to its topic.
+None of these topics is a command topic, so that moves no valve.
 
 ## New topics
 
@@ -220,9 +226,11 @@ A valve with the flow layer (Rust 2.2.8, `GET /api/valves/{n}/flow` in
 API.md) takes and reports percentages of its stroke: `valves/<V>/target`,
 `requested` and `actual` mean % of `strokeCounts`, 0 is closed and 100 the open
 end stop. `actual` is the held position, 0 while it is unknown (after a restart,
-until the valve is positioned again), and `sync` is `synced` as soon as the layer
-holds the target. The Home Assistant entities of the valve carry the same values;
-`failsafe` and the failsafe position stay on the STM's own scale.
+until the valve is positioned again). `sync` says nothing about the positioning:
+the layer delivers the target, so `sync` goes `synced` at the next read-back of
+the STM, also while the valve still moves. The Home Assistant entities of the valve
+carry the same values; `failsafe` and the failsafe position stay on the STM's own
+scale.
 
 Since Rust 2.2.10 such a valve also takes its target in l/min on
 `valves/<V>/flow/set`. The layer positions on the curve for that flow, and
@@ -234,6 +242,22 @@ message on the topic, as on `target/set`. Without the layer running on the valve
 the command is rejected `unsupported`, a payload that is no number is a payload
 reject. Without **separate** the retained `target` a broker hands back after a
 connect is the echo of a target in l/min and does not end it.
+
+No topic reports the flow, the target in l/min or the state of the layer: they are
+`flow.lpm`, `flow.targetLpm` and `flow.state` in `GET /api/valves`. A positioning
+that failed shows as `problem` = 1 and event 417.
+
+## Restart and broker loss
+
+| Event | What happens |
+|---|---|
+| ESP restart on request (`cmd/restart`, dashboard, OTA) | `<main>status` = `offline`, retained, then a clean disconnect: the broker sends no last will |
+| ESP crash or power loss | the broker sends the last will after 1.5 x keep-alive |
+| Every connect | `<main>status` = `online`, the subscriptions, a full publish spread over the passes, and every `diag/*` value once. `common/ip` goes out once per connection. `valves/<V>/calibration/date` goes out only after a calibration seen since the boot, so its retained value stays over a restart. `diag/valves/<V>/profile` goes out only for a new profile |
+| Commands sent while the ESP was away | the broker keeps QoS 1 messages of the persistent session and hands them over in order. A sender must publish with QoS 1: a QoS 0 message is not queued. Retained commands run once and are cleared |
+| `flow/set` before the ESP knows the STM (first seconds after a boot, an STM reset) | the state of the layer is `unsupported` until the STM version is read, so the command is rejected and cleared. A regulator that repeats its target recovers with the next one. The stored target stays: it survives a restart of the ESP and of the STM |
+| Broker away | no publish; reconnect with the back-off above. Events of that time are not sent later: they stay in the log (`GET /api/events`), `common/message` shows the latest. The failsafe lease is no longer renewed, so `failsafe.timeoutMin` later the valves go to their failsafe positions |
+| Broker back without its retained messages | the next connect restores every topic above except `calibration/date` of a valve without a calibration since the boot, and the HA configs when `haDiscoveryOnConnect` is off |
 
 ## Events
 
@@ -255,13 +279,18 @@ per hour and once per code and valve per 10 min; everything else 30 per hour
 and once per code and valve per 10 min. Suppressed events are counted
 (`diag/mqtt/eventsSuppressed`).
 
+Of the flow layer, `flow_position_failed`, `flow_hold_lost` and
+`flow_config_unreadable` reach MQTT. `flow_positioned` is an Info event of the class
+"warning and worse": it stays in the log, although `event_types` lists it.
+
 ## Home Assistant
 
 Discovery runs in mode 2 (MQTT + HA). It is sent on connect (if
 haDiscoveryOnConnect), when HA comes back (`<prefix>/status` goes from
 `offline` to `online`), and from Maintenance → MQTT (also in mode 1, then with
-**separate** required). After a connect, and when the STM reports other sensor
-assignments, it waits until the STM data has settled (link up, re-sync done,
+**separate** required). After a connect, when the STM reports other sensor
+assignments, and when the flow layer of a valve is switched or gets another `qmax`, it
+waits until the STM data has settled (link up, re-sync done,
 30 s for the 1-Wire lists; at most 2 min), so the set goes out once with the
 STM's sensor assignments instead of once per step of its start-up; a short
 loss of the settled state without another assignment sends nothing. Topic:
@@ -326,6 +355,14 @@ Per valve:
 | sensor (diagnostic, enum) | `diag_lastStop_<R>` | ESP + STM | newDiag |
 | sensor (diagnostic) | `diag_calState_<R>` | ESP + STM | newDiag |
 | sensor (diagnostic, measurement) | `diag_coastOpen_<R>`, `diag_coastClose_<R>` (no unit, motor pulses) | ESP + STM | newDiag |
+| number | `valves_flowTarget_<R>` (flow target, L/min) | ESP + STM | flow layer enabled on the valve |
+
+`valves_flowTarget_<R>` writes `valves/<V>/flow/set` with QoS 1: `min` 0, `max` the
+`qmax` of the valve, `step` 0.1, `device_class: volume_flow_rate`, `mode: box`,
+`command_template: {{ '%.3f' | format(value) }}`. No topic reports the flow, so the
+entity has no `state_topic`: it shows what Home Assistant sent last, not a target set
+elsewhere. `valves_target_<R>` stays the % of the stroke, and a value there ends the
+target in l/min.
 
 Per device:
 

@@ -877,6 +877,8 @@ pub fn flow_state_name(s: FlowState) -> &'static str {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FlowView {
     pub enabled: bool,
+    /// `qmax` of an enabled valve, ml/min (else 0): the upper bound of the Home Assistant number
+    pub qmax_ml: u16,
     pub state: FlowState,
     /// the held position is known: `counts`, `flow_ml` and `pct` are its values
     pub known: bool,
@@ -1589,6 +1591,7 @@ impl FlowLayer {
         };
         FlowView {
             enabled: cfg.enabled,
+            qmax_ml: if cfg.enabled { cfg.qmax_ml } else { 0 },
             state,
             known,
             counts: if known { fv.held_counts } else { 0 },

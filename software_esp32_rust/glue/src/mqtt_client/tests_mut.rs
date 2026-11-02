@@ -8,7 +8,7 @@
 use super::rig::{s, Client, Rig, Track, PORT};
 use super::*;
 use crate::mqtt_conn::MQTT_CONNECT_UNAUTHORIZED;
-use vdm_esp_core::common::{OneWireId, TEMP_READ_ERROR, VAD_FAILED};
+use vdm_esp_core::common::{contains_bytes, OneWireId, TEMP_READ_ERROR, VAD_FAILED};
 use vdm_esp_core::event_log::{make_event, EVENT_TEXT_MAX};
 use vdm_esp_core::flow_layer::FlowView;
 use vdm_esp_core::stm_codec::StopReason;
@@ -1633,6 +1633,111 @@ fn inbound_a_flow_the_queue_refuses_is_submitted_again() {
     rig.host.state().submit_result = true;
     rig.run(&mut c, 2);
     assert_eq!(rig.submitted()[0].flow_ml, Some(1250));
+}
+
+#[test]
+fn inbound_the_latch_keeps_the_newest_target_whether_a_flow_or_a_percentage() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.snap(|s| s.flow[0] = held_flow());
+    rig.publish_snap();
+    rig.settle(&mut c, 2);
+    rig.host.state().submit_result = false;
+    rig.deliver(FLOW_SET, "1,25");
+    rig.run(&mut c, 2);
+    rig.deliver("VdMot/valves/1/target/set", "40");
+    rig.run(&mut c, 2);
+    rig.host.state().submit_result = true;
+    rig.run(&mut c, 2);
+    let sub = rig.submitted();
+    assert_eq!(sub.len(), 1);
+    assert_eq!((sub[0].pos, sub[0].flow_ml), (40, None));
+    // The other way round.
+    rig.host.state().submit_result = false;
+    rig.deliver("VdMot/valves/1/target/set", "60");
+    rig.run(&mut c, 2);
+    rig.deliver(FLOW_SET, "2.5");
+    rig.run(&mut c, 2);
+    rig.host.state().submit_result = true;
+    rig.run(&mut c, 2);
+    let sub = rig.submitted();
+    assert_eq!(sub.len(), 2);
+    assert_eq!(sub[1].flow_ml, Some(2500));
+}
+
+#[test]
+fn inbound_a_flow_is_taken_in_every_state_of_a_running_layer() {
+    for state in [
+        FlowState::Unknown,
+        FlowState::Positioning,
+        FlowState::Held,
+        FlowState::Failed,
+    ] {
+        let rig = Rig::new();
+        let mut c = rig.client();
+        rig.use_mqtt(MqttMode::Mqtt);
+        rig.snap(|s| {
+            s.flow[0] = FlowView {
+                state,
+                ..held_flow()
+            };
+        });
+        rig.publish_snap();
+        rig.settle(&mut c, 2);
+        rig.deliver(FLOW_SET, "0");
+        rig.run(&mut c, 2);
+        assert_eq!(rig.submitted()[0].flow_ml, Some(0), "{state:?}");
+        assert_eq!(rig.shared.status().commands_rejected, 0, "{state:?}");
+    }
+}
+
+#[test]
+fn inbound_a_flow_on_an_inactive_or_unknown_valve_is_rejected_and_cleared() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.snap(|s| s.flow = [held_flow(); 12]);
+    rig.publish_snap();
+    rig.settle(&mut c, 2);
+    rig.deliver("VdMot/valves/2/flow/set", "1");
+    rig.run(&mut c, 2);
+    rig.deliver("VdMot/valves/13/flow/set", "1");
+    rig.run(&mut c, 2);
+    assert!(rig.submitted().is_empty());
+    assert_eq!(rig.payloads("VdMot/valves/2/flow/set"), vec![""]);
+    assert_eq!(rig.payloads("VdMot/valves/13/flow/set"), vec![""]);
+    let ev = rig.rejected();
+    assert_eq!(
+        Rig::text(&ev[0]),
+        reject_reason_name(RejectReason::Inactive)
+    );
+    assert_eq!(
+        Rig::text(&ev[1]),
+        reject_reason_name(RejectReason::UnknownValve)
+    );
+}
+
+#[test]
+fn no_topic_reports_the_flow_the_full_publish_stays_on_the_percentages() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.snap(|s| {
+        s.valves[0].known = true;
+        s.flow[0] = held_flow();
+    });
+    rig.publish_snap();
+    rig.settle(&mut c, 50);
+    let published = rig.published();
+    let valve = |tail: &str| {
+        let t = format!("VdMot/valves/1/{tail}");
+        published.iter().any(|p| p.topic == t.as_bytes())
+    };
+    assert!(valve("actual/value") && valve("state/value"));
+    assert!(!published
+        .iter()
+        .any(|p| contains_bytes(&p.topic, b"/flow") || contains_bytes(&p.payload, b"Lpm")));
 }
 
 // ---------------------------------------------------------------- connection

@@ -14,6 +14,7 @@
 use super::*;
 use crate::common::{contains_bytes, OneWireId, TEMP_READ_ERROR};
 use crate::event_log::event_mqtt_names;
+use crate::flow_layer::FlowView;
 use crate::test_support::{assert_text, Lcg};
 use crate::valve_model::ValveState;
 use std::boxed::Box;
@@ -94,7 +95,7 @@ pub(super) struct Msg {
     pub(super) json: Vec<u8>,
 }
 
-/// Every message of a fresh iterator (at most the 333 entities).
+/// Every message of a fresh iterator (at most the 345 entities).
 pub(super) fn all(c: &DiscoveryContext) -> Vec<Msg> {
     let mut it = DiscoveryIterator::new();
     let mut out = Vec::new();
@@ -108,7 +109,7 @@ pub(super) fn all(c: &DiscoveryContext) -> Vec<Msg> {
             topic: m.topic.to_vec(),
             json: jw.as_bytes().to_vec(),
         });
-        assert!(out.len() <= 333, "the iterator makes progress");
+        assert!(out.len() <= 345, "the iterator makes progress");
     }
     assert!(jw.ok()); // ended because the list is exhausted
     out
@@ -120,7 +121,7 @@ pub(super) fn topics(c: &DiscoveryContext) -> Vec<Vec<u8>> {
     let mut m = DiscoveryMessage::default();
     while it.next_topic(c, &mut m) {
         out.push(m.topic.to_vec());
-        assert!(out.len() <= 333, "the iterator makes progress");
+        assert!(out.len() <= 345, "the iterator makes progress");
     }
     assert!(m.topic.is_empty());
     out
@@ -994,7 +995,7 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
         if it.v20_topic(&c, &mut old) {
             olds.insert(m.topic.to_vec(), old.topic.to_vec());
         }
-        assert!(olds.len() <= 333);
+        assert!(olds.len() <= 345);
     }
     let old_of = |t: &str| olds.get(t.as_bytes()).cloned().unwrap_or_default();
     assert_text(
@@ -1018,7 +1019,7 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
         produced += 1;
         assert!(!same.v20_topic(&c, &mut old));
         assert!(old.topic.is_empty());
-        assert!(produced <= 333);
+        assert!(produced <= 345);
     }
     assert!(produced > 20);
     // Another prefix: the legacy prefix differs.
@@ -1170,11 +1171,11 @@ fn discovery_skips_an_entity_that_cannot_be_built_and_continues() {
     let mut rest = 0;
     while it.next(&c, &mut m, &mut jw) {
         rest += 1;
-        assert!(rest <= 333);
+        assert!(rest <= 345);
     }
     assert_eq!(rest, 8 + 7);
     assert!(jw.ok());
-    assert_eq!(it.position(), 333);
+    assert_eq!(it.position(), 345);
     assert!(!it.next(&c, &mut m, &mut jw));
     // next_topic passes unbuildable entities over.
     assert_eq!(topics(&c).len(), 3 + 9 + 7);
@@ -1221,6 +1222,7 @@ fn discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2() {
             true,
             b"\xc5\x81\xc5\x81\xc5\x81\xc5\x81\xc5\x81",
         );
+        c.valves[i].flow_qmax_ml = crate::flow_layer::FLOW_QMAX_MAX_ML;
     }
     for i in 0..usize::from(TEMP_SLOT_COUNT) {
         temp1(
@@ -1241,7 +1243,7 @@ fn discovery_with_every_entity_enabled_fits_the_mqtt_buffer_w15_2() {
         );
     }
     let v = all(&c);
-    assert_eq!(v.len(), 333);
+    assert_eq!(v.len(), 345);
     let mut longest = 0;
     for m in &v {
         longest = longest.max(m.json.len());
@@ -1742,6 +1744,7 @@ fn build_discovery_context_and_discovery_input_key() {
         let input = DiscoveryInputs {
             cfg: Some(&cfg),
             valves: Some(&valves),
+            flow: &[],
             temps: &temps,
             volts: &volts,
             sensors_settled: true,
@@ -1805,6 +1808,7 @@ fn build_discovery_context_and_discovery_input_key() {
     let mut input = DiscoveryInputs {
         cfg: Some(&cfg),
         valves: Some(&valves),
+        flow: &[],
         temps: &temps,
         volts: &volts,
         sensors_settled: true,
@@ -1894,6 +1898,7 @@ impl Snapshot {
         discovery_input_key(&DiscoveryInputs {
             cfg: Some(cfg),
             valves: Some(&self.valves),
+            flow: &[],
             temps: &self.temps,
             volts: &self.volts,
             sensors_settled: true,
@@ -2561,7 +2566,7 @@ fn v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity() {
     let mut bad = DiscoveryIterator::new();
     let mut m = DiscoveryMessage::default();
     assert!(!bad.next_topic(&c, &mut m));
-    assert_eq!(bad.position(), 333);
+    assert_eq!(bad.position(), 345);
     assert!(!bad.v20_topic(&c, &mut m));
     small(&mut c);
     set(&mut c.station, b"Dom 1");
@@ -2569,9 +2574,9 @@ fn v20_topic_nothing_for_an_unsafe_station_or_a_skipped_last_entity() {
     let mut n = 0;
     while it.next_topic(&c, &mut m) {
         n += 1;
-        assert!(n <= 333);
+        assert!(n <= 345);
     }
-    assert_eq!(it.position(), 333); // the last entity (leave safe mode) needs STM v3
+    assert_eq!(it.position(), 345); // the last entity (leave safe mode) needs STM v3
     assert!(!it.v20_topic(&c, &mut m));
 }
 
@@ -2614,9 +2619,12 @@ fn discovery_input_key_crc32_over_the_snapshot_parts_in_their_order() {
     temps[0].id = owid(1);
     let mut volts = [VoltReading::default(); 2];
     volts[1].id = owid(4);
+    let mut flow = [FlowView::default(); 12];
+    flow[2].qmax_ml = 2700;
     let input = DiscoveryInputs {
         cfg: Some(&cfg),
         valves: Some(&valves),
+        flow: &flow,
         temps: &temps,
         volts: &volts,
         sensors_settled: true,
@@ -2630,11 +2638,15 @@ fn discovery_input_key_crc32_over_the_snapshot_parts_in_their_order() {
     assert_text(&c.volts[1].topic_segment, "2");
     assert!(c.volts[1].topic_known);
     let mut crc = 0;
+    assert_eq!(c.valves[2].flow_qmax_ml, 2700);
     for v in &c.valves {
+        let [q0, q1] = v.flow_qmax_ml.to_le_bytes();
         let b = [
             u8::from(v.has_temp1),
             u8::from(v.has_temp2),
             u8::from(v.temps_known),
+            q0,
+            q1,
         ];
         crc = crc32(&b, crc);
     }
@@ -2650,6 +2662,82 @@ fn discovery_input_key_crc32_over_the_snapshot_parts_in_their_order() {
     hw[..c.hw_version.len()].copy_from_slice(&c.hw_version);
     crc = crc32(&hw, crc);
     assert_eq!(discovery_input_key(&input), crc32(&[1], crc));
+}
+
+#[test]
+fn discovery_the_flow_target_is_a_number_of_a_valve_with_the_layer() {
+    let mut c = small_ctx();
+    valve(&mut c, 0, "Bad", false, false, b"Bad");
+    valve(&mut c, 1, "Bad/WC", false, false, b"");
+    c.valves[1].flow_qmax_ml = 2700;
+    let number = "homeassistant/number/VdMot/valves_flowTarget_Bad_WC/config";
+    let v = all(&c);
+    assert!(find(
+        &v,
+        "homeassistant/number/VdMot/valves_flowTarget_Bad/config"
+    )
+    .is_none());
+    assert_text(
+        &json(&v, number),
+        format!(
+            "{{\"name\":\"Valve 2 flow target\",\
+             \"unique_id\":\"VdMot.valves.Bad/WC.flowTarget\",\
+             \"command_topic\":\"VdMot/valves/Bad/WC/flow/set\",\
+             \"command_template\":\"{{{{ '%.3f' | format(value) }}}}\",\
+             \"icon\":\"mdi:waves-arrow-right\",\"device_class\":\"volume_flow_rate\",\
+             \"unit_of_measurement\":\"L/min\",\
+             \"min\":0,\"max\":2.700,\"step\":0.1,\"mode\":\"box\",\"qos\":1,\
+             {ESP_STM}{DEVICE}"
+        ),
+    );
+    assert!(topics(&c).contains(&number.as_bytes().to_vec()));
+    assert_eq!(cls(&c, number.as_bytes()), TopicClass::Current);
+    // One topic with and without separate, qmax of the valve.
+    c.topics.separate = false;
+    c.valves[1].flow_qmax_ml = 10;
+    let j = json(&all(&c), number);
+    assert!(contains_bytes(
+        &j,
+        b"\"command_topic\":\"VdMot/valves/Bad/WC/flow/set\""
+    ));
+    assert!(contains_bytes(&j, b"\"max\":0.010,"));
+    // The layer goes off: the config is stale, the run deletes it.
+    c.valves[1].flow_qmax_ml = 0;
+    assert!(find(&all(&c), number).is_none());
+    assert_eq!(cls(&c, number.as_bytes()), TopicClass::Stale);
+    // An inactive valve has none.
+    c.valves[1].flow_qmax_ml = 2700;
+    c.valves[1].active = false;
+    assert!(find(&all(&c), number).is_none());
+}
+
+#[test]
+fn discovery_context_and_key_take_qmax_of_the_views() {
+    let cfg = Box::<Config>::default();
+    let mut flow = [FlowView::default(); 12];
+    flow[1].qmax_ml = 2700;
+    flow[1].state = crate::flow_layer::FlowState::Held;
+    let mut c = Box::<DiscoveryContext>::default();
+    fn inputs<'a>(cfg: &'a Config, flow: &'a [FlowView]) -> DiscoveryInputs<'a> {
+        DiscoveryInputs {
+            cfg: Some(cfg),
+            flow,
+            ..DiscoveryInputs::default()
+        }
+    }
+    assert!(build_discovery_context(&inputs(&cfg, &flow), &mut c));
+    assert_eq!(c.valves[0].flow_qmax_ml, 0);
+    assert_eq!(c.valves[1].flow_qmax_ml, 2700);
+    // A valve past the end of the views has no layer.
+    assert!(build_discovery_context(&inputs(&cfg, &flow[..1]), &mut c));
+    assert_eq!(c.valves[1].flow_qmax_ml, 0);
+    let key = discovery_input_key(&inputs(&cfg, &flow));
+    assert_ne!(key, discovery_input_key(&inputs(&cfg, &[])));
+    // The state of the layer is no input, qmax is.
+    flow[1].state = crate::flow_layer::FlowState::Positioning;
+    assert_eq!(discovery_input_key(&inputs(&cfg, &flow)), key);
+    flow[1].qmax_ml = 2701;
+    assert_ne!(discovery_input_key(&inputs(&cfg, &flow)), key);
 }
 
 #[test]

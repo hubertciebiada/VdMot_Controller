@@ -567,6 +567,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     // flow at most 65.535 l/min, the STM's duration and peak at their type's maximum).
     let flow = crate::flow_layer::FlowView {
         enabled: true,
+        qmax_ml: 2700,
         state: crate::flow_layer::FlowState::Positioning,
         known: true,
         counts: crate::flow_layer::FLOW_COUNTS_MAX,
@@ -1584,6 +1585,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     let mut buf = [0u8; 512];
     let held = FlowView {
         enabled: true,
+        qmax_ml: 2700,
         state: FlowState::Held,
         known: true,
         counts: 812,

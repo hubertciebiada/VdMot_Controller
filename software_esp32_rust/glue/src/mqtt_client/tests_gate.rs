@@ -7,6 +7,7 @@
 
 use super::rig::{s, Rig};
 use super::*;
+use vdm_esp_core::flow_layer::FlowView;
 
 /// MQTT with HA discovery on broker.lan.
 fn use_ha(rig: &Rig) {
@@ -104,6 +105,48 @@ fn gate_inputs_that_change_and_change_back_during_a_run_start_no_other() {
     rig.run(&mut c, 1000);
     assert_eq!(runs(&rig), 1);
     assert!(!rig.shared.status().discovery_running);
+}
+
+#[test]
+fn gate_the_layer_of_a_valve_is_an_input_its_state_is_not() {
+    const NUMBER: &str = "homeassistant/number/VdMot/valves_flowTarget_1/config";
+    let rig = Rig::new();
+    let mut c = rig.client();
+    use_ha(&rig);
+    link_up(&rig);
+    rig.snap(|s| s.sensors_settled = true);
+    rig.publish_snap();
+    c.begin();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 1);
+    assert_eq!(rig.count(NUMBER), 0);
+    // Enabling the layer: the number comes.
+    rig.snap(|s| {
+        s.flow[0].enabled = true;
+        s.flow[0].qmax_ml = 2700;
+        s.flow[0].state = FlowState::Unknown;
+    });
+    rig.publish_snap();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 2);
+    assert!(rig.last(NUMBER).contains("\"max\":2.700"));
+    // The layer at work: nothing.
+    rig.snap(|s| s.flow[0].state = FlowState::Held);
+    rig.publish_snap();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 2);
+    // Another qmax: the number follows.
+    rig.snap(|s| s.flow[0].qmax_ml = 2000);
+    rig.publish_snap();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 3);
+    assert!(rig.last(NUMBER).contains("\"max\":2.000"));
+    // The layer off: the config goes.
+    rig.snap(|s| s.flow[0] = FlowView::default());
+    rig.publish_snap();
+    rig.run(&mut c, 1000);
+    assert_eq!(runs(&rig), 4);
+    assert_eq!(rig.last(NUMBER), "");
 }
 
 #[test]

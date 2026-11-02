@@ -32,6 +32,17 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
   while it is open. The panel grows by about 4.4 KB of gzip; the image budget of 1,228,800 B has about
   1 KB left ([PORTING.md](PORTING.md)).
 
+### ESP32: MQTT and Home Assistant of the flow layer
+
+- Home Assistant gets the number `valves_flowTarget_<R>` on a valve with the flow layer: it writes
+  `valves/<V>/flow/set`, 0..`qmax` in steps of 0.1 L/min, QoS 1. No topic reports the flow, so it
+  has no state topic and shows what Home Assistant sent last. Discovery has at most 345 entities
+  (333 before), and a change of the layer of a valve (enabled, `qmax`) starts a run.
+- [MQTT.md](../revamped/MQTT.md) corrected: `valves/<V>/flow` is listed as no longer published,
+  `sync` of a valve with the layer says nothing about the positioning, and no topic reports the
+  flow. New: restart and broker loss, and which flow events reach MQTT.
+- [API.md](../revamped/API.md): `targetLpm` in the example of the valve entry.
+
 ## 2.2.12-revamped
 
 This release also carries 2.2.8, 2.2.9, 2.2.10 and 2.2.11 below, which had no release of their

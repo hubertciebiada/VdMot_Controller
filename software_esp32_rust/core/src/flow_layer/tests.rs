@@ -861,6 +861,17 @@ fn new_layer_everything_off_nothing_sent_the_view_is_empty() {
 }
 
 #[test]
+fn the_view_shows_qmax_of_an_enabled_valve_only() {
+    let mut f = FlowLayer::new();
+    let mut c = curve();
+    c.qmax_ml = 2500;
+    f.set_configs(&configs(&c, &[0]));
+    assert_eq!(f.view(0).qmax_ml, 2500);
+    assert_eq!(f.view(1).qmax_ml, 0);
+    assert_eq!(f.view(1), FlowView::default());
+}
+
+#[test]
 fn unsupported_stm_the_enabled_valve_shows_unsupported_and_nothing_is_sent() {
     let mut f = FlowLayer::new();
     f.set_configs(&configs(&curve(), &[0]));

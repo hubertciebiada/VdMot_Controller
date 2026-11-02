@@ -438,6 +438,7 @@ fn compat_and_new_topics_byte_exact() {
             b"Bad/WC",
             "VdMot/diag/valves/Bad/WC/coastClose",
         ),
+        new_row(Topic::ValveFlowSet, b"3", "VdMot/valves/3/flow/set"),
     ];
     // every topic covered: the array type has TOPIC_COUNT entries
     for (i, r) in rows.iter().enumerate() {
@@ -519,8 +520,11 @@ fn retain_flags() {
             t,
             Topic::Status | Topic::DiagCalibrationActive | Topic::StmStatus | Topic::Failsafe
         );
-        let never = matches!(t, Topic::Events | Topic::DiagValveProfile)
-            || (Topic::CmdValveCalibrate as u8..=Topic::CmdStmSafeExit as u8).contains(&i);
+        let never = matches!(
+            t,
+            Topic::Events | Topic::DiagValveProfile | Topic::ValveFlowSet
+        ) || (Topic::CmdValveCalibrate as u8..=Topic::CmdStmSafeExit as u8)
+            .contains(&i);
         if always {
             assert!(topic_retained(t, false), "{i}");
             assert!(topic_retained(t, true), "{i}");

@@ -152,7 +152,7 @@ Valve entry (`/api/valves`):
         "v3":{"flags":["calRestored"],"fault":"none","drive":15,"retryS":0,"retries":0}},
  "failsafe":{"state":"off","pct":50},
  "calibrationEnd":"2026-09-23T03:12:40",
- "flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"ms":null,"peak":null}}
+ "flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"targetLpm":null,"ms":null,"peak":null}}
 ```
 - `target` / `stmTarget`: null while unknown.
 - `targetSource`: `none`, `stm`, `web`, `mqtt`, `restored` (from RTC/NVS after

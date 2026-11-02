@@ -846,6 +846,7 @@ fn discovery_inputs<'s>(cfg: &'s Config, snap: &'s StmSnapshot, ip: u32) -> Disc
     DiscoveryInputs {
         cfg: Some(cfg),
         valves: Some(&snap.valves),
+        flow: &snap.flow,
         temps: temp_readings(snap),
         volts: volt_readings(snap),
         sensors_settled: snap.sensors_settled,
