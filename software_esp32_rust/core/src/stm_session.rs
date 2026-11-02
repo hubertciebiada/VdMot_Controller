@@ -24,7 +24,9 @@ use crate::event_log::{
 use crate::failsafe::{
     regulator_cause, LeaseMode, LeaseState, LeaseStatus, RegulatorCause, RegulatorInput,
 };
-use crate::flow_layer::{FlowConfig, FlowInputs, FlowLayer, FlowOutcome, FlowRequest, FlowState};
+use crate::flow_layer::{
+    flow_target, FlowConfig, FlowInputs, FlowLayer, FlowOutcome, FlowRequest, FlowState, Served,
+};
 use crate::health_monitor::{HealthMonitor, MAX_EVENTS_PER_UPDATE};
 use crate::lease_client::{effective_lease_config, LeaseClient, LeaseClientSnapshot};
 use crate::line_assembler::{LineAssembler, STM_MAX_LINE_LEN};
@@ -48,7 +50,7 @@ use crate::stm_flasher::{
 use crate::stm_types::{StmCommand, StmCommandType, StmSaveState, StmSnapshot};
 use crate::target_store::{capture_targets, restore_targets, PersistedTargets, RestoreSource};
 use crate::valve_model::{
-    expect_sensor, temp_raw_valid, vad_valid, SensorModel, ValveModel, ValveState,
+    expect_sensor, temp_raw_valid, vad_valid, SensorModel, TargetSource, ValveModel, ValveState,
     HEALTH_FLOW_FAILED,
 };
 use crate::version::{
@@ -368,11 +370,29 @@ impl<P: StmSessionPort> StmSession<P> {
     }
 
     /// The flow configuration of the valves (Rust 2.2.8; initially and whenever it changed):
-    /// the layer takes it, the model stops delivering the targets of the enabled valves.
+    /// the layer takes it, the model stops delivering the targets of the enabled valves, and a
+    /// target in l/min gets the % of the stroke of the new curve.
     pub fn apply_flow_config(&mut self, cfgs: &[FlowConfig; VALVES]) {
         self.flow.set_configs(cfgs);
         self.model.set_flow_mask(self.flow.active_mask());
+        for v in 0..VALVE_COUNT {
+            let s = self.model.valve(v);
+            if let Some(ml) = s.flow_target() {
+                self.set_flow_target(v, ml, s.source, 0);
+            }
+        }
         self.dirty = true;
+    }
+
+    /// A target in l/min on `valve` through its curve; false without the layer, whose curve it
+    /// needs, or when the model refuses it.
+    fn set_flow_target(&mut self, valve: u8, ml: u16, source: TargetSource, now_ms: u32) -> bool {
+        let cfg = self.flow.config(valve);
+        let t = flow_target(cfg, u32::from(ml));
+        cfg.enabled
+            && self
+                .model
+                .set_desired_flow(valve, t.pct, t.ml, source, now_ms)
     }
 
     /// The flow layer runs on this STM: protocol 3 and the version at least
@@ -545,10 +565,13 @@ impl<P: StmSessionPort> StmSession<P> {
         }
         match c.kind {
             StmCommandType::SetTarget => {
-                if !self
-                    .model
-                    .set_desired_target(c.valve, c.pos, c.source, now_ms)
-                {
+                let taken = match c.flow_ml {
+                    Some(ml) => self.set_flow_target(c.valve, ml, c.source, now_ms),
+                    None => self
+                        .model
+                        .set_desired_target(c.valve, c.pos, c.source, now_ms),
+                };
+                if !taken {
                     let valve = if c.valve < VALVE_COUNT {
                         i32::from(c.valve) + 1
                     } else {
@@ -638,8 +661,7 @@ impl<P: StmSessionPort> StmSession<P> {
                 }
             }
             StmCommandType::FlowCounts => {
-                let d = self.model.valve(c.valve);
-                let desired = d.desired_valid.then_some(d.desired);
+                let desired = Served::of(self.model.valve(c.valve));
                 if self
                     .flow
                     .position_counts(c.valve, c.counts, desired, now_ms)
@@ -1567,7 +1589,7 @@ impl<P: StmSessionPort> StmSession<P> {
         for (i, (v, f)) in (0u8..).zip(views) {
             *v = *self.model.valve(i);
             *f = self.flow.view(i);
-            // A flow valve reports its flow % as the position (0 while unknown).
+            // A flow valve reports the % of its stroke it holds (0 while unknown).
             if !matches!(f.state, FlowState::Off | FlowState::Unsupported) {
                 v.position = f.pct;
             }

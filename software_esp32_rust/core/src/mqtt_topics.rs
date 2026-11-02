@@ -925,8 +925,8 @@ pub fn parse_target_payload(p: &[u8]) -> Result<u8, TargetPayload> {
 }
 
 /// Flow payload in l/min: optional surrounding spaces/tabs/CR/LF, at most 16 bytes in all; 1+
-/// digits, optionally '.' or ',' and 1..3 digits. The flow in ml/min; a target of the valve only
-/// up to its qmax, which the caller knows.
+/// digits, optionally '.' or ',' and 1..3 digits. The flow in ml/min, at most 65535: the qmax of
+/// the valve clips it further down.
 pub fn parse_flow_payload(p: &[u8]) -> Result<u16, TargetPayload> {
     if p.is_empty() {
         return Err(TargetPayload::Empty);
@@ -944,7 +944,7 @@ pub fn parse_flow_payload(p: &[u8]) -> Result<u16, TargetPayload> {
     let pad = b"000".get(frac.len()..).unwrap_or_default();
     let digits = int.iter().chain(frac).chain(pad);
     let ml = digits.fold(0u64, |v, &c| v * 10 + u64::from(c - b'0'));
-    u16::try_from(ml).map_err(|_| TargetPayload::OutOfRange)
+    Ok(u16::try_from(ml).unwrap_or(u16::MAX))
 }
 
 /// Button payload: exactly "PRESS" (HA default payload_press).

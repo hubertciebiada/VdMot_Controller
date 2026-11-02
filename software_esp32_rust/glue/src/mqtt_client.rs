@@ -45,13 +45,13 @@ use vdm_esp_core::link_policy::{link_state_name, LinkState};
 use vdm_esp_core::mqtt_policy::{
     build_mqtt_client_id, decide_inbound, decode_ha_status_record, encode_ha_status_record,
     inbound_is_button, inbound_is_clear_echo, reject_reason_name, ButtonGate, DiscoveryGate,
-    EchoFilter, HaStatusRecord, InboundAction, InboundContext, InboundDecision, ReconnectPacer,
-    RegulatorWatch, RegulatorWatchChange, RejectLog, RejectReason, TargetLatch,
+    EchoFilter, HaStatusRecord, InboundAction, InboundContext, InboundDecision, InboundTarget,
+    ReconnectPacer, RegulatorWatch, RegulatorWatchChange, RejectLog, RejectReason, TargetLatch,
 };
 use vdm_esp_core::mqtt_topics::{
     build_subscription, build_topic, format_calib_date, format_legacy_counter, format_system_state,
     format_temp, format_uptime, format_valve_state, format_volt, topic_retained, PublishScheduler,
-    PublishSchedulerParams, Segments, TargetPayload, Topic, TopicContext, SEGMENT_MAX, TOPIC_MAX,
+    PublishSchedulerParams, Segments, Topic, TopicContext, SEGMENT_MAX, TOPIC_MAX,
 };
 use vdm_esp_core::mqtt_values::{
     active_valve_mask, find_temp_bus, find_volt_bus, published_target, sensor_topic_segment,
@@ -1405,46 +1405,41 @@ where
         })
     }
 
-    fn submit_target(&mut self, valve: u8, pos: u8) {
+    fn submit_target(&mut self, valve: u8, target: InboundTarget) {
+        let (pos, flow_ml) = match target {
+            InboundTarget::Pct(pos) => (pos, None),
+            InboundTarget::Flow(ml) => (0, Some(ml)),
+        };
         let ok = self.host.submit(&StmCommand {
             kind: StmCommandType::SetTarget,
             valve,
             pos,
+            flow_ml,
             source: TargetSource::Mqtt,
             ..StmCommand::default()
         });
         if ok {
             self.latch.clear(valve);
         } else {
-            self.latch.set(valve, pos); // submitted again until the queue takes it
+            self.latch.set(valve, target); // submitted again until the queue takes it
         }
     }
 
-    /// `valves/<V>/flow/set`: the flow as a target through the qmax of the valve, as a target in
-    /// percent from here on.
+    /// `valves/<V>/flow/set`: a target in l/min, which the session takes through the curve of the
+    /// valve; above qmax it is clipped.
     fn set_flow(&mut self, d: &InboundDecision) {
-        let Some(f) = self.snap.flow.get(usize::from(d.valve)) else {
-            return;
-        };
-        if matches!(f.state, FlowState::Off | FlowState::Unsupported) {
+        let state = self.snap.flow.get(usize::from(d.valve)).map(|f| f.state);
+        if matches!(state, None | Some(FlowState::Off | FlowState::Unsupported)) {
             return self.reject_command(RejectReason::Unsupported, d.valve, 0);
         }
-        match f.target_of(u32::from(d.flow_ml)) {
-            Some(pos) => {
-                self.submit_target(d.valve, pos);
-                self.accepted();
-            }
-            None => {
-                let detail = i32::from(TargetPayload::OutOfRange as u8);
-                self.reject_command(RejectReason::Payload, d.valve, detail);
-            }
-        }
+        self.submit_target(d.valve, InboundTarget::Flow(d.flow_ml));
+        self.accepted();
     }
 
     fn act(&mut self, d: &InboundDecision) {
         let ok = match d.action {
             InboundAction::SetTarget => {
-                self.submit_target(d.valve, d.pos);
+                self.submit_target(d.valve, InboundTarget::Pct(d.pos));
                 true
             }
             InboundAction::SetFlow => return self.set_flow(d),
@@ -1544,10 +1539,10 @@ where
         while let Some(d) = self.buttons.expire(self.clock.now_ms()) {
             self.reject_command(RejectReason::ClearNotConfirmed, d.valve, 0);
         }
-        if let Some((valve, pos)) = self.latch.next(self.latch_cursor) {
+        if let Some((valve, target)) = self.latch.next(self.latch_cursor) {
             // C++ `(valve + 1) % kValveCount`: next() wraps past the last valve itself
             self.latch_cursor = valve + 1;
-            self.submit_target(valve, pos);
+            self.submit_target(valve, target);
         }
     }
 
@@ -1680,7 +1675,13 @@ where
         }
         let seg = segment(&self.segments, i);
         let m = &self.cfg.mqtt;
-        if let Some(target) = self.out.valve_target(v, seg, m.separate) {
+        // The STM's target of a flow valve is the fallback of the layer: the target is the desired.
+        let running = self
+            .snap
+            .flow
+            .get(i)
+            .is_some_and(|f| !matches!(f.state, FlowState::Off | FlowState::Unsupported));
+        if let Some(target) = self.out.valve_target(v, seg, m.separate && !running) {
             self.echo.published(i as u8, target);
         }
         self.out.valve_state(v, seg, m.plain_text);
@@ -2256,6 +2257,16 @@ where
         self.diag.fill(DiagPub::EMPTY);
     }
 
+    /// Without `separate` the broker hands the retained state back after a connect: that % of a
+    /// target in l/min is its echo, it must not replace the flow.
+    fn keep_flow_targets(&mut self) {
+        for (i, v) in (0u8..).zip(&self.snap.valves) {
+            if v.desired_flow {
+                self.echo.published(i, v.desired);
+            }
+        }
+    }
+
     fn connect(&mut self, now: u32) -> bool {
         if !self.open_session() {
             return false;
@@ -2265,6 +2276,7 @@ where
         self.reset_published_state();
         self.inbound.count = 0;
         self.echo.reset();
+        self.keep_flow_targets();
         self.buttons.reset();
         self.out.publish_raw(&self.names.lwt, b"online", true);
         self.subscribe();

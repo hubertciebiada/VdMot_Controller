@@ -222,8 +222,12 @@ pub struct ValveState {
     pub move_seq: u32,
     // target delivery
     pub desired_valid: bool,
-    /// 0..100
+    /// 0..100; a valve with the flow layer: % of its stroke, of `desired_ml` when that is set
     pub desired: u8,
+    /// Rust 2.2.11: ml/min of a target in l/min, kept apart from the whole % (`desired_flow`)
+    pub desired_ml: u16,
+    /// `desired_ml` is the target: POST /flow/target or `flow/set`
+    pub desired_flow: bool,
     pub source: TargetSource,
     pub stm_target_known: bool,
     pub stm_target: u8,
@@ -270,6 +274,11 @@ pub struct ValveState {
 }
 
 impl ValveState {
+    /// The target in ml/min when the desired target is a flow.
+    pub fn flow_target(&self) -> Option<u16> {
+        self.desired_flow.then_some(self.desired_ml)
+    }
+
     /// A valve nothing is known about (C++ `ValveState{}`).
     pub const EMPTY: Self = Self {
         known: false,
@@ -303,6 +312,8 @@ impl ValveState {
         move_seq: 0,
         desired_valid: false,
         desired: 0,
+        desired_ml: 0,
+        desired_flow: false,
         source: TargetSource::None,
         stm_target_known: false,
         stm_target: 0,
@@ -436,6 +447,7 @@ pub fn diff_valve(a: &ValveState, b: &ValveState) -> u32 {
 /// last_push_ms and the revision itself are excluded.
 fn same_state(a: &ValveState, b: &ValveState) -> bool {
     diff_valve(a, b) == 0
+        && a.flow_target() == b.flow_target()
         && a.source == b.source
         && a.push_attempts == b.push_attempts
         && a.has_extended == b.has_extended
@@ -678,6 +690,7 @@ impl ValveModel {
         let v = &mut self.v[i];
         if before.desired_valid != v.desired_valid
             || before.desired != v.desired
+            || before.flow_target() != v.flow_target()
             || before.source != v.source
         {
             self.desired_rev = self.desired_rev.wrapping_add(1);
@@ -758,7 +771,7 @@ impl ValveModel {
     /// User/MQTT command. Returns false (no change) for valve >= 12, pos > 100 or an inactive
     /// valve. Same value as desired -> true without a re-push, except that a Failed delivery is
     /// re-armed (Pending, attempts reset). A new value equal to the known STM target (no stgtp
-    /// in flight) is Synced at once; otherwise it goes Pending.
+    /// in flight) is Synced at once; otherwise it goes Pending. A target in l/min ends here too.
     pub fn set_desired_target(
         &mut self,
         valve: u8,
@@ -766,6 +779,24 @@ impl ValveModel {
         src: TargetSource,
         _now_ms: u32,
     ) -> bool {
+        self.set_desired(valve, pos, None, src)
+    }
+
+    /// Rust 2.2.11: a target in l/min, `flow_ml`, with the % of the stroke it means as `pos`; the
+    /// rules of [`set_desired_target`](Self::set_desired_target), where the same value is the
+    /// same flow.
+    pub fn set_desired_flow(
+        &mut self,
+        valve: u8,
+        pos: u8,
+        flow_ml: u16,
+        src: TargetSource,
+        _now_ms: u32,
+    ) -> bool {
+        self.set_desired(valve, pos, Some(flow_ml), src)
+    }
+
+    fn set_desired(&mut self, valve: u8, pos: u8, flow_ml: Option<u16>, src: TargetSource) -> bool {
         let i = usize::from(valve);
         if i >= N || pos > 100 || !self.is_active(i) {
             return false;
@@ -776,7 +807,8 @@ impl ValveModel {
         let ends_assembly =
             before.source == TargetSource::Assembly && src != TargetSource::Assembly;
         let (v, t) = (&mut self.v[i], &mut self.t[i]);
-        if before.desired_valid && before.desired == pos && !ends_assembly {
+        let same = before.desired == pos && before.flow_target() == flow_ml;
+        if before.desired_valid && same && !ends_assembly {
             // Same value: only a Failed delivery is re-armed (explicit retry).
             if before.sync == TargetSync::Failed {
                 v.source = src;
@@ -789,6 +821,8 @@ impl ValveModel {
             let in_flight = matches!(v.sync, TargetSync::AwaitAck | TargetSync::AwaitVerify);
             v.desired_valid = true;
             v.desired = pos;
+            v.desired_ml = flow_ml.unwrap_or(0);
+            v.desired_flow = flow_ml.is_some();
             v.source = src;
             t.assembly_pending = false;
             t.read_back_first = false;
@@ -1214,6 +1248,8 @@ impl ValveModel {
             let v = &mut self.v[i];
             v.desired_valid = true;
             v.desired = 100;
+            v.desired_ml = 0;
+            v.desired_flow = false;
             v.source = TargetSource::Assembly;
             v.sync = TargetSync::AwaitAck;
             v.push_attempts = 0;
@@ -1296,7 +1332,7 @@ impl ValveModel {
         true
     }
 
-    /// +1 whenever desired_valid/desired/source of any valve changes.
+    /// +1 whenever the desired target (valid, %, flow) or the source of any valve changes.
     pub fn desired_revision(&self) -> u32 {
         self.desired_rev
     }
@@ -1361,6 +1397,8 @@ impl ValveModel {
             self.v[i] = ValveState {
                 desired_valid: before.desired_valid,
                 desired: before.desired,
+                desired_ml: before.desired_ml,
+                desired_flow: before.desired_flow,
                 source: before.source,
                 sync: if before.desired_valid {
                     TargetSync::Pending

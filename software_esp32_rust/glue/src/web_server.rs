@@ -1562,6 +1562,18 @@ where
         valve: u8,
         target: u8,
     ) -> bool {
+        self.submit_goal(req, cfg, valve, target, None)
+    }
+
+    /// `submit_target` of a target in % or, `flow_ml`, in l/min.
+    fn submit_goal(
+        &self,
+        req: &mut dyn HttpRequest,
+        cfg: &Config,
+        valve: u8,
+        target: u8,
+        flow_ml: Option<u16>,
+    ) -> bool {
         let active = cfg.valves.get(usize::from(valve)).is_some_and(|v| v.active);
         if !active {
             send_error(req, 409, "inactive", b"valve not active");
@@ -1569,6 +1581,7 @@ where
         }
         let cmd = StmCommand {
             pos: target,
+            flow_ml,
             source: TargetSource::Web,
             ..command(StmCommandType::SetTarget, valve)
         };
@@ -1653,9 +1666,9 @@ where
         self.submit_flow_counts(req, valve, counts as u16);
     }
 
-    /// POST /api/valves/{n}/flow/target `{"lpm":2.5}` (Rust 2.2.10): the flow as a target through
-    /// the curve of the valve. Answers 202 with the flow the valve reaches and the target it
-    /// became; `clipped`: above the top of the curve. The 409s are those of `flow_counts`.
+    /// POST /api/valves/{n}/flow/target `{"lpm":2.5}` (Rust 2.2.10): a target in l/min through
+    /// the curve of the valve. Answers 202 with the flow the valve reaches and the % of its stroke
+    /// that is; `clipped`: above qmax or the top of the curve. The 409s are those of `flow_counts`.
     #[inline(never)]
     fn flow_target(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8, body: &[u8]) {
         if self.refuse_while_flashing(req)
@@ -1680,7 +1693,7 @@ where
         valve: u8,
         t: &FlowTarget,
     ) {
-        if !self.submit_target(req, cfg, valve, t.pct) {
+        if !self.submit_goal(req, cfg, valve, t.pct, Some(t.ml)) {
             return;
         }
         let mut buf = [0u8; 64];

@@ -808,7 +808,10 @@ fn flow_config_is_read_patched_saved_and_refused() {
         r#""ms":null,"peak":null},"refDelta":null}"#
     )));
     let before = st.shared().flow_revision();
-    let body = r#"{"enabled":true,"qmax":2.5,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
+    let body = concat!(
+        r#"{"enabled":true,"qmax":2.5,"strokeCounts":2187,"#,
+        r#""points":[[593,0],[713,0.25],[1016,2.5]]}"#
+    );
     let r = perform(&mut web, api_post("/api/valves/1/flow", body));
     assert_eq!(r.status, 200);
     let t = text(&r);
@@ -953,7 +956,10 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     let st = rig.storage();
     assert!(!st.load_flow_configs());
     let mut web = rig.web(&st);
-    let curve = r#"{"enabled":true,"qmax":2.7,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
+    let curve = concat!(
+        r#"{"enabled":true,"qmax":2.7,"strokeCounts":2187,"#,
+        r#""points":[[593,0],[713,0.25],[1016,2.5]]}"#
+    );
     assert_eq!(
         perform(&mut web, api_post("/api/valves/1/flow", curve)).status,
         200
@@ -974,7 +980,7 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     let cases = [
         (
             r#"{"lpm":1.25}"#,
-            r#"{"valve":1,"lpm":1.245,"target":46,"clipped":false}"#,
+            r#"{"valve":1,"lpm":1.252,"target":39,"clipped":false}"#,
         ),
         (
             r#"{"lpm":0}"#,
@@ -982,11 +988,15 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
         ),
         (
             r#"{"lpm":2.5}"#,
-            r#"{"valve":1,"lpm":2.500,"target":93,"clipped":false}"#,
+            r#"{"valve":1,"lpm":2.500,"target":46,"clipped":false}"#,
         ),
         (
             r#"{"lpm":2.7}"#,
-            r#"{"valve":1,"lpm":2.500,"target":100,"clipped":true}"#,
+            r#"{"valve":1,"lpm":2.500,"target":46,"clipped":true}"#,
+        ),
+        (
+            r#"{"lpm":2.701}"#,
+            r#"{"valve":1,"lpm":2.500,"target":46,"clipped":true}"#,
         ),
     ];
     for (body, answer) in cases {
@@ -995,18 +1005,25 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
         assert_eq!(text(&r), answer, "{body}");
     }
     let s = rig.submitted();
-    assert_eq!(s.len(), 4);
+    assert_eq!(s.len(), 5);
     assert!(s.iter().all(|c| c.kind == StmCommandType::SetTarget
         && c.valve == 0
         && c.source == TargetSource::Web));
     assert_eq!(
         s.iter().map(|c| c.pos).collect::<Vec<_>>(),
-        [46, 0, 93, 100]
+        [39, 0, 46, 46, 46]
+    );
+    assert_eq!(
+        s.iter().map(|c| c.flow_ml).collect::<Vec<_>>(),
+        [Some(1250), Some(0), Some(2500), Some(2700), Some(2700)]
     );
     let refused = [
-        (r#"{"lpm":2.701}"#, "out_of_range", "lpm 0..qmax"),
-        (r#"{"lpm":-1}"#, "out_of_range", "lpm 0..qmax"),
-        (r#"{"lpm":"1"}"#, "out_of_range", "lpm 0..qmax"),
+        (r#"{"lpm":-1}"#, "out_of_range", "lpm a plain number from 0"),
+        (
+            r#"{"lpm":"1"}"#,
+            "out_of_range",
+            "lpm a plain number from 0",
+        ),
         ("{", "malformed", "malformed JSON"),
         (r#"{"x":1}"#, "invalid", "unknown key"),
         (r#"{"lpm":1,"x":2}"#, "malformed", "malformed JSON"),
@@ -1016,7 +1033,7 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
         assert_eq!(r.status, 400, "{body}");
         assert_eq!(text(&r), error_body(code, detail), "{body}");
     }
-    assert_eq!(rig.submitted().len(), 4);
+    assert_eq!(rig.submitted().len(), 5);
     // The refusals of a target in percent, and of a flash and a too-old STM.
     rig.config(|c| c.valves[0].active = false);
     let r = perform(&mut web, lpm(r#"{"lpm":1}"#));
@@ -1033,7 +1050,7 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     rig.state().flash_active = false;
     rig.state().support = StmSupport::TooOld;
     assert_eq!(perform(&mut web, lpm(r#"{"lpm":1}"#)).status, 409);
-    assert_eq!(rig.submitted().len(), 4);
+    assert_eq!(rig.submitted().len(), 5);
 }
 
 // ---------------------------------------------------------------- brake (STM 2.2.9)

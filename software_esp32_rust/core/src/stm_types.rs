@@ -19,7 +19,7 @@ use crate::version::{StmSupport, Version};
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StmCommandType {
-    /// valve, pos, source
+    /// valve, pos, source; with flow_ml a target in l/min, whose pos the session works out
     SetTarget = 0,
     /// valve or ALL_VALVES
     Calibrate = 1,
@@ -64,6 +64,8 @@ pub struct StmCommand {
     /// default NO_VALVE
     pub valve: u8,
     pub pos: u8,
+    /// SetTarget: ml/min instead of pos
+    pub flow_ml: Option<u16>,
     pub source: TargetSource,
     pub ids: [OneWireId; 2],
     /// SetMotorSettings: one command, so a request is queued completely or not at all even
@@ -101,6 +103,7 @@ impl Default for StmCommand {
             kind: StmCommandType::ConfigChanged,
             valve: NO_VALVE,
             pos: 0,
+            flow_ml: None,
             source: TargetSource::None,
             ids: [OneWireId::default(); 2],
             has_motor: false,
@@ -203,7 +206,7 @@ pub struct StmSnapshot {
     /// a flash waits for the STM EEPROM
     pub flash_pending: bool,
     /// Rust 2.2.8: the flow layer of every valve (`valves[i].position` of an enabled valve is
-    /// its flow %)
+    /// the % of its stroke it holds)
     pub flow: [FlowView; VALVE_COUNT as usize],
 }
 

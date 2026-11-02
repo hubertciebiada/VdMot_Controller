@@ -252,7 +252,7 @@ pub enum EventCode {
     /// arg1 min(openCount, closeCount), arg2 minCounts
     CalibStrokeShort = 415,
     /// Rust 2.2.8 (flow layer): the valve holds its flow position; arg1 pulses above the closed
-    /// reference, arg2 the flow target in %
+    /// reference, arg2 the target in % of the stroke
     FlowPositioned = 416,
     /// Rust 2.2.8: a flow positioning failed; arg1 step (1 fallback target, 2 move to the
     /// reference end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep), arg2 STM

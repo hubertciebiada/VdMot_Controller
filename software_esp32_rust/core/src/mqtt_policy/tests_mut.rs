@@ -54,10 +54,10 @@ fn echo_filter_reset_forgets_every_published_value() {
 #[test]
 fn target_latch_out_of_range_valves_are_ignored() {
     let mut l = TargetLatch::default();
-    l.set(VALVE_COUNT, 40);
+    l.set(VALVE_COUNT, InboundTarget::Pct(40));
     assert_eq!(l.next(0), None);
     assert!(!l.pending(VALVE_COUNT));
-    l.set(0, 30);
+    l.set(0, InboundTarget::Pct(30));
     l.clear(VALVE_COUNT);
-    assert_eq!(l.next(5), Some((0, 30)));
+    assert_eq!(l.next(5), Some((0, InboundTarget::Pct(30))));
 }

@@ -683,6 +683,7 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     // A save: the whole set in NVS, the shared set published.
     let mut c = FlowConfig {
         enabled: true,
+        stroke_counts: 4701,
         count: 2,
         ..FlowConfig::DEFAULT
     };

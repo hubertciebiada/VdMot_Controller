@@ -733,6 +733,7 @@ fn flow_configs(valve: usize, enabled: bool) -> [FlowConfig; 12] {
     let mut all = [FlowConfig::DEFAULT; 12];
     let c = &mut all[valve];
     c.enabled = enabled;
+    c.stroke_counts = 2187;
     c.count = 3;
     c.points[0] = FlowPoint {
         counts: 593,
@@ -772,7 +773,7 @@ fn flow_layer_positions_a_valve_with_svmov_and_skeep_and_reports_the_flow_percen
     r.command(&t);
     r.run(30_000);
     // The fallback target (the STM held 50), the reference close over the stroke (3350), the
-    // opening move of 0.999 l/min, the keep.
+    // opening move to 37 % of 2187 pulses, the keep.
     assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 15"]);
     assert_eq!(
         r.stm().lines_of("svmov"),
@@ -819,7 +820,7 @@ fn flow_layer_counts_command_positions_at_once_and_a_reboot_positions_again() {
     r.run(30_000);
     assert_eq!(r.port().last.flow[0].state, FlowState::Held);
     // 700 corrected pulses: the close from the held position + 500, the opening move, the
-    // keep; the flow of the curve at 700 is 0.495 l/min = 18 %.
+    // keep; 32 % of the stroke.
     let mut c = cmd(StmCommandType::FlowCounts, 0);
     c.counts = 700;
     r.command(&c);
@@ -830,8 +831,8 @@ fn flow_layer_counts_command_positions_at_once_and_a_reboot_positions_again() {
     );
     assert_eq!(r.count("skeep"), 2);
     let f = r.port().last.flow[0];
-    assert_eq!((f.state, f.counts, f.pct), (FlowState::Held, 700, 18));
-    assert_eq!(r.port().last.valves[0].position, 18);
+    assert_eq!((f.state, f.counts, f.pct), (FlowState::Held, 700, 32));
+    assert_eq!(r.port().last.valves[0].position, 32);
     assert_eq!(r.port().last.valves[0].desired, 37);
     assert_eq!(r.count("stgtp"), 1);
     // An STM reboot: the hold is lost (event), the fallback goes out again (the STM target is
@@ -860,6 +861,94 @@ fn flow_layer_counts_command_positions_at_once_and_a_reboot_positions_again() {
     assert_eq!(r.port().last.flow[0].state, FlowState::Held);
     assert_eq!(r.port().last.valves[0].position, 37);
     assert!(r.port().with_code(EventCode::FlowPositioned).len() >= 3);
+}
+
+#[test]
+fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
+    let mut r = flow_rig();
+    let mut t = r.target(0, 0, TargetSource::Web);
+    t.flow_ml = Some(1000);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(
+        r.stm().lines_of("svmov"),
+        ["svmov 0 1 3350 34", "svmov 0 0 809 30"]
+    );
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (37, Some(1000)));
+    assert_eq!(v.source, TargetSource::Web);
+    // A flow in the same whole % is a target of its own.
+    r.now = r.now.wrapping_add(300_000);
+    t.flow_ml = Some(1060);
+    r.command(&t);
+    r.run(10_000);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (37, Some(1060)));
+    assert_eq!(r.stm().lines_of("svmov")[2..], ["svmov 0 0 10 30"]);
+    // Above qmax it is qmax.
+    r.now = r.now.wrapping_add(300_000);
+    t.flow_ml = Some(u16::MAX);
+    r.command(&t);
+    r.run(10_000);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (50, Some(2700)));
+    assert_eq!(r.stm().lines_of("svmov")[3..], ["svmov 0 0 281 30"]);
+    // A target in % ends it.
+    r.now = r.now.wrapping_add(300_000);
+    let t = r.target(0, 40, TargetSource::Web);
+    r.command(&t);
+    r.run(10_000);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (40, None));
+    // (a close of this STM always meets the end stop: the positioning goes on from there)
+    assert_eq!(
+        r.stm().lines_of("svmov")[4..],
+        ["svmov 0 1 225 34", "svmov 0 1 3350 34", "svmov 0 0 875 30"]
+    );
+}
+
+#[test]
+fn flow_layer_a_target_in_l_min_needs_the_layer_on_the_valve() {
+    let mut r = flow_rig();
+    r.s.apply_flow_config(&flow_configs(0, false));
+    r.run(10_000);
+    let t = r.target(0, 40, TargetSource::Web);
+    r.command(&t);
+    r.run(5_000);
+    let mut t = r.target(0, 0, TargetSource::Web);
+    t.flow_ml = Some(1000);
+    r.command(&t);
+    r.run(5_000);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (40, None));
+    let ev = r.port().with_code(EventCode::MqttCommandRejected);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].arg1, 1);
+    assert_eq!(&ev[0].text[..], b"rejected by model");
+}
+
+#[test]
+fn flow_layer_a_new_curve_gives_a_target_in_l_min_the_percent_of_its_stroke() {
+    let mut r = flow_rig();
+    let mut t = r.target(0, 0, TargetSource::Web);
+    t.flow_ml = Some(1000);
+    r.command(&t);
+    r.run(30_000);
+    assert_eq!(r.port().last.valves[0].desired, 37);
+    let mut longer = flow_configs(0, true);
+    longer[0].stroke_counts = 4374;
+    r.s.apply_flow_config(&longer);
+    r.run(30_000);
+    let v = r.port().last.valves[0];
+    assert_eq!((v.desired, v.flow_target()), (18, Some(1000)));
+    assert_eq!(v.source, TargetSource::Web);
+    // A target in % stays what it was asked for.
+    let t = r.target(0, 25, TargetSource::Web);
+    r.command(&t);
+    r.run(30_000);
+    r.s.apply_flow_config(&flow_configs(0, true));
+    r.run(1_000);
+    assert_eq!(r.port().last.valves[0].desired, 25);
 }
 
 #[test]
@@ -970,7 +1059,7 @@ fn flow_layer_a_lost_keep_repositions_a_rejected_move_fails_the_positioning() {
     // failed, the position unknown.
     r.stm_mut()
         .set_answer("svmov", |line, _| format!("svmov {} err 1", &line[6..7]));
-    let t = r.target(0, 50, TargetSource::Web);
+    let t = r.target(0, 100, TargetSource::Web);
     r.now = r.now.wrapping_add(300_000);
     r.command(&t);
     r.run(10_000);
@@ -982,7 +1071,7 @@ fn flow_layer_a_lost_keep_repositions_a_rejected_move_fails_the_positioning() {
     assert_eq!(f.state, FlowState::Failed);
     assert!(!f.known);
     assert_eq!(r.port().last.valves[0].position, 0);
-    assert_eq!(r.port().last.valves[0].desired, 50);
+    assert_eq!(r.port().last.valves[0].desired, 100);
     // It reaches MQTT through the health of the valve: the problem topic, the on-change key.
     assert_eq!(
         r.port().last.valves[0].health & HEALTH_FLOW_FAILED,

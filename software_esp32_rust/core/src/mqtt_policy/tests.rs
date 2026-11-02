@@ -461,8 +461,9 @@ fn decide_inbound_a_flow_clears_the_retained_message_and_leaves_the_rest_to_the_
         )
     );
     assert!(d.clear_retained);
+    // Above any qmax: the session clips it.
     let d = inb.decide(topic, "65.536");
-    assert_eq!(d.detail, TargetPayload::OutOfRange as i32);
+    assert_eq!((d.action, d.flow_ml), (InboundAction::SetFlow, u16::MAX));
     let d = inb.decide("VdMot/valves/99/flow/set", "1");
     assert_eq!(
         (d.action, d.reason),
@@ -835,17 +836,18 @@ fn button_gate_confirm_takes_the_lowest_slot_also_after_a_slot_was_reused() {
 
 #[test]
 fn target_latch_the_newest_refused_target_per_valve() {
+    use InboundTarget::{Flow, Pct};
     let mut l = TargetLatch::default();
     assert_eq!(l.next(0), None); // C++ v stays 99
-    l.set(3, 40);
-    l.set(3, 41); // newer wins
-    l.set(7, 10);
+    l.set(3, Pct(40));
+    l.set(3, Pct(41)); // newer wins
+    l.set(7, Flow(1250));
     assert!(l.pending(3));
     assert!(l.pending(7));
     assert!(!l.pending(4));
     assert!(!l.pending(12));
-    assert_eq!(l.next(0), Some((3, 41)));
-    assert_eq!(l.next(4), Some((7, 10)));
+    assert_eq!(l.next(0), Some((3, Pct(41))));
+    assert_eq!(l.next(4), Some((7, Flow(1250))));
     assert_eq!(l.next(8).map(|(v, _)| v), Some(3)); // wraps
     assert_eq!(l.next(3).map(|(v, _)| v), Some(3));
     l.clear(3);
@@ -853,10 +855,10 @@ fn target_latch_the_newest_refused_target_per_valve() {
     assert_eq!(l.next(0).map(|(v, _)| v), Some(7));
     l.clear(7);
     assert_eq!(l.next(0), None);
-    l.set(12, 5); // out of range: ignored
+    l.set(12, Pct(5)); // out of range: ignored
     l.clear(12);
     assert_eq!(l.next(0), None);
-    l.set(11, 0);
-    assert_eq!(l.next(11), Some((11, 0)));
+    l.set(11, Pct(0));
+    assert_eq!(l.next(11), Some((11, Pct(0))));
     assert_eq!(l.next(0).map(|(v, _)| v), Some(11));
 }

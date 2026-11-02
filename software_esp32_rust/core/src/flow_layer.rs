@@ -1,12 +1,13 @@
-//! The flow layer of a valve (Rust 2.2.8, STM 2.2.8): the external target 0..100 % of a valve
-//! with a measured curve means 0..qmax l/min instead of a stroke percentage. The whole flow
-//! band of a floor-heating loop lies in 5..11 % of the stroke, so the layer positions the valve
-//! itself with service moves from a reference end stop (P1: a move to the end stop, one move
-//! of the curve's pulses away from it) and asks the STM to keep that position (`skeep`); the
-//! STM's own target of such a valve is the fallback position it drives to when the hold is
-//! lost. Hardware-free: the per-valve configuration with its NVS blob and JSON forms, the curve
-//! mapping both ways and the positioning state machine that hands requests to the session and
-//! reads the valve model. Owned by [`crate::stm_session::StmSession`].
+//! The flow layer of a valve (Rust 2.2.8, STM 2.2.8). The whole flow band of a floor-heating loop
+//! lies in 5..11 % of the stroke, so the layer positions a valve with a measured curve itself with
+//! service moves and asks the STM to keep that position (`skeep`); the STM's own target of such a
+//! valve is the fallback position it drives to when the hold is lost. A target is a percentage of
+//! the stroke of the valve, `strokeCounts`, or, Rust 2.2.10, a flow in l/min through the curve. The
+//! first positioning goes through a reference end stop (P1: a move to the end stop, one move of the
+//! pulses away from it); a held valve reaches a new target with one move. Hardware-free: the
+//! per-valve configuration with its NVS blob and JSON forms, the curve mapping both ways and the
+//! positioning state machine that hands requests to the session and reads the valve model. Owned
+//! by [`crate::stm_session::StmSession`].
 
 use crate::common::{elapsed_ms, fmt_fit, parse_uint, VALVE_COUNT};
 use crate::config::crc32;
@@ -82,13 +83,14 @@ pub struct FlowPoint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlowConfig {
     pub enabled: bool,
-    /// l/min x 1000 that a target of 100 % means
+    /// l/min x 1000: the highest flow a target can ask for
     pub qmax_ml: u16,
     /// mA: the end-stop threshold of a closing move
     pub ref_ma: u8,
     /// mA: the threshold of an opening move
     pub open_ma: u8,
-    /// stroke % the STM drives to when the hold is lost (its target while the layer runs)
+    /// the position the STM drives to when the hold is lost, its target while the layer runs: a
+    /// % of the STM's own scale, not of `stroke_counts`
     pub fallback_pct: u8,
     /// s between two positionings of the valve
     pub min_interval_s: u16,
@@ -100,8 +102,8 @@ pub struct FlowConfig {
     pub gain_milli: u16,
     /// the end stop the positioning starts from (the curve always counts from the closed one)
     pub ref_side: RefSide,
-    /// open reference: the counted open stroke from the closed end stop in pulses; the final
-    /// closing move is this minus the target counts
+    /// the counted open stroke from the closed end stop in pulses, a constant of the curve: 100 %
+    /// of a target; with the open reference the final closing move is this minus the target counts
     pub stroke_counts: u16,
     /// closed reference: a warm-up of the end stop (close, open 300, close) before the final
     /// move
@@ -220,16 +222,16 @@ pub fn flow_error_text(e: FlowError) -> &'static str {
         FlowError::PointFlow => "points lpm 0..65.535, non-decreasing",
         FlowError::RefSide => "refSide closed|open",
         FlowError::PreClose => "preClose true|false",
-        FlowError::StrokeCounts => "strokeCounts 0..10000 (refSide open needs 1..10000)",
-        FlowError::Lpm => "lpm 0..qmax",
+        FlowError::StrokeCounts => "strokeCounts 0..10000 (enabled or refSide open needs 1..)",
+        FlowError::Lpm => "lpm a plain number from 0",
     }
 }
 
 /// The rules of [`FlowConfig`]: qmax 0.01..20 l/min, both currents 5..60 mA, the fallback
 /// 0..100 %, the interval 0..3600 s, the dead band 0..5 l/min, the offset -10000..10000, the
-/// gain 0.1..10, the stroke 0..10000 (at least 1 with the open reference), no points or 2..16
-/// (an enabled layer needs them) with counts strictly increasing (the first may be 0, every
-/// one at most 10000) and flows non-decreasing.
+/// gain 0.1..10, the stroke 0..10000 (at least 1 when enabled or with the open reference: a % of
+/// the stroke needs it), no points or 2..16 (an enabled layer needs them) with counts strictly
+/// increasing (the first may be 0, every one at most 10000) and flows non-decreasing.
 pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
     if !(FLOW_QMAX_MIN_ML..=FLOW_QMAX_MAX_ML).contains(&c.qmax_ml) {
         return Err(FlowError::Qmax);
@@ -255,7 +257,8 @@ pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
     if !(FLOW_GAIN_MIN_MILLI..=FLOW_GAIN_MAX_MILLI).contains(&c.gain_milli) {
         return Err(FlowError::Gain);
     }
-    if c.stroke_counts > FLOW_COUNTS_MAX || (c.ref_side == RefSide::Open && c.stroke_counts == 0) {
+    let needs_stroke = c.enabled || c.ref_side == RefSide::Open;
+    if c.stroke_counts > FLOW_COUNTS_MAX || (needs_stroke && c.stroke_counts == 0) {
         return Err(FlowError::StrokeCounts);
     }
     let n = usize::from(c.count);
@@ -281,11 +284,6 @@ pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
 }
 
 // ---------------------------------------------------------------- mapping
-
-/// The flow of a target in ml/min: pct / 100 x qmax, rounded.
-pub fn pct_flow(c: &FlowConfig, pct: u8) -> u32 {
-    (u32::from(pct) * u32::from(c.qmax_ml) + 50) / 100
-}
 
 /// The curve counts of a flow: the first position where the piecewise-linear curve reaches
 /// `flow_ml`; the first point's counts at or below its flow, the last point's counts above the
@@ -353,14 +351,27 @@ fn raw_counts(c: &FlowConfig, corrected: u16) -> u16 {
     ((v + gain / 2) / gain).min(i64::from(u16::MAX)) as u16
 }
 
-/// The pulses the layer moves away from the reference end stop for a target: round(offset +
-/// gain x curve counts), 1..10000; 0 for a target of 0 (closed: a close to the end stop alone,
-/// whatever the reference side).
+/// The position of a target of `pct` % of the stroke in pulses above the closed end stop: pct x
+/// strokeCounts / 100, rounded; 0 is closed, 100 the open end stop. The curve and its correction
+/// have no part in it.
 pub fn target_counts(c: &FlowConfig, pct: u8) -> u16 {
-    if pct == 0 {
+    ((u32::from(pct) * u32::from(c.stroke_counts) + 50) / 100) as u16
+}
+
+/// `counts` in % of the stroke, rounded, at most 100; 0 without a stroke.
+pub fn stroke_pct(c: &FlowConfig, counts: u16) -> u8 {
+    let stroke = u32::from(c.stroke_counts);
+    let scaled = u32::from(counts) * 100 + stroke / 2;
+    scaled.checked_div(stroke).unwrap_or(0).min(100) as u8
+}
+
+/// The position of a flow target: round(offset + gain x curve counts), 1..10000, the flow at most
+/// qmax; 0 for no flow (closed: a close to the end stop alone, whatever the reference side).
+pub fn flow_counts(c: &FlowConfig, flow_ml: u32) -> u16 {
+    if flow_ml == 0 {
         return 0;
     }
-    corrected_counts(c, curve_counts(c, pct_flow(c, pct)))
+    corrected_counts(c, curve_counts(c, flow_ml.min(u32::from(c.qmax_ml))))
 }
 
 /// The flow the layer estimates at `counts` corrected pulses (ml/min); 0 at 0 (closed).
@@ -371,39 +382,30 @@ pub fn counts_flow(c: &FlowConfig, counts: u16) -> u32 {
     curve_flow(c, raw_counts(c, counts))
 }
 
-/// The % of a flow: flow / qmax x 100, rounded, at most 100.
-pub fn flow_pct(c: &FlowConfig, flow_ml: u32) -> u8 {
-    qmax_pct(c.qmax_ml, flow_ml)
-}
-
-fn qmax_pct(qmax_ml: u16, flow_ml: u32) -> u8 {
-    let qmax = u64::from(qmax_ml.max(1));
-    ((u64::from(flow_ml) * 100 + qmax / 2) / qmax).min(100) as u8
-}
-
 /// What a flow asked for in l/min becomes on a valve.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlowTarget {
-    /// the desired target it means
+    /// the target it is kept as, ml/min: at most qmax
+    pub ml: u16,
+    /// the desired target it means: its position in % of the stroke
     pub pct: u8,
-    /// ml/min the curve gives at that target: the top of the curve when `clipped`
+    /// ml/min the curve gives at that position: the top of the curve when `clipped`
     pub flow_ml: u32,
-    /// the flow lies above the last point of the curve
+    /// the flow lies above qmax or above the last point of the curve
     pub clipped: bool,
 }
 
-/// The target of `flow_ml` ml/min; None above qmax.
-pub fn flow_target(c: &FlowConfig, flow_ml: u32) -> Option<FlowTarget> {
-    if flow_ml > u32::from(c.qmax_ml) {
-        return None;
-    }
-    let pct = flow_pct(c, flow_ml);
+/// The target of `flow_ml` ml/min.
+pub fn flow_target(c: &FlowConfig, flow_ml: u32) -> FlowTarget {
+    let ml = flow_ml.min(u32::from(c.qmax_ml));
+    let counts = flow_counts(c, ml);
     let top = c.points().last().map_or(0, |p| u32::from(p.flow_ml));
-    Some(FlowTarget {
-        pct,
-        flow_ml: counts_flow(c, target_counts(c, pct)),
-        clipped: flow_ml > top,
-    })
+    FlowTarget {
+        ml: ml as u16,
+        pct: stroke_pct(c, counts),
+        flow_ml: counts_flow(c, counts),
+        clipped: flow_ml > ml || ml > top,
+    }
 }
 
 // ---------------------------------------------------------------- NVS blob
@@ -475,6 +477,8 @@ fn decode_record(b: &[u8; FLOW_RECORD_SIZE]) -> Option<FlowConfig> {
         p.counts = u16::from_le_bytes([cell[0], cell[1]]);
         p.flow_ml = u16::from_le_bytes([cell[2], cell[3]]);
     }
+    // A record before 2.2.11 may be enabled without a stroke: not a bad blob, the valve stays off.
+    c.enabled &= c.stroke_counts != 0;
     validate_flow_config(&c).ok().map(|()| c)
 }
 
@@ -804,8 +808,8 @@ pub fn patch_flow_config_json(c: &mut FlowConfig, json: &[u8]) -> Result<(), Flo
     Ok(())
 }
 
-/// `POST /api/valves/{n}/flow/target`: `{"lpm":2.5}`, a plain decimal with at most three
-/// decimals in 0..qmax.
+/// `POST /api/valves/{n}/flow/target`: `{"lpm":2.5}`, a plain decimal from 0 with at most three
+/// decimals; above qmax it is clipped ([`flow_target`]).
 pub fn parse_flow_target_json(c: &FlowConfig, json: &[u8]) -> Result<FlowTarget, FlowError> {
     let mut cur = Cursor { s: json, pos: 0 };
     cur.ws();
@@ -832,9 +836,8 @@ pub fn parse_flow_target_json(c: &FlowConfig, json: &[u8]) -> Result<FlowTarget,
         return Err(FlowError::Malformed);
     }
     u32::try_from(v)
-        .ok()
-        .and_then(|ml| flow_target(c, ml))
-        .ok_or(FlowError::Lpm)
+        .map(|ml| flow_target(c, ml))
+        .map_err(|_| FlowError::Lpm)
 }
 
 // ---------------------------------------------------------------- state
@@ -883,10 +886,8 @@ pub struct FlowView {
     pub target_counts: u16,
     /// ml/min the curve gives at `counts`
     pub flow_ml: u32,
-    /// `flow_ml` / qmax in %: the position the valve reports
+    /// `counts` in % of the stroke: the position the valve reports
     pub pct: u8,
-    /// l/min x 1000 that a target of 100 % means
-    pub qmax_ml: u16,
     /// a positioning completed since the start: `last_ms` and `last_peak` are the final move's
     pub last_valid: bool,
     /// duration of the final move of the last positioning (ms)
@@ -899,10 +900,20 @@ pub struct FlowView {
     pub ref_delta: Option<i16>,
 }
 
-impl FlowView {
-    /// The target of a flow in ml/min on this valve; None above qmax.
-    pub fn target_of(&self, flow_ml: u32) -> Option<u8> {
-        (flow_ml <= u32::from(self.qmax_ml)).then(|| qmax_pct(self.qmax_ml, flow_ml))
+/// A desired target as the layer serves it: its %, and its ml/min when it is a flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Served {
+    pub pct: u8,
+    pub flow_ml: Option<u16>,
+}
+
+impl Served {
+    /// The desired target of a valve; None without one.
+    pub fn of(s: &ValveState) -> Option<Self> {
+        s.desired_valid.then_some(Self {
+            pct: s.desired,
+            flow_ml: s.flow_target(),
+        })
     }
 }
 
@@ -1043,9 +1054,8 @@ struct FlowValve {
     /// the goal of the positioning
     target_counts: u16,
     target_pct: u8,
-    /// the desired target the positioning serves (served_valid)
-    served_desired: u8,
-    served_valid: bool,
+    /// the desired target the positioning serves
+    served: Option<Served>,
     /// the position the STM keeps (held_valid)
     held_counts: u16,
     held_valid: bool,
@@ -1069,8 +1079,7 @@ impl FlowValve {
         calib_seen: false,
         target_counts: 0,
         target_pct: 0,
-        served_desired: 0,
-        served_valid: false,
+        served: None,
         held_counts: 0,
         held_valid: false,
         last_valid: false,
@@ -1315,7 +1324,7 @@ impl FlowLayer {
         &mut self,
         valve: u8,
         counts: u16,
-        desired: Option<u8>,
+        desired: Option<Served>,
         now_ms: u32,
     ) -> bool {
         let i = usize::from(valve);
@@ -1326,8 +1335,7 @@ impl FlowLayer {
             return false;
         };
         let counts = counts.min(FLOW_COUNTS_MAX);
-        fv.served_desired = desired.unwrap_or(0);
-        fv.served_valid = desired.is_some();
+        fv.served = desired;
         if matches!(fv.phase, Phase::Positioning(_)) {
             fv.pending_raw = Some(counts);
         } else {
@@ -1341,9 +1349,9 @@ impl FlowLayer {
     /// The next request of the layer, at most one in flight over all valves (the STM moves one
     /// valve at a time): the release of a disabled valve, the continuation of a running
     /// positioning, else the start of one for a valve whose desired target is not the one its
-    /// held position serves. A new target is applied only when the flow changes by the dead band
-    /// and the interval since the last positioning has passed; a target of 0 and the first
-    /// positioning since the start are not delayed. A held valve goes to a new target with one
+    /// held position serves. A new target is applied only when the interval since the last
+    /// positioning has passed and, as a flow, when it differs from the flow of the held position by
+    /// the dead band; closing and the first positioning since the start are not delayed. A held valve goes to a new target with one
     /// move and `skeep` when it can ([`direct_seq`]). A valve in assembly, calibrating, moving, at
     /// its lease failsafe or without v3 data waits. A sequence between its moves starts again from
     /// the reference end stop when the valve is no longer where the last move left it (another
@@ -1587,8 +1595,11 @@ impl FlowLayer {
             counts: if known { fv.held_counts } else { 0 },
             target_counts: fv.target_counts,
             flow_ml,
-            pct: if known { flow_pct(cfg, flow_ml) } else { 0 },
-            qmax_ml: if running { cfg.qmax_ml } else { 0 },
+            pct: if known {
+                stroke_pct(cfg, fv.held_counts)
+            } else {
+                0
+            },
             last_valid: running && fv.last_valid,
             last_ms: fv.last_ms,
             last_peak: fv.last_peak,
@@ -1648,9 +1659,17 @@ fn direct_seq(fv: &FlowValve, cfg: &FlowConfig, s: &ValveState, counts: u16) -> 
     (reachable && !fallback_due(fv, cfg, Some(s))).then_some(move_seq)
 }
 
-/// Starts a positioning to the desired target `pct` at `counts`: one move when the held position
-/// allows it ([`direct_seq`]), else from the reference end stop.
-fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, pct: u8, counts: u16, now_ms: u32) {
+/// The position of the desired target of a valve.
+fn desired_counts(cfg: &FlowConfig, s: &ValveState) -> u16 {
+    match s.flow_target() {
+        Some(ml) => flow_counts(cfg, u32::from(ml)),
+        None => target_counts(cfg, s.desired),
+    }
+}
+
+/// Starts a positioning to the desired target at `counts`: one move when the held position allows
+/// it ([`direct_seq`]), else from the reference end stop.
+fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, counts: u16, now_ms: u32) {
     let direct = direct_seq(fv, cfg, s, counts);
     begin_sequence(fv, cfg, Some(s), now_ms);
     if let (Phase::Positioning(seq), Some(move_seq)) = (&mut fv.phase, direct) {
@@ -1658,10 +1677,9 @@ fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, pct: u8, counts: 
         seq.step_seq = move_seq;
         seq.from_held = Some(fv.held_counts);
     }
-    fv.target_pct = pct;
+    fv.target_pct = s.desired;
     fv.target_counts = counts;
-    fv.served_desired = pct;
-    fv.served_valid = true;
+    fv.served = Served::of(s);
     fv.pending_raw = None;
 }
 
@@ -1674,8 +1692,17 @@ fn begin_exact(
     now_ms: u32,
 ) {
     fv.target_counts = counts;
-    fv.target_pct = flow_pct(cfg, counts_flow(cfg, counts));
+    fv.target_pct = stroke_pct(cfg, counts);
     begin_sequence(fv, cfg, s, now_ms);
+}
+
+/// A flow target the curve gives at the held position, to the dead band. A target in % has none: a
+/// target above the top of the curve gives the flow of any other there, and the valve would stay.
+fn in_dead_band(fv: &FlowValve, cfg: &FlowConfig, s: &ValveState) -> bool {
+    s.flow_target().is_some_and(|ml| {
+        let held = counts_flow(cfg, fv.held_counts);
+        u32::from(ml).abs_diff(held) < u32::from(cfg.deadband_ml)
+    })
 }
 
 /// A valve that is not positioning: starts one when its desired target is due.
@@ -1697,22 +1724,15 @@ fn start_if_due(
     if !s.desired_valid {
         return None;
     }
-    let desired = s.desired;
-    let same = fv.served_valid && desired == fv.served_desired;
+    let counts = desired_counts(cfg, s);
+    let same = fv.served == Served::of(s);
     match fv.phase {
         Phase::Held { .. } => {
             if same {
                 return None;
             }
-            if desired != 0 {
-                let q_new = pct_flow(cfg, desired);
-                let q_held = counts_flow(cfg, fv.held_counts);
-                if q_new.abs_diff(q_held) < u32::from(cfg.deadband_ml) {
-                    return None;
-                }
-                if fv.too_soon(cfg, now_ms) {
-                    return None;
-                }
+            if counts != 0 && (in_dead_band(fv, cfg, s) || fv.too_soon(cfg, now_ms)) {
+                return None;
             }
         }
         Phase::Failed { at_ms } if same && elapsed_ms(now_ms, at_ms) < FAILED_RETRY_MS => {
@@ -1720,14 +1740,12 @@ fn start_if_due(
         }
         _ => {}
     }
-    let counts = target_counts(cfg, desired);
     if counts == fv.held_counts && direct_seq(fv, cfg, s, counts).is_some() {
         // the valve stands there already
-        fv.served_desired = desired;
-        fv.served_valid = true;
+        fv.served = Served::of(s);
         return None;
     }
-    start(fv, cfg, s, desired, counts, now_ms);
+    start(fv, cfg, s, counts, now_ms);
     continue_sequence(fv, cfg, s, valve, inp, now_ms)
 }
 

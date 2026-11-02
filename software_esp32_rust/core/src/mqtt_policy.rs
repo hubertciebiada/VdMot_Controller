@@ -720,18 +720,25 @@ impl ButtonGate {
 
 // ---------------------------------------------------------------- TargetLatch
 
+/// A target as it arrived: a percentage, or a flow in ml/min.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboundTarget {
+    Pct(u8),
+    Flow(u16),
+}
+
 /// H14: the newest target per valve that app::submit() refused (full queue); the task re-submits
 /// it until the queue takes it, a newer one replaces it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetLatch {
-    pos: [Option<u8>; N],
+    pos: [Option<InboundTarget>; N],
 }
 
 impl TargetLatch {
     /// Valves out of range are ignored.
-    pub fn set(&mut self, valve: u8, pos: u8) {
+    pub fn set(&mut self, valve: u8, target: InboundTarget) {
         if let Some(p) = self.pos.get_mut(usize::from(valve)) {
-            *p = Some(pos);
+            *p = Some(target);
         }
     }
 
@@ -741,8 +748,8 @@ impl TargetLatch {
         }
     }
 
-    /// The first latched valve at or after `from` (wrapping): (valve, pos); None when none.
-    pub fn next(&self, from: u8) -> Option<(u8, u8)> {
+    /// The first latched valve at or after `from` (wrapping): (valve, target); None when none.
+    pub fn next(&self, from: u8) -> Option<(u8, InboundTarget)> {
         (0..N)
             .map(|k| (usize::from(from) + k) % N)
             .find_map(|v| Some((u8::try_from(v).ok()?, self.pos.get(v).copied().flatten()?)))

@@ -1205,7 +1205,7 @@ fn parse_inbound_topic_fuzz_fixed_seed() {
 #[test]
 fn parse_flow_payload_cases() {
     use TargetPayload::*;
-    let oks: [(&[u8], u16); 13] = [
+    let oks: [(&[u8], u16); 15] = [
         (b"0", 0),
         (b"2", 2000),
         (b"2.5", 2500),
@@ -1218,12 +1218,14 @@ fn parse_flow_payload_cases() {
         (b" 1.5\r\n", 1500),
         (b"\t1.5 ", 1500),
         (b"65.535", 65535),
+        (b"65.536", 65535), // the qmax of the valve is the limit
+        (b"999999999999.999", 65535),
         (b"0000000000000.25", 250),
     ];
     for (p, want) in oks {
         assert_eq!(parse_flow_payload(p), Ok(want), "{}", p.escape_ascii());
     }
-    let bad: [(&[u8], TargetPayload); 19] = [
+    let bad: [(&[u8], TargetPayload); 17] = [
         (b"", Empty),
         (b"   ", Empty),
         (b"\r\n", Empty),
@@ -1241,8 +1243,6 @@ fn parse_flow_payload_cases() {
         (b"2.5000", NotNumber),
         (b"0.0001", NotNumber),
         (b"1234567890123.456", NotNumber), // 17 bytes
-        (b"65.536", OutOfRange),
-        (b"999999999999.999", OutOfRange),
     ];
     for (p, want) in bad {
         assert_eq!(parse_flow_payload(p), Err(want), "{}", p.escape_ascii());

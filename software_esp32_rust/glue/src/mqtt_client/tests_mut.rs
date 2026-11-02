@@ -1487,13 +1487,12 @@ fn held_flow() -> FlowView {
         enabled: true,
         state: FlowState::Held,
         known: true,
-        qmax_ml: 2500,
         ..FlowView::default()
     }
 }
 
 #[test]
-fn inbound_a_flow_is_a_target_through_the_qmax_and_the_message_is_cleared() {
+fn inbound_a_flow_is_a_target_in_l_min_and_the_message_is_cleared() {
     let rig = Rig::new();
     let mut c = rig.client();
     rig.use_mqtt(MqttMode::MqttHa);
@@ -1506,27 +1505,88 @@ fn inbound_a_flow_is_a_target_through_the_qmax_and_the_message_is_cleared() {
     let sub = rig.submitted();
     assert_eq!(sub.len(), 1);
     assert_eq!(sub[0].kind, StmCommandType::SetTarget);
-    assert_eq!((sub[0].valve, sub[0].pos), (0, 50));
+    assert_eq!((sub[0].valve, sub[0].flow_ml), (0, Some(1250)));
     assert_eq!(sub[0].source, TargetSource::Mqtt);
     assert_eq!(rig.payloads(FLOW_SET), vec![""]);
     assert_eq!(rig.shared.regulator_state().command_seq, seq + 1);
-    rig.deliver(FLOW_SET, "2.5");
-    rig.run(&mut c, 2);
-    assert_eq!(rig.submitted()[1].pos, 100);
-    assert_eq!(rig.shared.status().commands_rejected, 0);
-    // Above qmax: the out of range of a target.
+    // Above qmax it is taken: the session clips it.
     rig.deliver(FLOW_SET, "2.501");
     rig.run(&mut c, 2);
-    assert_eq!(rig.submitted().len(), 2);
+    assert_eq!(rig.submitted()[1].flow_ml, Some(2501));
+    assert_eq!(rig.shared.status().commands_rejected, 0);
+    // A percentage is no flow.
+    rig.deliver("VdMot/valves/1/target/set", "40");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted()[2].flow_ml, None);
+    assert_eq!(rig.submitted()[2].pos, 40);
+    // Not a number: a payload reject.
+    rig.deliver(FLOW_SET, "-1");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted().len(), 3);
     assert_eq!(rig.payloads(FLOW_SET), vec!["", "", ""]);
     let ev = rig.rejected();
     assert_eq!(ev.len(), 1);
     assert_eq!(Rig::text(&ev[0]), reject_reason_name(RejectReason::Payload));
     assert_eq!(
         (ev[0].arg1, ev[0].arg2),
-        (1, TargetPayload::OutOfRange as i32)
+        (
+            1,
+            vdm_esp_core::mqtt_topics::TargetPayload::NotNumber as i32
+        )
     );
-    assert_eq!(rig.shared.regulator_state().command_seq, seq + 2);
+    assert_eq!(rig.shared.regulator_state().command_seq, seq + 3);
+}
+
+#[test]
+fn the_retained_percent_of_a_flow_target_does_not_replace_it_after_a_connect() {
+    let rig = Rig::new();
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| c.mqtt.separate = false);
+    rig.link_up();
+    rig.snap(|s| {
+        s.flow[0] = held_flow();
+        // not published yet: the broker's copy arrives first
+        s.valves[0].known = false;
+        s.valves[0].desired_valid = true;
+        s.valves[0].desired = 37;
+        s.valves[0].desired_ml = 1000;
+        s.valves[0].desired_flow = true;
+    });
+    rig.publish_snap();
+    rig.settle(&mut c, 40);
+    assert_eq!(rig.count("VdMot/valves/1/target"), 0);
+    rig.deliver("VdMot/valves/1/target", "37");
+    rig.run(&mut c, 2);
+    assert!(rig.submitted().is_empty());
+    rig.deliver("VdMot/valves/1/target", "38");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted()[0].pos, 38);
+}
+
+#[test]
+fn with_separate_a_flow_valve_publishes_its_desired_target_not_the_fallback_of_the_stm() {
+    for (state, target) in [
+        (FlowState::Held, "37"),
+        (FlowState::Positioning, "37"),
+        (FlowState::Off, "15"),
+        (FlowState::Unsupported, "15"),
+    ] {
+        let rig = Rig::new();
+        let mut c = rig.client();
+        rig.use_mqtt(MqttMode::Mqtt);
+        rig.link_up();
+        rig.snap(|s| {
+            s.valves[0].desired_valid = true;
+            s.valves[0].desired = 37;
+            s.valves[0].stm_target_known = true;
+            s.valves[0].stm_target = 15;
+            s.flow[0].state = state;
+        });
+        rig.publish_snap();
+        rig.settle(&mut c, 40);
+        assert_eq!(rig.last("VdMot/valves/1/target/value"), target, "{state:?}");
+    }
 }
 
 #[test]
@@ -1572,7 +1632,7 @@ fn inbound_a_flow_the_queue_refuses_is_submitted_again() {
     assert!(rig.submitted().is_empty());
     rig.host.state().submit_result = true;
     rig.run(&mut c, 2);
-    assert_eq!(rig.submitted()[0].pos, 50);
+    assert_eq!(rig.submitted()[0].flow_ml, Some(1250));
 }
 
 // ---------------------------------------------------------------- connection

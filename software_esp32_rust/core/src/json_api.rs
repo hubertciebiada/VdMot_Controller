@@ -627,7 +627,6 @@ static NO_FLOW: FlowView = FlowView {
     target_counts: 0,
     flow_ml: 0,
     pct: 0,
-    qmax_ml: 0,
     last_valid: false,
     last_ms: 0,
     last_peak: 0,
@@ -822,7 +821,7 @@ fn write_valve(jw: &mut JsonWriter<'_>, idx: u32, v: &ValveView<'_>, now_ms: u32
 /// 2.2.4 members: ext."coastOpen" and ext."coastClose" between "moveSeq" and "v3", motor
 /// pulses|null (null until the STM reports them, state.has_coast).
 /// Rust 2.2.8: "flow" ([`write_flow_json`]) after "calibrationEnd"; "pos" and "target" of a
-/// valve with the flow layer are flow percentages.
+/// valve with the flow layer are percentages of its `strokeCounts`.
 /// A view without state or config renders them as empty. Returns jw.ok().
 pub fn write_valves_json(jw: &mut JsonWriter<'_>, views: &[ValveView<'_>], now_ms: u32) -> bool {
     jw.begin_object();

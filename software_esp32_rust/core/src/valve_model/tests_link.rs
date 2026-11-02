@@ -98,6 +98,61 @@ fn flow_mask_a_flow_valve_keeps_its_desired_target_without_a_push_and_is_synced_
 }
 
 #[test]
+fn a_flow_target_is_a_target_of_its_own_beside_the_percent_it_means() {
+    let mut m = synced(0x003, 40);
+    m.set_flow_mask(0x001);
+    let rev = m.desired_revision();
+    assert_eq!(m.valve(0).flow_target(), None);
+    assert!(m.set_desired_flow(0, 37, 1000, TargetSource::Web, 100));
+    let v = *m.valve(0);
+    assert_eq!((v.desired, v.flow_target()), (37, Some(1000)));
+    assert_eq!(v.source, TargetSource::Web);
+    assert_eq!(m.desired_revision(), rev + 1);
+    // The same flow is no change, another one in the same whole % is: the revision moves.
+    let state = m.valve(0).revision;
+    assert!(m.set_desired_flow(0, 37, 1000, TargetSource::Mqtt, 200));
+    assert_eq!(m.valve(0).source, TargetSource::Web);
+    assert_eq!(m.desired_revision(), rev + 1);
+    assert_eq!(m.valve(0).revision, state);
+    assert!(m.set_desired_flow(0, 37, 1010, TargetSource::Web, 300));
+    assert_eq!(m.valve(0).flow_target(), Some(1010));
+    assert_eq!(m.desired_revision(), rev + 2);
+    assert_ne!(m.valve(0).revision, state);
+    // A target in % ends it, in the same whole % too, and the other way round.
+    assert!(m.set_desired_target(0, 37, TargetSource::Web, 400));
+    let v = *m.valve(0);
+    assert_eq!((v.desired, v.flow_target(), v.desired_ml), (37, None, 0));
+    assert_eq!(m.desired_revision(), rev + 3);
+    assert!(m.set_desired_flow(0, 37, 1010, TargetSource::Web, 500));
+    assert_eq!(m.valve(0).flow_target(), Some(1010));
+    assert_eq!(m.desired_revision(), rev + 4);
+    // 0 l/min is a flow as well.
+    assert!(m.set_desired_flow(0, 0, 0, TargetSource::Web, 600));
+    assert_eq!(m.valve(0).flow_target(), Some(0));
+    // The rules of a target: an active valve, 0..100.
+    assert!(!m.set_desired_flow(2, 37, 1000, TargetSource::Web, 700));
+    assert!(!m.set_desired_flow(0, 101, 1000, TargetSource::Web, 700));
+    assert_eq!(m.valve(2).flow_target(), None);
+}
+
+#[test]
+fn a_flow_target_stays_without_the_stm_and_without_the_layer_an_assembly_ends_it() {
+    let mut m = synced(0x003, 40);
+    m.set_flow_mask(0x003);
+    assert!(m.set_desired_flow(0, 37, 1000, TargetSource::Web, 100));
+    assert!(m.set_desired_flow(1, 37, 1000, TargetSource::Web, 100));
+    m.forget_stm_data();
+    assert_eq!(m.valve(0).flow_target(), Some(1000));
+    m.on_stm_rebooted(0);
+    assert_eq!(m.valve(0).flow_target(), Some(1000));
+    m.set_flow_mask(0);
+    assert_eq!(m.valve(0).flow_target(), Some(1000));
+    m.set_assembly(1, 100);
+    let v = *m.valve(1);
+    assert_eq!((v.desired, v.flow_target(), v.desired_ml), (100, None, 0));
+}
+
+#[test]
 fn flow_mask_no_stm_target_is_adopted_for_a_flow_valve_without_a_desired_target() {
     let mut m = ValveModel::default();
     m.set_active_mask(0x001);
