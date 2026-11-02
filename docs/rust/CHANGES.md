@@ -8,10 +8,20 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
-## 2.2.11-revamped
+## 2.2.12-revamped
 
-This release also carries 2.2.8, 2.2.9 and 2.2.10 below, which had no release of their own. The
-STM32 code is that of 2.2.9; only its version number changes.
+This release also carries 2.2.8, 2.2.9, 2.2.10 and 2.2.11 below, which had no release of their
+own. The STM32 code is that of 2.2.9; only its version number changes, and the flash only keeps
+the versions of the two MCUs equal.
+
+### ESP32: the stack of `main`
+
+- `CONFIG_ESP_MAIN_TASK_STACK_SIZE` is 40 960 B, was 32 768 B. The frame of `main` grew from
+  22 320 B to 26 704 B with the stored flow target, and the boot of the 2.2.11 image overflowed
+  the stack before the logger. It restarted until the boot guard switched back. The stack is
+  freed when `main` returns.
+
+## 2.2.11-revamped
 
 ### ESP32: the flow layer positions on the stroke, with one move, without the drift
 

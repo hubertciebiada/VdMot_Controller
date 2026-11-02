@@ -231,7 +231,7 @@ and the glue feeds the watchdog inside long passes as the C++ does (MQTT after e
 
 | Thread | Created by | Core | Prio | Stack | Peak in QEMU | C++ size (peak measured) | TWDT | Loop | Runs |
 |---|---|---|---|---|---|---|---|---|---|
-| `main` | ESP-IDF `app_main` | 0 | 1 | `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 32768, freed when `main` returns | 27,336 | `loopTask` 8192 | no; boot deadline §6.4 | once | NRST release, NVS, boot guard, boot order of D§3, spawns, returns |
+| `main` | ESP-IDF `app_main` | 0 | 1 | `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 40960, freed when `main` returns | 27,336 | `loopTask` 8192 | no; boot deadline §6.4 | once | NRST release, NVS, boot guard, boot order of D§3, spawns, returns |
 | `stm` | main | 1 | 5 | 8192 | 6,000 | 6656 (2676) | yes | 2 ms | D§3 `stm` |
 | `app` | main | 1 | 3 | 10240 | 8,060 | 7168 (3136) | yes | 100 ms | D§3 `app`, HTTP server start, boot guard confirm and switch |
 | `mqtt` | main | 1 | 2 | 16384 | 12,532 (a discovery run) | 7168 (3200) | yes, also after every publish | 20 / 100 / 500 ms | D§3 `mqtt` |
@@ -925,7 +925,7 @@ image for the interop run.
     the IDF 5.5 default is 1 h) and the SNTP startup delay off; WiFi 4 static RX buffers and dynamic
     TX buffers (D§9), `CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n`; Ethernet DMA 10 + 10 × 512 B;
     `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2560` and `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=2560`
-    (+ 512 each); `CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768` (§2.1); `CONFIG_SPIRAM=n`,
+    (+ 512 each); `CONFIG_ESP_MAIN_TASK_STACK_SIZE=40960` (§2.1); `CONFIG_SPIRAM=n`,
     `CONFIG_BT_ENABLED=n`; the LittleFS values of item 2; HTTPD header 1024 B, URI 512 B.
     Recommendation: these values, reviewed with the firmware spike; the firmware sets them.
 14. **Risk: crate sources.** docs.rs has no build of esp-idf-svc 0.53.0 or esp-idf-hal 0.47.0, and
