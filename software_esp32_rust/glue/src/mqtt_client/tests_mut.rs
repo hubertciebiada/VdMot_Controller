@@ -1567,6 +1567,52 @@ fn the_retained_percent_of_a_flow_target_does_not_replace_it_after_a_connect() {
     assert_eq!(rig.submitted()[0].pos, 38);
 }
 
+/// A connected client without **separate**, valve 1 with 1 l/min (37 %) not yet published.
+fn flow_target_client(rig: &Rig) -> Client<'_> {
+    let mut c = rig.client();
+    rig.use_mqtt(MqttMode::Mqtt);
+    rig.cfg(|c| c.mqtt.separate = false);
+    rig.link_up();
+    rig.snap(|s| {
+        s.flow[0] = held_flow();
+        s.valves[0].known = false;
+        s.valves[0].desired_valid = true;
+        s.valves[0].desired = 37;
+        s.valves[0].desired_ml = 1000;
+        s.valves[0].desired_flow = true;
+    });
+    rig.publish_snap();
+    rig.settle(&mut c, 40);
+    c
+}
+
+#[test]
+fn a_retained_percent_older_than_the_flow_target_does_not_replace_it_after_a_connect() {
+    let rig = Rig::new();
+    let mut c = flow_target_client(&rig);
+    rig.deliver("VdMot/valves/1/target", "25"); // the target changed while the broker was away
+    rig.run(&mut c, 2);
+    assert!(rig.submitted().is_empty());
+    rig.deliver("VdMot/valves/1/target", "25"); // the next one is a command
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted()[0].pos, 25);
+}
+
+#[test]
+fn target_set_works_before_and_after_the_retained_percent_of_a_flow_target() {
+    let rig = Rig::new();
+    let mut c = flow_target_client(&rig);
+    rig.deliver("VdMot/valves/1/target/set", "38");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted().len(), 1);
+    rig.deliver("VdMot/valves/1/target", "25");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted().len(), 1);
+    rig.deliver("VdMot/valves/1/target/set", "39");
+    rig.run(&mut c, 2);
+    assert_eq!(rig.submitted()[1].pos, 39);
+}
+
 #[test]
 fn with_separate_a_flow_valve_publishes_its_desired_target_not_the_fallback_of_the_stm() {
     for (state, target) in [

@@ -1534,6 +1534,7 @@ where
             return;
         }
         let d = decide_inbound(&ic, &m.topic, &m.payload);
+        self.echo.on_inbound(&d);
         if d.action == InboundAction::Ignore {
             return;
         }
@@ -2294,11 +2295,11 @@ where
     }
 
     /// Without `separate` the broker hands the retained state back after a connect: that % of a
-    /// target in l/min is its echo, it must not replace the flow.
+    /// target in l/min, also an older one, must not replace the flow.
     fn keep_flow_targets(&mut self) {
         for (i, v) in (0u8..).zip(&self.snap.valves) {
             if v.desired_flow {
-                self.echo.published(i, v.desired);
+                self.echo.expect_retained(i);
             }
         }
     }

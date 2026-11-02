@@ -240,8 +240,9 @@ flow. Above `qmax` the flow is clipped to `qmax`, and between the top of the cur
 and `qmax` the valve goes to the top of the curve. The ESP clears a retained
 message on the topic, as on `target/set`. Without the layer running on the valve
 the command is rejected `unsupported`, a payload that is no number is a payload
-reject. Without **separate** the retained `target` a broker hands back after a
-connect is the echo of a target in l/min and does not end it.
+reject. Without **separate** the first message on `target` after a connect is
+taken for the retained copy of a valve with a target in l/min: it is ignored,
+whatever its %, and the flow stays. `target/set` works as ever.
 
 `valves/<V>/flow` reports the layer in one line of JSON, the values of `flow.state`,
 `flow.lpm` and `flow.targetLpm` in `GET /api/valves`:

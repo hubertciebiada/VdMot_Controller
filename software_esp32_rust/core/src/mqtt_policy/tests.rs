@@ -442,6 +442,35 @@ fn inbound_button_actions() {
 }
 
 #[test]
+fn echo_filter_the_retained_message_of_a_flow_target_counts_once_whatever_its_value() {
+    let mut r = Inbound::new(false, MqttMode::Mqtt);
+    let state = "VdMot/valves/Bad_1/target";
+    r.echo.expect_retained(0);
+    r.echo.published(1, 40);
+    assert!(r.echo.is_echo(0, 25));
+    assert!(!r.echo.is_echo(1, 25));
+    // target/set is no state form and leaves it waiting
+    let d = r.decide("VdMot/valves/Bad_1/target/set", "25");
+    assert_eq!(d.action, InboundAction::SetTarget);
+    r.echo.on_inbound(&d);
+    assert!(r.echo.is_echo(0, 25));
+    let d = r.decide(state, "25");
+    assert_eq!(d.action, InboundAction::Ignore);
+    r.echo.on_inbound(&d);
+    let d = r.decide(state, "25");
+    assert_eq!((d.action, d.pos), (InboundAction::SetTarget, 25));
+    // the other topics and a blank payload use up nothing
+    r.echo.expect_retained(0);
+    for (topic, payload) in [("VdMot/other", "25"), (state, " ")] {
+        let d = r.decide(topic, payload);
+        r.echo.on_inbound(&d);
+    }
+    assert!(r.echo.is_echo(0, 25));
+    r.echo.reset();
+    assert!(!r.echo.is_echo(0, 25));
+}
+
+#[test]
 fn decide_inbound_a_flow_clears_the_retained_message_and_leaves_the_rest_to_the_caller() {
     let inb = Inbound::new(true, MqttMode::MqttHa);
     let topic = "VdMot/valves/1/flow/set";

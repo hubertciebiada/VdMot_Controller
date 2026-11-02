@@ -272,15 +272,24 @@ pub fn build_mqtt_client_id(station: &[u8], mac: &[u8; 6], out: &mut [u8]) -> us
 
 /// Without `separate` the target state topic is also a command topic: the ESP remembers the
 /// value it published there last per valve (since connect); an inbound message on the state form
-/// with that value is its own echo.
+/// with that value is its own echo. So is the first such message after a connect on a valve with
+/// a target in l/min, whatever its value: the retained % of the broker can be older than that
+/// target, and it must not replace it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EchoFilter {
     value: [Option<u8>; N],
+    /// bit v: the next message on the state form of valve v is the retained one
+    retained: u16,
+}
+
+/// Bit `valve` (none for [`NO_VALVE`]).
+fn valve_bit(valve: u8) -> u16 {
+    1u16.checked_shl(u32::from(valve)).unwrap_or(0)
 }
 
 impl EchoFilter {
     pub fn reset(&mut self) {
-        self.value = [None; N];
+        *self = Self::default();
     }
 
     /// Valves out of range are ignored.
@@ -290,8 +299,22 @@ impl EchoFilter {
         }
     }
 
+    /// After a connect, `valve` with a target in l/min.
+    pub fn expect_retained(&mut self, valve: u8) {
+        self.retained |= valve_bit(valve);
+    }
+
     pub fn is_echo(&self, valve: u8, value: u8) -> bool {
-        self.value.get(usize::from(valve)) == Some(&Some(value))
+        self.retained & valve_bit(valve) != 0
+            || self.value.get(usize::from(valve)) == Some(&Some(value))
+    }
+
+    /// `d` was decided: a message on the state form uses up the retained one of its valve. The
+    /// broker sends that first, and the ESP's own publish at the latest ends the wait for it.
+    pub fn on_inbound(&mut self, d: &InboundDecision) {
+        if !d.clear_retained {
+            self.retained &= !valve_bit(d.valve);
+        }
     }
 }
 
