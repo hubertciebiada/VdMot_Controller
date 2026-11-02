@@ -9,34 +9,35 @@ use super::*;
 use crate::stm_codec::{MoveResult, ValveEx, STM_FLAG_ASSEMBLY, STM_FLAG_SVC_HOLD};
 use crate::valve_model::TargetSource;
 
-/// west 1 of the plan: 593 pulses without flow, 2.5 l/min at 1016, qmax 2.7; 37 % of the stroke is
-/// 809 pulses.
+/// An invented curve: 630 pulses without flow, 2.3 l/min at 1070, qmax 2.6; 37 % of the stroke is
+/// 888 pulses.
 fn curve() -> FlowConfig {
     let mut c = FlowConfig {
         enabled: true,
         count: 5,
-        stroke_counts: 2187,
+        qmax_ml: 2600,
+        stroke_counts: 2400,
         ..FlowConfig::DEFAULT
     };
     c.points[0] = FlowPoint {
-        counts: 593,
+        counts: 630,
         flow_ml: 0,
     };
     c.points[1] = FlowPoint {
-        counts: 713,
-        flow_ml: 250,
+        counts: 760,
+        flow_ml: 300,
     };
     c.points[2] = FlowPoint {
-        counts: 809,
+        counts: 888,
         flow_ml: 1000,
     };
     c.points[3] = FlowPoint {
-        counts: 1016,
-        flow_ml: 2500,
+        counts: 1070,
+        flow_ml: 2300,
     };
     c.points[4] = FlowPoint {
-        counts: 1100,
-        flow_ml: 2700,
+        counts: 1180,
+        flow_ml: 2600,
     };
     c
 }
@@ -59,11 +60,11 @@ fn position_open(stm: &mut Stm, f: &mut FlowLayer, v: u8, close: u16) {
     stm.flags(v, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
 }
 
-/// The same loop measured from the open end stop: 4701 pulses of stroke.
+/// The same loop measured from the open end stop: 4641 pulses of stroke.
 fn open_curve() -> FlowConfig {
     let mut c = curve();
     c.ref_side = RefSide::Open;
-    c.stroke_counts = 4701;
+    c.stroke_counts = 4641;
     c
 }
 
@@ -149,7 +150,7 @@ fn validation_every_rule_with_its_error() {
         (|c| c.count = 1, FlowError::PointCount),
         (|c| c.count = 17, FlowError::PointCount),
         (|c| c.count = 0, FlowError::PointCount),
-        (|c| c.points[2].counts = 713, FlowError::PointCounts),
+        (|c| c.points[2].counts = 760, FlowError::PointCounts),
         (|c| c.points[2].counts = 700, FlowError::PointCounts),
         (|c| c.points[4].counts = 10001, FlowError::PointCounts),
         (|c| c.points[2].flow_ml = 249, FlowError::PointFlow),
@@ -170,7 +171,7 @@ fn validation_every_rule_with_its_error() {
     ok.offset = -10000;
     ok.gain_milli = 100;
     ok.points[4].counts = 10000;
-    ok.points[2].flow_ml = 250; // equal flows are allowed
+    ok.points[2].flow_ml = 300; // equal flows are allowed
     assert_eq!(validate_flow_config(&ok), Ok(()));
     ok.offset = 10000;
     ok.gain_milli = 10000;
@@ -263,28 +264,28 @@ fn error_texts_name_the_key_and_its_range() {
 fn mapping_closed_reference_first_position_where_the_curve_reaches_the_flow() {
     let c = curve();
     // Below the first flow: the first counts; on the segments: linear; above: the last.
-    assert_eq!(curve_counts(&c, 0), 593);
-    assert_eq!(curve_counts(&c, 250), 713);
-    assert_eq!(curve_counts(&c, 125), 653);
-    assert_eq!(curve_counts(&c, 1000), 809);
-    assert_eq!(curve_counts(&c, 1750), 913); // 809 + 750/1500 x 207 = 912.5 -> 913
-    assert_eq!(curve_counts(&c, 2700), 1100);
-    assert_eq!(curve_counts(&c, 5000), 1100);
+    assert_eq!(curve_counts(&c, 0), 630);
+    assert_eq!(curve_counts(&c, 300), 760);
+    assert_eq!(curve_counts(&c, 150), 695);
+    assert_eq!(curve_counts(&c, 1000), 888);
+    assert_eq!(curve_counts(&c, 1025), 892); // 888 + 25/1300 x 182 = 891.5 -> 892
+    assert_eq!(curve_counts(&c, 2600), 1180);
+    assert_eq!(curve_counts(&c, 5000), 1180);
     // A flat segment: its first position.
     let mut flat = c;
-    flat.points[2].flow_ml = 250;
-    assert_eq!(curve_counts(&flat, 250), 713);
-    assert_eq!(curve_counts(&flat, 251), 809); // 809 + 1/2250 x 207 -> 809.09 -> 809
+    flat.points[2].flow_ml = 300;
+    assert_eq!(curve_counts(&flat, 300), 760);
+    assert_eq!(curve_counts(&flat, 301), 888); // 888 + 1/2000 x 182 -> 888.09 -> 888
     assert_eq!(curve_counts(&FlowConfig::DEFAULT, 100), 0);
     // The flow targets: 0 is closed, otherwise the corrected counts.
     assert_eq!(flow_counts(&c, 0), 0);
-    assert_eq!(flow_counts(&c, 27), 606); // 593 + 27/250 x 120 = 605.96
-    assert_eq!(flow_counts(&c, 999), 809); // 808.87
-    assert_eq!(flow_counts(&c, 2700), 1100);
+    assert_eq!(flow_counts(&c, 27), 642); // 630 + 27/300 x 130 = 641.7
+    assert_eq!(flow_counts(&c, 999), 888); // 887.82
+    assert_eq!(flow_counts(&c, 2600), 1180);
     let mut corrected = c;
     corrected.offset = -9;
     corrected.gain_milli = 1010;
-    assert_eq!(flow_counts(&corrected, 999), 808); // 809 x 1.01 = 817.09 -> 817 - 9
+    assert_eq!(flow_counts(&corrected, 999), 888); // 888 x 1.01 = 896.88 -> 897 - 9
     corrected.offset = -10000;
     assert_eq!(flow_counts(&corrected, 999), 1); // never below 1
     corrected.offset = 10000;
@@ -292,45 +293,45 @@ fn mapping_closed_reference_first_position_where_the_curve_reaches_the_flow() {
                                                      // qmax is the limit, whatever the curve goes on to.
     let mut low = c;
     low.qmax_ml = 1000;
-    assert_eq!(flow_counts(&low, 2500), 809);
-    assert_eq!(flow_counts(&low, 1000), 809);
-    assert_eq!(flow_counts(&low, 999), 809);
+    assert_eq!(flow_counts(&low, 2500), 888);
+    assert_eq!(flow_counts(&low, 1000), 888);
+    assert_eq!(flow_counts(&low, 999), 888);
 }
 
 #[test]
 fn a_target_is_a_percentage_of_the_stroke_and_the_curve_has_no_part_in_it() {
     let mut c = curve();
-    c.stroke_counts = 4701;
+    c.stroke_counts = 4641;
     assert_eq!(target_counts(&c, 0), 0);
-    assert_eq!(target_counts(&c, 1), 47);
-    assert_eq!(target_counts(&c, 37), 1739); // 1739.37
-    assert_eq!(target_counts(&c, 38), 1786); // 1786.38
-    assert_eq!(target_counts(&c, 50), 2351); // 2350.5
-    assert_eq!(target_counts(&c, 100), 4701);
+    assert_eq!(target_counts(&c, 1), 46);
+    assert_eq!(target_counts(&c, 37), 1717); // 1717.17
+    assert_eq!(target_counts(&c, 38), 1764); // 1763.58
+    assert_eq!(target_counts(&c, 50), 2321); // 2320.5
+    assert_eq!(target_counts(&c, 100), 4641);
     c.stroke_counts = 10000;
     assert_eq!(target_counts(&c, 100), 10000);
     assert_eq!(target_counts(&c, 7), 700);
     let mut corrected = curve();
     corrected.offset = -9;
     corrected.gain_milli = 1010;
-    assert_eq!(target_counts(&corrected, 37), 809);
+    assert_eq!(target_counts(&corrected, 37), 888);
     corrected.count = 0;
-    assert_eq!(target_counts(&corrected, 37), 809);
+    assert_eq!(target_counts(&corrected, 37), 888);
     assert_eq!(target_counts(&FlowConfig::DEFAULT, 37), 0);
 }
 
 #[test]
 fn a_position_in_percent_of_the_stroke_is_rounded_and_ends_at_100() {
     let mut c = curve();
-    c.stroke_counts = 4701;
+    c.stroke_counts = 4641;
     assert_eq!(stroke_pct(&c, 0), 0);
-    assert_eq!(stroke_pct(&c, 23), 0); // 0.49
-    assert_eq!(stroke_pct(&c, 24), 1); // 0.51
-    assert_eq!(stroke_pct(&c, 1739), 37);
-    assert_eq!(stroke_pct(&c, 4701), 100);
+    assert_eq!(stroke_pct(&c, 23), 0); // 0.496
+    assert_eq!(stroke_pct(&c, 24), 1); // 0.517
+    assert_eq!(stroke_pct(&c, 1717), 37);
+    assert_eq!(stroke_pct(&c, 4641), 100);
     assert_eq!(stroke_pct(&c, 10000), 100); // past the stroke
     assert_eq!(stroke_pct(&FlowConfig::DEFAULT, 500), 0);
-    for stroke in [100u16, 2187, 4162, 4961, 10000] {
+    for stroke in [100u16, 2400, 4170, 4950, 10000] {
         c.stroke_counts = stroke;
         for pct in 0..=100u8 {
             let counts = target_counts(&c, pct);
@@ -343,20 +344,20 @@ fn a_position_in_percent_of_the_stroke_is_rounded_and_ends_at_100() {
 fn mapping_closed_reference_inverse_flow() {
     let c = curve();
     assert_eq!(curve_flow(&c, 0), 0);
-    assert_eq!(curve_flow(&c, 593), 0);
-    assert_eq!(curve_flow(&c, 653), 125);
-    assert_eq!(curve_flow(&c, 713), 250);
-    assert_eq!(curve_flow(&c, 913), 1754); // 1000 + 104/207 x 1500 = 1753.6
-    assert_eq!(curve_flow(&c, 1100), 2700);
-    assert_eq!(curve_flow(&c, 5000), 2700);
+    assert_eq!(curve_flow(&c, 630), 0);
+    assert_eq!(curve_flow(&c, 695), 150);
+    assert_eq!(curve_flow(&c, 760), 300);
+    assert_eq!(curve_flow(&c, 992), 1743); // 1000 + 104/182 x 1300 = 1742.9
+    assert_eq!(curve_flow(&c, 1180), 2600);
+    assert_eq!(curve_flow(&c, 5000), 2600);
     assert_eq!(curve_flow(&FlowConfig::DEFAULT, 500), 0);
     assert_eq!(counts_flow(&c, 0), 0);
-    assert_eq!(counts_flow(&c, 809), 1000);
+    assert_eq!(counts_flow(&c, 888), 1000);
     assert_eq!(counts_flow(&c, 1), 0);
     let mut corrected = c;
     corrected.offset = -9;
     corrected.gain_milli = 1010;
-    assert_eq!(counts_flow(&corrected, 808), 1000); // (808 + 9) / 1.01 = 808.9 -> 809
+    assert_eq!(counts_flow(&corrected, 888), 1000); // (888 + 9) / 1.01 = 888.1 -> 888
     corrected.offset = 2000;
     assert_eq!(counts_flow(&corrected, 100), 0); // behind the offset: the curve's start
 }
@@ -368,11 +369,11 @@ fn mapping_the_reference_side_changes_nothing_the_curve_counts_from_the_closed_s
     for pct in 0..=100u8 {
         assert_eq!(target_counts(&o, pct), target_counts(&c, pct), "{pct}");
     }
-    for counts in [0u16, 1, 593, 700, 809, 1100, 4701, 10000] {
+    for counts in [0u16, 1, 630, 700, 888, 1180, 4641, 10000] {
         assert_eq!(counts_flow(&o, counts), counts_flow(&c, counts), "{counts}");
     }
-    assert_eq!(target_counts(&o, 37), 809);
-    assert_eq!(flow_counts(&o, 999), 809);
+    assert_eq!(target_counts(&o, 37), 888);
+    assert_eq!(flow_counts(&o, 999), 888);
 }
 
 // ================================================================ blob
@@ -388,19 +389,19 @@ fn blob_round_trip_and_rejections() {
     let mut bytes = [0xEE; FLOW_BLOB_SIZE];
     assert_eq!(encode_flow_configs(&all, &mut bytes), FLOW_BLOB_SIZE);
     assert_eq!(&bytes[..6], b"VDMF\x01\x0C");
-    // valve 0: enabled, 2700 = 0x0A8C, 34, 30, 15, 60 = 0x003C, 50, 0, 1000 = 0x03E8,
-    // closed, no warm-up, 2187 = 0x088B, 5 points, the first 593 = 0x0251 at 0.
+    // valve 0: enabled, 2600 = 0x0A28, 34, 30, 15, 60 = 0x003C, 50, 0, 1000 = 0x03E8,
+    // closed, no warm-up, 2400 = 0x0960, 5 points, the first 630 = 0x0276 at 0.
     assert_eq!(
         &bytes[6..29],
         &[
-            1, 0x8C, 0x0A, 34, 30, 15, 0x3C, 0x00, 50, 0, 0, 0, 0xE8, 0x03, 0, 0, 0x8B, 0x08, 5,
-            0x51, 0x02, 0, 0
+            1, 0x28, 0x0A, 34, 30, 15, 0x3C, 0x00, 50, 0, 0, 0, 0xE8, 0x03, 0, 0, 0x60, 0x09, 5,
+            0x76, 0x02, 0, 0
         ]
     );
     let valve5 = 6 + 5 * FLOW_RECORD_SIZE;
     assert_eq!(bytes[valve5 + 14], 1); // open
     assert_eq!(bytes[valve5 + 15], 1); // preClose
-    assert_eq!(&bytes[valve5 + 16..valve5 + 18], &4701u16.to_le_bytes()); // strokeCounts
+    assert_eq!(&bytes[valve5 + 16..valve5 + 18], &4641u16.to_le_bytes()); // strokeCounts
     assert_eq!(&bytes[valve5 + 10..valve5 + 12], &(-17i16).to_le_bytes());
     let mut back = [FlowConfig::DEFAULT; 12];
     assert!(decode_flow_configs(&bytes, &mut back));
@@ -468,10 +469,10 @@ fn json_document_and_patch_round_trip() {
     assert_eq!(
         text,
         concat!(
-            r#"{"enabled":true,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"#,
+            r#"{"enabled":true,"qmax":2.600,"refmA":34,"openmA":30,"fallbackPct":15,"#,
             r#""minIntervalS":60,"deadbandLpm":0.050,"offset":0,"gain":1.000,"#,
-            r#""refSide":"closed","strokeCounts":2187,"preClose":false,"#,
-            r#""points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]}"#
+            r#""refSide":"closed","strokeCounts":2400,"preClose":false,"#,
+            r#""points":[[630,0.000],[760,0.300],[888,1.000],[1070,2.300],[1180,2.600]]}"#
         )
     );
     assert_eq!(patched(&FlowConfig::DEFAULT, &text), Ok(c));
@@ -481,7 +482,7 @@ fn json_document_and_patch_round_trip() {
     open.gain_milli = 995;
     open.deadband_ml = 5;
     let text = json(&open);
-    assert!(text.contains(r#""refSide":"open","strokeCounts":4701,"preClose":true,"#));
+    assert!(text.contains(r#""refSide":"open","strokeCounts":4641,"preClose":true,"#));
     assert!(text.contains(r#""offset":-17,"gain":0.995,"#));
     assert!(text.contains(r#""deadbandLpm":0.005,"#));
     assert_eq!(patched(&FlowConfig::DEFAULT, &text), Ok(open));
@@ -512,11 +513,11 @@ fn json_patch_keeps_absent_members_and_takes_every_number_form() {
     );
     let p = patched(
         &c,
-        r#"{"refSide":"open","strokeCounts":4701,"preClose":true}"#,
+        r#"{"refSide":"open","strokeCounts":4641,"preClose":true}"#,
     )
     .expect("ok");
     assert_eq!(p.ref_side, RefSide::Open);
-    assert_eq!(p.stroke_counts, 4701);
+    assert_eq!(p.stroke_counts, 4641);
     assert!(p.pre_close);
     assert_eq!(p.points(), c.points());
     let p = patched(&c, r#"{"enabled":false,"points":[]}"#).expect("ok");
@@ -627,7 +628,7 @@ fn ex(valve: u8, target: u8, flags: u16) -> ValveEx {
         position: 20,
         target,
         mean_current: 20,
-        open_count: 4701,
+        open_count: 4641,
         close_count: 4800,
         v3: true,
         flags,
@@ -910,13 +911,13 @@ fn first_positioning_fallback_target_close_to_the_end_stop_open_keep_held() {
     let mut stm = Stm::new(0x001);
     assert_eq!(stm.next(&mut f), None); // no desired target
     stm.target(0, 37);
-    // 37 % of the stroke is 809 pulses; the STM target is 15 already? No: 50.
+    // 37 % of the stroke is 888 pulses; the STM target is 15 already? No: 50.
     stm.ex[0].target = 50;
     stm.poll(0);
     assert_eq!(stm.next(&mut f), set_target(0, 15));
     assert_eq!(stm.next(&mut f), None); // one request at a time
     assert_eq!(f.view(0).state, FlowState::Positioning);
-    assert_eq!(f.view(0).target_counts, 809);
+    assert_eq!(f.view(0).target_counts, 888);
     assert!(f.take_dirty());
     stm.result(&mut f, 0, FlowOutcome::Ok);
     // The stroke (4800) closes it: the position is unknown.
@@ -935,10 +936,10 @@ fn first_positioning_fallback_target_close_to_the_end_stop_open_keep_held() {
     stm.ex[0].status = 1;
     stm.poll(0);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 888, 888, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     assert_eq!(f.view(0).state, FlowState::Positioning);
@@ -946,17 +947,17 @@ fn first_positioning_fallback_target_close_to_the_end_stop_open_keep_held() {
     assert_eq!(stm.codes(), [EventCode::FlowPositioned]);
     assert_eq!(
         (stm.events[0].valve, stm.events[0].arg1, stm.events[0].arg2),
-        (0, 809, 37)
+        (0, 888, 37)
     );
     let v = f.view(0);
     assert_eq!(v.state, FlowState::Held);
     assert!(v.known);
     assert_eq!(
         (v.counts, v.target_counts, v.flow_ml, v.pct),
-        (809, 809, 1000, 37)
+        (888, 888, 1000, 37)
     );
     assert!(v.last_valid);
-    assert_eq!((v.last_ms, v.last_peak), (809 * 7, 123));
+    assert_eq!((v.last_ms, v.last_peak), (888 * 7, 123));
     assert!(!f.busy(0));
     // Held: nothing more while the flag arrives; the same target is served.
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
@@ -973,14 +974,14 @@ fn fallback_target_is_skipped_when_the_stm_target_is_it_already_and_sent_once() 
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.target(0, 50);
-    // The STM target is 15 (the fallback): the close comes first; 1094 pulses.
-    position(&mut stm, &mut f, 0, false, 4800, 1094);
+    // The STM target is 15 (the fallback): the close comes first; 1200 pulses.
+    position(&mut stm, &mut f, 0, false, 4800, 1200);
     assert_eq!(f.view(0).state, FlowState::Held);
     // A target only the reference reaches, after the interval: no stgtp again, the close counts
     // from the held position + 500.
     stm.now += 300_000;
     stm.target(0, 100);
-    position(&mut stm, &mut f, 0, false, 1594, 2187);
+    position(&mut stm, &mut f, 0, false, 1700, 2400);
     assert_eq!(f.view(0).pct, 100);
 }
 
@@ -1000,9 +1001,9 @@ fn closed_target_the_reference_close_alone_is_kept_the_position_is_0() {
     // A target of 0 is never delayed nor filtered: held at 37, the interval not over.
     stm.target(2, 37);
     stm.now += 300_000;
-    position(&mut stm, &mut f, 2, false, 500, 809);
+    position(&mut stm, &mut f, 2, false, 500, 888);
     stm.target(2, 0);
-    assert_eq!(stm.next(&mut f), mv(2, MoveDir::Close, 1309, 34));
+    assert_eq!(stm.next(&mut f), mv(2, MoveDir::Close, 1388, 34));
 }
 
 #[test]
@@ -1014,7 +1015,7 @@ fn dead_band_and_interval_hold_a_new_target_back_the_latest_wins() {
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 1000);
     let started = stm.now + 2; // the first request of the positioning
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     // 1.05 l/min: inside the dead band of 0.1 -> nothing.
     stm.flow(&c, 0, 1050);
     assert_eq!(stm.next(&mut f), None);
@@ -1026,8 +1027,8 @@ fn dead_band_and_interval_hold_a_new_target_back_the_latest_wins() {
     stm.now = started + 59_997; // the call comes 2 ms later
     assert_eq!(stm.next(&mut f), None);
     stm.now = started + 59_998;
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 503, 30));
-    assert_eq!(f.view(0).target_counts, 1312);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 552, 30));
+    assert_eq!(f.view(0).target_counts, 1440);
     assert_eq!(f.view(0).state, FlowState::Positioning);
     // While it positions, the held value stays reported.
     assert_eq!(f.view(0).pct, 37);
@@ -1042,12 +1043,12 @@ fn a_new_target_exactly_the_dead_band_away_is_served() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 1000);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     stm.flow(&c, 0, 1099);
     assert_eq!(stm.next(&mut f), None);
     stm.flow(&c, 0, 901);
     assert_eq!(stm.next(&mut f), None);
-    stm.flow(&c, 0, 1100); // 823 pulses
+    stm.flow(&c, 0, 1100); // 902 pulses
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 14, 30));
     assert_eq!(f.view(0).state, FlowState::Positioning);
 }
@@ -1102,7 +1103,7 @@ fn the_reference_close_is_repeated_up_to_three_times_then_the_positioning_fails(
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 800, 60, StopReason::EarlyEndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 831, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 912, 30));
     assert_eq!(CLOSE_EXTRA_COUNTS, 500);
     assert_eq!(REF_RETRY_COUNTS, 800);
     assert_eq!(REF_ATTEMPTS, 3);
@@ -1126,10 +1127,10 @@ fn an_unexpected_stop_of_a_move_fails_the_positioning_with_the_reason() {
     // ... and of the opening move (the close equals the last record: one pulse more).
     stm.target(0, 38);
     position_until_open(&mut stm, &mut f, 0, 4801);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 831, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 912, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 831, 400, StopReason::Aborted);
+    stm.moved(0, MoveDir::Open, 912, 400, StopReason::Aborted);
     stm.tick(&mut f);
     assert_eq!(f.view(0).state, FlowState::Failed);
     assert_eq!(stm.events[1].arg1, 5);
@@ -1137,10 +1138,10 @@ fn an_unexpected_stop_of_a_move_fails_the_positioning_with_the_reason() {
     // An opening move that meets the open end stop is a position too.
     stm.target(0, 39);
     position_until_open(&mut stm, &mut f, 0, 4800);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 853, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 936, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 853, 700, StopReason::EarlyEndStop);
+    stm.moved(0, MoveDir::Open, 936, 700, StopReason::EarlyEndStop);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1235,10 +1236,10 @@ fn no_reply_and_a_rejected_keep_fail_the_positioning() {
     assert_eq!(&stm.events[0].text[..], b"no reply");
     stm.target(0, 38);
     position_until_open(&mut stm, &mut f, 0, 4800);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 831, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 912, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 831, 831, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 912, 912, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Rejected(1));
@@ -1325,7 +1326,7 @@ fn the_result_of_a_release_frees_the_layer_at_once() {
     let mut f = layer(&c, &[0, 1]);
     let mut stm = Stm::new(0x003);
     stm.target(0, 37);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     f.set_configs(&configs(&c, &[1]));
     assert_eq!(stm.next(&mut f), keep(0, false));
     stm.target(1, 37);
@@ -1382,12 +1383,12 @@ fn the_record_of_the_final_move_counts_once_the_valve_stopped() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 4800, 97, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
     // The record is there while the valve still opens: the keep waits.
     stm.ex[0].status = 2;
-    stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 888, 888, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), None);
     assert!(!f.view(0).last_valid);
@@ -1404,7 +1405,7 @@ fn hold_lost_by_the_flag_or_another_move_repositions_when_the_valve_is_free() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.target(0, 37);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     stm.tick(&mut f);
     assert_eq!(f.view(0).state, FlowState::Held);
     // The flag is gone (a calibration, the lease): unknown, repositioned once the valve is
@@ -1430,10 +1431,10 @@ fn hold_lost_by_the_flag_or_another_move_repositions_when_the_valve_is_free() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 4800, 100, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 888, 888, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1454,10 +1455,10 @@ fn hold_the_flag_counts_only_from_a_poll_after_the_keep() {
     let mut stm = Stm::new(0x001);
     stm.target(0, 37);
     position_until_open(&mut stm, &mut f, 0, 4800);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 888, 888, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1477,7 +1478,7 @@ fn stm_reboot_forgets_the_hold_and_the_request_in_flight_the_fallback_goes_first
     let mut f = layer(&c, &[0, 1]);
     let mut stm = Stm::new(0x003);
     stm.target(0, 37);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     stm.target(1, 50);
     assert_eq!(stm.next(&mut f), mv(1, MoveDir::Close, 4800, 34));
     stm.rebooted(&mut f);
@@ -1487,7 +1488,7 @@ fn stm_reboot_forgets_the_hold_and_the_request_in_flight_the_fallback_goes_first
     assert!(!f.view(0).known);
     // the last move stays on record
     assert!(f.view(0).last_valid);
-    assert_eq!((f.view(0).last_ms, f.view(0).last_peak), (5663, 123));
+    assert_eq!((f.view(0).last_ms, f.view(0).last_peak), (6216, 123));
     assert!(!f.busy(1));
     // The held valve lost its hold (event), the positioning valve silently.
     assert_eq!(
@@ -1516,7 +1517,7 @@ fn stm_reboot_forgets_the_hold_and_the_request_in_flight_the_fallback_goes_first
     stm.tick(&mut f);
     stm.moved(1, MoveDir::Close, 4800, 100, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
 }
 
 #[test]
@@ -1599,7 +1600,7 @@ fn moves_of_different_valves_run_one_after_the_other_round_robin() {
     stm.tick(&mut f);
     stm.moved(2, MoveDir::Close, 4800, 100, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
 }
 
 #[test]
@@ -1608,52 +1609,52 @@ fn counts_request_positions_at_once_and_counts_the_desired_target_as_served() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.target(0, 37);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
-    // 900 corrected pulses at once (the interval is not over), the view with its own %.
-    assert!(f.position_counts(0, 900, served(37), stm.now));
+    position(&mut stm, &mut f, 0, false, 4800, 888);
+    // 984 corrected pulses at once (the interval is not over), the view with its own %.
+    assert!(f.position_counts(0, 984, served(37), stm.now));
     assert!(f.take_dirty());
     assert_eq!(f.view(0).state, FlowState::Positioning);
-    assert_eq!(f.view(0).target_counts, 900);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    assert_eq!(f.view(0).target_counts, 984);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1309, 100, StopReason::EndStop);
+    stm.moved(0, MoveDir::Close, 1388, 100, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 900, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 984, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 900, 900, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 984, 984, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     let v = f.view(0);
-    assert_eq!((v.counts, v.flow_ml, v.pct), (900, 1659, 41));
+    assert_eq!((v.counts, v.flow_ml, v.pct), (984, 1686, 41));
     assert_eq!(stm.events.last().map(|e| e.arg2), Some(41));
     // The desired 37 is served: no positioning back, until it changes.
     stm.now += 400_000;
     assert_eq!(stm.next(&mut f), None);
     stm.target(0, 100);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1400, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1484, 34));
     // A counts request during a positioning follows it; the limit is 10000; 0 closes.
     assert!(f.position_counts(0, 12000, served(100), stm.now));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1400, 100, StopReason::EndStop);
+    stm.moved(0, MoveDir::Close, 1484, 100, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 2187, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 2400, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 2187, 2187, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 2400, 2400, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 2687, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 2900, 34));
     assert_eq!(f.view(0).target_counts, 10000);
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 2687, 100, StopReason::EndStop);
+    stm.moved(0, MoveDir::Close, 2900, 100, StopReason::EndStop);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1675,7 +1676,7 @@ fn disabling_releases_the_keep_the_curve_change_repositions() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 999);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     // The same config again: nothing.
     assert!(f.take_dirty());
     f.set_configs(&configs(&c, &[0]));
@@ -1691,26 +1692,26 @@ fn disabling_releases_the_keep_the_curve_change_repositions() {
     assert!(f.take_dirty());
     assert_eq!(f.view(0).state, FlowState::Unknown);
     assert!(f.view(0).known); // the old position until the moves start
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
-    assert_eq!(f.view(0).target_counts, 814);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
+    assert_eq!(f.view(0).target_counts, 893);
     // A change during the positioning: another one follows the keep.
     c2.gain_milli = 1001;
     f.set_configs(&configs(&c2, &[0]));
     assert_eq!(f.view(0).state, FlowState::Positioning);
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1309, 100, StopReason::EndStop);
+    stm.moved(0, MoveDir::Close, 1388, 100, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 814, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 893, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 814, 814, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 893, 893, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     assert_eq!(f.view(0).state, FlowState::Unknown);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1314, 34));
-    assert_eq!(f.view(0).target_counts, 815);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1393, 34));
+    assert_eq!(f.view(0).target_counts, 894);
     // Disabled while positioning: the keep is released once, the state is off.
     f.set_configs(&configs(&FlowConfig::DEFAULT, &[0]));
     assert_eq!(f.view(0).state, FlowState::Off);
@@ -1725,7 +1726,7 @@ fn disabling_releases_the_keep_the_curve_change_repositions() {
     f.set_configs(&configs(&c, &[0]));
     stm.ex[0].target = 15;
     stm.poll(0);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     f.set_configs(&configs(&FlowConfig::DEFAULT, &[0]));
     assert_eq!(stm.next(&mut f), keep(0, false));
     f.on_dropped(0, stm.now);
@@ -1756,20 +1757,20 @@ fn pre_close_warms_the_end_stop_before_the_opening_move() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 800, 350, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+    stm.moved(0, MoveDir::Open, 888, 888, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!(f.view(0).counts, 809);
+    assert_eq!(f.view(0).counts, 888);
     // The warm-up close that misses the end stop is repeated; a warm-up opening that meets
     // the open end stop goes on; a target of 0 skips the warm-up.
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     stm.now += 300_000;
     stm.target(0, 100);
-    position_until_open(&mut stm, &mut f, 0, 1309);
+    position_until_open(&mut stm, &mut f, 0, 1388);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 300, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
@@ -1785,10 +1786,10 @@ fn pre_close_warms_the_end_stop_before_the_opening_move() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Close, 801, 400, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 2187, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 2400, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 2187, 200, StopReason::UnderCurrent);
+    stm.moved(0, MoveDir::Open, 2400, 200, StopReason::UnderCurrent);
     stm.tick(&mut f);
     assert_eq!(f.view(0).state, FlowState::Failed);
     stm.target(0, 0);
@@ -1821,7 +1822,7 @@ fn pre_close_warms_the_end_stop_before_the_opening_move() {
     stm.tick(&mut f);
     stm.moved(2, MoveDir::Open, 10000, 4650, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(2, MoveDir::Close, 3892, 34));
+    assert_eq!(stm.next(&mut f), mv(2, MoveDir::Close, 3753, 34));
 }
 
 #[test]
@@ -1846,45 +1847,45 @@ fn open_reference_opens_to_the_end_stop_then_closes_the_curve_pulses() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Open, 801, 30, StopReason::EarlyEndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3892, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3753, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 3892, 3892, StopReason::Target);
+    stm.moved(0, MoveDir::Close, 3753, 3753, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     let v = f.view(0);
     assert_eq!(v.state, FlowState::Held);
-    assert_eq!((v.counts, v.flow_ml, v.pct), (809, 1000, 17)); // 4701 - 3892
-    assert_eq!((v.last_ms, v.last_peak), (3892 * 7, 123));
+    assert_eq!((v.counts, v.flow_ml, v.pct), (888, 1000, 19)); // 4641 - 3753
+    assert_eq!((v.last_ms, v.last_peak), (3753 * 7, 123));
     // No held position before the first positioning.
     assert_eq!(v.ref_delta, None);
     // A positioning that goes through the end stop again (the whole range, one more than the
     // record when equal); the final close may meet the closed end stop.
-    assert!(f.position_counts(0, 716, Served::of(stm.m.valve(0)), stm.now));
+    assert!(f.position_counts(0, 795, Served::of(stm.m.valve(0)), stm.now));
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 10000, 3892, StopReason::EndStop);
+    stm.moved(0, MoveDir::Open, 10000, 3753, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3985, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3846, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 3985, 4000, StopReason::EarlyEndStop);
+    stm.moved(0, MoveDir::Close, 3846, 3861, StopReason::EarlyEndStop);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
-    assert_eq!(f.view(0).counts, 701); // 4701 - 4000
-    assert_eq!(f.view(0).pct, 15); // of 4701
+    assert_eq!(f.view(0).counts, 780); // 4641 - 3861
+    assert_eq!(f.view(0).pct, 17); // of 4641
     assert_eq!(f.view(0).ref_delta, Some(0));
     // A target of 0 closes to the closed reference as always.
     stm.target(0, 0);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1201, 34)); // 701 + 500
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1280, 34)); // 780 + 500
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1201, 700, StopReason::EndStop);
+    stm.moved(0, MoveDir::Close, 1280, 700, StopReason::EndStop);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1902,7 +1903,7 @@ fn ref_delta_is_what_the_opening_counted_above_the_way_to_the_end_stop() {
     stm.flow(&c, 0, 999);
     let go = |stm: &mut Stm, f: &mut FlowLayer, counts, cnt, stop, close: u16| {
         stm.now += 300_000;
-        if counts != 809 || f.view(0).known {
+        if counts != 888 || f.view(0).known {
             assert!(f.position_counts(0, counts, Served::of(stm.m.valve(0)), stm.now));
         }
         assert_eq!(stm.next(f), mv(0, MoveDir::Open, 10000, 30));
@@ -1920,14 +1921,14 @@ fn ref_delta_is_what_the_opening_counted_above_the_way_to_the_end_stop() {
         stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
         f.view(0)
     };
-    let v = go(&mut stm, &mut f, 809, 4000, StopReason::EndStop, 3892);
-    assert_eq!((v.counts, v.ref_delta), (808, None));
+    let v = go(&mut stm, &mut f, 888, 4000, StopReason::EndStop, 3753);
+    assert_eq!((v.counts, v.ref_delta), (887, None));
     assert_eq!(stm.events.last().unwrap().text.as_slice(), b"");
-    let v = go(&mut stm, &mut f, 716, 3919, StopReason::EndStop, 3985);
-    assert_eq!((v.counts, v.ref_delta), (715, Some(26))); // 3919 - (4701 - 808)
+    let v = go(&mut stm, &mut f, 795, 3780, StopReason::EndStop, 3846);
+    assert_eq!((v.counts, v.ref_delta), (794, Some(26))); // 3780 - (4641 - 887)
     assert_eq!(stm.events.last().unwrap().text.as_slice(), b"ref +26");
-    let v = go(&mut stm, &mut f, 809, 3970, StopReason::EarlyEndStop, 3892);
-    assert_eq!((v.counts, v.ref_delta), (808, Some(-16))); // 3970 - (4701 - 715)
+    let v = go(&mut stm, &mut f, 888, 3831, StopReason::EarlyEndStop, 3753);
+    assert_eq!((v.counts, v.ref_delta), (887, Some(-16))); // 3831 - (4641 - 794)
     assert_eq!(stm.events.last().unwrap().text.as_slice(), b"ref -16");
 }
 
@@ -1937,10 +1938,10 @@ fn ref_delta_needs_the_first_reference_move_from_a_held_position() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 999);
-    position_open(&mut stm, &mut f, 0, 3892);
-    assert_eq!(f.view(0).counts, 809);
+    position_open(&mut stm, &mut f, 0, 3753);
+    assert_eq!(f.view(0).counts, 888);
     // The first move stops short of the end stop: the count of the second one is only its end.
-    assert!(f.position_counts(0, 716, Served::of(stm.m.valve(0)), stm.now));
+    assert!(f.position_counts(0, 795, Served::of(stm.m.valve(0)), stm.now));
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
@@ -1951,10 +1952,10 @@ fn ref_delta_needs_the_first_reference_move_from_a_held_position() {
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Open, 800, 700, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3985, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3846, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 3985, 3985, StopReason::Target);
+    stm.moved(0, MoveDir::Close, 3846, 3846, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -1990,10 +1991,10 @@ fn reference_counts_when_the_stroke_is_unknown_the_whole_range_at_the_limit_one_
     stm.tick(&mut f);
     stm.moved(1, MoveDir::Close, 10000, 4700, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(1, MoveDir::Open, 809, 30));
+    assert_eq!(stm.next(&mut f), mv(1, MoveDir::Open, 888, 30));
     stm.result(&mut f, 1, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(1, MoveDir::Open, 809, 9800, StopReason::Target);
+    stm.moved(1, MoveDir::Open, 888, 9800, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(1, true));
     stm.result(&mut f, 1, FlowOutcome::Ok);
@@ -2020,23 +2021,23 @@ fn reference_counts_when_the_stroke_is_unknown_the_whole_range_at_the_limit_one_
 
 // ================================================================ one move from a held position
 
-/// Valve 0 of `c`, an open reference, held at 809 pulses for 1 l/min, the interval over.
+/// Valve 0 of `c`, an open reference, held at 888 pulses for 1 l/min, the interval over.
 fn held_open(c: &FlowConfig) -> (Stm, FlowLayer) {
     let mut f = layer(c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(c, 0, 1000);
-    position_open(&mut stm, &mut f, 0, c.stroke_counts - 809);
+    position_open(&mut stm, &mut f, 0, c.stroke_counts - 888);
     stm.now += 300_000;
     (stm, f)
 }
 
-/// A target of 1.35 l/min on valve 0 of the open curve: 857 pulses.
-fn to_857(stm: &mut Stm) {
+/// A target of 1.35 l/min on valve 0 of the open curve: 937 pulses.
+fn to_937(stm: &mut Stm) {
     stm.flow(&open_curve(), 0, 1350);
 }
 
-/// A target of 1 l/min on valve 0 of the open curve: 809 pulses.
-fn to_809(stm: &mut Stm) {
+/// A target of 1 l/min on valve 0 of the open curve: 888 pulses.
+fn to_888(stm: &mut Stm) {
     stm.flow(&open_curve(), 0, 1000);
 }
 
@@ -2054,32 +2055,32 @@ fn direct_done(stm: &mut Stm, f: &mut FlowLayer, dir: MoveDir, req: u16, cnt: u1
 #[test]
 fn a_new_target_of_a_held_valve_is_one_move_and_the_keep() {
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     assert!(f.busy(0));
     let v = f.view(0);
     assert_eq!(
         (v.state, v.counts, v.target_counts),
-        (FlowState::Positioning, 809, 857)
+        (FlowState::Positioning, 888, 937)
     );
     assert!(v.known);
-    // The counted pulses hold the brake's: 51, not the 48 asked for.
-    direct_done(&mut stm, &mut f, MoveDir::Open, 48, 51);
+    // The counted pulses hold the brake's: 52, not the 49 asked for.
+    direct_done(&mut stm, &mut f, MoveDir::Open, 49, 52);
     let v = f.view(0);
     assert_eq!(
         (v.state, v.counts, v.target_counts),
-        (FlowState::Held, 860, 857)
+        (FlowState::Held, 940, 937)
     );
-    assert_eq!((v.last_ms, v.last_peak), (51 * 7, 123));
+    assert_eq!((v.last_ms, v.last_peak), (52 * 7, 123));
     stm.tick(&mut f);
     assert_eq!(f.view(0).state, FlowState::Held);
     assert_eq!(stm.next(&mut f), None);
     // Back: closing with the threshold of a closing move.
     stm.now += 300_000;
-    to_809(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 51, 34));
-    direct_done(&mut stm, &mut f, MoveDir::Close, 51, 53);
-    assert_eq!(f.view(0).counts, 807);
+    to_888(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 52, 34));
+    direct_done(&mut stm, &mut f, MoveDir::Close, 52, 54);
+    assert_eq!(f.view(0).counts, 886);
     // No event of these moves in the ring of 32.
     assert_eq!(stm.codes(), [EventCode::FlowPositioned]);
 }
@@ -2087,27 +2088,27 @@ fn a_new_target_of_a_held_valve_is_one_move_and_the_keep() {
 #[test]
 fn a_direct_move_of_the_same_pulses_as_the_last_one_gets_a_record_of_its_own() {
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
-    direct_done(&mut stm, &mut f, MoveDir::Open, 48, 48);
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
+    direct_done(&mut stm, &mut f, MoveDir::Open, 49, 49);
     stm.now += 300_000;
-    to_809(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 49, 34));
-    direct_done(&mut stm, &mut f, MoveDir::Close, 49, 49);
-    assert_eq!(f.view(0).counts, 808);
+    to_888(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 50, 34));
+    direct_done(&mut stm, &mut f, MoveDir::Close, 50, 50);
+    assert_eq!(f.view(0).counts, 887);
 }
 
 #[test]
 fn the_held_position_of_a_direct_move_stays_inside_the_range() {
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
-    direct_done(&mut stm, &mut f, MoveDir::Open, 48, 9900);
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
+    direct_done(&mut stm, &mut f, MoveDir::Open, 49, 9900);
     assert_eq!(f.view(0).counts, FLOW_COUNTS_MAX);
     let (mut stm, mut f) = held_open(&open_curve());
-    stm.flow(&open_curve(), 0, 540); // 750 pulses
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 59, 34));
-    direct_done(&mut stm, &mut f, MoveDir::Close, 59, 900);
+    stm.flow(&open_curve(), 0, 540); // 804 pulses
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 84, 34));
+    direct_done(&mut stm, &mut f, MoveDir::Close, 84, 984);
     assert_eq!(f.view(0).counts, 0);
     let v = f.view(0);
     assert_eq!((v.state, v.known), (FlowState::Held, true));
@@ -2121,18 +2122,18 @@ fn a_direct_move_needs_the_hold_of_the_stm_and_the_record_of_the_last_move() {
     stm.flags(0, STM_FLAG_SVC_KEEP);
     stm.tick(&mut f);
     assert_eq!(f.view(0).state, FlowState::Held);
-    to_857(&mut stm);
+    to_937(&mut stm);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     assert!(!f.view(0).known);
     // The hold alone will be noticed by the next tick: the position is still known.
     let (mut stm, mut f) = held_open(&open_curve());
     stm.flags(0, STM_FLAG_SVC_HOLD);
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     // Another record before the tick: not where the last move left it.
     let (mut stm, mut f) = held_open(&open_curve());
     stm.moved(0, MoveDir::Open, 50, 50, StopReason::Target);
-    to_857(&mut stm);
+    to_937(&mut stm);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     assert!(!f.view(0).known);
 }
@@ -2140,11 +2141,11 @@ fn a_direct_move_needs_the_hold_of_the_stm_and_the_record_of_the_last_move() {
 #[test]
 fn a_direct_move_waits_with_a_busy_stm_and_starts_again_when_the_valve_left_meanwhile() {
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     stm.result(&mut f, 0, FlowOutcome::Rejected(2));
     stm.now += BUSY_RETRY_MS;
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     stm.result(&mut f, 0, FlowOutcome::Rejected(2));
     foreign_move(&mut stm, 0, 0);
     stm.now += BUSY_RETRY_MS;
@@ -2154,9 +2155,9 @@ fn a_direct_move_waits_with_a_busy_stm_and_starts_again_when_the_valve_left_mean
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3844, 34));
-    direct_done(&mut stm, &mut f, MoveDir::Close, 3844, 3844);
-    assert_eq!(f.view(0).counts, 857);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3704, 34));
+    direct_done(&mut stm, &mut f, MoveDir::Close, 3704, 3704);
+    assert_eq!(f.view(0).counts, 937);
     assert_eq!(
         stm.codes(),
         [EventCode::FlowPositioned, EventCode::FlowPositioned]
@@ -2164,8 +2165,8 @@ fn a_direct_move_waits_with_a_busy_stm_and_starts_again_when_the_valve_left_mean
     // A link lost before the move starts from the end stop too, with nothing of the held
     // position left in the sequence.
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     stm.result(&mut f, 0, FlowOutcome::Rejected(2));
     assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
     stm.now += BUSY_RETRY_MS;
@@ -2174,18 +2175,18 @@ fn a_direct_move_waits_with_a_busy_stm_and_starts_again_when_the_valve_left_mean
     stm.tick(&mut f);
     stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
     stm.tick(&mut f);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3844, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3704, 34));
 }
 
 #[test]
 fn a_direct_move_that_meets_an_end_stop_goes_on_from_the_reference_end_stop() {
     for stop in [StopReason::EndStop, StopReason::EarlyEndStop] {
         let (mut stm, mut f) = held_open(&open_curve());
-        to_857(&mut stm);
-        assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+        to_937(&mut stm);
+        assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
         stm.result(&mut f, 0, FlowOutcome::Ok);
         stm.tick(&mut f);
-        stm.moved(0, MoveDir::Open, 48, 20, stop);
+        stm.moved(0, MoveDir::Open, 49, 20, stop);
         stm.tick(&mut f);
         // Not a failure: the same sequence, the position forgotten.
         assert_eq!(f.view(0).state, FlowState::Positioning);
@@ -2195,27 +2196,27 @@ fn a_direct_move_that_meets_an_end_stop_goes_on_from_the_reference_end_stop() {
         stm.tick(&mut f);
         stm.moved(0, MoveDir::Open, 10000, 20, StopReason::EndStop);
         stm.tick(&mut f);
-        assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3844, 34));
-        direct_done(&mut stm, &mut f, MoveDir::Close, 3844, 3844);
-        assert_eq!(f.view(0).counts, 857);
+        assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3704, 34));
+        direct_done(&mut stm, &mut f, MoveDir::Close, 3704, 3704);
+        assert_eq!(f.view(0).counts, 937);
         assert_eq!(f.view(0).ref_delta, None);
         // The positioning through the end stop reports itself.
         assert_eq!(
             stm.codes(),
             [EventCode::FlowPositioned, EventCode::FlowPositioned]
         );
-        assert_eq!((stm.events[1].arg1, stm.events[1].arg2), (857, 18));
+        assert_eq!((stm.events[1].arg1, stm.events[1].arg2), (937, 20));
     }
 }
 
 #[test]
 fn any_other_stop_of_a_direct_move_fails_at_the_final_step() {
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 48, 12, StopReason::UnderCurrent);
+    stm.moved(0, MoveDir::Open, 49, 12, StopReason::UnderCurrent);
     stm.tick(&mut f);
     assert_eq!(f.view(0).state, FlowState::Failed);
     assert!(!f.view(0).known);
@@ -2233,7 +2234,7 @@ fn a_stgtp_that_is_due_ends_the_hold_so_the_moves_go_through_the_reference_end_s
     let (mut stm, mut f) = held_open(&open_curve());
     stm.ex[0].target = 50;
     stm.poll(0);
-    to_857(&mut stm);
+    to_937(&mut stm);
     assert_eq!(stm.next(&mut f), set_target(0, 15));
     stm.ex[0].target = 15;
     stm.poll(0);
@@ -2243,8 +2244,8 @@ fn a_stgtp_that_is_due_ends_the_hold_so_the_moves_go_through_the_reference_end_s
     let mut c = open_curve();
     c.deadband_ml = 0;
     let (mut stm, mut f) = held_open(&c);
-    assert!(f.position_counts(0, 857, Served::of(stm.m.valve(0)), stm.now));
-    stm.moved_through(&mut f, c.stroke_counts - 857);
+    assert!(f.position_counts(0, 937, Served::of(stm.m.valve(0)), stm.now));
+    stm.moved_through(&mut f, c.stroke_counts - 937);
     stm.now += 300_000;
     stm.ex[0].target = 50;
     stm.poll(0);
@@ -2257,10 +2258,10 @@ fn a_closed_target_the_first_opening_and_the_open_end_stop_go_through_an_end_sto
     // Closed: the close to the closed end stop.
     let (mut stm, mut f) = held_open(&open_curve());
     stm.target(0, 0);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1309, 800, StopReason::EndStop);
+    stm.moved(0, MoveDir::Close, 1388, 800, StopReason::EndStop);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -2272,27 +2273,27 @@ fn a_closed_target_the_first_opening_and_the_open_end_stop_go_through_an_end_sto
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     // A target on the open end stop: the opening move alone, no closing move after it.
     let mut c = open_curve();
-    c.stroke_counts = 1100;
+    c.stroke_counts = 1180;
     let (mut stm, mut f) = held_open(&c);
     stm.target(0, 100);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Open, 10000, 291, StopReason::EndStop);
+    stm.moved(0, MoveDir::Open, 10000, 292, StopReason::EndStop);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), keep(0, true));
     stm.result(&mut f, 0, FlowOutcome::Ok);
-    assert_eq!(f.view(0).counts, 1100);
+    assert_eq!(f.view(0).counts, 1180);
     // The top of the curve at the end stop as well, however the target came.
     let (mut stm, mut f) = held_open(&c);
-    stm.flow(&c, 0, 2700);
+    stm.flow(&c, 0, 2600);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     // One pulse below it: one move, and 100 % is the end stop all the same.
     let mut c = open_curve();
-    c.stroke_counts = 1101;
+    c.stroke_counts = 1181;
     let (mut stm, mut f) = held_open(&c);
-    stm.flow(&c, 0, 2700);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 291, 30));
+    stm.flow(&c, 0, 2600);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 292, 30));
     let (mut stm, mut f) = held_open(&c);
     stm.target(0, 100);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
@@ -2301,7 +2302,7 @@ fn a_closed_target_the_first_opening_and_the_open_end_stop_go_through_an_end_sto
 #[test]
 fn a_counts_request_and_a_changed_curve_go_through_the_reference_end_stop() {
     let (mut stm, mut f) = held_open(&open_curve());
-    assert!(f.position_counts(0, 857, Served::of(stm.m.valve(0)), stm.now));
+    assert!(f.position_counts(0, 937, Served::of(stm.m.valve(0)), stm.now));
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     let c = open_curve();
     let (mut stm, mut f) = held_open(&c);
@@ -2311,11 +2312,11 @@ fn a_counts_request_and_a_changed_curve_go_through_the_reference_end_stop() {
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
     // A curve that changes during a direct move: its keep is followed by a whole positioning.
     let (mut stm, mut f) = held_open(&c);
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     f.set_configs(&configs(&changed, &[0]));
     assert_eq!(f.view(0).state, FlowState::Positioning);
-    direct_done(&mut stm, &mut f, MoveDir::Open, 48, 48);
+    direct_done(&mut stm, &mut f, MoveDir::Open, 49, 49);
     assert_eq!(f.view(0).state, FlowState::Unknown);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
 }
@@ -2325,8 +2326,8 @@ fn a_target_at_the_held_pulses_is_served_without_a_move() {
     let mut c = open_curve();
     c.deadband_ml = 0;
     let (mut stm, mut f) = held_open(&c);
-    assert!(f.position_counts(0, 857, Served::of(stm.m.valve(0)), stm.now));
-    stm.moved_through(&mut f, c.stroke_counts - 857);
+    assert!(f.position_counts(0, 937, Served::of(stm.m.valve(0)), stm.now));
+    stm.moved_through(&mut f, c.stroke_counts - 937);
     let start = f.v[0].last_start_ms;
     stm.now += 300_000;
     stm.flow(&c, 0, 1350);
@@ -2335,38 +2336,38 @@ fn a_target_at_the_held_pulses_is_served_without_a_move() {
     assert_eq!(
         f.v[0].served,
         Some(Served {
-            pct: 18,
+            pct: 20,
             flow_ml: Some(1350)
         })
     );
     assert_eq!(f.v[0].last_start_ms, start);
     assert_eq!(f.view(0).state, FlowState::Held);
     // A target in % there as well.
-    stm.target(0, 18); // 846 pulses
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 11, 34));
-    direct_done(&mut stm, &mut f, MoveDir::Close, 11, 11);
-    assert_eq!(f.view(0).counts, 846);
+    stm.target(0, 20); // 928 pulses
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 9, 34));
+    direct_done(&mut stm, &mut f, MoveDir::Close, 9, 9);
+    assert_eq!(f.view(0).counts, 928);
     stm.now += 300_000;
-    stm.flow(&c, 0, 1270); // 846 pulses
+    stm.flow(&c, 0, 1286); // 928 pulses
     assert_eq!(stm.next(&mut f), None);
-    stm.target(0, 18);
+    stm.target(0, 20);
     assert_eq!(stm.next(&mut f), None);
-    assert_eq!(f.v[0].served, served(18));
+    assert_eq!(f.v[0].served, served(20));
 }
 
 #[test]
 fn a_target_at_the_held_pulses_is_the_target_shown() {
     let (mut stm, mut f) = held_open(&open_curve());
-    to_857(&mut stm);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 48, 30));
-    // 11 pulses short of the target
-    direct_done(&mut stm, &mut f, MoveDir::Open, 48, 37);
-    assert_eq!((f.view(0).counts, f.view(0).target_counts), (846, 857));
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
+    // 9 pulses short of the target
+    direct_done(&mut stm, &mut f, MoveDir::Open, 49, 40);
+    assert_eq!((f.view(0).counts, f.view(0).target_counts), (928, 937));
     stm.now += 300_000;
-    stm.target(0, 18); // 846 pulses
+    stm.target(0, 20); // 928 pulses
     assert_eq!(stm.next(&mut f), None);
-    assert_eq!((f.view(0).counts, f.view(0).target_counts), (846, 846));
-    assert_eq!(f.v[0].target_pct, 18);
+    assert_eq!((f.view(0).counts, f.view(0).target_counts), (928, 928));
+    assert_eq!(f.v[0].target_pct, 20);
 }
 
 #[test]
@@ -2375,14 +2376,14 @@ fn a_target_in_percent_moves_the_valve_above_the_top_of_the_curve_too() {
     c.min_interval_s = 0;
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
-    stm.target(0, 60); // 1312 pulses, above the curve
-    position(&mut stm, &mut f, 0, false, 4800, 1312);
-    assert_eq!(f.view(0).flow_ml, 2700);
-    stm.target(0, 70); // 1531 pulses, the same flow
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 219, 30));
-    direct_done(&mut stm, &mut f, MoveDir::Open, 219, 219);
-    assert_eq!(f.view(0).counts, 1531);
-    assert_eq!(f.view(0).flow_ml, 2700);
+    stm.target(0, 60); // 1440 pulses, above the curve
+    position(&mut stm, &mut f, 0, false, 4800, 1440);
+    assert_eq!(f.view(0).flow_ml, 2600);
+    stm.target(0, 70); // 1680 pulses, the same flow
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 240, 30));
+    direct_done(&mut stm, &mut f, MoveDir::Open, 240, 240);
+    assert_eq!(f.view(0).counts, 1680);
+    assert_eq!(f.view(0).flow_ml, 2600);
 }
 
 #[test]
@@ -2393,12 +2394,12 @@ fn two_flows_in_the_same_whole_percent_are_two_positions() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 1000);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
-    stm.flow(&c, 0, 1015); // 811 pulses
+    position(&mut stm, &mut f, 0, false, 4800, 888);
+    stm.flow(&c, 0, 1015); // 890 pulses
     assert_eq!(stm.m.valve(0).desired, 37);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 2, 30));
     direct_done(&mut stm, &mut f, MoveDir::Open, 2, 2);
-    assert_eq!(f.view(0).counts, 811);
+    assert_eq!(f.view(0).counts, 890);
 }
 
 #[test]
@@ -2408,9 +2409,9 @@ fn a_target_in_percent_ends_the_flow_target_of_the_same_percent() {
     c.deadband_ml = 0;
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
-    stm.flow(&c, 0, 1015); // 37 %, 811 pulses
-    position(&mut stm, &mut f, 0, false, 4800, 811);
-    stm.target(0, 37); // 809 pulses
+    stm.flow(&c, 0, 1015); // 37 %, 890 pulses
+    position(&mut stm, &mut f, 0, false, 4800, 890);
+    stm.target(0, 37); // 888 pulses
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 2, 34));
 }
 
@@ -2422,14 +2423,14 @@ fn the_dead_band_counts_from_the_flow_of_the_held_position() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 1000);
-    // The brake leaves it 20 pulses above the 809 asked for: 1.15 l/min on the curve.
+    // The brake leaves it 20 pulses above the 888 asked for: 1.14 l/min on the curve.
     position_until_open(&mut stm, &mut f, 0, 4800);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 809, 30));
-    direct_done(&mut stm, &mut f, MoveDir::Open, 809, 829);
-    assert_eq!(f.view(0).flow_ml, 1145);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 888, 30));
+    direct_done(&mut stm, &mut f, MoveDir::Open, 888, 908);
+    assert_eq!(f.view(0).flow_ml, 1143);
     stm.flow(&c, 0, 1200);
     assert_eq!(stm.next(&mut f), None);
-    stm.flow(&c, 0, 999); // 0.146 l/min away, 809 pulses
+    stm.flow(&c, 0, 999); // 0.144 l/min away, 888 pulses
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 20, 34));
 }
 
@@ -2440,9 +2441,9 @@ fn no_flow_closes_at_once_past_the_dead_band_and_the_interval() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.flow(&c, 0, 1000);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     stm.flow(&c, 0, 0);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
     assert_eq!(f.view(0).target_counts, 0);
 }
 
@@ -2456,7 +2457,7 @@ fn warm_requests() -> [Option<FlowRequest>; 5] {
         mv(0, MoveDir::Close, 4800, 34),
         mv(0, MoveDir::Open, 300, 30),
         mv(0, MoveDir::Close, 800, 34),
-        mv(0, MoveDir::Open, 809, 30),
+        mv(0, MoveDir::Open, 888, 30),
         keep(0, true),
     ]
 }
@@ -2466,7 +2467,7 @@ const WARM_RECORDS: [(MoveDir, u16, u16, StopReason); 4] = [
     (MoveDir::Close, 4800, 97, StopReason::EndStop),
     (MoveDir::Open, 300, 300, StopReason::Target),
     (MoveDir::Close, 800, 350, StopReason::EndStop),
-    (MoveDir::Open, 809, 809, StopReason::Target),
+    (MoveDir::Open, 888, 888, StopReason::Target),
 ];
 
 /// Valve 0 of a layer with the warm-up after `moves` moves of its positioning to 37 %: the
@@ -2594,7 +2595,7 @@ fn a_link_loss_between_moves_restarts_the_sequence_from_the_end_stop() {
             stm.result(&mut f, 0, FlowOutcome::Ok);
         }
         stm.tick(&mut f);
-        stm.moved(0, MoveDir::Open, 809, 809, StopReason::Target);
+        stm.moved(0, MoveDir::Open, 888, 888, StopReason::Target);
         stm.tick(&mut f);
         assert_eq!(stm.next(&mut f), keep(0, true), "running {running}");
     }
@@ -2608,17 +2609,17 @@ fn a_held_valve_and_a_reference_retry_do_not_depend_on_the_last_move() {
     let mut f = layer(&c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.target(0, 37);
-    position(&mut stm, &mut f, 0, false, 4800, 809);
+    position(&mut stm, &mut f, 0, false, 4800, 888);
     stm.now += 2;
     assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
     assert!(f.view(0).known);
     stm.now += 300_000;
     stm.target(0, 100);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
     // The retry of a reference close that missed the end stop is the retry, hold or not.
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1309, 1309, StopReason::Target);
+    stm.moved(0, MoveDir::Close, 1388, 1388, StopReason::Target);
     stm.tick(&mut f);
     stm.flags(0, 0);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 800, 34));
@@ -2681,13 +2682,13 @@ fn the_restart_closes_the_whole_stroke_not_a_retry_nor_the_held_position() {
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
     assert!(f.view(0).known);
-    // From the held 809: the close of 1309 misses the end stop, the retry of 800 meets it.
+    // From the held 888: the close of 1388 misses the end stop, the retry of 800 meets it.
     stm.now += 300_000;
     stm.target(0, 100);
-    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1309, 34));
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
     stm.tick(&mut f);
-    stm.moved(0, MoveDir::Close, 1309, 1309, StopReason::Target);
+    stm.moved(0, MoveDir::Close, 1388, 1388, StopReason::Target);
     stm.tick(&mut f);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 800, 34));
     stm.result(&mut f, 0, FlowOutcome::Ok);
@@ -2695,7 +2696,7 @@ fn the_restart_closes_the_whole_stroke_not_a_retry_nor_the_held_position() {
     stm.moved(0, MoveDir::Close, 800, 120, StopReason::EndStop);
     stm.tick(&mut f);
     assert!(f.view(0).known); // the held value until the position is lost
-                              // The hold is gone before the warm-up: the stroke, neither 800 nor 809 + 500.
+                              // The hold is gone before the warm-up: the stroke, neither 800 nor 888 + 500.
     stm.flags(0, 0);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
     assert!(!f.view(0).known);
@@ -2708,13 +2709,13 @@ fn flow_target_is_the_flow_the_position_on_the_curve_and_the_clip_at_qmax_and_th
 {
     let c = curve();
     let t = |ml| flow_target(&c, ml);
-    // 1.25 l/min: 844 pulses, 38.6 % of the stroke, the nearest pulse gives 1.254.
+    // 1.26 l/min: 924 pulses, 38.5 % of the stroke, the nearest pulse gives 1.257.
     assert_eq!(
-        t(1250),
+        t(1260),
         FlowTarget {
-            ml: 1250,
+            ml: 1260,
             pct: 39,
-            flow_ml: 1254,
+            flow_ml: 1257,
             clipped: false
         }
     );
@@ -2728,41 +2729,41 @@ fn flow_target_is_the_flow_the_position_on_the_curve_and_the_clip_at_qmax_and_th
         }
     );
     // Any flow above nothing has a position at the start of the curve.
-    assert_eq!(t(1).pct, 27);
+    assert_eq!(t(1).pct, 26);
     // qmax itself, at the top of the curve.
     let top = FlowTarget {
-        ml: 2700,
-        pct: 50,
-        flow_ml: 2700,
+        ml: 2600,
+        pct: 49,
+        flow_ml: 2600,
         clipped: false,
     };
-    assert_eq!(t(2700), top);
+    assert_eq!(t(2600), top);
     // Above qmax it is qmax, and clipped.
     let clipped = FlowTarget {
         clipped: true,
         ..top
     };
-    assert_eq!(t(2701), clipped);
+    assert_eq!(t(2601), clipped);
     assert_eq!(t(u32::MAX), clipped);
     // A curve that ends below qmax: the last point answers, one ml/min above it is clipped.
     let mut low = curve();
     low.count = 4;
     let t = |ml| flow_target(&low, ml);
     assert_eq!(
-        t(2500),
+        t(2300),
         FlowTarget {
-            ml: 2500,
-            pct: 46,
-            flow_ml: 2500,
+            ml: 2300,
+            pct: 45,
+            flow_ml: 2300,
             clipped: false
         }
     );
     assert_eq!(
-        t(2501),
+        t(2301),
         FlowTarget {
-            ml: 2501,
-            pct: 46,
-            flow_ml: 2500,
+            ml: 2301,
+            pct: 45,
+            flow_ml: 2300,
             clipped: true
         }
     );
@@ -2799,12 +2800,12 @@ fn flow_target_json_one_member_from_0_above_qmax_it_is_clipped() {
     let c = curve();
     let ok = |s: &str| parse_flow_target_json(&c, s.as_bytes());
     assert_eq!(ok(r#"{"lpm":1.25}"#).unwrap().ml, 1250);
-    assert_eq!(ok(" {\t\"lpm\" :\n2.7 } \r\n").unwrap().ml, 2700);
+    assert_eq!(ok(" {\t\"lpm\" :\n2.6 } \r\n").unwrap().ml, 2600);
     assert_eq!(ok(r#"{"lpm":0}"#).unwrap().ml, 0);
-    let above = ok(r#"{"lpm":2.701}"#).unwrap();
-    assert_eq!((above.ml, above.clipped), (2700, true));
-    assert!(!ok(r#"{"lpm":2.7}"#).unwrap().clipped);
-    assert_eq!(ok(r#"{"lpm":70.5}"#).unwrap().ml, 2700); // past u16 in ml/min
+    let above = ok(r#"{"lpm":2.601}"#).unwrap();
+    assert_eq!((above.ml, above.clipped), (2600, true));
+    assert!(!ok(r#"{"lpm":2.6}"#).unwrap().clipped);
+    assert_eq!(ok(r#"{"lpm":70.5}"#).unwrap().ml, 2600); // past u16 in ml/min
     for (body, err) in [
         ("", FlowError::Malformed),
         ("[]", FlowError::Malformed),

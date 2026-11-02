@@ -142,10 +142,10 @@ Error codes:
 
 Valve entry (`/api/valves`):
 ```json
-{"idx":1,"name":"KorWitryna","active":true,"known":true,"state":1,"stateKey":"idle",
+{"idx":1,"name":"Room 1","active":true,"known":true,"state":1,"stateKey":"idle",
  "calibrating":false,"pos":15,"target":15,"targetSource":"mqtt","sync":"synced","stmTarget":15,
  "meanCur":16,"moves":3937,"oc":408,"cc":445,"dc":37,"cr":0,"health":[],"age":3,
- "sensors":[{"sensor":1,"slot":1,"name":"KorWitryna","temp":20.9}],
+ "sensors":[{"sensor":1,"slot":1,"name":"Room 1","temp":20.9}],
  "ext":{"calState":0,"calEarlyStop":false,"calLastFailed":false,"earlyStops":0,"cmdRejected":0,
         "lastMove":{"dir":"open","req":408,"cnt":395,"stop":"endstop","peak":29.9,"ms":15784},"moveSeq":1,
         "coastOpen":12,"coastClose":9,
@@ -251,12 +251,12 @@ failsafe, calibration). `GET /api/valves/{n}/flow` returns the stored
 configuration and the `flow` block of the valve entry:
 ```json
 {"valve":1,
- "config":{"enabled":true,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,
+ "config":{"enabled":true,"qmax":2.400,"refmA":34,"openmA":30,"fallbackPct":15,
            "minIntervalS":60,"deadbandLpm":0.050,"offset":0,"gain":1.000,
-           "refSide":"open","strokeCounts":4701,"preClose":false,
-           "points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]},
- "flow":{"enabled":true,"state":"held","counts":809,"targetCounts":809,"lpm":1.000,
-         "targetLpm":1.000,"ms":5663,"peak":12.3},
+           "refSide":"open","strokeCounts":4150,"preClose":false,
+           "points":[[540,0.000],[650,0.200],[770,1.000],[980,2.000],[1070,2.400]]},
+ "flow":{"enabled":true,"state":"held","counts":770,"targetCounts":770,"lpm":1.000,
+         "targetLpm":1.000,"ms":5390,"peak":12.3},
  "refDelta":24}
 ```
 - `refDelta` (null until measured, also on a disabled valve): with `refSide`

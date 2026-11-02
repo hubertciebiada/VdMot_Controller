@@ -337,7 +337,7 @@ fn reconnect_pacer_back_off_reset_only_after_a_stable_connection() {
 #[test]
 fn mqtt_client_id() {
     assert_text(&id(b"VdMot"), "VdMot-a1b2c3");
-    assert_text(&id(b"Dom 1 \xc5\x81azienka EG"), "Dom-1-azienka-EG-a1b2c3");
+    assert_text(&id(b"Dom 1 \xc5\x81Strefa1 EG"), "Dom-1-Strefa1-EG-a1b2c3");
     assert_text(&id(b"Wohnung-Ost-EG-Bad"), "Wohnung-Ost-EG-B-a1b2c3");
     assert_text(&id(b"abcdefghijklmno-x"), "abcdefghijklmno-a1b2c3");
     assert_text(&id(b"abcdefghijklmn--x"), "abcdefghijklmn-a1b2c3");

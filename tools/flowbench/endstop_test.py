@@ -406,7 +406,7 @@ def main():
         return
     esps = []
     if a.sim:
-        for i, (name, n) in enumerate((("sim-west", 2), ("sim-east", 2))):
+        for i, (name, n) in enumerate((("sim-a", 2), ("sim-b", 2))):
             dev = SimDevice(name, [f"Loop {j + 1}" for j in range(n)], seed=i + 1, speed=20)
             esps.append(Esp(name, serve_sim(dev, 18091 + i)))
     for c in a.controller:

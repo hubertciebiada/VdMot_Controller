@@ -8,7 +8,7 @@ the first design, the text says so (*Implementation:*). Binding documents: `docs
 embassy, cortex-m-rt and Renode facts come from the sources of the `embassy-stm32-v0.6.0` tag,
 of `cortex-m-rt` and of `renode-infrastructure`.
 
-**Requirement (operator):** flashing never forces anyone to open the cabinet. The ESP drives
+**Requirement:** flashing never forces anyone to open the enclosure. The ESP drives
 NRST but not BOOT0, so an STM image can be re-flashed remotely only through its own boot
 window (`DEADBEEF` -> `BEEFIT` -> ROM bootloader). Every Rust image keeps that path, and code
 added later cannot break it (§5).
@@ -636,12 +636,12 @@ small native harness that links the C++ `stm_flasher.cpp`, the code of the ESPs 
 ### 5.9 Proof on hardware
 
 The emulator proves the control flow and the register values; the ROM bootloader and the
-electrical timing need hardware. Before the first cabinet unit (the operator flashes, D10):
+electrical timing need hardware. Before the first installed unit (a manual flash, D10):
 1. bench BlackPill (F401CC or F411CE) with an ESP or a USB-UART: C++ 2.1.7 -> Rust -> C++ 2.1.7
    -> Rust through the ESP flasher; after each flash `gvers` and a warm restore check;
 2. a power cycle and a cold start;
 3. 1-Wire slots and I2C on a logic analyzer next to the C++ (R5);
-4. then one cabinet unit, with C++ 2.1.7 as the known-good fallback image on the ESP.
+4. then one installed unit, with C++ 2.1.7 as the known-good fallback image on the ESP.
 
 ### 5.10 What the image cannot cover, and the half-flashed image
 
@@ -861,20 +861,20 @@ and E11 -> release packaging. A failure anywhere stops the release of every STM 
 
 ## 8. Open decisions and risks
 
-Decided on 2026-10-07 (the operator may revert): D1 recommendation (HSE if ready within 5 ms,
+Decided on 2026-10-07 (revertible): D1 recommendation (HSE if ready within 5 ms,
 else HSI); D2 fixed 8-byte blocks as C++ (the proven path with the real ROM bootloader; the
 sliding window stays a documented alternative); D3 the C++ 2.1.7 addresses; D4 IWDG reset;
 D5 PLL from HSI; D6 no executor; D7 port 1:1 behind the feature `terminal`; D8
 `2.2.0-revamped` for the first Rust release (ESP and STM); D9 the boot stage stays inside
 sector 0 and the Rust ESP flasher erases and writes sector 0 last (a documented deviation of
 the flasher port); D10 the bench proof is a required step of the install procedure, done by
-the operator; D11 recommendation; D12 128 KiB.
+hand; D11 recommendation; D12 128 KiB.
 
-### Decisions for the operator
+### Decisions
 
 | # | decision | recommendation | alternatives |
 |---|---|---|---|
-| D1 | clock of the boot window | HSE 25 MHz if ready within 5 ms, else HSI | HSI always (the operator's example: simplest, but HSI ±4 % worst case against ~3.4 % 8E1 tolerance); HSE only (C++ behaviour, blocked without HSE) |
+| D1 | clock of the boot window | HSE 25 MHz if ready within 5 ms, else HSI | HSI always (simplest, but HSI ±4 % worst case against ~3.4 % 8E1 tolerance); HSE only (C++ behaviour, blocked without HSE) |
 | D2 | handshake matcher | fixed 8-byte blocks as C++ (PROTOCOL_V2 documents it; ESP 2.1 realigns) | sliding window: accepts misaligned streams too, a documented deviation |
 | D3 | `NOINIT` cells | at the C++ 2.1.7 addresses: warm state survives C++ <-> Rust flashes and the ROM bootloader | own addresses: cold start with presence tests and reference moves after every implementation switch |
 | D4 | fault policy | outputs off, `FaultRecord`, IWDG reset (reset reason as a C++ fault, also before the IWDG would run) | SYSRESETREQ: faster, but counted as software reset, so a fault loop never enters safe mode |
@@ -883,7 +883,7 @@ the operator; D11 recommendation; D12 128 KiB.
 | D7 | debug terminal | port 1:1 with the debug lines, feature `terminal`; ArduinoMenu dropped | drop the terminal (saves 3-5 KiB; its 24 test cases and the field tool go) |
 | D8 | version of the first Rust release | `2.2.0-revamped`: `gvers` and the dashboard tell Rust from C++ | `2.1.7-revamped`: byte-identical `gvers`, implementations indistinguishable remotely |
 | D9 | interrupted flash | keep the boot stage and its callees inside sector 0 (image check verifies) and let the ESP flasher erase and write sector 0 last: the brick window shrinks from the whole session (30-55 s) to ~2 s; decide with the ESP flasher port. *Implementation:* a flash cut in the pass of sectors 1..n leaves a boot stage in front of foreign sectors; it starts no application there (B8: record and CRC-32 of the application part, §5.11) and the IWDG runs from the end of every window that does start one (§5.4, §5.10). F9 (2026-10-07): the ESP writes sector 0 first for an image with a valid record, last otherwise, so a flash from C++ is protected too (§5.10) | accept as today; or a permanent first stage in sector 0 with the application at 0x08004000 (new image format, flasher change) |
-| D10 | bench proof | mandatory before the first cabinet unit: spare BlackPill + ESP or USB-UART (§5.9) | flash a cabinet unit directly, C++ fallback on the ESP |
+| D10 | bench proof | mandatory before the first installed unit: spare BlackPill + ESP or USB-UART (§5.9) | flash an installed unit directly, C++ fallback on the ESP |
 | D11 | emulator | `antmicro/renode:1.16.1` (newest published image; Renode 1.17.0 has a GitHub release but no image); E11 once the Rust ESP flasher exists | own image from the 1.17.0 release; skip E11 |
 | D12 | size budget | 128 KiB per image (same erase set as C++) | 192 KiB (one more 128 KiB sector, ~1-2 s longer erase) |
 

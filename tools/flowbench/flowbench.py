@@ -61,8 +61,8 @@ CLOSE_STEP = 40  # requested pulses of a closing step; the valve also coasts 50.
 
 WATER_NU = [(20, 1.004e-6), (25, 0.893e-6), (30, 0.801e-6), (35, 0.724e-6), (40, 0.658e-6),
             (45, 0.602e-6)]  # kinematic viscosity of water [m²/s]
-KV_METER = 1.1  # KAN-therm InoxFlow flow meter, Kvs [m³/h at 1 bar]
-KV_VALVE = 2.4  # M30x1.5 valve insert, Kvs
+KV_METER = 1.1  # flow meter of the manifold, Kvs [m³/h at 1 bar]
+KV_VALVE = 2.4  # valve insert of the manifold, Kvs
 FITTINGS = 1.10  # bends of the loop: +10 % on the straight pipe
 
 
@@ -1639,7 +1639,7 @@ def main():
 
     esps, devices = [], {}
     if a.sim:
-        for i, (name, n) in enumerate((("sim-west", 6), ("sim-east", 7))):
+        for i, (name, n) in enumerate((("sim-a", 2), ("sim-b", 2))):
             dev = SimDevice(name, [f"Pętla {j + 1}" for j in range(n)], seed=i + 1,
                             speed=a.sim_speed)
             devices[name] = dev

@@ -118,7 +118,7 @@ bash tools/rust/esp/docker.sh qemu [scenarios]   # the QEMU variants, then the e
 `build` writes `/target/images/<variant>/vdm-esp-fw.bin` (with `.elf` and `.map`) in the target
 volume of the checkout; variants: `default`, `nowifi`, `qemu` (OpenETH of Espressif QEMU instead
 of the LAN8720), and the boot guard test images `qemu-fail-boot` and `qemu-hang-setup`. Nothing
-is flashed: the first flash of a device is the operator's. `export` copies the default variant
+is flashed: the first flash of a device is a manual step. `export` copies the default variant
 (`vdm-esp-fw.bin`, `vdm-esp-fw_nodigest.bin`, `.elf`, `.map`) out of the volume for
 `tools/release/package.py --from-builds .` (docs/rust/README.md).
 

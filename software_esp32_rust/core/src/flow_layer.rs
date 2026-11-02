@@ -1,5 +1,5 @@
-//! The flow layer of a valve (Rust 2.2.8, STM 2.2.8). The whole flow band of a floor-heating loop
-//! lies in 5..11 % of the stroke, so the layer positions a valve with a measured curve itself with
+//! The flow layer of a valve (Rust 2.2.8, STM 2.2.8). The flow band of a floor-heating loop can be
+//! a small part of the stroke, so the layer positions a valve with a measured curve itself with
 //! service moves and asks the STM to keep that position (`skeep`); the STM's own target of such a
 //! valve is the fallback position it drives to when the hold is lost. A target is a percentage of
 //! the stroke of the valve, `strokeCounts`, or, Rust 2.2.10, a flow in l/min through the curve. The
@@ -526,7 +526,7 @@ pub fn decode_flow_configs(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
 
 /// `{"enabled":..,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"minIntervalS":60,
 /// "deadbandLpm":0.050,"offset":0,"gain":1.000,"refSide":"closed","strokeCounts":0,
-/// "preClose":false,"points":[[229,0.000],...]}` (the flows with three decimals).
+/// "preClose":false,"points":[[300,0.000],...]}` (the flows with three decimals).
 pub fn write_flow_config_json(jw: &mut JsonWriter<'_>, c: &FlowConfig) {
     jw.begin_object();
     jw.kv("enabled", c.enabled);

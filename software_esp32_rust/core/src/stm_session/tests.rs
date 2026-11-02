@@ -727,25 +727,26 @@ fn constants() {
 
 use crate::flow_layer::{FlowConfig, FlowPoint, FlowState};
 
-/// The flow configuration of every valve: `valve` with a curve (593 pulses without flow,
-/// 1 l/min at 809, 2.7 at 1100), the others at their defaults.
+/// The flow configuration of every valve: `valve` with a curve (630 pulses without flow,
+/// 1 l/min at 888, 2.6 at 1180), the others at their defaults.
 fn flow_configs(valve: usize, enabled: bool) -> [FlowConfig; 12] {
     let mut all = [FlowConfig::DEFAULT; 12];
     let c = &mut all[valve];
     c.enabled = enabled;
-    c.stroke_counts = 2187;
+    c.qmax_ml = 2600;
+    c.stroke_counts = 2400;
     c.count = 3;
     c.points[0] = FlowPoint {
-        counts: 593,
+        counts: 630,
         flow_ml: 0,
     };
     c.points[1] = FlowPoint {
-        counts: 809,
+        counts: 888,
         flow_ml: 1000,
     };
     c.points[2] = FlowPoint {
-        counts: 1100,
-        flow_ml: 2700,
+        counts: 1180,
+        flow_ml: 2600,
     };
     all
 }
@@ -773,11 +774,11 @@ fn flow_layer_positions_a_valve_with_svmov_and_skeep_and_reports_the_flow_percen
     r.command(&t);
     r.run(30_000);
     // The fallback target (the STM held 50), the reference close over the stroke (3350), the
-    // opening move to 37 % of 2187 pulses, the keep.
+    // opening move to 37 % of 2400 pulses, the keep.
     assert_eq!(r.stm().lines_of("stgtp"), ["stgtp 0 15"]);
     assert_eq!(
         r.stm().lines_of("svmov"),
-        ["svmov 0 1 3350 34", "svmov 0 0 809 30"]
+        ["svmov 0 1 3350 34", "svmov 0 0 888 30"]
     );
     assert_eq!(r.stm().lines_of("skeep"), ["skeep 0 1"]);
     assert!(r.stm().keep[0]);
@@ -790,13 +791,13 @@ fn flow_layer_positions_a_valve_with_svmov_and_skeep_and_reports_the_flow_percen
     assert_eq!(f.state, FlowState::Held);
     assert_eq!(
         (f.counts, f.flow_ml, f.pct, f.target_counts),
-        (809, 1000, 37, 809)
+        (888, 1000, 37, 888)
     );
     assert!(f.last_valid);
     assert_eq!((f.last_ms, f.last_peak), (8123, 412));
     let done = r.port().with_code(EventCode::FlowPositioned);
     assert_eq!(done.len(), 1);
-    assert_eq!((done[0].valve, done[0].arg1, done[0].arg2), (0, 809, 37));
+    assert_eq!((done[0].valve, done[0].arg1, done[0].arg2), (0, 888, 37));
     // The layer's moves are not service moves of a user: no event 414.
     assert!(!r.port().has(EventCode::ServiceMoveDone));
     assert!(!r.port().has(EventCode::FlowPositionFailed));
@@ -820,19 +821,19 @@ fn flow_layer_counts_command_positions_at_once_and_a_reboot_positions_again() {
     r.run(30_000);
     assert_eq!(r.port().last.flow[0].state, FlowState::Held);
     // 700 corrected pulses: the close from the held position + 500, the opening move, the
-    // keep; 32 % of the stroke.
+    // keep; 29 % of the stroke.
     let mut c = cmd(StmCommandType::FlowCounts, 0);
     c.counts = 700;
     r.command(&c);
     r.run(30_000);
     assert_eq!(
         r.stm().lines_of("svmov")[2..],
-        ["svmov 0 1 1309 34", "svmov 0 0 700 30"]
+        ["svmov 0 1 1388 34", "svmov 0 0 700 30"]
     );
     assert_eq!(r.count("skeep"), 2);
     let f = r.port().last.flow[0];
-    assert_eq!((f.state, f.counts, f.pct), (FlowState::Held, 700, 32));
-    assert_eq!(r.port().last.valves[0].position, 32);
+    assert_eq!((f.state, f.counts, f.pct), (FlowState::Held, 700, 29));
+    assert_eq!(r.port().last.valves[0].position, 29);
     assert_eq!(r.port().last.valves[0].desired, 37);
     assert_eq!(r.count("stgtp"), 1);
     // An STM reboot: the hold is lost (event), the fallback goes out again (the STM target is
@@ -855,7 +856,7 @@ fn flow_layer_counts_command_positions_at_once_and_a_reboot_positions_again() {
     let svmov = r.stm().lines_of("svmov");
     assert_eq!(
         svmov[svmov.len() - 2..],
-        ["svmov 0 1 3350 34", "svmov 0 0 809 30"]
+        ["svmov 0 1 3350 34", "svmov 0 0 888 30"]
     );
     assert!(r.count("skeep") >= 3);
     assert_eq!(r.port().last.flow[0].state, FlowState::Held);
@@ -872,7 +873,7 @@ fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
     r.run(30_000);
     assert_eq!(
         r.stm().lines_of("svmov"),
-        ["svmov 0 1 3350 34", "svmov 0 0 809 30"]
+        ["svmov 0 1 3350 34", "svmov 0 0 888 30"]
     );
     let v = r.port().last.valves[0];
     assert_eq!((v.desired, v.flow_target()), (37, Some(1000)));
@@ -885,14 +886,14 @@ fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
     r.run(10_000);
     let v = r.port().last.valves[0];
     assert_eq!((v.desired, v.flow_target()), (37, Some(1060)));
-    assert_eq!(r.stm().lines_of("svmov")[2..], ["svmov 0 0 10 30"]);
+    assert_eq!(r.stm().lines_of("svmov")[2..], ["svmov 0 0 11 30"]);
     // Above qmax it is qmax.
     r.now = r.now.wrapping_add(300_000);
     t.flow_ml = Some(u16::MAX);
     r.command(&t);
     r.run(10_000);
     let v = r.port().last.valves[0];
-    assert_eq!((v.desired, v.flow_target()), (50, Some(2700)));
+    assert_eq!((v.desired, v.flow_target()), (49, Some(2600)));
     assert_eq!(r.stm().lines_of("svmov")[3..], ["svmov 0 0 281 30"]);
     // A target in % ends it.
     r.now = r.now.wrapping_add(300_000);
@@ -905,7 +906,7 @@ fn flow_layer_a_target_in_l_min_goes_through_the_curve_and_stops_at_qmax() {
     // (a close of this STM always meets the end stop: the positioning goes on from there)
     assert_eq!(
         r.stm().lines_of("svmov")[4..],
-        ["svmov 0 1 225 34", "svmov 0 1 3350 34", "svmov 0 0 875 30"]
+        ["svmov 0 1 220 34", "svmov 0 1 3350 34", "svmov 0 0 960 30"]
     );
 }
 
@@ -916,7 +917,7 @@ fn flow_layer_a_target_in_l_min_survives_a_restart_of_the_stm_and_of_the_esp() {
     t.flow_ml = Some(1060);
     r.command(&t);
     r.run(30_000);
-    assert_eq!(r.stm().lines_of("svmov")[1..], ["svmov 0 0 819 30"]);
+    assert_eq!(r.stm().lines_of("svmov")[1..], ["svmov 0 0 899 30"]);
     let stored = *r.port().targets.last().expect("stored");
     assert_eq!((stored.pos[0], stored.flow_ml[0]), (37, Some(1060)));
     // The STM restarts: the flow is positioned again, not its whole %.
@@ -924,7 +925,7 @@ fn flow_layer_a_target_in_l_min_survives_a_restart_of_the_stm_and_of_the_esp() {
     r.stm_mut().reset(u64::from(now));
     r.run(60_000);
     let svmov = r.stm().lines_of("svmov");
-    assert_eq!(svmov[svmov.len() - 1], "svmov 0 0 819 30");
+    assert_eq!(svmov[svmov.len() - 1], "svmov 0 0 899 30");
     assert_eq!(r.port().last.valves[0].flow_target(), Some(1060));
     // The ESP restarts.
     let mut r = Rig::new(3, 0x001);
@@ -937,7 +938,7 @@ fn flow_layer_a_target_in_l_min_survives_a_restart_of_the_stm_and_of_the_esp() {
     assert_eq!(v.source, TargetSource::Restored);
     assert_eq!(
         r.stm().lines_of("svmov"),
-        ["svmov 0 1 3350 34", "svmov 0 0 819 30"]
+        ["svmov 0 1 3350 34", "svmov 0 0 899 30"]
     );
 }
 
@@ -970,11 +971,11 @@ fn flow_layer_a_new_curve_gives_a_target_in_l_min_the_percent_of_its_stroke() {
     r.run(30_000);
     assert_eq!(r.port().last.valves[0].desired, 37);
     let mut longer = flow_configs(0, true);
-    longer[0].stroke_counts = 4374;
+    longer[0].stroke_counts = 4800;
     r.s.apply_flow_config(&longer);
     r.run(30_000);
     let v = r.port().last.valves[0];
-    assert_eq!((v.desired, v.flow_target()), (18, Some(1000)));
+    assert_eq!((v.desired, v.flow_target()), (19, Some(1000)));
     assert_eq!(v.source, TargetSource::Web);
     assert_eq!(r.port().last.flow[0].target_ml, Some(1000));
     // Without the layer the valve shows no flow target, and keeps it for its return.

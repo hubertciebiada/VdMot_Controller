@@ -875,35 +875,35 @@ fn discovery_ha_safe_ids_raw_names_root_and_prefix_e20_2_h5() {
     valve(
         &mut c,
         0,
-        "\u{141}azienka",
+        "\u{141}Strefa1",
         false,
         false,
-        "\u{141}azienka".as_bytes(),
+        "\u{141}Strefa1".as_bytes(),
     );
     let v = all(&c);
-    let m = find(&v, "homeassistant/text/Dom_1/valves_state_Lazienka/config").expect("message");
+    let m = find(&v, "homeassistant/text/Dom_1/valves_state_LStrefa1/config").expect("message");
     assert!(has(
         &m.json,
-        "\"name\":\"valves.\u{141}azienka.state\",\"unique_id\":\"Dom_1.valves.\u{141}azienka.state\""
+        "\"name\":\"valves.\u{141}Strefa1.state\",\"unique_id\":\"Dom_1.valves.\u{141}Strefa1.state\""
     ));
     assert!(has(
         &m.json,
-        "\"state_topic\":\"Dom 1/valves/\u{141}azienka/state/value\""
+        "\"state_topic\":\"Dom 1/valves/\u{141}Strefa1/state/value\""
     ));
     assert!(has(&m.json, "\"identifiers\":\"Dom 1\",\"name\":\"Dom 1\""));
     assert!(has(
         &json(
             &v,
-            "homeassistant/sensor/Dom_1/valves_actual_Lazienka/config"
+            "homeassistant/sensor/Dom_1/valves_actual_LStrefa1/config"
         ),
-        "\"name\":\"\u{141}azienka position\""
+        "\"name\":\"\u{141}Strefa1 position\""
     ));
     set(&mut c.discovery_prefix, b"ha");
-    assert_text(&topics(&c)[4], "ha/text/Dom_1/valves_state_Lazienka/config");
+    assert_text(&topics(&c)[4], "ha/text/Dom_1/valves_state_LStrefa1/config");
     c.discovery_prefix.clear(); // empty: the legacy prefix
     assert_text(
         &topics(&c)[4],
-        "homeassistant/text/Dom_1/valves_state_Lazienka/config",
+        "homeassistant/text/Dom_1/valves_state_LStrefa1/config",
     );
     let bad: [&[u8]; 8] = [
         b"a b",
@@ -983,7 +983,7 @@ fn discovery_ha_safe_ids_raw_names_root_and_prefix_e20_2_h5() {
 fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
     let mut c = new_ctx();
     set(&mut c.topics.station, b"Dom 1");
-    valve(&mut c, 0, "\u{141}azienka", false, false, b"");
+    valve(&mut c, 0, "\u{141}Strefa1", false, false, b"");
     valve(&mut c, 1, "Bad_1", false, false, b"");
     set(&mut c.discovery_prefix, b"homeassistant");
     let mut it = DiscoveryIterator::new();
@@ -999,8 +999,8 @@ fn discovery_v20_topic_the_2_0_0_form_of_changed_ids_e20_3() {
     }
     let old_of = |t: &str| olds.get(t.as_bytes()).cloned().unwrap_or_default();
     assert_text(
-        &old_of("homeassistant/text/Dom_1/valves_state_Lazienka/config"),
-        "homeassistant/text/Dom 1/valves_state_\u{141}azienka/config",
+        &old_of("homeassistant/text/Dom_1/valves_state_LStrefa1/config"),
+        "homeassistant/text/Dom 1/valves_state_\u{141}Strefa1/config",
     );
     assert_text(
         &old_of("homeassistant/text/Dom_1/state/config"),
@@ -1395,7 +1395,7 @@ fn classify_discovery_list_lines_w4_1() {
     assert_eq!(
         cls(
             &c,
-            "homeassistant/text/Dom 1/valves_state_\u{141}azienka/config"
+            "homeassistant/text/Dom 1/valves_state_\u{141}Strefa1/config"
         ),
         TopicClass::Stale
     );

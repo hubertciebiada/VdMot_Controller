@@ -455,9 +455,9 @@ failsafe active, or any other health flag on an active valve; 0 = otherwise.
 
 ### Flow layer (Rust 2.2.8, STM 2.2.8)
 
-The whole flow band of a floor-heating loop (0..2.5 l/min) lies in 229..481
-motor pulses above the closed end stop, 5..11 % of the stroke, so a stroke
-target (`stgtp`, 1 % = 41..49 pulses) is too coarse to set a flow. The flow
+The flow band of a floor-heating loop can lie in a few hundred motor pulses
+above the closed end stop, a small part of the stroke, so a stroke target
+(`stgtp`, 1 % is dozens of pulses) is too coarse to set a flow. The flow
 layer (`core/src/flow_layer.rs`, owned by `StmSession`) positions a valve with
 a measured curve itself (API.md "Flow layer"):
 

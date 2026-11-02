@@ -554,7 +554,7 @@ Glue tests follow PORTING.md: `test/native/glue/test_<stem>.cpp` → `glue/src/<
 `test_<stem>__<part>.cpp` and `test_<stem>_<topic>.cpp` → `tests_<part>.rs` / `tests_<topic>.rs`.
 Every case that tests the glue's own behaviour is ported with all its assertions; cases that test
 how the glue copes with an Arduino library that is gone are retired, and their subject gets new
-cases against the Rust mechanism (list approved by the operator, decision 7.4).
+cases against the Rust mechanism (list approved as decision 7.4).
 
 | C++ file (cases) | Covers | Rust | Port |
 |---|---|---|---|
@@ -657,8 +657,8 @@ Not provable in QEMU, and where it is covered instead:
 | A software restart after the first minute of uptime (a QEMU limit) | the next boot takes an interrupt without a handler in ESP-IDF's startup (`esp_timer_init`) and loops before main (a user restart at 30 s of uptime boots, at 70 s it loops); a restart into the C++ image after Ethernet ran also hung once in its startup. The chip resets its timer groups and its EMAC in `esp_restart` (`esp_restart_noos` in `esp_system/port/soc/esp32/system_internal.c`: `DPORT_TIMERS_RST` through `DPORT_PERIP_RST_EN_REG`, `DPORT_EMAC_RST` through `DPORT_CORE_RST_EN_REG`), the QEMU model does not | the scenarios end the QEMU process at every restart that leads into the C++ image or comes late, check the flash and power on a new one; the early restarts of the Rust image (boot limit, deadline) run through. On the device it is a first-flash check: after the first OTA to Rust let the image run at least 10 min, then a user restart and a power cycle must both come back, since a loop before `main` is the one failure the boot guard cannot catch |
 | The C++ firmware's whole boot after a switch | its setup runs a factory reset (GPIO2 reads LOW here) on garbage flash reads; in most runs it mounts LittleFS and prints its first events within seconds, in others (mostly after a power-on) it stalls for minutes | the start is proven by the bootloader starting the C++ image and its ESP-IDF 4.4.4 startup line; its LittleFS mount and boot event are logged when they come |
 | The C++ firmware uploading the Rust image (C++ → Rust OTA) | the C++ image panics in its Ethernet init (QEMU emulates OpenETH, not the EMAC), so it has no network | otadata written as the C++ upload leaves it (sequence 2, NEW); the C++ upload checks the image with Arduino's `Update` (magic byte, then ESP-IDF 4.4's `esp_image_verify` in `esp_ota_end`), the image format code the devices' bootloader of the same era runs when it loads the Rust image in QEMU |
-| The LAN8720 adapter (EMAC, RMII clock on GPIO0, PHY reset on GPIO16) | no EMAC model | the operator's first flash |
-| WiFi | no WiFi model | the operator's first flash |
+| The LAN8720 adapter (EMAC, RMII clock on GPIO0, PHY reset on GPIO16) | no EMAC model | the first flash of a device |
+| WiFi | no WiFi model | the first flash of a device |
 | The STM link, an STM flash, the factory pin | no STM; GPIO2 reads LOW (the harness sets `frLatch`) | glue host tests with the fake STM (§5.1), Renode for the STM images |
 | Stack and heap figures of the device | OpenETH buffers instead of the EMAC DMA, WiFi off, no STM traffic | the measuring campaign of §2.1 |
 
@@ -816,15 +816,15 @@ event (reset reason `sw`).
 
 ## 7. Open risks and decisions
 
-Decided on 2026-10-06 (the operator may revert): 3 (a) synchronous uploads, checked with the
+Decided on 2026-10-06 (revertible): 3 (a) synchronous uploads, checked with the
 dashboard during an OTA in QEMU; 4 the retired cases as listed; 5 as written; 6 in the Rust
-firmware only — the same route in the C++ firmware is a separate change on the operator's word;
+firmware only — the same route in the C++ firmware is a separate change;
 10 parity; 13 as written, reviewed against the firmware spike. 11: `mosquitto` joins the test
 image for the interop run.
 
 1. **Risk: boot chain.** The devices boot through the legacy serial-flashed bootloader
    (`software_esp32/bootloader_dio_40m.bin`) and partition table (`software_esp32/partitions.bin`).
-   An ESP-IDF 5.5 image that fails before `main` is a serial reflash in the cabinet. Gate: QEMU boot
+   An ESP-IDF 5.5 image that fails before `main` is a serial reflash on site. Gate: QEMU boot
    of that bootloader + table + C++ 2.1.7 → OTA to Rust → OTA back to C++, with the image header of
    the C++ build (DIO, 80 MHz, 4 MB), `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n`. Passed on
    2026-10-07 within the limits of the C++ image in QEMU (§5.5).
@@ -894,7 +894,7 @@ image for the interop run.
    | 1. first build: `opt-level = "s"`, std with its default features | 1,363,152 B | -134,352 B, also over the 1,310,720 B slot | replaced by 3 |
    | 2. std without its default features (`build-std-features = []`): no backtrace symbolizer (gimli, addr2line, demangler), which runs only with `RUST_BACKTRACE` set and needs the ELF file; a panic still prints its message, ESP-IDF its register dump | 1,210,944 B | 17,856 B | adopted |
    | 3. 2 + `opt-level = "z"` | 1,187,680 B | 41,120 B | adopted: the release build |
-   | 4. 3 + `panic = "immediate-abort"` | 1,147,776 B | 81,024 B | not adopted: a Rust panic no longer prints its message, only the register dump; the operator's call |
+   | 4. 3 + `panic = "immediate-abort"` | 1,147,776 B | 81,024 B | not adopted: a Rust panic no longer prints its message, only the register dump |
    | 5. 3 without WiFi (`nowifi`) | 822,304 B | 406,496 B | reference only: WiFi costs about 365 KB |
 
    Largest parts of 3: the Rust object (core, glue, std, esp-idf-svc; one LTO unit) about 500 KB

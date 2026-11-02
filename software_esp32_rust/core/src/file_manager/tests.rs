@@ -23,7 +23,7 @@ fn path_syntax() {
     assert!(valid("/a"));
     assert!(valid("/stm/x.bin"));
     assert!(valid("/Bad Name.bin"));
-    assert!(valid("/\u{141}azienka.bin")); // UTF-8
+    assert!(valid("/\u{141}Strefa1.bin")); // UTF-8
     assert!(valid("/.x"));
     assert!(valid("/..x"));
     assert!(valid("/a/.b/c"));

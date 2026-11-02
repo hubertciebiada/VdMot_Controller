@@ -129,12 +129,12 @@ the versions of the two MCUs equal.
   more than `mult` times the pulse interval before the stopping pulse (0..10; 0 = off), whichever
   comes first; then the motor is switched off and the direction output goes back. Without a
   brake the motor coasts 30..65 uncounted
-  pulses after an opening move in the low-load part of the stroke (field data of 2026-10-30),
+  pulses after an opening move in the low-load part of the stroke (reference measurement on two controllers),
   with a scatter of about ±15; the pulses of the braking motor are counted (`lastCnt` exceeds
   `lastReq` by them). The end-stop limits do not judge the brake current (about twice the
   stall current, bounded by `maxMs`); `sstop` ends a brake with the move. Normal moves,
   calibration strokes and the coast probe are not braked. After a start every valve brakes with
-  `35 20 0`: in the field test (13 valves, 5 moves each) a further opening move missed a median
+  `35 20 0`: in a reference measurement on two controllers (5 moves per valve) a further opening move missed a median
   of 3 pulses instead of 28..60, the spread of one opening move of ~900 pulses from the closed
   end stop fell from sd 6..24 to a median of 8 pulses, and 60 20 0 was a little worse (median
   5 missed, spread 10); 60 10 0 was unstable and 80 30 0 drove a stopped motor backwards (up to
@@ -215,9 +215,9 @@ otherwise.
 
 - The health flags `earlyStop` and `cmdRejected` (`/api/valves` `health`, MQTT, the dashboard)
   compare `earlyStops` and `cmdRejected` with a baseline. 2.2.6 took it at the start of the ESP
-  and after a restart of the STM, so a flag stayed until the next restart of the ESP (the
-  installed west controller: valves 4 and 5 for two days, across the successful calibration
-  that followed their early stops within minutes). A
+  and after a restart of the STM, so a flag stayed until the next restart of the ESP (on a
+  reference controller for two days, across the successful calibration that followed the
+  early stops within minutes). A
   calibration that ends at idle (the event `calib_ok`) now moves both baselines to the current
   counts as well; a calibration that fails keeps them. The counts themselves (`earlyStops`,
   `cmdRejected`, MQTT `diag/valves/<V>/...`) do not change; the STM clears its calState bit 2
@@ -230,7 +230,7 @@ otherwise.
 - `POST /api/stm/images` of a new name into a store with 3 uploaded images (besides
   `last_good`) removes one of them once the upload has completed, instead of `507`
   `too_many_images`: of the images with a version, the one with the lowest version except the
-  lowest of all, which stays as the long-term fallback (on the installed controllers the C++
+  lowest of all, which stays as the long-term fallback (on the reference controllers the C++
   2.1.7 image `stm217` beside the Rust releases); never the image `last_good` holds (the running
   one, same CRC and size) or one a `last_good` copy reads; of equal versions the one listed
   first counts as the lower. The answer `201` names it in `evicted` (null when nothing was removed), the
@@ -267,7 +267,7 @@ can be updated first.
 - An automatic Home Assistant discovery run after a change of the discovery inputs compares only
   settled STM inputs (`sensorsSettled`: link up, re-sync done, sensor grace over). The degraded
   second of the daily re-scan cleared them, the valve sensors left the inputs for that second,
-  and a full run (142 to 161 retained configs on the installed controllers) followed on about
+  and a full run (142 to 161 retained configs on the reference controllers) followed on about
   one day in three. A change while the STM is not settled (a restart of the STM, `stons`) still
   starts one run once the inputs settled; an STM that never settles gets only the run after a
   connect (at most 120 s later), as before
@@ -283,8 +283,8 @@ STM32 release: only the closing coast is learned. The ESP32 firmware is the one 
 - A calibration pass probes the coast once: after the third stroke reached the open end stop, a
   closing step of 200 pulses and the move back up. The probe at the closed end stop is gone: its
   move back counts the pulses the motor turns against the hard stop of the actuator until the
-  end-stop threshold trips, not the coast (2.2.4 on the installed valves: more than 100 pulses
-  and no sample on ten of thirteen). A pass takes two short moves less than in 2.2.4 (about 3 s
+  end-stop threshold trips, not the coast (2.2.4, reference measurement on two controllers: more than 100 pulses
+  and no sample on most valves). A pass takes two short moves less than in 2.2.4 (about 3 s
   at 0.25 pulses/ms). Normal move pairs refine the coast only from the open end stop (a closing
   step away from it and the move back), and only partial closing moves are shortened: an opening
   step works against the spring of the normally closed insert, which stops the motor within a
@@ -301,7 +301,7 @@ reports the learned coast. Flash both; either MCU can be updated first.
 - A calibration pass measures the coast of the motor (the pulses it turns after its enable went
   off, which the STM cannot count) with a step of 200 pulses away from each end stop and the move
   back: four short moves more, a pass takes about 6 s longer (at the 0.25 pulses/ms of the
-  installed actuators; a due temperature cycle can pause it after each move back as well).
+  reference measurement; a due temperature cycle can pause it after each move back as well).
   A pass sets the coast; normal move pairs (a step away from an end stop and the move back)
   refine it, and two pairs in a row that agree with each other but not with it replace it. A
   partial move then stops the learned coast of its direction earlier, by at
@@ -482,7 +482,7 @@ The MQTT client is an own implementation with the PubSubClient 2.8 behaviour
 ### STM32: boot, clocks, faults
 
 Details in [GLUE-DESIGN-STM.md §5](GLUE-DESIGN-STM.md#5-boot-and-flashing-safety) and the
-decisions of [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator):
+decisions of [§8](GLUE-DESIGN-STM.md#decisions):
 
 - The boot window runs on the 25 MHz crystal when it starts within 5 ms, else on the internal
   16 MHz oscillator (D1). The C++ image hangs before its window when the crystal does not start,
@@ -515,7 +515,7 @@ decisions of [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator):
   pass (about 2 s) instead of the whole flash: after an interruption of the other pass the STM
   waits in a Rust boot stage (the new one of a Rust image, or the running one when the C++ image
   replaces a Rust one) and answers the next flash; a flash from C++ to C++ keeps the C++ risk
-  ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover-and-the-half-flashed-image), [§8](GLUE-DESIGN-STM.md#decisions-for-the-operator) D9).
+  ([GLUE-DESIGN-STM.md §5.10](GLUE-DESIGN-STM.md#510-what-the-image-cannot-cover-and-the-half-flashed-image), [§8](GLUE-DESIGN-STM.md#decisions) D9).
 - The bytes of sector 0 are read and checked before its erase, and the sector-0 pass has retries
   of its own. When the pass fails after its erase, the ESP does not reset the STM (it would not
   start again): the flash shows the new phase `sector0_pending` (legacy status 8, event

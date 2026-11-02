@@ -809,21 +809,21 @@ fn flow_config_is_read_patched_saved_and_refused() {
     )));
     let before = st.shared().flow_revision();
     let body = concat!(
-        r#"{"enabled":true,"qmax":2.5,"strokeCounts":2187,"#,
-        r#""points":[[593,0],[713,0.25],[1016,2.5]]}"#
+        r#"{"enabled":true,"qmax":2.3,"strokeCounts":2400,"#,
+        r#""points":[[630,0],[760,0.3],[1070,2.3]]}"#
     );
     let r = perform(&mut web, api_post("/api/valves/1/flow", body));
     assert_eq!(r.status, 200);
     let t = text(&r);
-    assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":true,"qmax":2.500,"#));
-    assert!(t.contains(r#""points":[[593,0.000],[713,0.250],[1016,2.500]]},"#));
+    assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":true,"qmax":2.300,"#));
+    assert!(t.contains(r#""points":[[630,0.000],[760,0.300],[1070,2.300]]},"#));
     // Stored: the revision moved, NVS holds the blob, the GET reads it back; the other valves
     // keep their defaults.
     assert_eq!(st.shared().flow_revision(), before + 1);
     assert!(rig.dev.nvs.has("vdmrev", "flow"));
     assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
     let r = perform(&mut web, get("/api/valves/1/flow"));
-    assert!(text(&r).contains(r#""qmax":2.500,"#));
+    assert!(text(&r).contains(r#""qmax":2.300,"#));
     let r = perform(&mut web, get("/api/valves/2/flow"));
     assert!(text(&r).starts_with(r#"{"valve":2,"config":{"enabled":false,"qmax":2.700,"#));
     assert!(st.shared().flow_config(0).enabled);
@@ -831,7 +831,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
     // A second patch keeps the members it does not name.
     let r = perform(&mut web, api_post("/api/valves/1/flow", r#"{"offset":-7}"#));
     assert_eq!(r.status, 200);
-    assert!(text(&r).contains(r#""qmax":2.500,"#));
+    assert!(text(&r).contains(r#""qmax":2.300,"#));
     assert!(text(&r).contains(r#""offset":-7,"#));
     // Refusals, nothing changed.
     let cases = [
@@ -918,8 +918,8 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
         qmax_ml: 2700,
         state: FlowState::Held,
         known: true,
-        counts: 812,
-        target_counts: 809,
+        counts: 891,
+        target_counts: 888,
         flow_ml: 1012,
         pct: 37,
         last_valid: true,
@@ -932,7 +932,7 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
     let r = perform(&mut web, get("/api/valves"));
     let t = text(&r);
     assert!(t.contains(concat!(
-        r#""flow":{"enabled":true,"state":"held","counts":812,"targetCounts":809,"#,
+        r#""flow":{"enabled":true,"state":"held","counts":891,"targetCounts":888,"#,
         r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"peak":12.3}},{"idx":2,"#
     )));
     assert!(t.contains(r#","pos":37,"#));
@@ -958,8 +958,8 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     assert!(!st.load_flow_configs());
     let mut web = rig.web(&st);
     let curve = concat!(
-        r#"{"enabled":true,"qmax":2.7,"strokeCounts":2187,"#,
-        r#""points":[[593,0],[713,0.25],[1016,2.5]]}"#
+        r#"{"enabled":true,"qmax":2.6,"strokeCounts":2400,"#,
+        r#""points":[[630,0],[760,0.3],[1070,2.3]]}"#
     );
     assert_eq!(
         perform(&mut web, api_post("/api/valves/1/flow", curve)).status,
@@ -981,23 +981,23 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     let cases = [
         (
             r#"{"lpm":1.25}"#,
-            r#"{"valve":1,"lpm":1.252,"target":39,"clipped":false}"#,
+            r#"{"valve":1,"lpm":1.248,"target":38,"clipped":false}"#,
         ),
         (
             r#"{"lpm":0}"#,
             r#"{"valve":1,"lpm":0.000,"target":0,"clipped":false}"#,
         ),
         (
-            r#"{"lpm":2.5}"#,
-            r#"{"valve":1,"lpm":2.500,"target":46,"clipped":false}"#,
+            r#"{"lpm":2.3}"#,
+            r#"{"valve":1,"lpm":2.300,"target":45,"clipped":false}"#,
         ),
         (
-            r#"{"lpm":2.7}"#,
-            r#"{"valve":1,"lpm":2.500,"target":46,"clipped":true}"#,
+            r#"{"lpm":2.6}"#,
+            r#"{"valve":1,"lpm":2.300,"target":45,"clipped":true}"#,
         ),
         (
-            r#"{"lpm":2.701}"#,
-            r#"{"valve":1,"lpm":2.500,"target":46,"clipped":true}"#,
+            r#"{"lpm":2.601}"#,
+            r#"{"valve":1,"lpm":2.300,"target":45,"clipped":true}"#,
         ),
     ];
     for (body, answer) in cases {
@@ -1012,11 +1012,11 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
         && c.source == TargetSource::Web));
     assert_eq!(
         s.iter().map(|c| c.pos).collect::<Vec<_>>(),
-        [39, 0, 46, 46, 46]
+        [38, 0, 45, 45, 45]
     );
     assert_eq!(
         s.iter().map(|c| c.flow_ml).collect::<Vec<_>>(),
-        [Some(1250), Some(0), Some(2500), Some(2700), Some(2700)]
+        [Some(1250), Some(0), Some(2300), Some(2600), Some(2600)]
     );
     let refused = [
         (r#"{"lpm":-1}"#, "out_of_range", "lpm a plain number from 0"),

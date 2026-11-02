@@ -3107,8 +3107,8 @@ fn v3_ha_ids_are_unique_among_valves_and_active_slots() {
     strcpy(&mut c.valves[1].name, "Bad-1");
     assert_eq!(validate_path(&c), "OK");
     let mut u = Config::default(); // UTF-8 letters map to their base letter
-    strcpy(&mut u.valves[3].name, "\u{141}azienka");
-    strcpy(&mut u.valves[7].topic, "Lazienka");
+    strcpy(&mut u.valves[3].name, "\u{141}Strefa1");
+    strcpy(&mut u.valves[7].topic, "LStrefa1");
     assert_eq!(validate_path(&u), "valves.8.topic");
     let mut o = Config::default();
     strcpy(&mut o.valves[0].topic, "a/b");

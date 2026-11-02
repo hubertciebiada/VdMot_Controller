@@ -24,3 +24,6 @@ software_stm32_rust/target/
 software_esp32_rust/firmware/target/
 software_stm32_rust/firmware/target/
 tools/rust/mutation/*.report.json
+
+## Claude Code local state ########
+.claude/

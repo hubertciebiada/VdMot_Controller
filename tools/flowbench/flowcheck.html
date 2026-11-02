@@ -178,7 +178,7 @@ function cardEl(c) {
   val.append(minus, input, plus); el.appendChild(val);
   const v2 = document.createElement("div"); v2.className = "val2";
   for (const [label, f] of [["Nie płynie", () => answer(c.key, "value", 0)], ["Zapisz odczyt", save],
-                            ["Powyżej skali", () => answer(c.key, "value", 2.7)]]) {
+                            ["Powyżej skali", () => answer(c.key, "value", presets.scaleTop)]]) {
     const b = document.createElement("button"); b.textContent = label; b.onclick = f;
     if (label === "Zapisz odczyt") b.className = "pri";
     v2.appendChild(b);

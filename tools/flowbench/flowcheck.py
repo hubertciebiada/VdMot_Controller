@@ -49,20 +49,28 @@ TARGET_S = 30  # one target move of one valve
 SETTLE_S = 15  # the float after a move; the page counts it down, the answers stay open
 HOLD_CHECK_S = 5  # how often a card that waits for a reading checks that its valve still holds
 OTHERS_PCT = 0  # the other loops while the curves were measured: one loop open at a time
-PUMP_WARN_W = 70  # the pump saturates near 77 W: above this it does not keep its head
+PUMP_WARN_W = 70  # default of --pump-warn-w: above this a pump near saturation does not keep its head
 PUMP_MIN_W = 5  # below this the circulation pump stands
 SD_OK = 0.1  # repeat: the standard deviation that passes [l/min]
-# stops of a check session [l/min]; mixed: every stop twice and never twice in a row
-STOPS = {
-    "short": [1.0, 2.0, 0.5],
-    "mixed": [2.0, 0.25, 1.5, 0.5, 1.0, 2.0, 0.5, 1.5, 0.25, 1.0],
-    "up": [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.7],
-    "down": [2.7, 2.5, 2.25, 2.0, 1.75, 1.5, 1.25, 1.0, 0.75, 0.5, 0.25],
-    "zigzag": [2.7, 0.25, 2.5, 0.5, 2.25, 0.75, 2.0, 1.0, 1.75, 1.25, 1.5],
-}
-STOP_LABELS = {"short": "krótka: 1 · 2 · 0,5 l/min", "mixed": "mieszana: 10 przystanków",
-               "up": "w górę: 11 przystanków", "down": "w dół: 11 przystanków",
-               "zigzag": "zygzak: 11 przystanków"}
+SCALE_TOP_LPM = 2.7  # default of --scale-top: the top of the flow meter's scale [l/min]
+STOP_STEPS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]  # below the top of the scale
+STOP_LABELS = {"short": "krótka: 1 · 2 · 0,5 l/min", "mixed": "mieszana: {n} przystanków",
+               "up": "w górę: {n} przystanków", "down": "w dół: {n} przystanków",
+               "zigzag": "zygzak: {n} przystanków"}
+# a made-up curve of the simulator: pulses, flow as a part of the top of the scale
+SIM_CURVE = [(560, 0.0), (650, 0.1), (730, 0.3), (800, 0.5), (880, 0.65), (960, 0.8), (1060, 0.92),
+             (1120, 1.0)]
+
+
+def stops_for(top):
+    """The stops of a check session [l/min] on a flow meter whose scale ends at `top`; mixed:
+    every stop twice and never twice in a row."""
+    up = [q for q in STOP_STEPS if q < top] + [top]
+    return {"short": [1.0, 2.0, 0.5],
+            "mixed": [2.0, 0.25, 1.5, 0.5, 1.0, 2.0, 0.5, 1.5, 0.25, 1.0],
+            "up": up,
+            "down": up[::-1],
+            "zigzag": [q for pair in zip(reversed(up), up) for q in pair][:len(up)]}
 
 
 # ───────────────────────────── curves ─────────────────────────────
@@ -148,11 +156,13 @@ class Stop(Exception):
 
 
 class Engine:
-    def __init__(self, esps, out, power=None, pick=()):
+    def __init__(self, esps, out, power=None, pick=(), pump_warn_w=PUMP_WARN_W, scale_top=SCALE_TOP_LPM):
         self.esps = {e.name: e for e in esps}
         self.out = out
         self.power = power
         self.pick = list(pick)
+        self.pump_warn_w, self.scale_top = pump_warn_w, scale_top
+        self.stops = stops_for(scale_top)
         self.lock = threading.Lock()
         self.cv = threading.Condition(self.lock)
         self.db = sqlite3.connect(out / "flowcheck.db", check_same_thread=False)
@@ -213,8 +223,9 @@ class Engine:
                 if part:
                     groups.append({"label": f"{esp.name} {part[0]}–{part[-1]}",
                                    "loops": [f"{esp.name} {i}" for i in part]})
-        return {"groups": groups, "pick": self.pick, "others": OTHERS_PCT, "pumpWarn": PUMP_WARN_W,
-                "stops": [{"id": k, "label": STOP_LABELS[k]} for k in STOPS]}
+        return {"groups": groups, "pick": self.pick, "others": OTHERS_PCT, "pumpWarn": self.pump_warn_w,
+                "scaleTop": self.scale_top,
+                "stops": [{"id": k, "label": STOP_LABELS[k].format(n=len(v))} for k, v in self.stops.items()]}
 
     def check(self):
         if self.stop_req:
@@ -617,7 +628,7 @@ class Engine:
         return counts + (step if ans["answer"] == "less" else -step), mult
 
     def run_check(self, loops, cfg):
-        stops = cfg.get("stops") or STOPS.get(cfg.get("mode", "short"))
+        stops = cfg.get("stops") or self.stops.get(cfg.get("mode", "short"))
         for no, q in enumerate(stops, 1):
             self.set(stop={"no": no, "of": len(stops), "q": q})
             counts = {lp: lp.counts_for(q) for lp in loops}
@@ -707,25 +718,24 @@ class Engine:
 # ───────────────────────────── simulator ─────────────────────────────
 
 class SimEsp:
-    """A controller with the flow layer: each valve has a true offset and gain against the curve
-    of curves.example.json, plus a scatter of the positioning. As on the real one, the layer
+    """A controller with the flow layer: each valve has a true offset and gain against a made-up
+    curve, plus a scatter of the positioning. As on the real one, the layer
     positions a valve as soon as it is switched on, a valve it lets go drives to the fallback
     target, and only a changed target reaches the STM."""
 
-    def __init__(self, name, n, seed):
+    def __init__(self, name, n, seed, top=SCALE_TOP_LPM):
         self.name = name
         self.base = f"sim://{name}"
         self.rnd = random.Random(seed)
-        pts = [[0, 0.0], [600, 0.0], [700, 0.25], [760, 0.6], [830, 1.0], [900, 1.5], [980, 2.0],
-               [1070, 2.5], [1110, 2.7]]
+        pts = [[0, 0.0]] + [[c, round(part * top, 3)] for c, part in SIM_CURVE]
         self.lock = threading.Lock()
         self.v = {}
         for i in range(1, n + 1):
             shift = self.rnd.randint(-60, 60)
             self.v[i] = {"name": f"Loop {i}", "cfg": {
-                "enabled": False, "qmax": 2.7, "refmA": 34, "openmA": 30, "fallbackPct": 15,
+                "enabled": False, "qmax": top, "refmA": 34, "openmA": 30, "fallbackPct": 15,
                 "minIntervalS": 60, "deadbandLpm": 0.05, "offset": 0, "gain": 1.0,
-                "refSide": "open", "strokeCounts": 4700,
+                "refSide": "open", "strokeCounts": 4300,
                 "points": [[c + shift if c else 0, q] for c, q in pts]},
                 "true_off": self.rnd.randint(-50, 50), "true_gain": self.rnd.uniform(0.9, 1.1),
                 "counts": 0, "target": 0, "busy_until": 0.0, "noise": 0, "seq": 0,
@@ -912,6 +922,10 @@ def main():
     ap.add_argument("--sim", action="store_true")
     ap.add_argument("--sim-auto", action="store_true")
     ap.add_argument("--ha-power", metavar="ENTITY")
+    ap.add_argument("--pump-warn-w", type=float, default=PUMP_WARN_W, metavar="W",
+                    help="the page marks a pump power above this (default %(default)s)")
+    ap.add_argument("--scale-top", type=float, default=SCALE_TOP_LPM, metavar="LPM",
+                    help="the top of the flow meter's scale: the highest stop and the value of a reading above it (default %(default)s)")
     ap.add_argument("--pick", default="", metavar="KEYS",
                     help="loops marked for the repeat session, comma-separated: 'west 3,east 7'")
     ap.add_argument("cmd", nargs="*", help="upload CURVES.json [--enable]")
@@ -919,8 +933,8 @@ def main():
     a = ap.parse_args()
     esps, sims = [], {}
     if a.sim:
-        for i, (name, n) in enumerate((("sim-west", 6), ("sim-east", 7))):
-            sims[name] = SimEsp(name, n, seed=i + 1)
+        for i, (name, n) in enumerate((("sim-a", 2), ("sim-b", 2))):
+            sims[name] = SimEsp(name, n, seed=i + 1, top=a.scale_top)
             esps.append(sims[name])
     for c in a.controller:
         name, _, host = c.partition("=")
@@ -937,7 +951,8 @@ def main():
         if not (url and token):
             ap.error("--ha-power needs HA_URL and HA_TOKEN in the environment")
         power = HaPower(url, token, a.ha_power)
-    engine = Engine(esps, out, power, [k.strip() for k in a.pick.split(",") if k.strip()])
+    engine = Engine(esps, out, power, [k.strip() for k in a.pick.split(",") if k.strip()],
+                    a.pump_warn_w, a.scale_top)
     page = (HERE / "flowcheck.html").read_text(encoding="utf-8")
     srv = Server((a.bind, a.port), make_handler(engine, page))
     print(f"flowcheck: http://{lan_ip()}:{a.port}  (on this PC: http://localhost:{a.port})")

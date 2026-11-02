@@ -588,7 +588,7 @@ fn ha_id(input: &[u8]) -> String {
 fn build_ha_id_maps_names_to_ha_ids() {
     assert_eq!(ha_id(b"VdMot"), "VdMot");
     assert_eq!(ha_id(b"Dom 1"), "Dom_1");
-    assert_eq!(ha_id(b"\xC5\x81azienka"), "Lazienka"); // Łazienka
+    assert_eq!(ha_id(b"\xC5\x81Strefa1"), "LStrefa1"); // Ł + Strefa1
     assert_eq!(ha_id(b"K\xC3\xBCche"), "Kuche"); // Küche
     assert_eq!(ha_id(b"Stra\xC3\x9Fe"), "Strasse"); // Straße
     assert_eq!(ha_id(b"\xC3\x86ble"), "AEble"); // Æble

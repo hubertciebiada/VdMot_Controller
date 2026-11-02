@@ -502,7 +502,7 @@ fn valve_display_names() {
     // C++ valveDisplayName(nullptr, 11, ..): the empty name.
     assert_eq!(valve_display_name(b"", 11, &mut out), 8);
     assert_text(&out[..8], "Valve 12");
-    assert_eq!(valve_display_name(b"\xc5\x81azienka", 3, &mut out), 9);
+    assert_eq!(valve_display_name(b"\xc5\x81Strefa1", 3, &mut out), 9);
     let mut eight = [b'X'; 8];
     assert_eq!(valve_display_name(b"", 11, &mut eight), 0);
     let mut nine = [0u8; 9];

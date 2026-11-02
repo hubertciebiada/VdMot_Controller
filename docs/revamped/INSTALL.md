@@ -259,8 +259,8 @@ How to tell: right after the restart into the new image, `GET /api/health` →
 valid, and the event log gets `app_marked_valid`. When `ota` is `null` from
 the first seconds and `app_marked_valid` never comes, the image was not put on
 trial: it runs as valid at once, and an image that does not come up needs the
-USB-serial recovery (section 6). Both controllers this firmware is tested on
-behave like that: none of the ESP updates in their event logs (2.1.0 to
+USB-serial recovery (section 6). The two reference controllers of this
+firmware behave like that: none of the ESP updates in their event logs (2.1.0 to
 2.1.4) went through the trial.
 
 Getting the rollback on such a controller means writing a bootloader with

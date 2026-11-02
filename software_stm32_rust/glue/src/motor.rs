@@ -72,9 +72,9 @@ pub const SVMOV_MAXMA_MAX: u8 = SAFETY_LIMIT_MA;
 /// sbrak: the longest brake and the longest pulse gap in ms (the L293D and the common's
 /// push-pull carry the brake current for a bounded time)
 pub const SBRAK_MS_MAX: u8 = 100;
-/// The brake of the service moves after a start (2.2.9 field test, 13 valves: a further opening
-/// move missed a median of 3 pulses instead of 28..60; longer brakes drove the motor backwards):
-/// at most 35 ms, ended 20 ms after the last pulse of the slowing motor.
+/// The brake of the service moves after a start (2.2.9, reference measurement on two controllers:
+/// a further opening move missed a median of 3 pulses instead of 28..60; longer brakes drove the
+/// motor backwards): at most 35 ms, ended 20 ms after the last pulse of the slowing motor.
 pub const SBRAK_DEFAULT_MAX_MS: u8 = 35;
 pub const SBRAK_DEFAULT_GAP_MS: u8 = 20;
 /// sbrak: the largest multiple of the pulse interval that ends the brake

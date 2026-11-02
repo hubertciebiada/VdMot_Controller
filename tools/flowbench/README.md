@@ -203,7 +203,7 @@ python tools/flowbench/endstop_test.py --summary --out endstops.jsonl
 | relative | with `--pos`: 3 × (close K, open to the end stop), 3 × (close K, open 300, open to the end stop), 3 × (close K, 5 pairs of open and close, open to the end stop) | what one more stop loses near the working point, how far a pair of relative moves shifts the valve (`relative` in the summary); counts alone do not show the backlash |
 
 `--phases` picks the phases (default `closed,steps,open,zero`); `top` needs `--pos`
-(`{"west 1": 810, ...}`, the pulses of 1.0 l/min). At the end the valve gets 0 % and then its
+(`{"west 1": 750, ...}`, the pulses of 1.0 l/min). At the end the valve gets 0 % and then its
 target again. Every move is a JSON line in `--out`.
 
 ## Checking the curves on the flow layer (`flowcheck.py`)
@@ -220,12 +220,14 @@ python tools/flowbench/flowcheck.py --sim --sim-auto                            
 
 `--ha-power ENTITY` (with `HA_URL` and `HA_TOKEN` in the environment) shows the pump power on the
 page and refuses a session below 5 W; an unknown power does not stop it. `--pick "west 3,east 7"`
-marks the loops of the repeat session on the page.
+marks the loops of the repeat session on the page. `--scale-top LPM` (default 2.7) is the top of
+the flow meter's scale: the highest stop of the long check sessions and the value of a reading
+above the scale.
 
 Every session starts the same way: the target of every valve is noted, the loops outside the
 session close (the curves were measured with one loop open, so the pump keeps its head), the layer
-goes on for the session loops. The page marks a pump power above 70 W: near saturation (about 77 W here)
-the head sags, so a reading there does not fit the curve. At the end, also after STOP or an error, the layer goes off and every
+goes on for the session loops. The page marks a pump power above `--pump-warn-w W` (default 70): near
+saturation the head sags, so a reading there does not fit the curve. At the end, also after STOP or an error, the layer goes off and every
 valve goes back to the noted target. A layer that lets go leaves the valve at `fallbackPct` while
 the ESP keeps the old target as desired, and the ESP sends only a changed target, so a session loop
 goes over another target first (5 % on the way to 0 %). A valve that does not get back is named on

@@ -499,8 +499,9 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   then: the pulses come from the motor current, which stops with the enable,
   and the L293 has no brake. Only the coast of a closing step is learned
   (`coastClose`): the spring of the normally closed insert drives a closing
-  step on (50..80 pulses on the installed actuators), while an opening step
-  works against the spring, which stops the motor within a few pulses. After
+  step on (50..80 pulses in a reference measurement on two controllers), while
+  an opening step works against the spring, which stops the motor within a
+  few pulses. After
   the third stroke reached the open end stop, a pass makes a closing step of
   200 pulses and moves back up to the open end stop; the move back counts the
   step and its coast. The pass takes two short moves more (about 3 s at
@@ -559,7 +560,8 @@ one by one by their ROM CRC. Every repair sets a bit in `gstax` cfgFlags.
   warning. A safety stop keeps the counted position, so does a move of a
   blocked or failed valve (status kept), and closing always does: closing
   steps travel further than counted too, but no valve closed in many small
-  steps reached its closed end early in the field, and taking a closing stop
+  steps reached its closed end early in a reference measurement on two
+  controllers, and taking a closing stop
   as 0 % would take a valve that jams on the way down as closed. An early end stop gives `lastStop` 3 (or 6); after an early partial stop
   exactly one more move in the same direction is made for the same drive
   target (flag `earlyPending`), the second early stop in a row requests a

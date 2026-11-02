@@ -1588,8 +1588,8 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         qmax_ml: 2700,
         state: FlowState::Held,
         known: true,
-        counts: 812,
-        target_counts: 809,
+        counts: 891,
+        target_counts: 888,
         flow_ml: 1012,
         pct: 37,
         target_ml: Some(1250),
@@ -1604,7 +1604,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     assert_eq!(
         String::from_utf8_lossy(jw.as_bytes()),
         concat!(
-            r#"{"enabled":true,"state":"held","counts":812,"targetCounts":809,"#,
+            r#"{"enabled":true,"state":"held","counts":891,"targetCounts":888,"#,
             r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"peak":12.3}"#
         )
     );
@@ -1622,7 +1622,7 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     assert_eq!(
         String::from_utf8_lossy(jw.as_bytes()),
         concat!(
-            r#"{"enabled":true,"state":"unknown","counts":null,"targetCounts":809,"#,
+            r#"{"enabled":true,"state":"unknown","counts":null,"targetCounts":888,"#,
             r#""lpm":null,"targetLpm":1.250,"ms":5684,"peak":12.3}"#
         )
     );
@@ -1636,19 +1636,19 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         ..FlowConfig::DEFAULT
     };
     c.points[0] = FlowPoint {
-        counts: 593,
+        counts: 630,
         flow_ml: 0,
     };
     c.points[1] = FlowPoint {
-        counts: 1100,
-        flow_ml: 2700,
+        counts: 1180,
+        flow_ml: 2600,
     };
     let mut buf = [0u8; 1024];
     let mut jw = JsonWriter::new(&mut buf);
     assert!(write_valve_flow_json(&mut jw, 2, &c, &held));
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
-    assert!(j.contains(r#""points":[[593,0.000],[1100,2.700]]},"flow":{"enabled":true,"#));
+    assert!(j.contains(r#""points":[[630,0.000],[1180,2.600]]},"flow":{"enabled":true,"#));
     assert!(j.contains(r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"#));
     assert!(j.ends_with(r#""peak":12.3},"refDelta":-24}"#));
     check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());

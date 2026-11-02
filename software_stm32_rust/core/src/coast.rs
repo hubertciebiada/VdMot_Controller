@@ -7,10 +7,10 @@
 //!
 //! Only the closing coast is learned. A closing step has the spring of the normally closed insert
 //! behind it and coasts 50..80 pulses; an opening step works against the spring, which stops the
-//! motor within a few pulses (about 2..14 in the field data of 2.2.4). A step away from the closed
-//! end stop cannot measure it: the move back counts the pulses the motor turns against the hard
-//! stop of the actuator until the end-stop threshold trips (2.2.4: 44..98 pulses or more than
-//! COAST_MAX_COUNTS on 13 valves).
+//! motor within a few pulses (about 2..14 in a reference measurement on two controllers, 2.2.4). A
+//! step away from the closed end stop cannot measure it: the move back counts the pulses the motor
+//! turns against the hard stop of the actuator until the end-stop threshold trips (2.2.4, the same
+//! measurement: 44..98 pulses or more than COAST_MAX_COUNTS).
 //!
 //! The probe of a calibration sets the coast. A move pair of normal moves refines it by a quarter
 //! when it agrees with it; two pairs in a row that agree with each other but not with it replace
