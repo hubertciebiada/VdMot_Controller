@@ -805,7 +805,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":false,"qmax":2.700,"#));
     assert!(t.ends_with(concat!(
         r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"#,
-        r#""holdMin":null,"estLpm":null,"ms":null,"peak":null},"refDelta":null}"#
+        r#""ms":null,"peak":null},"refDelta":null}"#
     )));
     let before = st.shared().flow_revision();
     let body = r#"{"enabled":true,"qmax":2.5,"points":[[593,0],[713,0.25],[1016,2.5]]}"#;
@@ -1034,41 +1034,6 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     rig.state().support = StmSupport::TooOld;
     assert_eq!(perform(&mut web, lpm(r#"{"lpm":1}"#)).status, 409);
     assert_eq!(rig.submitted().len(), 4);
-}
-
-#[test]
-fn the_estimate_stands_in_the_flow_document_and_not_in_the_valve_list() {
-    let rig = Rig::started();
-    let st = rig.storage();
-    let mut web = rig.web(&st);
-    let r = perform(&mut web, get("/api/valves/1/flow"));
-    assert!(text(&r).contains(r#""lpm":null,"holdMin":null,"estLpm":null,"ms":null"#));
-    let body = r#"{"driftD":5.5}"#;
-    let r = perform(&mut web, api_post("/api/valves/1/flow", body));
-    assert_eq!(r.status, 200);
-    assert!(text(&r).contains(r#""driftD":5.5,"#));
-    assert!(rig.dev.nvs.has("vdmrev", "flowx"));
-    assert_eq!(st.shared().flow_config(0).drift_d10, 55);
-    let r = perform(
-        &mut web,
-        api_post("/api/valves/1/flow", r#"{"driftD":25.6}"#),
-    );
-    assert_eq!(r.status, 400);
-    assert_eq!(text(&r), error_body("out_of_range", "driftD 0..25.5"));
-    rig.state().snapshot.flow[0] = FlowView {
-        enabled: true,
-        state: FlowState::Held,
-        known: true,
-        flow_ml: 1000,
-        hold_min: 60,
-        est_ml: 973,
-        ..FlowView::default()
-    };
-    let r = perform(&mut web, get("/api/valves/1/flow"));
-    assert!(text(&r).contains(r#""lpm":1.000,"holdMin":60,"estLpm":0.973,"#));
-    let r = perform(&mut web, get("/api/valves"));
-    assert!(text(&r).contains(r#""lpm":1.000,"ms":"#));
-    assert!(!text(&r).contains("holdMin") && !text(&r).contains("estLpm"));
 }
 
 // ---------------------------------------------------------------- brake (STM 2.2.9)

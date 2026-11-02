@@ -573,8 +573,6 @@ fn api_twelve_full_valves_fit_a_response_slot() {
         target_counts: crate::flow_layer::FLOW_COUNTS_MAX,
         flow_ml: u32::from(u16::MAX),
         pct: 100,
-        hold_min: u16::MAX,
-        est_ml: u32::from(u16::MAX),
         qmax_ml: crate::flow_layer::FLOW_QMAX_MAX_ML,
         last_valid: true,
         last_ms: u32::MAX,
@@ -620,9 +618,7 @@ fn api_twelve_full_valves_fit_a_response_slot() {
     }
     assert_eq!(doc.matches(r#""health":["blocked","#).count(), 12);
     assert_eq!(doc.matches(r#""temp":-3276.8}"#).count(), 24);
-    // 313 B below RESPONSE_SIZE: holdMin and estLpm of 12 valves stay out of this document.
-    assert!(!doc.contains("holdMin"));
-    assert!(!doc.contains("estLpm"));
+    // 313 B below RESPONSE_SIZE.
     assert_eq!(jw.length(), 16_071);
 }
 
@@ -1594,8 +1590,6 @@ fn flow_json_of_a_valve_and_the_flow_document() {
         target_counts: 809,
         flow_ml: 1012,
         pct: 37,
-        hold_min: 60,
-        est_ml: 973,
         qmax_ml: 2700,
         last_valid: true,
         last_ms: 5684,
@@ -1653,26 +1647,13 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
     assert!(j.contains(r#""points":[[593,0.000],[1100,2.700]]},"flow":{"enabled":true,"#));
-    assert!(j.contains(r#""lpm":1.012,"holdMin":60,"estLpm":0.973,"ms":5684,"#));
+    assert!(j.contains(r#""lpm":1.012,"ms":5684,"#));
     assert!(j.ends_with(r#""peak":12.3},"refDelta":-24}"#));
     check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());
     let mut jw = JsonWriter::new(&mut buf);
     assert!(write_valve_flow_json(&mut jw, 2, &c, &unknown));
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
-    assert!(j.contains(r#""lpm":null,"holdMin":null,"estLpm":null,"ms":5684,"#));
-    // The MQTT topic valves/<V>/flow.
-    let mut jw = JsonWriter::new(&mut buf);
-    write_flow_state_json(&mut jw, &held);
-    assert_eq!(
-        String::from_utf8_lossy(jw.as_bytes()),
-        r#"{"holdMin":60,"estLpm":0.973}"#
-    );
-    let mut jw = JsonWriter::new(&mut buf);
-    write_flow_state_json(&mut jw, &unknown);
-    assert_eq!(
-        String::from_utf8_lossy(jw.as_bytes()),
-        r#"{"holdMin":null,"estLpm":null}"#
-    );
+    assert!(j.contains(r#""lpm":null,"ms":5684,"#));
     let none = FlowView::default();
     let mut jw = JsonWriter::new(&mut buf);
     assert!(write_valve_flow_json(&mut jw, 2, &c, &none));

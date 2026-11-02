@@ -7,12 +7,6 @@
 //! lost. Hardware-free: the per-valve configuration with its NVS blob and JSON forms, the curve
 //! mapping both ways and the positioning state machine that hands requests to the session and
 //! reads the valve model. Owned by [`crate::stm_session::StmSession`].
-//!
-//! Rust 2.2.10: a flow can be asked for in l/min ([`flow_target`]), and the layer knows how a
-//! held loop drifts. The curves describe one loop in minute 30 after a positioning; before and
-//! after it the flow lies above and below the curve by `driftD` x ln((1 + t) / 31) pulses. The
-//! layer reports that estimate and repositions when it fell by the dead band. Saturation of the
-//! whole system is not known here: the estimate describes one loop.
 
 use crate::common::{elapsed_ms, fmt_fit, parse_uint, VALVE_COUNT};
 use crate::config::crc32;
@@ -115,13 +109,11 @@ pub struct FlowConfig {
     /// points in use (0 or [`FLOW_POINTS_MIN`]..[`FLOW_POINTS_MAX`])
     pub count: u8,
     pub points: [FlowPoint; FLOW_POINTS_MAX],
-    /// pulses of drift per e-fold of the hold time x 10, NVS `flowx` (0: no drift model)
-    pub drift_d10: u8,
 }
 
 impl FlowConfig {
     /// Disabled, 2.7 l/min, 34 / 30 mA, fallback 15 %, 5 min, 0.05 l/min, no correction,
-    /// closed reference without a warm-up, no points, no drift model.
+    /// closed reference without a warm-up, no points.
     pub const DEFAULT: Self = Self {
         enabled: false,
         qmax_ml: 2700,
@@ -140,7 +132,6 @@ impl FlowConfig {
             counts: 0,
             flow_ml: 0,
         }; FLOW_POINTS_MAX],
-        drift_d10: 0,
     };
 
     /// The points in use.
@@ -205,9 +196,8 @@ pub enum FlowError {
     RefSide = 15,
     PreClose = 16,
     StrokeCounts = 17,
-    DriftD = 18,
     /// `POST /api/valves/{n}/flow/target`
-    Lpm = 19,
+    Lpm = 18,
 }
 
 /// The API detail of an error.
@@ -231,7 +221,6 @@ pub fn flow_error_text(e: FlowError) -> &'static str {
         FlowError::RefSide => "refSide closed|open",
         FlowError::PreClose => "preClose true|false",
         FlowError::StrokeCounts => "strokeCounts 0..10000 (refSide open needs 1..10000)",
-        FlowError::DriftD => "driftD 0..25.5",
         FlowError::Lpm => "lpm 0..qmax",
     }
 }
@@ -417,58 +406,6 @@ pub fn flow_target(c: &FlowConfig, flow_ml: u32) -> Option<FlowTarget> {
     })
 }
 
-// ---------------------------------------------------------------- drift
-
-/// g(t) = ln((1 + t) / 31) in 1/1000 at minute t, linear between the points; core is no_std
-/// without libm. The curves are measured in minute 30.
-const DRIFT_LOG: [(u16, i16); 11] = [
-    (0, -3434),
-    (1, -2741),
-    (2, -2335),
-    (5, -1642),
-    (10, -1036),
-    (20, -389),
-    (30, 0),
-    (60, 677),
-    (120, 1362),
-    (240, 2051),
-    (480, 2742),
-];
-
-/// g(`t_min`) of [`DRIFT_LOG`], its last value from minute 480 on.
-fn log_milli(t_min: u32) -> i32 {
-    for (&(t0, g0), &(t1, g1)) in DRIFT_LOG.iter().zip(DRIFT_LOG.iter().skip(1)) {
-        if t_min <= u32::from(t1) {
-            let (x, dt) = (t_min as i32 - i32::from(t0), i32::from(t1 - t0));
-            return i32::from(g0) + (i32::from(g1) - i32::from(g0)) * x / dt;
-        }
-    }
-    DRIFT_LOG.last().map_or(0, |&(_, g)| i32::from(g))
-}
-
-/// Pulses of the drift at `t_min` x 10, rounded: negative before minute 30.
-fn drift_tenths(cfg: &FlowConfig, t_min: u32) -> i32 {
-    (i32::from(cfg.drift_d10) * log_milli(t_min) + 500).div_euclid(1000)
-}
-
-/// Pulses a positioning adds to its target against the drift at `t_min`, rounded; the flow
-/// above the curve before minute 30 takes none away.
-fn drift_comp(cfg: &FlowConfig, t_min: u32) -> u16 {
-    ((drift_tenths(cfg, t_min).max(0) + 5) / 10) as u16
-}
-
-/// What flows now on one loop, ml/min: the curve at the held pulses less the drift, to a tenth
-/// of a pulse. 0 at 0 (closed).
-fn estimate_ml(cfg: &FlowConfig, held: u16, t_min: u32) -> u32 {
-    if held == 0 {
-        return 0;
-    }
-    let at = (i32::from(raw_counts(cfg, held)) * 10 - drift_tenths(cfg, t_min)).max(0) as u32;
-    let whole = (at / 10).min(u32::from(FLOW_COUNTS_MAX)) as u16;
-    let (low, high) = (curve_flow(cfg, whole), curve_flow(cfg, whole + 1));
-    low + (high.saturating_sub(low) * (at % 10) + 5) / 10
-}
-
 // ---------------------------------------------------------------- NVS blob
 
 /// One valve in the blob.
@@ -532,7 +469,6 @@ fn decode_record(b: &[u8; FLOW_RECORD_SIZE]) -> Option<FlowConfig> {
         stroke_counts: u16_at(16),
         count: b[18],
         points: [FlowPoint::default(); FLOW_POINTS_MAX],
-        drift_d10: 0,
     };
     let (cells, _) = b[POINTS_AT..].as_chunks::<4>();
     for (p, cell) in c.points.iter_mut().zip(cells) {
@@ -582,49 +518,11 @@ pub fn decode_flow_configs(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
     true
 }
 
-/// NVS `vdmrev/flowx`: "VDMX" (4), version 1 (1), 12 x driftD (1), CRC-32 (4). Apart from the
-/// blob `flow`, so a firmware before 2.2.10 reads that one unchanged.
-pub const FLOW_X_BLOB_SIZE: usize = 5 + N + 4;
-
-const FLOW_X_MAGIC: [u8; 4] = *b"VDMX";
-const FLOW_X_VERSION: u8 = 1;
-const FLOW_X_CRC_AT: usize = FLOW_X_BLOB_SIZE - 4;
-
-/// Writes the blob `flowx` of `c`.
-pub fn encode_flow_x(c: &[FlowConfig; N], out: &mut [u8; FLOW_X_BLOB_SIZE]) {
-    out[..4].copy_from_slice(&FLOW_X_MAGIC);
-    out[4] = FLOW_X_VERSION;
-    for (d, cfg) in out[5..FLOW_X_CRC_AT].iter_mut().zip(c) {
-        *d = cfg.drift_d10;
-    }
-    let sum = crc32(&out[..FLOW_X_CRC_AT], 0);
-    out[FLOW_X_CRC_AT..].copy_from_slice(&sum.to_le_bytes());
-}
-
-/// Reads a blob `flowx` into `out`; false (`out` as it was) for another length or a bad
-/// magic, version or CRC.
-pub fn decode_flow_x(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
-    let Ok(b) = <&[u8; FLOW_X_BLOB_SIZE]>::try_from(data) else {
-        return false;
-    };
-    let (body, crc) = b.split_at(FLOW_X_CRC_AT);
-    if body[..4] != FLOW_X_MAGIC
-        || body[4] != FLOW_X_VERSION
-        || crc != crc32(body, 0).to_le_bytes().as_slice()
-    {
-        return false;
-    }
-    for (cfg, &d) in out.iter_mut().zip(&body[5..]) {
-        cfg.drift_d10 = d;
-    }
-    true
-}
-
 // ---------------------------------------------------------------- JSON
 
 /// `{"enabled":..,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"minIntervalS":300,
 /// "deadbandLpm":0.050,"offset":0,"gain":1.000,"refSide":"closed","strokeCounts":0,
-/// "preClose":false,"driftD":0.0,"points":[[229,0.000],...]}` (the flows with three decimals).
+/// "preClose":false,"points":[[229,0.000],...]}` (the flows with three decimals).
 pub fn write_flow_config_json(jw: &mut JsonWriter<'_>, c: &FlowConfig) {
     jw.begin_object();
     jw.kv("enabled", c.enabled);
@@ -642,8 +540,6 @@ pub fn write_flow_config_json(jw: &mut JsonWriter<'_>, c: &FlowConfig) {
     jw.kv("refSide", ref_side_name(c.ref_side));
     jw.kv("strokeCounts", c.stroke_counts);
     jw.kv("preClose", c.pre_close);
-    jw.key("driftD");
-    jw.fixed(i32::from(c.drift_d10), 1);
     jw.key("points");
     jw.begin_array();
     for p in c.points() {
@@ -849,15 +745,10 @@ fn apply_member(cur: &mut Cursor<'_>, key: &[u8], c: &mut FlowConfig) -> Result<
                 b"deadbandLpm" => FlowError::Deadband,
                 b"offset" => FlowError::Offset,
                 b"gain" => FlowError::Gain,
-                b"driftD" => FlowError::DriftD,
                 _ => return Err(FlowError::UnknownKey),
             };
             let v = cur.milli().ok_or(err)?;
             match key {
-                b"driftD" if v % 100 == 0 => {
-                    c.drift_d10 = u8::try_from(v / 100).map_err(|_| err)?;
-                }
-                b"driftD" => return Err(err),
                 b"qmax" => c.qmax_ml = u16::try_from(v).map_err(|_| err)?,
                 b"refmA" => c.ref_ma = integer(v, 0, 255, err)? as u8,
                 b"openmA" => c.open_ma = integer(v, 0, 255, err)? as u8,
@@ -876,9 +767,8 @@ fn apply_member(cur: &mut Cursor<'_>, key: &[u8], c: &mut FlowConfig) -> Result<
 /// `POST /api/valves/{n}/flow`: applies the members of a flat JSON object to `c` (the members
 /// not present keep their values; `points` replaces every point), then checks the result with
 /// [`validate_flow_config`]. Numbers are plain decimals with at most three decimals (`qmax`,
-/// `deadbandLpm`, `gain` and the flows), one for `driftD`, whole numbers elsewhere; `enabled`
-/// and `preClose` are JSON bools, `refSide` is "closed" or "open". On an error `c` is left as
-/// it was.
+/// `deadbandLpm`, `gain` and the flows), whole numbers elsewhere; `enabled` and `preClose` are
+/// JSON bools, `refSide` is "closed" or "open". On an error `c` is left as it was.
 pub fn patch_flow_config_json(c: &mut FlowConfig, json: &[u8]) -> Result<(), FlowError> {
     let mut patched = *c;
     let mut cur = Cursor { s: json, pos: 0 };
@@ -985,22 +875,16 @@ pub fn flow_state_name(s: FlowState) -> &'static str {
 pub struct FlowView {
     pub enabled: bool,
     pub state: FlowState,
-    /// the held position is known: `counts`, `flow_ml`, `pct`, `hold_min` and `est_ml` are its
-    /// values
+    /// the held position is known: `counts`, `flow_ml` and `pct` are its values
     pub known: bool,
     /// pulses from the reference end stop (0: closed)
     pub counts: u16,
     /// pulses of the current or last positioning
     pub target_counts: u16,
-    /// ml/min the curve gives at `counts` less the pulses added against the drift: the target
-    /// position
+    /// ml/min the curve gives at `counts`
     pub flow_ml: u32,
     /// `flow_ml` / qmax in %: the position the valve reports
     pub pct: u8,
-    /// minutes on the drift clock
-    pub hold_min: u16,
-    /// ml/min on one loop now, the drift included
-    pub est_ml: u32,
     /// l/min x 1000 that a target of 100 % means
     pub qmax_ml: u16,
     /// a positioning completed since the start: `last_ms` and `last_peak` are the final move's
@@ -1174,14 +1058,6 @@ struct FlowValve {
     /// a counts request arrived while a positioning ran
     pending_raw: Option<u16>,
     ref_delta: Option<i16>,
-    /// the positioning that zeroed the drift: minute 0 of [`estimate_ml`]
-    clock_ms: u32,
-    /// pulses of `target_counts` added against the drift
-    comp: u16,
-    /// pulses of `held_counts` added against the drift
-    held_comp: u16,
-    /// the position came from `/flow/counts`: no correction
-    exact: bool,
 }
 
 impl FlowValve {
@@ -1203,21 +1079,7 @@ impl FlowValve {
         needs_fallback: true,
         pending_raw: None,
         ref_delta: None,
-        clock_ms: 0,
-        comp: 0,
-        held_comp: 0,
-        exact: false,
     };
-
-    /// The target position of the held pulses.
-    fn held_target(&self) -> u16 {
-        self.held_counts.saturating_sub(self.held_comp)
-    }
-
-    /// Minutes on the drift clock.
-    fn clock_min(&self, now_ms: u32) -> u32 {
-        elapsed_ms(now_ms, self.clock_ms) / 60_000
-    }
 
     /// Less than `min_interval_s` passed since the last positioning.
     fn too_soon(&self, cfg: &FlowConfig, now_ms: u32) -> bool {
@@ -1282,11 +1144,6 @@ pub const BUSY_RETRIES_MAX: u16 = 100;
 pub const CALIB_RETRY_MS: u32 = 60_000;
 /// A failed positioning is tried again after this time (or with the next target).
 pub const FAILED_RETRY_MS: u32 = 300_000;
-/// Closed this long: the drift starts again at the next opening.
-const CLOSED_RESET_MS: u32 = 240_000;
-/// Held this long: a positioning starts the drift again; `u32::MAX`: it never does. Seven loops
-/// held for 60 min and then 20 min, repositioned to the same pulses: the pump power did not rise.
-const HELD_RESET_MS: u32 = u32::MAX;
 /// A request whose result has not come within this time counts as not queued (far beyond a
 /// queue wait with its attempts and the STM's start-up hold).
 pub const FLOW_REQ_TIMEOUT_MS: u32 = 30_000;
@@ -1315,8 +1172,6 @@ pub struct FlowLayer {
     supported: bool,
     cursor: usize,
     dirty: bool,
-    /// [`HELD_RESET_MS`]; a member so the tests reach every outcome of it
-    held_reset_ms: u32,
 }
 
 impl Default for FlowLayer {
@@ -1336,7 +1191,6 @@ impl FlowLayer {
             supported: false,
             cursor: 0,
             dirty: false,
-            held_reset_ms: HELD_RESET_MS,
         }
     }
 
@@ -1452,10 +1306,9 @@ impl FlowLayer {
     }
 
     /// `POST /api/valves/{n}/flow/counts`: positions the valve to `counts` corrected pulses at
-    /// once (0: closed), outside the dead band and the interval and without a correction of the
-    /// drift; `desired` is the valve's desired target, which the layer then counts as served
-    /// until it changes. While a positioning runs, the request follows it. False when the layer
-    /// does not run on the valve.
+    /// once (0: closed), outside the dead band and the interval; `desired` is the valve's desired
+    /// target, which the layer then counts as served until it changes. While a positioning runs,
+    /// the request follows it. False when the layer does not run on the valve.
     pub fn position_counts(
         &mut self,
         valve: u8,
@@ -1477,7 +1330,7 @@ impl FlowLayer {
             fv.pending_raw = Some(counts);
         } else {
             fv.pending_raw = None;
-            begin_exact(fv, cfg, None, counts, self.held_reset_ms, now_ms);
+            begin_exact(fv, cfg, None, counts, now_ms);
         }
         self.dirty = true;
         true
@@ -1486,10 +1339,9 @@ impl FlowLayer {
     /// The next request of the layer, at most one in flight over all valves (the STM moves one
     /// valve at a time): the release of a disabled valve, the continuation of a running
     /// positioning, else the start of one for a valve whose desired target is not the one its
-    /// held position serves or whose estimate fell by the dead band (`drift_due`). A new target
-    /// is applied only when the flow changes by the dead band and the interval since the last
-    /// positioning has passed; a target of 0 and the first positioning since the start are not
-    /// delayed. A valve in assembly, calibrating, moving, at its lease failsafe or without v3
+    /// held position serves. A new target is applied only when the flow changes by the dead band
+    /// and the interval since the last positioning has passed; a target of 0 and the first
+    /// positioning since the start are not delayed. A valve in assembly, calibrating, moving, at its lease failsafe or without v3
     /// data waits. A sequence between its moves starts again from the reference end stop when
     /// the valve is no longer where the last move left it (another move record, no service
     /// hold) or the link was lost.
@@ -1541,7 +1393,7 @@ impl FlowLayer {
             let req = if matches!(fv.phase, Phase::Positioning(_)) {
                 continue_sequence(fv, cfg, s, valve, inp, now_ms)
             } else {
-                start_if_due(fv, cfg, s, valve, inp, self.held_reset_ms, now_ms)
+                start_if_due(fv, cfg, s, valve, inp, now_ms)
             };
             if req.is_some() {
                 self.cursor = (i + 1) % N;
@@ -1706,7 +1558,7 @@ impl FlowLayer {
     }
 
     /// What the snapshot shows of valve `valve`.
-    pub fn view(&self, valve: u8, now_ms: u32) -> FlowView {
+    pub fn view(&self, valve: u8) -> FlowView {
         let i = usize::from(valve);
         let (Some(cfg), Some(fv)) = (self.cfg.get(i), self.v.get(i)) else {
             return FlowView::default();
@@ -1721,11 +1573,10 @@ impl FlowLayer {
         let running = state != FlowState::Off && state != FlowState::Unsupported;
         let known = running && fv.held_valid;
         let flow_ml = if known {
-            counts_flow(cfg, fv.held_target())
+            counts_flow(cfg, fv.held_counts)
         } else {
             0
         };
-        let t_min = fv.clock_min(now_ms);
         FlowView {
             enabled: cfg.enabled,
             state,
@@ -1734,16 +1585,6 @@ impl FlowLayer {
             target_counts: fv.target_counts,
             flow_ml,
             pct: if known { flow_pct(cfg, flow_ml) } else { 0 },
-            hold_min: if known {
-                t_min.min(u32::from(u16::MAX)) as u16
-            } else {
-                0
-            },
-            est_ml: if known {
-                estimate_ml(cfg, fv.held_counts, t_min)
-            } else {
-                0
-            },
             qmax_ml: if running { cfg.qmax_ml } else { 0 },
             last_valid: running && fv.last_valid,
             last_ms: fv.last_ms,
@@ -1758,38 +1599,10 @@ fn event(code: EventCode, valve: u8, a1: i32, a2: i32, text: &[u8]) -> Event {
     make_event(code, event_default_severity(code), valve, a1, a2, text)
 }
 
-/// The drift starts again at a positioning from anything but a hold (a restart, a lost hold, a
-/// calibration, the lease: the valve went through an end stop on its own), and from a hold that
-/// lasted: [`CLOSED_RESET_MS`] at the closed end stop, `held_reset_ms` elsewhere. Otherwise the
-/// clock runs on.
-fn drift_clock(fv: &mut FlowValve, held_reset_ms: u32, now_ms: u32) {
-    let fresh = match fv.phase {
-        Phase::Held { at_ms, .. } => {
-            let limit = if fv.held_counts == 0 {
-                CLOSED_RESET_MS
-            } else {
-                held_reset_ms
-            };
-            elapsed_ms(now_ms, at_ms) >= limit
-        }
-        _ => true,
-    };
-    if fresh {
-        fv.clock_ms = now_ms;
-    }
-}
-
 /// Starts the moves of a positioning: the fallback target first when it is due and the STM's
 /// target is not it already, else the move to the reference end stop. Called before the phase
 /// of the valve is replaced.
-fn begin_sequence(
-    fv: &mut FlowValve,
-    cfg: &FlowConfig,
-    s: Option<&ValveState>,
-    held_reset_ms: u32,
-    now_ms: u32,
-) {
-    drift_clock(fv, held_reset_ms, now_ms);
+fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, now_ms: u32) {
     fv.last_start_ms = now_ms;
     fv.started_once = true;
     // The fallback target goes out when the STM's target is known to be another one (another
@@ -1815,25 +1628,11 @@ fn begin_sequence(
     });
 }
 
-/// Starts a positioning to the desired target `pct`, plus the drift of the clock that runs on.
-fn start(
-    fv: &mut FlowValve,
-    cfg: &FlowConfig,
-    s: &ValveState,
-    pct: u8,
-    held_reset_ms: u32,
-    now_ms: u32,
-) {
-    begin_sequence(fv, cfg, Some(s), held_reset_ms, now_ms);
-    let counts = target_counts(cfg, pct);
-    fv.comp = if counts == 0 {
-        0
-    } else {
-        drift_comp(cfg, fv.clock_min(now_ms)).min(FLOW_COUNTS_MAX - counts)
-    };
-    fv.exact = false;
+/// Starts a positioning to the desired target `pct`.
+fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, pct: u8, now_ms: u32) {
+    begin_sequence(fv, cfg, Some(s), now_ms);
     fv.target_pct = pct;
-    fv.target_counts = counts + fv.comp;
+    fv.target_counts = target_counts(cfg, pct);
     fv.served_desired = pct;
     fv.served_valid = true;
     fv.pending_raw = None;
@@ -1845,43 +1644,27 @@ fn begin_exact(
     cfg: &FlowConfig,
     s: Option<&ValveState>,
     counts: u16,
-    held_reset_ms: u32,
     now_ms: u32,
 ) {
-    fv.comp = 0;
-    fv.exact = true;
     fv.target_counts = counts;
     fv.target_pct = flow_pct(cfg, counts_flow(cfg, counts));
-    begin_sequence(fv, cfg, s, held_reset_ms, now_ms);
+    begin_sequence(fv, cfg, s, now_ms);
 }
 
-/// The estimate of a held valve fell the dead band below its target position (at least 1 ml/min:
-/// a dead band of 0 would reposition every interval): a positioning is due, unless the drift
-/// model is off, the interval has not passed or the position came from `/flow/counts`.
-fn drift_due(fv: &FlowValve, cfg: &FlowConfig, now_ms: u32) -> bool {
-    if cfg.drift_d10 == 0 || fv.exact || fv.too_soon(cfg, now_ms) {
-        return false;
-    }
-    let target = counts_flow(cfg, fv.held_target());
-    let estimate = estimate_ml(cfg, fv.held_counts, fv.clock_min(now_ms));
-    target.saturating_sub(estimate) >= u32::from(cfg.deadband_ml).max(1)
-}
-
-/// A valve that is not positioning: starts one when its desired target or the drift is due.
+/// A valve that is not positioning: starts one when its desired target is due.
 fn start_if_due(
     fv: &mut FlowValve,
     cfg: &FlowConfig,
     s: &ValveState,
     valve: u8,
     inp: FlowInputs,
-    held_reset_ms: u32,
     now_ms: u32,
 ) -> Option<FlowRequest> {
     if !can_move(s, inp) || s.source == TargetSource::Assembly {
         return None;
     }
     if let Some(counts) = fv.pending_raw.take() {
-        begin_exact(fv, cfg, Some(s), counts, held_reset_ms, now_ms);
+        begin_exact(fv, cfg, Some(s), counts, now_ms);
         return continue_sequence(fv, cfg, s, valve, inp, now_ms);
     }
     if !s.desired_valid {
@@ -1891,14 +1674,13 @@ fn start_if_due(
     let same = fv.served_valid && desired == fv.served_desired;
     match fv.phase {
         Phase::Held { .. } => {
-            let due = drift_due(fv, cfg, now_ms);
-            if same && !due {
+            if same {
                 return None;
             }
-            if desired != 0 && !same {
+            if desired != 0 {
                 let q_new = pct_flow(cfg, desired);
-                let q_held = counts_flow(cfg, fv.held_target());
-                if !due && q_new.abs_diff(q_held) < u32::from(cfg.deadband_ml) {
+                let q_held = counts_flow(cfg, fv.held_counts);
+                if q_new.abs_diff(q_held) < u32::from(cfg.deadband_ml) {
                     return None;
                 }
                 if fv.too_soon(cfg, now_ms) {
@@ -1911,7 +1693,7 @@ fn start_if_due(
         }
         _ => {}
     }
-    start(fv, cfg, s, desired, held_reset_ms, now_ms);
+    start(fv, cfg, s, desired, now_ms);
     continue_sequence(fv, cfg, s, valve, inp, now_ms)
 }
 
@@ -2148,7 +1930,6 @@ impl FlowValve {
 
 /// The final move of a positioning ended: its record is kept, the keep follows.
 fn finish_move(fv: &mut FlowValve, seq: &mut Sequence, s: &ValveState) {
-    fv.held_comp = fv.comp;
     fv.last_valid = true;
     fv.last_ms = s.last_move.duration_ms;
     fv.last_peak = s.last_move.peak_current;

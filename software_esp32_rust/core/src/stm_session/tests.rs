@@ -805,8 +805,6 @@ fn flow_layer_positions_a_valve_with_svmov_and_skeep_and_reports_the_flow_percen
     r.run(10_000);
     assert_eq!(r.count("svmov"), 2);
     assert_eq!(r.count("stgtp"), 1);
-    assert_eq!(r.port().last.flow[0].hold_min, 10); // the snapshot's time on the drift clock
-    assert_eq!(r.port().last.flow[0].est_ml, 1000); // no drift model
     assert_eq!(r.port().last.flow[0].state, FlowState::Held);
     // The target persisted is the flow target.
     let stored = r.port().targets.last().expect("stored").pos[0];

@@ -1566,7 +1566,7 @@ impl<P: StmSessionPort> StmSession<P> {
         let views = self.snap.valves.iter_mut().zip(self.snap.flow.iter_mut());
         for (i, (v, f)) in (0u8..).zip(views) {
             *v = *self.model.valve(i);
-            *f = self.flow.view(i, now_ms);
+            *f = self.flow.view(i);
             // A flow valve reports its flow % as the position (0 while unknown).
             if !matches!(f.state, FlowState::Off | FlowState::Unsupported) {
                 v.position = f.pct;

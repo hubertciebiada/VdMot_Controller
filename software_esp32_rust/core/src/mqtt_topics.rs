@@ -282,12 +282,9 @@ pub enum Topic {
     DiagValveCoastOpen = 55,
     /// `<main>diag/valves/<V>/coastClose`
     DiagValveCoastClose = 56,
-    // ---- 2.2.10 ----
-    /// `<main>valves/<V>/flow[/value]` the drift clock and the estimate of the flow layer
-    ValveFlow = 57,
 }
 
-pub const TOPIC_COUNT: u8 = 58;
+pub const TOPIC_COUNT: u8 = 57;
 
 /// Every topic in number order.
 const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
@@ -348,7 +345,6 @@ const ALL_TOPICS: [Topic; TOPIC_COUNT as usize] = [
     Topic::CmdStmSafeExit,
     Topic::DiagValveCoastOpen,
     Topic::DiagValveCoastClose,
-    Topic::ValveFlow,
 ];
 
 impl Topic {
@@ -462,10 +458,9 @@ const TOPICS: [TopicDef; TOPIC_COUNT as usize] = [
     path(b"cmd/stmSafeExit", false, N),
     item(b"diag/valves/", b"/coastOpen", false, S),
     item(b"diag/valves/", b"/coastClose", false, S),
-    item(b"valves/", b"/flow", true, S),
 ];
 const _: () = assert!(
-    Topic::ValveFlow as u8 + 1 == TOPIC_COUNT,
+    Topic::DiagValveCoastClose as u8 + 1 == TOPIC_COUNT,
     "TOPICS out of sync"
 );
 

@@ -11,7 +11,7 @@ use crate::testkit::nvs::NvsType;
 use crate::testkit::{Device, Reset};
 use vdm_esp_core::config::DecodeResult;
 use vdm_esp_core::file_manager::FS_PATH_MAX;
-use vdm_esp_core::flow_layer::{FlowConfig, FlowPoint, FLOW_BLOB_SIZE, FLOW_X_BLOB_SIZE};
+use vdm_esp_core::flow_layer::{FlowConfig, FlowPoint, FLOW_BLOB_SIZE};
 use vdm_esp_core::legacy_import::{DROPPED_MESSENGER, LEGACY_TEMPS_BLOB};
 
 /// A config with an ext key away from its default.
@@ -758,78 +758,4 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert!(!st.save_flow_config(3, &c));
     let e = rig.host.with_code(EventCode::FlowConfigUnreadable);
     assert_eq!((e.len(), e[3].arg1), (4, 1));
-}
-
-// ------------------------------------------------------------- the drift (Rust 2.2.10)
-
-#[test]
-fn the_drift_has_its_own_key_and_the_flow_blob_stays_what_an_older_image_reads() {
-    let rig = Rig::new();
-    let st = rig.storage();
-    assert!(!st.load_flow_configs());
-    let mut c = FlowConfig {
-        enabled: true,
-        count: 2,
-        ..FlowConfig::DEFAULT
-    };
-    c.points[1] = FlowPoint {
-        counts: 1000,
-        flow_ml: 2700,
-    };
-    // No drift, no key: the NVS of 2.2.9.
-    assert!(st.save_flow_config(3, &c));
-    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_X));
-    let flow = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW);
-    // A drift: the key, and `flow` byte for byte the same.
-    let d = FlowConfig { drift_d10: 55, ..c };
-    assert!(st.save_flow_config(3, &d));
-    assert_eq!(st.shared().flow_config(3), d);
-    assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), flow);
-    assert_eq!(
-        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_X).len(),
-        FLOW_X_BLOB_SIZE
-    );
-    // The next boot reads both.
-    assert!(st.load_flow_configs());
-    assert_eq!(st.shared().flow_config(3), d);
-    assert!(rig.host.events().is_empty());
-    // A failed write of the drift publishes nothing.
-    rig.dev.nvs.knobs().fail_set.insert(KEY_FLOW_X.to_string());
-    let e = FlowConfig { drift_d10: 60, ..c };
-    assert!(!st.save_flow_config(3, &e));
-    assert_eq!(st.shared().flow_config(3), d);
-    // ... and a save that keeps the drift does not write the key.
-    let same = FlowConfig { offset: 9, ..d };
-    assert!(st.save_flow_config(3, &same));
-    assert_eq!(st.shared().flow_config(3), same);
-    rig.dev.nvs.knobs().fail_set.clear();
-    // A damaged key: no drift, the event with arg2 1, the set is loaded and a save goes on.
-    let mut bad = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_X);
-    bad[6] ^= 1;
-    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_X, &bad);
-    assert!(st.load_flow_configs());
-    assert!(st.shared().flow_loaded());
-    assert_eq!(st.shared().flow_config(3).drift_d10, 0);
-    assert!(st.shared().flow_config(3).enabled);
-    let ev = rig.host.with_code(EventCode::FlowConfigUnreadable);
-    assert_eq!(
-        (ev.len(), ev[0].valve, ev[0].arg1, ev[0].arg2),
-        (1, NO_VALVE, 3, 1)
-    );
-    assert!(st.save_flow_config(3, &d));
-    assert!(st.load_flow_configs());
-    assert_eq!(st.shared().flow_config(3), d);
-    assert_eq!(rig.host.with_code(EventCode::FlowConfigUnreadable).len(), 1);
-    // A key that does not fit is the same event.
-    rig.dev
-        .nvs
-        .set_blob(NAMESPACE, KEY_FLOW_X, &[0; FLOW_X_BLOB_SIZE + 1]);
-    assert!(st.load_flow_configs());
-    assert_eq!(st.shared().flow_config(3).drift_d10, 0);
-    assert_eq!(rig.host.with_code(EventCode::FlowConfigUnreadable).len(), 2);
-    // A factory reset takes it along.
-    assert!(st.save_flow_config(3, &d));
-    assert!(st.factory_reset());
-    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_X));
-    assert_eq!(st.shared().flow_config(3).drift_d10, 0);
 }

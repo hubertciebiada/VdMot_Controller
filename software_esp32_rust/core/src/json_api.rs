@@ -627,8 +627,6 @@ static NO_FLOW: FlowView = FlowView {
     target_counts: 0,
     flow_ml: 0,
     pct: 0,
-    hold_min: 0,
-    est_ml: 0,
     qmax_ml: 0,
     last_valid: false,
     last_ms: 0,
@@ -636,36 +634,12 @@ static NO_FLOW: FlowView = FlowView {
     ref_delta: None,
 };
 
-/// `"holdMin":n|null,"estLpm":0.973|null`.
-fn write_flow_estimate(jw: &mut JsonWriter<'_>, f: &FlowView) {
-    jw.kv("holdMin", f.known.then_some(f.hold_min));
-    jw.key("estLpm");
-    if f.known {
-        jw.fixed(f.est_ml.min(i32::MAX as u32) as i32, 3);
-    } else {
-        jw.null_value();
-    }
-}
-
-/// MQTT `valves/<V>/flow`: `{"holdMin":60,"estLpm":0.973}`, the minutes on the drift clock and
-/// the flow of one loop now, null while the held position is not known.
-pub fn write_flow_state_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
-    jw.begin_object();
-    write_flow_estimate(jw, f);
-    jw.end_object();
-}
-
 /// `{"enabled":..,"state":"off|unsupported|unknown|positioning|held|failed","counts":n|null,
 /// "targetCounts":n,"lpm":1.000|null,"ms":n|null,"peak":12.3|null}`: the held position
-/// (pulses from the reference end stop, the flow of its target position) while it is known, the
+/// (pulses from the reference end stop, the flow of the curve there) while it is known, the
 /// pulses of the current or last positioning, the duration and the peak current (mA, one
 /// decimal) of the final move of the last positioning.
 pub fn write_flow_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
-    write_flow_object(jw, f, false);
-}
-
-/// [`write_flow_json`], with `estimate` the members of [`write_flow_estimate`] after `lpm`.
-fn write_flow_object(jw: &mut JsonWriter<'_>, f: &FlowView, estimate: bool) {
     jw.begin_object();
     jw.kv("enabled", f.enabled);
     jw.kv("state", flow_state_name(f.state));
@@ -676,9 +650,6 @@ fn write_flow_object(jw: &mut JsonWriter<'_>, f: &FlowView, estimate: bool) {
         jw.fixed(f.flow_ml.min(i32::MAX as u32) as i32, 3);
     } else {
         jw.null_value();
-    }
-    if estimate {
-        write_flow_estimate(jw, f);
     }
     jw.kv("ms", f.last_valid.then_some(f.last_ms));
     jw.key("peak");
@@ -691,7 +662,7 @@ fn write_flow_object(jw: &mut JsonWriter<'_>, f: &FlowView, estimate: bool) {
 }
 
 /// `GET/POST /api/valves/{n}/flow`: `{"valve":n,"config":{write_flow_config_json},
-/// "flow":{write_flow_json with holdMin and estLpm},"refDelta":n|null}`. Returns jw.ok().
+/// "flow":{write_flow_json},"refDelta":n|null}`. Returns jw.ok().
 pub fn write_valve_flow_json(
     jw: &mut JsonWriter<'_>,
     valve: u8,
@@ -703,7 +674,7 @@ pub fn write_valve_flow_json(
     jw.key("config");
     write_flow_config_json(jw, c);
     jw.key("flow");
-    write_flow_object(jw, f, true);
+    write_flow_json(jw, f);
     jw.kv("refDelta", f.ref_delta.map(i32::from));
     jw.end_object();
     jw.ok()

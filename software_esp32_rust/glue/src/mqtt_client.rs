@@ -39,7 +39,7 @@ use vdm_esp_core::ha_discovery::{
     build_discovery_context, discovery_input_key, DiscoveryContext, DiscoveryInputs, DiscoveryPlan,
     DiscoveryPort, DiscoveryRun, DiscoveryRunPhase, DISCOVERY_PAYLOAD_MAX,
 };
-use vdm_esp_core::json_api::{write_flow_state_json, write_profile_json, MqttState};
+use vdm_esp_core::json_api::{write_profile_json, MqttState};
 use vdm_esp_core::json_writer::JsonWriter;
 use vdm_esp_core::link_policy::{link_state_name, LinkState};
 use vdm_esp_core::mqtt_policy::{
@@ -464,8 +464,6 @@ struct Published {
     /// per valve the key of its compat fields (valve_compat_key), not the whole ValveState
     valve_key: [u32; N_VALVES],
     valve_valid: [bool; N_VALVES],
-    /// per valve the estimate of the flow layer it published last
-    flow_est: [u32; N_VALVES],
     volts: [SensorPub; N_VOLTS],
     state: Option<u8>,
     uptime: Option<u32>,
@@ -487,7 +485,6 @@ impl Default for Published {
         Self {
             valve_key: [0; N_VALVES],
             valve_valid: [false; N_VALVES],
-            flow_est: [0; N_VALVES],
             volts: [SensorPub::EMPTY; N_VOLTS],
             state: None,
             uptime: None,
@@ -1694,43 +1691,6 @@ where
         let (t1, t2, [s1, s2]) = (v.temp1, v.temp2, v.sensor_slot);
         self.publish_valve_temp(Topic::ValveTemp1, i, t1, s1);
         self.publish_valve_temp(Topic::ValveTemp2, i, t2, s2);
-        if self.snap.flow.get(i).is_some_and(|f| f.enabled) {
-            self.publish_flow_state(i);
-        }
-    }
-
-    /// `valves/<V>/flow` of an active valve.
-    fn publish_flow_state(&mut self, i: usize) {
-        let Some(f) = self.snap.flow.get(i) else {
-            return;
-        };
-        if let Some(est) = self.published.flow_est.get_mut(i) {
-            *est = f.est_ml;
-        }
-        if !self.cfg.valves.get(i).is_some_and(|c| c.active) {
-            return;
-        }
-        let mut json = [0u8; 40];
-        let mut jw = JsonWriter::new(&mut json);
-        write_flow_state_json(&mut jw, f);
-        if jw.complete() {
-            let seg = segment(&self.segments, i);
-            self.out.publish(Topic::ValveFlow, seg, jw.as_bytes());
-        }
-    }
-
-    /// The first valve whose estimate moved: it moves with the minutes of the drift clock, so a
-    /// valve sends one message a minute at most, and its other topics stay quiet.
-    fn service_flow_state(&mut self) {
-        let mut est = self.snap.flow.iter().map(|f| f.est_ml);
-        let moved = self
-            .published
-            .flow_est
-            .iter()
-            .position(|&e| est.next() != Some(e));
-        if let Some(i) = moved {
-            self.publish_flow_state(i);
-        }
     }
 
     fn publish_temp(&mut self, i: u8) {
@@ -1913,7 +1873,6 @@ where
         if !self.cfg.mqtt.on_change {
             return;
         }
-        self.service_flow_state();
         let mut sent = 0;
         for _ in 0..SLOT_SYSTEM {
             if sent >= MAX_SLOTS_PER_PASS {
