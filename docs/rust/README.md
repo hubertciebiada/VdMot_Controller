@@ -45,7 +45,7 @@ Installing it on a controller: [INSTALL.md](INSTALL.md).
 | `software_stm32_rust/firmware` | `vdm-stm-fw`: embassy adapters, boot stage registers, linker scripts of the four images (target `thumbv7em-none-eabihf`; outside the host workspace) |
 | `software_stm32_rust/renode` | the Renode machine, board models and suites of the images |
 | `tools/rust` | the container scripts (below), the mutation gate and its lists of equivalent mutants, the QEMU harness, the STM32 build, image check and E11 programs |
-| `tools/release/package.py` | the release assets of the C++ and of the Rust firmware |
+| `tools/release/package.py` | the release assets of the Rust firmware |
 
 ## Build, test, gate, emulate
 
@@ -91,7 +91,7 @@ version.
 | `rust-esp` | `esp/docker.sh export`, `esp/docker.sh lint` | pushes, pull requests, tags |
 | `rust-esp-qemu` | `esp/docker.sh qemu` with the pinned C++ 2.1.7 ESP32 image | weekly, manual (input `qemu`) |
 | `rust-mutation`, `rust-mutation-gate` | `docker.sh mutate` per package, the large packages in shards; one 95 % per-file gate per package over all its shards | weekly, manual (input `rust_mutation`) |
-| `release-firmware`, `release-rust` | `package.py`, GitHub release | a `v*-revamped` tag, or the manual input `release_tag`, with the version of the Rust firmware |
+| `release-rust` | `package.py`, GitHub release | a `v*-revamped` tag, or the manual input `release_tag`, with the version of the Rust firmware |
 
 The pushes are those of the branches `hc-version`, `revamped` and `revamped-rust`, the pull
 requests those into them.

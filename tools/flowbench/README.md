@@ -13,7 +13,7 @@ valve position (for example a controller that works with heat power = flow × Δ
 Python 3.10 or newer, standard library only.
 
 ```sh
-uv run tools/flowbench/flowbench.py --controller west=192.168.1.51 --controller east=192.168.1.52
+python tools/flowbench/flowbench.py --controller west=192.168.1.51 --controller east=192.168.1.52
 ```
 
 Open the printed address (`http://<PC>:4680`) on a phone in the same network and take the phone
@@ -22,8 +22,8 @@ to the manifold. Sessions go to `~/flowbench/flowbench.db` (see Data).
 Try it without hardware first:
 
 ```sh
-uv run tools/flowbench/flowbench.py --sim                       # two simulated controllers
-uv run tools/flowbench/flowbench.py --sim --sim-auto --sim-speed 20   # also a simulated reader
+python tools/flowbench/flowbench.py --sim                       # two simulated controllers
+python tools/flowbench/flowbench.py --sim --sim-auto --sim-speed 20   # also a simulated reader
 ```
 
 The pump power can come from a Home Assistant power sensor (for example a smart plug). With
@@ -205,6 +205,12 @@ python tools/flowbench/endstop_test.py --summary --out endstops.jsonl
 `--phases` picks the phases (default `closed,steps,open,zero`); `top` needs `--pos`
 (`{"west 1": 750, ...}`, the pulses of 1.0 l/min). At the end the valve gets 0 % and then its
 target again. Every move is a JSON line in `--out`.
+
+`--valves` limits a run per controller: `NAME:1,3`, several controllers separated by `;`. A
+controller without an entry runs all its valves. `--zero-only` runs only the zero phase and
+ignores `--phases`. `--stroke` is a JSON file `{"west 1": 2400, ...}` with the counted open stroke
+from the 34 mA stop: K of the phases `top`, `relative` and `brake` counts from it instead of the
+stroke the STM calibrated; the phase `ruler` of the same run replaces it with what it measures.
 
 ## Checking the curves on the flow layer (`flowcheck.py`)
 

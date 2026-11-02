@@ -907,7 +907,7 @@ image for the interop run.
    58 KB, libc 54 KB.
    The finished firmware with option 3: 1,187,456 B (headroom 41,344 B); without WiFi 823,104 B.
 
-   Since the release after 2.2.12: `CONFIG_LIBC_NEWLIB_NANO_FORMAT=y` (the ESP-IDF 5.5 name,
+   Since 2.2.13: `CONFIG_LIBC_NEWLIB_NANO_FORMAT=y` (the ESP-IDF 5.5 name,
    `CONFIG_NEWLIB_NANO_FORMAT` is its deprecated alias). `printf` and `scanf` come from newlib's
    `libc_nano.a` in flash: on the ESP32 ESP-IDF 5.5 links no ROM printf, the ROM has a 32-bit
    `time_t`. A probe link of the entry points of the image has 65,035 B of code with the full

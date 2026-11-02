@@ -7,9 +7,9 @@ The tool drives the valves of one or more VdMot controllers through their HTTP A
 service moves (exact pulse counts), and a phone page shows a model of the rotameter: the user
 taps where the float is. One loop at a time, every other valve closed, opening sweeps only.
 
-  uv run tools/flowbench/flowbench.py --controller west=192.168.1.51 --controller east=192.168.1.52
-  uv run tools/flowbench/flowbench.py --sim                 (two simulated controllers)
-  uv run tools/flowbench/flowbench.py --sim --sim-auto      (simulated reader, no page needed)
+  python tools/flowbench/flowbench.py --controller west=192.168.1.51 --controller east=192.168.1.52
+  python tools/flowbench/flowbench.py --sim                 (two simulated controllers)
+  python tools/flowbench/flowbench.py --sim --sim-auto      (simulated reader, no page needed)
 
 Then open http://<this PC>:4680 on the phone. README.md next to this file explains the method.
 """

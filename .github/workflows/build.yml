@@ -378,8 +378,8 @@ jobs:
 
   # The release assets from the images: ESP32 app image and its digest-less copy, the four STM32
   # images, SHA256SUMS, manifest.json, docs/rust/INSTALL.md, the release notes from
-  # docs/rust/CHANGES.md. package.py refuses a tag that is not the version of both firmwares and
-  # images that do not carry it.
+  # docs/rust/release/<version>.md and docs/rust/CHANGES.md. package.py refuses a tag that is not
+  # the version of both firmwares and images that do not carry it.
   release-rust:
     name: Publish VdMot Revamped release (Rust)
     if: >-

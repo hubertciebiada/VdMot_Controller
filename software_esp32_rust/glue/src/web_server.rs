@@ -93,7 +93,7 @@ use crate::storage::{
 // ---------------------------------------------------------------- binding numbers
 
 /// The response buffer: one, allocated at its first use and kept (C++ two slots of 12 KiB; Rust
-/// 2.2.8 16 KiB: `/api/valves` with every member at its longest is 16 071 B). A document is
+/// 2.2.8 16 KiB: `/api/valves` with every member at its longest is 16 299 B). A document is
 /// at most one byte shorter (the C++ terminator).
 pub const RESPONSE_SIZE: usize = 16 * 1024;
 /// A JSON body is received whole into a heap buffer of its Content-Length; a larger one is
