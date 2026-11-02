@@ -231,14 +231,14 @@ and the glue feeds the watchdog inside long passes as the C++ does (MQTT after e
 
 | Thread | Created by | Core | Prio | Stack | Peak in QEMU | C++ size (peak measured) | TWDT | Loop | Runs |
 |---|---|---|---|---|---|---|---|---|---|
-| `main` | ESP-IDF `app_main` | 0 | 1 | `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 40960, freed when `main` returns | 27,336 | `loopTask` 8192 | no; boot deadline §6.4 | once | NRST release, NVS, boot guard, boot order of D§3, spawns, returns |
+| `main` | ESP-IDF `app_main` | 0 | 1 | `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 40960 (41,472 before nano printf), freed when `main` returns | about 33.5 KB, from the frames of the image (below) | `loopTask` 8192 | no; boot deadline §6.4 | once | NRST release, NVS, boot guard, boot order of D§3, spawns, returns |
 | `stm` | main | 1 | 5 | 8192 | 6,000 | 6656 (2676) | yes | 2 ms | D§3 `stm` |
 | `app` | main | 1 | 3 | 10240 | 8,060 | 7168 (3136) | yes | 100 ms | D§3 `app`, HTTP server start, boot guard confirm and switch |
 | `mqtt` | main | 1 | 2 | 16384 | 12,532 (a discovery run) | 7168 (3200) | yes, also after every publish | 20 / 100 / 500 ms | D§3 `mqtt` |
 | `httpd` | `EspHttpServer` | 0 | 5 (fixed, §4.1) | 15360 | 11,868 (a config save) | `async_tcp` 8960 (3532) | no: it blocks in `select()` for hours | event driven | every HTTP handler, uploads, log download |
-| `sys_evt` | ESP-IDF | 0 | 20 | 3072 (`CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2560` + 512) | 960 | 2560 (1076) | no | event driven | the adapters' ETH/WiFi/IP event callbacks (atomics only); `arduino_events` (4096 B) is gone |
-| `tiT` | lwIP | 0 | 18 | 3072 (`CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=2560` + 512, as 2.1.7) | 1,440 | 3072 (1736) | no | event driven | lwIP, DHCP, SNTP callback |
-| `esp_timer` | ESP-IDF | 0 | 22 | default (`CONFIG_ESP_TIMER_TASK_STACK_SIZE`) | not watched | 4608 (784) | no | | boot deadline timer |
+| `sys_evt` | ESP-IDF | 0 | 20 | 3072 = 2560 + 512 (`CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072`: with nano printf ESP-IDF adds no 512) | 960 | 2560 (1076) | no | event driven | the adapters' ETH/WiFi/IP event callbacks (atomics only); `arduino_events` (4096 B) is gone |
+| `tiT` | lwIP | 0 | 18 | 3072 = 2560 + 512 (`CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072`, as 2.1.7) | 1,440 | 3072 (1736) | no | event driven | lwIP, DHCP, SNTP callback |
+| `esp_timer` | ESP-IDF | 0 | 22 | 3584, the default of `CONFIG_ESP_TIMER_TASK_STACK_SIZE` (4096 before nano printf) | not watched | 4608 (784) | no | | boot deadline timer |
 | `ping` | `esp_ping_start` | any | 2 | 2560 | not watched | same | no | | one probe, at most every 60 s |
 
 - The sizes are the peaks measured in QEMU on 2026-10-07 (scenarios api, mqtt and soak of
@@ -246,11 +246,16 @@ and the glue feeds the watchdog inside long passes as the C++ does (MQTT after e
   with the HA discovery run, 10 parallel clients; no STM, WiFi off) plus about 25 %, rounded up
   to 1 KiB, and not below the first build (the C++ sizes plus about 25 %). The peaks are high
   where LTO inlines whole constructors and steps into one frame: `main` builds every module in a
-  21 KB frame, the web server's `serve` takes 3.8 KB, a discovery run puts its 4.4 KB context on
-  the `mqtt` stack once (§2.4). Before the first release the measuring campaign on the device
+  frame of 21 KB then, 26.8 KB now, the web server's `serve` takes 3.8 KB, a discovery run puts
+  its 4.4 KB context on the `mqtt` stack once (§2.4). Before the first release the measuring campaign on the device
   under `tools/loadtest.py` (3 and 10 workers, WiFi scanning next to Ethernet, an STM flash, a
   discovery run) checks them; `StackLow` (max(512 B, stack / 8)) watches the same seven tasks as
   D§3, with `httpd` in place of `async_tcp` and without `arduino_events`.
+- Nano printf ends the 512 B ESP-IDF adds to four stacks (`TASK_EXTRA_STACK_SIZE` is 0 in
+  `esp_task.h`). `sys_evt` and `tiT` keep their 3072 B through their settings. `main` has 40,960 B
+  instead of 41,472 B: its frame of 26.8 KB and the 6.8 KB of `load_config_blobs` below it leave
+  about 7 KB. `esp_timer` has 3584 B instead of 4096 B: it runs the boot deadline and the timers
+  of ESP-IDF, the C++ peak was 784 B, so its setting stays at the default.
 - `CONFIG_FREERTOS_HZ=1000` is binding: at the IDF default of 100 Hz a 2 ms delay is 0 ticks and the
   `stm` thread (prio 5) would starve core 1.
 - TWDT: 30 s, panic, idle task of core 0 watched (Arduino-ESP32 2.0.7: `CHECK_IDLE_TASK_CPU0=y`,
@@ -937,8 +942,8 @@ image for the interop run.
     `CONFIG_LWIP_SNTP_MAX_SERVERS=1`, `CONFIG_LWIP_SNTP_UPDATE_DELAY=10800000` (Arduino-ESP32 2.0.7;
     the IDF 5.5 default is 1 h) and the SNTP startup delay off; WiFi 4 static RX buffers and dynamic
     TX buffers (D§9), `CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n`; Ethernet DMA 10 + 10 × 512 B;
-    `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2560` and `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=2560`
-    (+ 512 each); `CONFIG_ESP_MAIN_TASK_STACK_SIZE=40960` (§2.1); `CONFIG_SPIRAM=n`,
+    `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3072` and `CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072`;
+    `CONFIG_ESP_MAIN_TASK_STACK_SIZE=40960` (§2.1); `CONFIG_SPIRAM=n`,
     `CONFIG_BT_ENABLED=n`; the LittleFS values of item 2; HTTPD header 1024 B, URI 512 B.
     Recommendation: these values, reviewed with the firmware spike; the firmware sets them.
 14. **Risk: crate sources.** docs.rs has no build of esp-idf-svc 0.53.0 or esp-idf-hal 0.47.0, and
