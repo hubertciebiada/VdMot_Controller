@@ -243,46 +243,23 @@ pub fn choose_flow_targets(
 
 /// NVS copy, written by the app task: 5 min after the last change, at most 30 min after the
 /// first unsaved change, only when the value differs from the stored one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetSaver {
     stored: PersistedTargets,
     current: PersistedTargets,
-    bytes: [u8; PERSISTED_TARGETS_SIZE],
-    flow_bytes: [u8; PERSISTED_FLOW_SIZE],
     dirty: bool,
     last_change_ms: u32,
     first_change_ms: u32,
-}
-
-impl Default for TargetSaver {
-    /// Nothing stored, all bytes 0 (not the encoding of the empty set) until `prime_stored()`.
-    fn default() -> Self {
-        Self {
-            stored: PersistedTargets::default(),
-            current: PersistedTargets::default(),
-            bytes: [0; PERSISTED_TARGETS_SIZE],
-            flow_bytes: [0; PERSISTED_FLOW_SIZE],
-            dirty: false,
-            last_change_ms: 0,
-            first_change_ms: 0,
-        }
-    }
 }
 
 impl TargetSaver {
     pub const DEBOUNCE_MS: u32 = 300000;
     pub const MAX_DELAY_MS: u32 = 1800000;
 
-    fn encode(&mut self) {
-        encode_targets(&self.current, &mut self.bytes);
-        encode_flow_targets(&self.current, &mut self.flow_bytes);
-    }
-
     /// Boot: what NVS holds.
     pub fn prime_stored(&mut self, t: &PersistedTargets) {
         self.stored = *t;
         self.current = *t;
-        self.encode();
         self.dirty = false;
     }
 
@@ -293,7 +270,6 @@ impl TargetSaver {
             return;
         }
         self.current = *t;
-        self.encode();
         if self.current == self.stored {
             self.dirty = false;
             return;
@@ -316,13 +292,17 @@ impl TargetSaver {
     }
 
     /// The encoded current value.
-    pub fn bytes(&self) -> &[u8; PERSISTED_TARGETS_SIZE] {
-        &self.bytes
+    pub fn bytes(&self) -> [u8; PERSISTED_TARGETS_SIZE] {
+        let mut bytes = [0; PERSISTED_TARGETS_SIZE];
+        encode_targets(&self.current, &mut bytes);
+        bytes
     }
 
     /// The encoded flows of the current value.
-    pub fn flow_bytes(&self) -> &[u8; PERSISTED_FLOW_SIZE] {
-        &self.flow_bytes
+    pub fn flow_bytes(&self) -> [u8; PERSISTED_FLOW_SIZE] {
+        let mut bytes = [0; PERSISTED_FLOW_SIZE];
+        encode_flow_targets(&self.current, &mut bytes);
+        bytes
     }
 
     /// ok: stored := current, clean; !ok: the next attempt DEBOUNCE_MS later.

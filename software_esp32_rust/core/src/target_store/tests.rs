@@ -400,13 +400,12 @@ fn flow_targets_capture_and_restore_through_the_model() {
 #[test]
 fn saver_a_flow_alone_is_a_change_and_its_bytes_go_with_it() {
     let mut s = TargetSaver::default();
-    assert_eq!(*s.flow_bytes(), [0; PERSISTED_FLOW_SIZE]);
     s.prime_stored(&golden());
-    assert_eq!(*s.flow_bytes(), flow_bytes(&golden()));
+    assert_eq!(s.flow_bytes(), flow_bytes(&golden()));
     s.update(&flows(), 100);
     assert!(s.dirty());
-    assert_eq!(*s.flow_bytes(), flow_bytes(&flows()));
-    assert_eq!(*s.bytes(), GOLDEN);
+    assert_eq!(s.flow_bytes(), flow_bytes(&flows()));
+    assert_eq!(s.bytes(), GOLDEN);
     s.saved(true, 200);
     assert!(!s.dirty());
     s.update(&flows(), 300);
@@ -433,7 +432,7 @@ fn saver_5_min_after_one_change() {
     assert!(s.dirty());
     assert!(!s.due(1000 + 299999));
     assert!(s.due(1000 + 300000));
-    assert_eq!(*s.bytes(), GOLDEN);
+    assert_eq!(s.bytes(), GOLDEN);
     s.saved(true, 301000);
     assert!(!s.dirty());
     assert!(!s.due(10000000));
@@ -463,7 +462,7 @@ fn saver_a_change_every_minute_is_written_at_most_30_min_after_the_first() {
 fn saver_a_change_back_to_the_stored_value_is_clean_again() {
     let mut s = TargetSaver::default();
     s.prime_stored(&golden());
-    assert_eq!(*s.bytes(), GOLDEN);
+    assert_eq!(s.bytes(), GOLDEN);
     s.update(&golden(), 0);
     assert!(!s.dirty());
     s.update(&PersistedTargets::default(), 100);
@@ -471,7 +470,7 @@ fn saver_a_change_back_to_the_stored_value_is_clean_again() {
     s.update(&golden(), 200);
     assert!(!s.dirty());
     assert!(!s.due(10000000));
-    assert_eq!(*s.bytes(), GOLDEN);
+    assert_eq!(s.bytes(), GOLDEN);
 }
 
 #[test]

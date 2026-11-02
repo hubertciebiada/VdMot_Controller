@@ -926,7 +926,6 @@ fn flow_counts_need_a_running_layer_and_queue_the_command() {
         last_peak: 123,
         ref_delta: None,
         target_ml: Some(1250),
-        ..FlowView::default()
     };
     rig.state().snapshot.valves[0].position = 37;
     let r = perform(&mut web, get("/api/valves"));

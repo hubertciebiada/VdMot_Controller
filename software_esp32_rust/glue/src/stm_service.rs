@@ -260,28 +260,7 @@ impl<'a, P: Platform, H: StmServiceHost> StmService<'a, P, H> {
         self.calib.restore_last_slot(slot);
         let last = self.host.load_last_calib();
         self.set_calib_info(last, 0, &LocalTime::default());
-        let mut nvs = [0u8; PERSISTED_TARGETS_SIZE];
-        let n = self.host.load_targets(&mut nvs).min(nvs.len());
-        let mut rtc = [0u8; RTC_TARGETS_LEN];
-        self.rtc.load(self.records.targets, &mut rtc);
-        let mut targets = PersistedTargets::default();
-        let source = choose_targets(&rtc, &nvs[..n], &mut targets);
-        let mut nvs_flow = [0u8; PERSISTED_FLOW_SIZE];
-        let n_flow = self
-            .host
-            .load_flow_targets(&mut nvs_flow)
-            .min(nvs_flow.len());
-        let mut rtc_flow = [0u8; RTC_FLOW_TARGETS_LEN];
-        self.rtc.load(self.records.flow_targets, &mut rtc_flow);
-        choose_flow_targets(source, &rtc_flow, &nvs_flow[..n_flow], &mut targets);
-        let mut stored = PersistedTargets::default();
-        decode_targets(&nvs[..n], &mut stored);
-        decode_flow_targets(&nvs_flow[..n_flow], &mut stored);
-        self.saver.prime_stored(&stored);
-        // targets newer than NVS (a restart without a flush): NVS catches up
-        if source == RestoreSource::Rtc {
-            self.saver.update(&targets, self.clock.now_ms());
-        }
+        let (targets, source) = self.boot_copy();
         let mut lease = [0u8; RTC_LEASE_LEN];
         self.rtc.load(self.records.lease, &mut lease);
         *lock(&self.shared.boot) = BootChoice {
@@ -306,6 +285,41 @@ impl<'a, P: Platform, H: StmServiceHost> StmService<'a, P, H> {
         }
         self.last_calib_ms = now_ms;
         self.calibration_tick(now_ms);
+    }
+
+    /// The boot copy of the desired targets and where it came from; the saver starts from what
+    /// NVS holds.
+    fn boot_copy(&mut self) -> (PersistedTargets, RestoreSource) {
+        let mut nvs = [0u8; PERSISTED_TARGETS_SIZE];
+        let n = self.host.load_targets(&mut nvs).min(nvs.len());
+        let mut rtc = [0u8; RTC_TARGETS_LEN];
+        self.rtc.load(self.records.targets, &mut rtc);
+        let mut targets = PersistedTargets::default();
+        let source = choose_targets(&rtc, &nvs[..n], &mut targets);
+        let mut stored = PersistedTargets::default();
+        decode_targets(&nvs[..n], &mut stored);
+        self.boot_flows(source, &mut targets, &mut stored);
+        self.saver.prime_stored(&stored);
+        // targets newer than NVS (a restart without a flush): NVS catches up
+        if source == RestoreSource::Rtc {
+            self.saver.update(&targets, self.clock.now_ms());
+        }
+        (targets, source)
+    }
+
+    /// The flows of the boot copy on `targets`, those of NVS on `stored`.
+    fn boot_flows(
+        &mut self,
+        source: RestoreSource,
+        targets: &mut PersistedTargets,
+        stored: &mut PersistedTargets,
+    ) {
+        let mut nvs = [0u8; PERSISTED_FLOW_SIZE];
+        let n = self.host.load_flow_targets(&mut nvs).min(nvs.len());
+        let mut rtc = [0u8; RTC_FLOW_TARGETS_LEN];
+        self.rtc.load(self.records.flow_targets, &mut rtc);
+        choose_flow_targets(source, &rtc, &nvs[..n], targets);
+        decode_flow_targets(&nvs[..n], stored);
     }
 
     /// App thread, before an ESP restart (not for a factory reset): the desired targets go to
@@ -427,8 +441,8 @@ impl<'a, P: Platform, H: StmServiceHost> StmService<'a, P, H> {
     }
 
     fn save_targets(&mut self, now_ms: u32) {
-        let ok = self.host.save_targets(self.saver.bytes())
-            && self.host.save_flow_targets(self.saver.flow_bytes());
+        let ok = self.host.save_targets(&self.saver.bytes())
+            && self.host.save_flow_targets(&self.saver.flow_bytes());
         self.saver.saved(ok, now_ms);
     }
 
