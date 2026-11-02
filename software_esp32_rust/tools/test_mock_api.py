@@ -26,7 +26,7 @@ PORT = 0
 
 def setUpModule():
     global SERVER, PORT
-    mock_api.Handler.dev = mock_api.Device("east", 2)
+    mock_api.Handler.dev = mock_api.Device("1", 2)
     SERVER = ThreadingHTTPServer(("127.0.0.1", 0), mock_api.Handler)
     SERVER.daemon_threads = True
     PORT = SERVER.server_address[1]
@@ -67,7 +67,7 @@ def req(method, path, body=None, headers=None, host=None, raw=None, ctype="appli
 
 
 def device(proto=2, scenarios=(), import_report=False, station_name=None):
-    d = mock_api.Device("east", proto, scenarios, import_report, station_name)
+    d = mock_api.Device("1", proto, scenarios, import_report, station_name)
     mock_api.Handler.dev = d
     return d
 
@@ -85,7 +85,7 @@ class Guard(unittest.TestCase):  # M1
         device()
         self.assertEqual(req("GET", "/api/status").status, 200)
         self.assertEqual(req("GET", "/api/status", host="localhost:8080").status, 200)
-        self.assertEqual(req("GET", "/api/status", host="vdmot-east.local").status, 200)
+        self.assertEqual(req("GET", "/api/status", host="vdmot-1.local").status, 200)
         r = req("GET", "/api/status", host="evil.com")
         self.assertEqual(r.status, 403)
         self.assertEqual(r.json, {"error": "host_not_allowed",
@@ -610,7 +610,7 @@ class FlowScenario(unittest.TestCase):  # M26, what the dashboard's curve and St
     def test_curves(self):
         d = device(proto=3, scenarios=("flow",))
         active = [i for i, v in enumerate(d.valves) if v["active"]]
-        self.assertEqual(len(active), 7)
+        self.assertEqual(len(active), 8)
         for i in active[:-1]:
             doc = req("GET", f"/api/valves/{i + 1}/flow").json
             pts = doc["config"]["points"]

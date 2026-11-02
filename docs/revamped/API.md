@@ -477,7 +477,7 @@ python3 software_esp32_rust/tools/mock_api.py --proto 3              # STM 2.1: 
 python3 software_esp32_rust/tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline
 python3 software_esp32_rust/tools/mock_api.py --proto 3 --scenario flow    # the flow layer with made-up curves
 python3 software_esp32_rust/tools/mock_api.py --import-report        # a legacy import report
-python3 software_esp32_rust/tools/mock_api.py --station west --station-name "Dom Północ"
+python3 software_esp32_rust/tools/mock_api.py --station 2 --station-name "Dom 1"
 ```
 
 Scenarios: `health` (stale, unconfirmed target, failed temperature), `busy`

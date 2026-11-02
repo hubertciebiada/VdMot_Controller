@@ -1346,7 +1346,7 @@ class Harness:
                 log(f"  {method} {path} -> {a}")
                 if a.status != want:
                     failures.append(f"{method} {path}")
-            dry = {"station": "Kotlownia", "calib": {"hour": 1}}
+            dry = {"station": "Boiler", "calib": {"hour": 1}}
             a = request(self.port, "POST", "/api/config?dryRun=1", json.dumps(dry).encode())
             log(f"  POST /api/config?dryRun=1 {json.dumps(dry)} -> {a}")
             if a.status != 200 or a.json() != {"restartRequired": True, "netTrial": False}:

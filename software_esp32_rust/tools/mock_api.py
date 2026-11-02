@@ -6,13 +6,13 @@ DESIGN.md "HTTP API": valves move towards their targets, calibrations run and
 fail for the blocked valves, events accumulate, uploads and STM flashing show
 progress, and restarts make the device briefly unreachable.
 
-    python3 tools/mock_api.py                     # station "east" on :8080
-    python3 tools/mock_api.py --station west --port 8081
+    python3 tools/mock_api.py                     # station "1" on :8080
+    python3 tools/mock_api.py --station 2 --port 8081
     python3 tools/mock_api.py --proto 1           # legacy STM 1.4.x (no gvlvx/gprof/svmov)
     python3 tools/mock_api.py --proto 3           # STM protocol 3: failsafe lease, stop, safe mode
     python3 tools/mock_api.py --scenario health,busy,queue,failsafe,safemode,tooold,haoffline,flow
     python3 tools/mock_api.py --import-report     # a legacy import report (notice N2)
-    python3 tools/mock_api.py --station-name "Dom Północ"
+    python3 tools/mock_api.py --station-name "Dom 1"
 
 The mock follows the firmware's request guard: Host must name the device
 (127.0.0.1, localhost, the station's host name), API writes need the header
@@ -51,10 +51,8 @@ ESP_APP_MAX = 0x140000
 
 # name, blocked calibration (oc, cc, cr) or None
 STATIONS = {
-    "east": [("Korytarz1", None), ("Pokoj1", None), ("Pokoj2", None), ("Korytarz2", None),
-             ("Strefa1", None), ("Strefa2", (67, 82, 3)), ("Strefa3", None)],
-    "west": [("Strefa4", (72, 100, 3)), ("Strefa5", None), ("Strefa6", None), ("Strefa7", None),
-             ("Gabinet", None), ("Pokoj3", None)],
+    "1": [(f"Loop {n}", (67, 82, 3) if n == 5 else None) for n in range(1, 9)],
+    "2": [(f"Loop {n}", (72, 100, 3) if n == 2 else None) for n in range(1, 12)],
 }
 
 SEVERITIES = ["debug", "info", "warning", "error", "critical"]
@@ -218,7 +216,7 @@ def ipv4(s) -> bool:
 class Device:
     def __init__(self, station: str, proto: int, scenarios=(), import_report=False, station_name=None):
         self.lock = threading.RLock()
-        self.rng = random.Random(42 if station == "east" else 7)
+        self.rng = random.Random(42 if station == "1" else 7)
         self.station = station
         self.proto = proto
         self.boot_wall = time.time() - 3 * 86400 - 4 * 3600 - 17 * 60
@@ -356,7 +354,7 @@ class Device:
     def _history(self):
         t0 = self.boot_wall
         self.event(100, info=1, a1=1, a2=self.boots, text=ESP_VERSION, at=t0)
-        self.event(200, a1=1, text="192.168.1.51" if self.station == "east" else "192.168.1.52", at=t0 + 4)
+        self.event(200, a1=1, text="192.168.1.51" if self.station == "1" else "192.168.1.52", at=t0 + 4)
         self.event(111, at=t0 + 6)
         self.event(300, at=t0 + 7)
         self.event(306, a1=self.proto, a2=0x431, text=self.stm_version, at=t0 + 7)
@@ -627,7 +625,7 @@ class Device:
     def status(self):
         now = time.time()
         lt = dt.datetime.now()
-        net_ip = "192.168.1.51" if self.station == "east" else "192.168.1.52"
+        net_ip = "192.168.1.51" if self.station == "1" else "192.168.1.52"
         mqtt_on = self.config["mqtt"]["mode"] > 0
         c = self.config
         trial = {"remainS": max(0, int(self.trial["until"] - now))} if self.trial else None
@@ -662,7 +660,7 @@ class Device:
             "time": {"valid": True, "epoch": int(now), "local": lt.strftime("%Y-%m-%dT%H:%M:%S"),
                      "lastSync": int(now) - 1800},
             "net": {"state": "ethernet", "ip": net_ip, "mask": "255.255.255.0", "gw": "192.168.1.1",
-                    "dns": "192.168.1.1", "mac": "A8:03:2A:6C:1E:%02X" % (0x51 if self.station == "east" else 0x52),
+                    "dns": "192.168.1.1", "mac": "A8:03:2A:6C:1E:%02X" % (0x51 if self.station == "1" else 0x52),
                     "rssi": None, "hostname": build_hostname(c["station"]), "trial": trial},
             "mqtt": {"state": "connected" if mqtt_on else "disabled", "rc": 0, "reconnects": 2, "publishFailures": 0,
                      "clientId": c["mqtt"]["clientId"] or build_hostname(c["station"]) + "-6c1e51",
@@ -972,7 +970,7 @@ class Device:
         if re.fullmatch(r"[\d.]+", host):
             if not ipv4(host) or host == "0.0.0.0":
                 return False
-            own = "192.168.1.51" if self.station == "east" else "192.168.1.52"
+            own = "192.168.1.51" if self.station == "1" else "192.168.1.52"
             return host in (local_ip, own) or host in allowed
         name = build_hostname(self.config["station"]).lower()
         return host.lower() in (name, name + ".local") or host.lower() in (x.lower() for x in allowed)
@@ -1919,7 +1917,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--station", choices=sorted(STATIONS), default="east")
+    ap.add_argument("--station", choices=sorted(STATIONS), default="1")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--proto", type=int, choices=(1, 2, 3), default=2,

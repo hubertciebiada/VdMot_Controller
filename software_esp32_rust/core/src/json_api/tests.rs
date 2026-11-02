@@ -220,7 +220,7 @@ fn populated_status() -> StatusSnapshot<'static> {
     s.last_scheduled_calib_epoch = 1_789_990_000;
     s.next_calib_slot = 20_260_927;
     s.last_event_seq = 999;
-    s.station = "Dom Północ".as_bytes();
+    s.station = b"Dom 1";
     s.net_trial_active = true;
     s.net_trial_remain_s = 87;
     s.mqtt_client_id = text(b"vdmot-a1b2c3");
@@ -252,7 +252,7 @@ fn api_status_of_a_populated_snapshot() {
     let s = populated_status();
     let j = status(&s);
     let expected = [
-        r#"{"station":"Dom Północ","esp":{"version":"2.0.0-revamped","#,
+        r#"{"station":"Dom 1","esp":{"version":"2.0.0-revamped","#,
         r#""build":1790000000,"uptime":3600,"#,
         r#""resetReason":"task_wdt","boots":17,"heap":{"free":150000,"min":90000,"#,
         r#""largest":110000},"flash":{"used":987654,"size":1310720}},"#,
