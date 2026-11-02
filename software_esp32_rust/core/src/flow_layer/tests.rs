@@ -89,13 +89,13 @@ fn patched(c: &FlowConfig, body: &str) -> Result<FlowConfig, FlowError> {
 // ================================================================ configuration
 
 #[test]
-fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_5_min_dead_band_0_05() {
+fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_60_s_dead_band_0_05() {
     let c = FlowConfig::default();
     assert_eq!(c, FlowConfig::DEFAULT);
     assert!(!c.enabled);
     assert_eq!(c.qmax_ml, 2700);
     assert_eq!((c.ref_ma, c.open_ma, c.fallback_pct), (34, 30, 15));
-    assert_eq!((c.min_interval_s, c.deadband_ml), (300, 50));
+    assert_eq!((c.min_interval_s, c.deadband_ml), (60, 50));
     assert_eq!((c.offset, c.gain_milli), (0, 1000));
     assert_eq!(c.ref_side, RefSide::Closed);
     assert_eq!(c.stroke_counts, 0);
@@ -338,12 +338,12 @@ fn blob_round_trip_and_rejections() {
     let mut bytes = [0xEE; FLOW_BLOB_SIZE];
     assert_eq!(encode_flow_configs(&all, &mut bytes), FLOW_BLOB_SIZE);
     assert_eq!(&bytes[..6], b"VDMF\x01\x0C");
-    // valve 0: enabled, 2700 = 0x0A8C, 34, 30, 15, 300 = 0x012C, 50, 0, 1000 = 0x03E8,
+    // valve 0: enabled, 2700 = 0x0A8C, 34, 30, 15, 60 = 0x003C, 50, 0, 1000 = 0x03E8,
     // closed, no warm-up, 5 points, the first 593 = 0x0251 at 0.
     assert_eq!(
         &bytes[6..29],
         &[
-            1, 0x8C, 0x0A, 34, 30, 15, 0x2C, 0x01, 50, 0, 0, 0, 0xE8, 0x03, 0, 0, 0, 0, 5, 0x51,
+            1, 0x8C, 0x0A, 34, 30, 15, 0x3C, 0x00, 50, 0, 0, 0, 0xE8, 0x03, 0, 0, 0, 0, 5, 0x51,
             0x02, 0, 0
         ]
     );
@@ -400,7 +400,7 @@ fn json_document_and_patch_round_trip() {
         text,
         concat!(
             r#"{"enabled":true,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"#,
-            r#""minIntervalS":300,"deadbandLpm":0.050,"offset":0,"gain":1.000,"#,
+            r#""minIntervalS":60,"deadbandLpm":0.050,"offset":0,"gain":1.000,"#,
             r#""refSide":"closed","strokeCounts":0,"preClose":false,"#,
             r#""points":[[593,0.000],[713,0.250],[809,1.000],[1016,2.500],[1100,2.700]]}"#
         )
@@ -416,7 +416,7 @@ fn json_document_and_patch_round_trip() {
     assert!(text.contains(r#""offset":-17,"gain":0.995,"#));
     assert!(text.contains(r#""deadbandLpm":0.005,"#));
     assert_eq!(patched(&FlowConfig::DEFAULT, &text), Ok(open));
-    assert_eq!(json(&FlowConfig::DEFAULT).len(), 198);
+    assert_eq!(json(&FlowConfig::DEFAULT).len(), 197);
     assert!(json(&FlowConfig::DEFAULT).ends_with(r#""points":[]}"#));
 }
 

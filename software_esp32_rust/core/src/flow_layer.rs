@@ -112,7 +112,7 @@ pub struct FlowConfig {
 }
 
 impl FlowConfig {
-    /// Disabled, 2.7 l/min, 34 / 30 mA, fallback 15 %, 5 min, 0.05 l/min, no correction,
+    /// Disabled, 2.7 l/min, 34 / 30 mA, fallback 15 %, 60 s, 0.05 l/min, no correction,
     /// closed reference without a warm-up, no points.
     pub const DEFAULT: Self = Self {
         enabled: false,
@@ -120,7 +120,7 @@ impl FlowConfig {
         ref_ma: 34,
         open_ma: 30,
         fallback_pct: 15,
-        min_interval_s: 300,
+        min_interval_s: 60,
         deadband_ml: 50,
         offset: 0,
         gain_milli: 1000,
@@ -520,7 +520,7 @@ pub fn decode_flow_configs(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
 
 // ---------------------------------------------------------------- JSON
 
-/// `{"enabled":..,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"minIntervalS":300,
+/// `{"enabled":..,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"minIntervalS":60,
 /// "deadbandLpm":0.050,"offset":0,"gain":1.000,"refSide":"closed","strokeCounts":0,
 /// "preClose":false,"points":[[229,0.000],...]}` (the flows with three decimals).
 pub fn write_flow_config_json(jw: &mut JsonWriter<'_>, c: &FlowConfig) {
