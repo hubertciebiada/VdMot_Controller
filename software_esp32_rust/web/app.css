@@ -146,7 +146,10 @@ dl.kv dt { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow
 dl.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 .lastmove { font-size: 13px; }
 .flags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
-.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; align-items: center; }
+.actions { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px 8px; margin-bottom: 10px; }
+.actions h4 { font-size: 11.5px; font-weight: 400; color: var(--muted); margin-bottom: 4px; }
+.actions div { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 4px; }
+.actions button { justify-content: center; font-size: 13px; padding: 4px 6px; min-height: 30px; white-space: nowrap; }
 .summary { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 14px; }
 
 /* tables */

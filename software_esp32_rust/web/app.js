@@ -688,7 +688,8 @@ function buildRow(i) {
   ];
   c.curve = h("div");
   c.det = h("div", { class: "vdet", id: "vd-" + i, hidden: true },
-    h("div", null, c.flags, h("div", { class: "actions" }, c.btns.slice(1)), dl, c.last), c.curve);
+    h("div", null, c.flags, h("section", { class: "actions", "aria-label": "Actions" }, h("h4", { text: "Actions" }),
+      h("div", null, c.btns.slice(1))), dl, c.last), c.curve);
   c.el = h("article", { class: "vrow", "aria-labelledby": "vt-" + i },
     h("div", { class: "vmain" },
       h("h3", { class: "vn", id: "vt-" + i }, c.head),
