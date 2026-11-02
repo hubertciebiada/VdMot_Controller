@@ -1012,6 +1012,8 @@ struct Sequence {
     restart: bool,
     /// [`FlowView::ref_delta`] of the reference move of this positioning
     ref_delta: Option<i16>,
+    /// the held position the final move starts from, with no move to an end stop before it
+    from_held: Option<u16>,
 }
 
 /// What the layer does on a valve (Off and Unsupported are derived from the configuration).
@@ -1341,10 +1343,11 @@ impl FlowLayer {
     /// positioning, else the start of one for a valve whose desired target is not the one its
     /// held position serves. A new target is applied only when the flow changes by the dead band
     /// and the interval since the last positioning has passed; a target of 0 and the first
-    /// positioning since the start are not delayed. A valve in assembly, calibrating, moving, at its lease failsafe or without v3
-    /// data waits. A sequence between its moves starts again from the reference end stop when
-    /// the valve is no longer where the last move left it (another move record, no service
-    /// hold) or the link was lost.
+    /// positioning since the start are not delayed. A held valve goes to a new target with one
+    /// move and `skeep` when it can ([`direct_seq`]). A valve in assembly, calibrating, moving, at
+    /// its lease failsafe or without v3 data waits. A sequence between its moves starts again from
+    /// the reference end stop when the valve is no longer where the last move left it (another
+    /// move record, no service hold) or the link was lost.
     pub fn next(
         &mut self,
         model: &ValveModel,
@@ -1599,19 +1602,22 @@ fn event(code: EventCode, valve: u8, a1: i32, a2: i32, text: &[u8]) -> Event {
     make_event(code, event_default_severity(code), valve, a1, a2, text)
 }
 
+/// The fallback target goes out when the STM's target is known to be another one (another
+/// client, an assembly), and after an enable or a new STM session while it is not known.
+fn fallback_due(fv: &FlowValve, cfg: &FlowConfig, s: Option<&ValveState>) -> bool {
+    match s {
+        Some(s) if s.stm_target_known => s.stm_target != cfg.fallback_pct,
+        _ => fv.needs_fallback,
+    }
+}
+
 /// Starts the moves of a positioning: the fallback target first when it is due and the STM's
 /// target is not it already, else the move to the reference end stop. Called before the phase
 /// of the valve is replaced.
 fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, now_ms: u32) {
     fv.last_start_ms = now_ms;
     fv.started_once = true;
-    // The fallback target goes out when the STM's target is known to be another one (another
-    // client, an assembly), and after an enable or a new STM session while it is not known.
-    let send_fallback = match s {
-        Some(s) if s.stm_target_known => s.stm_target != cfg.fallback_pct,
-        _ => fv.needs_fallback,
-    };
-    let step = if send_fallback {
+    let step = if fallback_due(fv, cfg, s) {
         Step::Fallback
     } else {
         fv.needs_fallback = false;
@@ -1625,14 +1631,35 @@ fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, 
         busy_retries: 0,
         restart: false,
         ref_delta: None,
+        from_held: None,
     });
 }
 
-/// Starts a positioning to the desired target `pct`.
-fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, pct: u8, now_ms: u32) {
+/// The move record a held valve goes on from when it can reach `counts` with one move: neither
+/// the target nor the held position is closed (the first opening goes through the open end stop,
+/// as the curves were measured), the target lies below the open end stop, and no `stgtp` is due,
+/// which would end the hold.
+fn direct_seq(fv: &FlowValve, cfg: &FlowConfig, s: &ValveState, counts: u16) -> Option<u32> {
+    let Phase::Held { move_seq, .. } = fv.phase else {
+        return None;
+    };
+    let reachable =
+        fv.held_valid && fv.held_counts > 0 && counts != 0 && counts < cfg.stroke_counts;
+    (reachable && !fallback_due(fv, cfg, Some(s))).then_some(move_seq)
+}
+
+/// Starts a positioning to the desired target `pct` at `counts`: one move when the held position
+/// allows it ([`direct_seq`]), else from the reference end stop.
+fn start(fv: &mut FlowValve, cfg: &FlowConfig, s: &ValveState, pct: u8, counts: u16, now_ms: u32) {
+    let direct = direct_seq(fv, cfg, s, counts);
     begin_sequence(fv, cfg, Some(s), now_ms);
+    if let (Phase::Positioning(seq), Some(move_seq)) = (&mut fv.phase, direct) {
+        seq.step = Step::Final;
+        seq.step_seq = move_seq;
+        seq.from_held = Some(fv.held_counts);
+    }
     fv.target_pct = pct;
-    fv.target_counts = target_counts(cfg, pct);
+    fv.target_counts = counts;
     fv.served_desired = pct;
     fv.served_valid = true;
     fv.pending_raw = None;
@@ -1693,7 +1720,14 @@ fn start_if_due(
         }
         _ => {}
     }
-    start(fv, cfg, s, desired, now_ms);
+    let counts = target_counts(cfg, desired);
+    if counts == fv.held_counts && direct_seq(fv, cfg, s, counts).is_some() {
+        // the valve stands there already
+        fv.served_desired = desired;
+        fv.served_valid = true;
+        return None;
+    }
+    start(fv, cfg, s, desired, counts, now_ms);
     continue_sequence(fv, cfg, s, valve, inp, now_ms)
 }
 
@@ -1766,9 +1800,17 @@ fn continue_sequence(
                     distinct(WARM_UP_COUNTS + CLOSE_EXTRA_COUNTS, s),
                     cfg.ref_ma,
                 ),
-                _ => match cfg.ref_side {
-                    RefSide::Closed => (MoveDir::Open, fv.target_counts, cfg.open_ma),
-                    RefSide::Open => (
+                _ => match (seq.from_held, cfg.ref_side) {
+                    (Some(held), _) => {
+                        let (dir, ma) = if fv.target_counts > held {
+                            (MoveDir::Open, cfg.open_ma)
+                        } else {
+                            (MoveDir::Close, cfg.ref_ma)
+                        };
+                        (dir, distinct(fv.target_counts.abs_diff(held), s), ma)
+                    }
+                    (None, RefSide::Closed) => (MoveDir::Open, fv.target_counts, cfg.open_ma),
+                    (None, RefSide::Open) => (
                         MoveDir::Close,
                         final_close(fv.target_counts, cfg),
                         cfg.ref_ma,
@@ -1803,6 +1845,7 @@ fn after_move(step: Step) -> bool {
 fn rereference(seq: &mut Sequence, held_valid: &mut bool) {
     seq.step = Step::Reference;
     seq.ref_attempts = 0;
+    seq.from_held = None;
     *held_valid = false;
 }
 
@@ -1889,12 +1932,20 @@ fn move_done(
             }
         }
         Step::WarmUp if settled => seq.step = Step::WarmClose,
+        // the end stop came before the pulses: where the valve stands is known from there only
+        Step::Final if at_end && seq.from_held.is_some() => {
+            rereference(&mut seq, &mut fv.held_valid);
+        }
         Step::Final if settled => {
             let counted = s.last_move.counted_counts.min(u32::from(FLOW_COUNTS_MAX)) as u16;
             // the held position counts from the closed end stop on both sides
-            fv.held_counts = match cfg.ref_side {
-                RefSide::Closed => counted,
-                RefSide::Open => cfg.stroke_counts.saturating_sub(counted),
+            fv.held_counts = match (seq.from_held, cfg.ref_side) {
+                (Some(held), _) if s.last_move.dir == MoveDir::Open => {
+                    held.saturating_add(counted).min(FLOW_COUNTS_MAX)
+                }
+                (Some(held), _) => held.saturating_sub(counted),
+                (None, RefSide::Closed) => counted,
+                (None, RefSide::Open) => cfg.stroke_counts.saturating_sub(counted),
             };
             finish_move(fv, &mut seq, s);
         }
@@ -1937,7 +1988,8 @@ fn finish_move(fv: &mut FlowValve, seq: &mut Sequence, s: &ValveState) {
 }
 
 /// The keep was acknowledged: the position is held at the record of the final move (unknown
-/// when the curve changed meanwhile), event FlowPositioned.
+/// when the curve changed meanwhile), event FlowPositioned unless the move went straight from the
+/// last position: a target can come every minute, and the event ring holds 32 entries.
 fn held(
     fv: &mut FlowValve,
     seq: &Sequence,
@@ -1947,17 +1999,19 @@ fn held(
 ) -> Phase {
     fv.held_valid = true;
     fv.ref_delta = seq.ref_delta.or(fv.ref_delta);
-    let mut text = [0u8; 12];
-    let n = seq
-        .ref_delta
-        .map_or(0, |d| fmt_fit(&mut text, format_args!("ref {d:+}")));
-    log(&event(
-        EventCode::FlowPositioned,
-        valve,
-        i32::from(fv.held_counts),
-        i32::from(fv.target_pct),
-        text.get(..n).unwrap_or_default(),
-    ));
+    if seq.from_held.is_none() {
+        let mut text = [0u8; 12];
+        let n = seq
+            .ref_delta
+            .map_or(0, |d| fmt_fit(&mut text, format_args!("ref {d:+}")));
+        log(&event(
+            EventCode::FlowPositioned,
+            valve,
+            i32::from(fv.held_counts),
+            i32::from(fv.target_pct),
+            text.get(..n).unwrap_or_default(),
+        ));
+    }
     if seq.restart {
         Phase::Unknown
     } else {
