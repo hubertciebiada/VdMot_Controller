@@ -180,7 +180,8 @@ Valve entry (`/api/valves`):
 - `flow` (Rust 2.2.8, the flow layer below): `enabled`; `state` `off`,
   `unsupported` (STM below 2.2.8), `unknown` (no held position: a positioning
   follows when the valve is free), `positioning`, `held`, `failed` (tried again
-  after 5 min or with the next target); `counts` the held position in motor
+  after 5, 10, 20 min, then every 60 min, or at once with a new target); `counts`
+  the held position in motor
   pulses from the reference end stop (0 = closed) and `lpm` the flow of the
   curve there, both null while the position is not held; `targetCounts` the
   pulses of the current or last positioning; `targetLpm` the target in l/min

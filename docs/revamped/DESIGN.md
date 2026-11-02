@@ -482,8 +482,12 @@ a measured curve itself (API.md "Flow layer"):
   the last record asks one pulse more (less at 10000), so its record always
   differs. A move without a record within 120 s, a stop other than the end
   stop (reference) or the target/end stop (final), a rejected request, no
-  reply and a 101st `err 2` fail the positioning (event 417, state `failed`,
-  tried again after 5 min or with the next target). Each later step (the
+  reply and a 101st `err 2` fail the positioning (event 417, state `failed`).
+  A retry goes through the end stop again, so it waits: 5, 10, 20 min, then
+  every 60 min (`FAILED_RETRY_MS`). The count of the failures is in RAM. A new
+  target goes out at once and starts the waits again, as do a success, a
+  `/flow/counts` request, a changed curve and a new STM session. Each later
+  step (the
   warm-up moves, the final move, the keep) needs the valve where the last move
   of the sequence left it: the `move_seq` of that record and the `svcHold`
   flag. A kept valve shows `svcHold` and `svcKeep` both, as the hold counts down

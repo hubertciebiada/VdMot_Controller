@@ -1074,6 +1074,8 @@ struct FlowValve {
     /// a counts request arrived while a positioning ran
     pending_raw: Option<u16>,
     ref_delta: Option<i16>,
+    /// positionings that failed in a row, from the last success or new target on
+    failures: u8,
 }
 
 impl FlowValve {
@@ -1094,7 +1096,14 @@ impl FlowValve {
         needs_fallback: true,
         pending_raw: None,
         ref_delta: None,
+        failures: 0,
     };
+
+    /// The wait before the retry of the last failed positioning.
+    fn retry_ms(&self) -> u32 {
+        let last = FAILED_RETRY_MS.len() - 1;
+        FAILED_RETRY_MS[usize::from(self.failures).saturating_sub(1).min(last)]
+    }
 
     /// Less than `min_interval_s` passed since the last positioning.
     fn too_soon(&self, cfg: &FlowConfig, now_ms: u32) -> bool {
@@ -1157,8 +1166,10 @@ pub const BUSY_RETRIES_MAX: u16 = 100;
 /// `svmov err 3` (calibration pending): the move is sent again when the calibration ended,
 /// or after this time.
 pub const CALIB_RETRY_MS: u32 = 60_000;
-/// A failed positioning is tried again after this time (or with the next target).
-pub const FAILED_RETRY_MS: u32 = 300_000;
+/// A failed positioning is tried again after these times, the last from then on, or with the next
+/// target. A retry is a whole sequence through the end stop, which the actuators should not see
+/// without end.
+pub const FAILED_RETRY_MS: [u32; 4] = [300_000, 600_000, 1_200_000, 3_600_000];
 /// A request whose result has not come within this time counts as not queued (far beyond a
 /// queue wait with its attempts and the STM's start-up hold).
 pub const FLOW_REQ_TIMEOUT_MS: u32 = 30_000;
@@ -1244,6 +1255,7 @@ impl FlowLayer {
                     Phase::Positioning(seq) => seq.restart = true,
                     phase => *phase = Phase::Unknown,
                 }
+                fv.failures = 0;
                 self.dirty = true;
             }
             *cur = *new;
@@ -1337,6 +1349,7 @@ impl FlowLayer {
         };
         let counts = counts.min(FLOW_COUNTS_MAX);
         fv.served = desired;
+        fv.failures = 0;
         if matches!(fv.phase, Phase::Positioning(_)) {
             fv.pending_raw = Some(counts);
         } else {
@@ -1743,10 +1756,13 @@ fn start_if_due(
                 return None;
             }
         }
-        Phase::Failed { at_ms } if same && elapsed_ms(now_ms, at_ms) < FAILED_RETRY_MS => {
+        Phase::Failed { at_ms } if same && elapsed_ms(now_ms, at_ms) < fv.retry_ms() => {
             return None;
         }
         _ => {}
+    }
+    if !same {
+        fv.failures = 0;
     }
     if counts == fv.held_counts && direct_seq(fv, cfg, s, counts).is_some() {
         // the valve stands there already
@@ -2024,6 +2040,7 @@ fn held(
     log: &mut dyn FnMut(&Event),
 ) -> Phase {
     fv.held_valid = true;
+    fv.failures = 0;
     fv.ref_delta = seq.ref_delta.or(fv.ref_delta);
     if seq.from_held.is_none() {
         let mut text = [0u8; 12];
@@ -2059,6 +2076,7 @@ fn fail(
     log: &mut dyn FnMut(&Event),
 ) -> Phase {
     fv.held_valid = false;
+    fv.failures = fv.failures.saturating_add(1);
     log(&event(
         EventCode::FlowPositionFailed,
         valve,

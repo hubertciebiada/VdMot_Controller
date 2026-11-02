@@ -589,7 +589,7 @@ const HEALTH = { blocked: ["blocked", "err", STATE_TIP.blocked], failed: ["faile
 // The flow layer's states that need a look; "held" shows as a flow, "off" as a valve without one.
 const FLOW_CHIP = { positioning: ["positioning", "info", "The flow layer is moving the valve to its position."],
   unknown: ["position unknown", "warn", "The flow layer holds no position, after a restart or a lost hold: it positions the valve once the valve is free."],
-  failed: ["positioning failed", "err", "The last positioning failed. The layer tries again after 5 min or with the next target."],
+  failed: ["positioning failed", "err", "The last positioning failed. The layer tries again after 5, 10, 20 min, then every 60 min, or at once with a new target."],
   unsupported: ["needs STM 2.2.8", "warn", "The flow layer is enabled, but this STM cannot keep a position: the valve stays in normal mode."] };
 const STOP_TXT = { none: "–", target: "target reached", endstop: "end stop", early_endstop: "early end stop",
   timeout: "timeout", undercurrent: "no motor current", safety_overcurrent: "over-current limit", aborted: "aborted" };

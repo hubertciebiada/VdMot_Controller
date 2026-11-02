@@ -1354,22 +1354,114 @@ fn a_retry_time_half_the_clock_range_ahead_is_not_reached() {
     );
 }
 
-#[test]
-fn a_failed_positioning_is_tried_again_5_min_after_the_failure_to_the_ms() {
-    let c = curve();
-    let mut f = layer(&c, &[0]);
+/// The request of valve 0 that is out is refused: the positioning has failed.
+fn refused(stm: &mut Stm, f: &mut FlowLayer) {
+    stm.result(f, 0, FlowOutcome::Rejected(1));
+    assert_eq!(f.view(0).state, FlowState::Failed);
+}
+
+/// The next retry comes `ms` after the failure to the ms, a close through the end stop.
+fn retry_after(stm: &mut Stm, f: &mut FlowLayer, ms: u32) {
+    let inp = inputs(true, false);
+    assert_eq!(f.next(&stm.m, inp, stm.now + ms - 1), None);
+    stm.now += ms;
+    assert_eq!(
+        f.next(&stm.m, inp, stm.now),
+        mv(0, MoveDir::Close, 4800, 34)
+    );
+}
+
+/// A valve 0 whose first positioning to 37 % failed.
+fn failed_once(c: &FlowConfig) -> (Stm, FlowLayer) {
+    let mut f = layer(c, &[0]);
     let mut stm = Stm::new(0x001);
     stm.target(0, 37);
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
-    stm.result(&mut f, 0, FlowOutcome::Rejected(1));
-    assert_eq!(f.view(0).state, FlowState::Failed);
-    let at = stm.now;
-    let inp = inputs(true, false);
-    assert_eq!(f.next(&stm.m, inp, at + FAILED_RETRY_MS - 1), None);
-    assert_eq!(
-        f.next(&stm.m, inp, at + FAILED_RETRY_MS),
-        mv(0, MoveDir::Close, 4800, 34)
-    );
+    refused(&mut stm, &mut f);
+    (stm, f)
+}
+
+const MIN: u32 = 60_000;
+
+#[test]
+fn a_failed_positioning_is_tried_again_after_5_10_20_and_then_every_60_min() {
+    let (mut stm, mut f) = failed_once(&curve());
+    for ms in [5 * MIN, 10 * MIN, 20 * MIN, 60 * MIN, 60 * MIN, 60 * MIN] {
+        retry_after(&mut stm, &mut f, ms);
+        refused(&mut stm, &mut f);
+    }
+    // every failure is one event 417
+    let failed = stm
+        .codes()
+        .iter()
+        .filter(|c| **c == EventCode::FlowPositionFailed)
+        .count();
+    assert_eq!(failed, 7);
+}
+
+#[test]
+fn the_failures_stop_counting_at_their_limit_and_the_wait_stays_60_min() {
+    let (mut stm, mut f) = failed_once(&curve());
+    f.v[0].failures = u8::MAX;
+    retry_after(&mut stm, &mut f, 60 * MIN);
+    refused(&mut stm, &mut f);
+    assert_eq!(f.v[0].failures, u8::MAX);
+}
+
+#[test]
+fn a_new_target_goes_out_at_once_and_starts_the_waits_again() {
+    let (mut stm, mut f) = failed_once(&curve());
+    retry_after(&mut stm, &mut f, 5 * MIN);
+    refused(&mut stm, &mut f);
+    stm.target(0, 40);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 4800, 34));
+    refused(&mut stm, &mut f);
+    retry_after(&mut stm, &mut f, 5 * MIN);
+}
+
+#[test]
+fn a_success_starts_the_waits_again() {
+    let (mut stm, mut f) = failed_once(&curve());
+    retry_after(&mut stm, &mut f, 5 * MIN);
+    refused(&mut stm, &mut f);
+    retry_after(&mut stm, &mut f, 10 * MIN);
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 4800, 97, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert!(matches!(stm.next(&mut f), Some(FlowRequest::Move { .. })));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    let counts = f.view(0).target_counts;
+    stm.moved(0, MoveDir::Open, counts, counts, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.v[0].failures, 0);
+}
+
+#[test]
+fn a_counts_request_and_a_changed_curve_start_the_waits_again() {
+    let c = curve();
+    let (stm, mut f) = failed_once(&c);
+    assert!(f.position_counts(0, 700, served(37), stm.now));
+    assert_eq!(f.v[0].failures, 0);
+    let (_, mut f) = failed_once(&c);
+    let moved = FlowConfig { offset: 5, ..c };
+    f.set_configs(&configs(&moved, &[0]));
+    assert_eq!(f.v[0].failures, 0);
+}
+
+#[test]
+fn a_new_stm_session_tries_at_once_and_starts_the_waits_again() {
+    let (mut stm, mut f) = failed_once(&curve());
+    retry_after(&mut stm, &mut f, 5 * MIN);
+    refused(&mut stm, &mut f);
+    stm.rebooted(&mut f);
+    stm.m.on_stm_rebooted(stm.now);
+    assert_eq!(stm.next(&mut f), set_target(0, 15));
+    assert_eq!(f.v[0].failures, 0);
 }
 
 #[test]
