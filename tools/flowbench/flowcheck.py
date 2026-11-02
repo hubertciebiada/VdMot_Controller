@@ -724,7 +724,7 @@ class SimEsp:
             shift = self.rnd.randint(-60, 60)
             self.v[i] = {"name": f"Loop {i}", "cfg": {
                 "enabled": False, "qmax": 2.7, "refmA": 34, "openmA": 30, "fallbackPct": 15,
-                "minIntervalS": 300, "deadbandLpm": 0.05, "offset": 0, "gain": 1.0,
+                "minIntervalS": 60, "deadbandLpm": 0.05, "offset": 0, "gain": 1.0,
                 "refSide": "open", "strokeCounts": 4700,
                 "points": [[c + shift if c else 0, q] for c, q in pts]},
                 "true_off": self.rnd.randint(-50, 50), "true_gain": self.rnd.uniform(0.9, 1.1),

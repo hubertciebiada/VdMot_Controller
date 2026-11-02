@@ -718,7 +718,7 @@ State of the running image (each image runs the same machine when it boots):
 | `otaOk` | NVS `vdmrev`, blob 16 B | "VDOK", the `AppId` of the confirmed image, CRC32; removed when that image is left by an upload or by a manual switch, so it runs a trial when it comes back (also after the C++ firmware ran in between) |
 | `otaTrial` | NVS `vdmrev`, blob 32 B | "VDOT", version 1, state (`Trial`, `SwitchedBack`), boots, flags (bit0 stm required, bit1 an image switched away from is recorded), `AppId` of the image on trial, `AppId` of the last image the guard switched away from, fallback slot address, CRC32 |
 | Guard mirror | RTC block, first record, 28 B | "VBGD", `AppId` on trial (for a confirmed image: that image), boots, breadcrumb of the last switch (`AppId` switched away from, reason 1 boot limit / 2 health / 3 crash loop), the crash streak of a confirmed image (byte 14) and its flags (byte 15: bit0 the boot deadline restarted the boot, bit1 the boot ran 10 min), CRC32. Images before F5 wrote bytes 14 and 15 as zero and ignore them |
-| Other RTC records | RTC block after the mirror | net watchdog count ("VNWD"), desired targets (46 B), ESP lease emulation, HA status: the C++ formats, each with its own check |
+| Other RTC records | RTC block after the mirror | net watchdog count ("VNWD"), desired targets (46 B), ESP lease emulation, HA status: the C++ formats, each with its own check; last the targets in l/min (58 B, "VDFT", Rust 2.2.11) |
 
 The C++ firmware ignores both NVS keys. The RTC layout of a C++ image and of a Rust image differ, so
 an OTA between them loses the RTC records (each fails its check and counts as power-on garbage);

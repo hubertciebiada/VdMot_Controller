@@ -462,8 +462,12 @@ layer (`core/src/flow_layer.rs`, owned by `StmSession`) positions a valve with
 a measured curve itself (API.md "Flow layer"):
 
 - The external target of the valve stays the desired target of `ValveModel`
-  (persisted, restored, shown as `target`), but means 0..qmax l/min. The model
-  keeps a flow mask: such a valve is never pushed with `stgtp`, a read-back
+  (persisted, restored, shown as `target`): a % of `strokeCounts`, 0 closed, 100
+  the open end stop. A target in l/min (`POST /flow/target`, `flow/set`) keeps
+  `desired_ml` and `desired_flow` next to it, with `desired` the % of the stroke
+  of its position: the layer positions on the curve for `desired_ml`, and the
+  served target (`Served`) holds both, so two flows in one whole % are two
+  positions. A target in % clears them. The model keeps a flow mask: such a valve is never pushed with `stgtp`, a read-back
   marks it Synced without comparing (the STM target is the layer's
   `fallbackPct`, sent once when the layer is enabled, after an STM reboot and
   when it differs at the start of a positioning) and no STM target is adopted
@@ -482,13 +486,23 @@ a measured curve itself (API.md "Flow layer"):
   tried again after 5 min or with the next target). Each later step (the
   warm-up moves, the final move, the keep) needs the valve where the last move
   of the sequence left it: the `move_seq` of that record and the `svcHold`
-  flag. Otherwise (a calibration after `err 3`, the lease failsafe, a hold
+  flag. A kept valve shows `svcHold` and `svcKeep` both, as the hold counts down
+  only without the keep; the keep alone means the hold ran out before `skeep`
+  arrived, and the STM may drive the valve then. Otherwise (a calibration after `err 3`, the lease failsafe, a hold
   that ran out during `err 2` retries, another move) and after a link loss the
   sequence starts again with a close of the whole stroke to the reference end
   stop. A request of the layer whose result has not come within 30 s
   (`FLOW_REQ_TIMEOUT_MS`: another `stgtp` of the valve took the place of its
   fallback target in the link queue, the queue was cleared) counts as not
   queued, so it cannot stall the other valves.
+- One move (Rust 2.2.11): from `Phase::Held` a new target below the open end
+  stop, neither it nor the held position closed, starts the sequence at the
+  final step with `from_held` set and `step_seq` the `move_seq` of the hold, as
+  long as `begin_sequence` sends no `stgtp` (it would end the hold). The pulses
+  are the difference through `distinct()`, the held position `from_held` plus or
+  minus the counted pulses, within 0..10000. An end stop on the way is
+  `rereference` in the same sequence, another stop fails at step 5. Such a move
+  logs no event 416: a target can come every minute and the ring holds 32.
 - `tick` once per second: the records, the timeouts, the end of a calibration
   a refused move waits for, and a held valve whose `svcKeep` flag is gone (a
   poll after the keep) or whose `move_seq` moved -> `unknown`, event 418. A
@@ -496,28 +510,17 @@ a measured curve itself (API.md "Flow layer"):
   layer runs only when the STM answers protocol 3 and `gvers` is at least
   2.2.8 (`FLOW_MIN_STM_VERSION`); otherwise `unsupported`, the mask is empty.
 - The snapshot carries `FlowView` per valve; `position` of an enabled valve
-  is the flow percentage of the held position (0 while unknown), so MQTT,
-  Home Assistant and the dashboard see flow percentages without a change.
-- The configuration (`FlowConfig`, 12 x 84 B) lives in NVS `flow` and `flowx`
+  is the held position in % of `strokeCounts` (0 while unknown), so MQTT and Home
+  Assistant see that % without a change. The session adds `target_ml` of a target
+  in l/min to the view. With **separate** the MQTT target of such a valve is the
+  desired target. `flow_target` clips a flow to `qmax`, and `apply_flow_config`
+  works the % of a target in l/min out again for a new curve.
+- The configuration (`FlowConfig`, 12 x 84 B) lives in NVS `flow`
   (section 9), loaded next to the config at boot, published with a revision
   the stm thread follows (`StmLinkHost::flow_revision`), written by
   `POST /api/valves/{n}/flow`.
-- Drift (Rust 2.2.10, API.md "Drift"): each valve has a clock, `clock_ms`, set
-  by `drift_clock` at the start of a sequence, from the phase it replaces: a
-  held valve keeps it unless it was held for `HELD_RESET_MS` (`CLOSED_RESET_MS`
-  at the closed end stop), every other phase starts it again. `FlowLayer` takes
-  the limit as a member, so tests run both outcomes; the value is that one
-  constant, `u32::MAX`: a positioning never starts it again, measured on seven
-  loops held for 60 and 20 min (the pump power did not rise).
-  `drift_tenths` is the shift in 0.1 pulses from the table `DRIFT_LOG` (the core
-  has no libm), `comp` the pulses a positioning adds on top of the target,
-  `held_comp` those of the held position, so `lpm` and `actual` are the target
-  without them also while a refresh runs. `drift_due` is checked in
-  `start_if_due`, with the desired target unchanged in `desired`: a refresh is
-  a positioning to the same target. A valve set by `/flow/counts` is `exact`:
-  no comp, no refresh until its next target. Failed of the layer sets
-  `HEALTH_FLOW_FAILED` on the published valve, which `valve_problem` reads; it
-  has no name in the `health` list of `/api/valves`.
+- Failed of the layer sets `HEALTH_FLOW_FAILED` on the published valve, which
+  `valve_problem` reads; it has no name in the `health` list of `/api/valves`.
 
 ## 7. Config schema
 
@@ -689,11 +692,12 @@ NVS namespace `vdmrev`:
 | `haDrop` | u8 | 1 = legacy DROP discovery entities deleted |
 | `haLayout` | u8 | 2 = the 2.1 discovery layout was published (2.0.0 migration done) |
 | `targets` | blob 46 | desired targets: "VDTG", version 1, count 12, 12 x {flags bit0 valid, pos, source}, CRC32 |
+| `flowtgt` | blob 58 | Rust 2.2.11: the targets in l/min beside `targets`: "VDFT", version 1, count 12, 12 x {flags bit0 flow, pos, ml/min}, CRC32; written with `targets`. An entry counts only where `targets` has the same pos; absent or bad: the target in % |
 | `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous interface/DHCP/addresses/WiFi, CRCs) |
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
 | `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it |
-| `flowx` | blob 21 | Rust 2.2.10: "VDMX", version 1, 12 x driftD (0.1 pulses per e), CRC32. Written only when a drift changes; absent: no drift, and `flow` stays what 2.2.8 reads. One that cannot be read gives no drift and event 124 with arg2 1; saves go on and the next change of a drift rewrites it |
+| `flowx` | blob 21 | Rust 2.2.10 only: the drift of the valves. Nothing reads it since 2.2.11, and it stays until a factory reset |
 
 Config load order (`loadConfigBlobs`): `cfg` + `cfgx` from NVS; a missing or
 undecodable `cfg` falls back to the backup files (`config_restored`); a
@@ -706,7 +710,8 @@ backups are written after every save, but not while a network trial runs.
 RTC slow memory (`RTC_NOINIT_ATTR`, survives software restarts, garbage after
 power-on, every record CRC-checked): network watchdog restart counter,
 desired targets (same format as NVS `targets`), ESP failsafe emulation
-(`gRtcLease`), last HA status (`gRtcHaStatus`).
+(`gRtcLease`), last HA status (`gRtcHaStatus`), targets in l/min (same format as
+NVS `flowtgt`, the last record, so the offsets before it stay).
 
 LittleFS (partition `spiffs`, mounted at `/littlefs`, formatted only when
 mounting fails, which raises `FsFormatted`):
@@ -998,7 +1003,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 120 | config_newer_schema | Warning | W | - | base schema / unknown ext records |
 | 121 | files_removed | Info | - | - | files / KiB / name or `legacy images` |
 | 122 | heap_critical | Error | W | - | free / largest block (the heap guard's restart follows, section 16) |
-| 124 | flow_config_unreadable | Error | W | - | Rust 2.2.8: 1 NVS not open, 2 no memory, 3 a bad blob / 0 NVS `flow`, 1 NVS `flowx` (section 9) |
+| 124 | flow_config_unreadable | Error | W | - | Rust 2.2.8: 1 NVS not open, 2 no memory, 3 a bad blob / 0 (section 9) |
 | 200 | net_up | Info | W | - | 1 eth, 2 wifi / - / IP |
 | 201 | net_down | Warning | W | - | interface |
 | 202 | mqtt_connected | Info | W | - | |
@@ -1056,7 +1061,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 413 | valve_stale | Warning | W | yes | seconds |
 | 414 | service_move_done | Info | W | yes | counted / stop reason |
 | 415 | calib_stroke_short | Warning | W | yes | min(oc, cc) / minCounts |
-| 416 | flow_positioned | Info | W | yes | Rust 2.2.8: pulses from the reference end stop / target % / `ref +24`: refDelta of this positioning, empty without a measure |
+| 416 | flow_positioned | Info | W | yes | Rust 2.2.8: pulses from the reference end stop / target in % of the stroke / `ref +24`: refDelta of this positioning, empty without a measure. Not for one move from a held position |
 | 417 | flow_position_failed | Warning | W | yes | Rust 2.2.8: step 1 fallback target, 2 move to the end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep / STM error code, -1 no reply, -2 timeout, or the stop reason / reason |
 | 418 | flow_hold_lost | Warning | W | yes | Rust 2.2.8: STM flags |
 | 500 | temp_sensor_failed | Warning | W | - | slot / raw / id |

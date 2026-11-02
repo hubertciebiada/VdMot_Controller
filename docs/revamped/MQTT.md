@@ -117,7 +117,7 @@ parse them must be checked.
 | Topic | QoS | Payload | Action |
 |---|---|---|---|
 | separate on: `<main>valves/<V>/target/set` (`.../target/set/set` also accepted for ioBroker); separate off: `<main>valves/<V>/target` or `.../target/set` | 1 | `0`..`100`, optionally with a fraction (`.` or `,`, e.g. `43.7`, `43,7`), rounded half up; `OPEN` = 100, `CLOSE` = 0; `STOP` (STM 2.1: stops the valve where it is) | target of the valve |
-| `<main>valves/<V>/flow/set` (with and without separate) | 1 | the flow in l/min: digits, optionally `.` or `,` and 1..3 digits, e.g. `2.5`, `2,5`, `0.125` | target of the valve with the flow layer: 0..qmax l/min as a percentage of `qmax` (Rust 2.2.10) |
+| `<main>valves/<V>/flow/set` (with and without separate) | 1 | the flow in l/min: digits, optionally `.` or `,` and 1..3 digits, e.g. `2.5`, `2,5`, `0.125` | target of the valve with the flow layer in l/min, above `qmax` clipped to it (Rust 2.2.10) |
 | `<main>cmd/valves/<V>/calibrate` | 0 | `PRESS` | calibrate the valve |
 | `<main>cmd/calibrate` | 0 | `PRESS` | calibrate all valves |
 | `<main>cmd/detect` | 0 | `PRESS` | valve detection |
@@ -168,7 +168,6 @@ before).
 | `<main>valves/<V>/sync` | target delivery: `unknown`, `synced`, `pending`, `await_ack`, `await_verify`, `failed` | yes | setting | active valve |
 | `<main>valves/<V>/failsafe` | `off`, `lease` (regulator silent), `blocked` (blocked valve at its failsafe position) | yes | setting | active valve |
 | `<main>valves/<V>/problem` | `1` when the valve is blocked, failed, without contact, stale, its target is not confirmed, a temperature failed or its flow layer failed to position it, else `0` | yes | setting | active valve |
-| `<main>valves/<V>/flow` | `{"holdMin":60,"estLpm":0.973}`: minutes on the drift clock and the estimated flow of this loop in l/min, both `null` while the held position is not known (API.md "Drift") | yes | setting | active valve with the flow layer, every full publish and, with **on change**, when the estimate moves, at most once a minute |
 | `<main>diag/valves/<V>/lastMove` | `{"dir":"open","req":408,"cnt":395,"stop":"endstop","peak":299,"ms":15784}` | no | setting | v2, after each move |
 | `<main>diag/valves/<V>/earlyStops` | count since STM start (early stops the next move did not recover) | no | setting | v2, on change |
 | `<main>diag/valves/<V>/cmdRejected` | count since STM start | no | setting | v2, on change |
@@ -213,24 +212,28 @@ valve targets should read back:
 - `stm/status`: the STM link.
 
 With **separate**, `valves/<V>/target` is the target the STM confirmed, so a
-regulator that compares it with what it sent sees a lost command.
+regulator that compares it with what it sent sees a lost command. A valve with
+the flow layer shows its desired target there: the STM's own is the layer's
+fallback position.
 
 A valve with the flow layer (Rust 2.2.8, `GET /api/valves/{n}/flow` in
-API.md) takes and reports percentages of its flow band: `valves/<V>/target`
-(the command and, with separate, the confirmed value), `requested` and
-`actual` mean 0..qmax l/min, `actual` is 0 while the held position is unknown
-(after a restart, until the valve is positioned again), and `sync` is
-`synced` as soon as the layer holds the target. The Home Assistant entities
-of the valve carry the same values; `failsafe` and the failsafe position stay
-stroke percentages.
+API.md) takes and reports percentages of its stroke: `valves/<V>/target`,
+`requested` and `actual` mean % of `strokeCounts`, 0 is closed and 100 the open
+end stop. `actual` is the held position, 0 while it is unknown (after a restart,
+until the valve is positioned again), and `sync` is `synced` as soon as the layer
+holds the target. The Home Assistant entities of the valve carry the same values;
+`failsafe` and the failsafe position stay on the STM's own scale.
 
 Since Rust 2.2.10 such a valve also takes its target in l/min on
-`valves/<V>/flow/set`. It is the percentage of `qmax` from there on, so
-`target`, `requested` and `actual` move as usual. The ESP clears a retained
+`valves/<V>/flow/set`. The layer positions on the curve for that flow, and
+`target`, `requested` and `actual` show the position in % of the stroke, so two
+flows in one whole percent look the same there. A target on `target/set` ends the
+flow. Above `qmax` the flow is clipped to `qmax`, and between the top of the curve
+and `qmax` the valve goes to the top of the curve. The ESP clears a retained
 message on the topic, as on `target/set`. Without the layer running on the valve
-the command is rejected `unsupported`, above `qmax` it is a payload reject with
-detail 3 (out of range). The estimate `valves/<V>/flow` has no Home Assistant
-entity.
+the command is rejected `unsupported`, a payload that is no number is a payload
+reject. Without **separate** the retained `target` a broker hands back after a
+connect is the echo of a target in l/min and does not end it.
 
 ## Events
 

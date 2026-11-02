@@ -8,6 +8,44 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.11-revamped (unreleased)
+
+### ESP32: the flow layer positions on the stroke, with one move, without the drift
+
+- Gone: the drift model. `driftD`, `holdMin`, `estLpm`, the MQTT topic `valves/<V>/flow`, the
+  drift clock and the refresh of a held valve. `POST /api/valves/{n}/flow/target`, MQTT
+  `valves/<V>/flow/set` and `HEALTH_FLOW_FAILED` stay. The NVS key `flowx` stays unused: nothing
+  reads or writes it, a factory reset drops it. A `driftD` in a config patch is an unknown key.
+- Changed meaning: with the layer running, `target`, `requested` and `actual` in the API, on MQTT
+  and in Home Assistant are % of the stroke of the valve, not of `qmax`: position = pct x
+  `strokeCounts` / 100, rounded; 0 is closed, 100 the open end stop. `actual` is the held pulses
+  / `strokeCounts`. `lpm` is the flow of the curve at the held pulses, the top of the curve above
+  its last point. `fallbackPct` stays a % of the STM's scale. With **separate** the target topic
+  of such a valve shows its desired target instead of the STM's fallback.
+- `strokeCounts` is required (1..10000) on an enabled valve, a constant of the curve. A stored
+  configuration that is enabled with 0 comes back disabled, the other valves stay.
+- A held valve reaches a new target with one service move and `skeep`, without a move to the end
+  stop, and without event 416. An end stop on the way continues through the reference end stop.
+  The end stop stays for closing, the first opening from 0 %, an unknown position, a lost hold, a
+  changed curve, `/flow/counts` and 100 %. `refDelta` comes only from a positioning through the
+  open end stop.
+- A target in l/min no longer goes through a whole percent: `desired_ml` is kept beside the %,
+  to 1 ml/min, and `flow.targetLpm` in `/api/valves` and `GET /api/valves/{n}/flow` shows it (null
+  for a target in %). `POST .../target` and `target/set` end it. It survives a restart of the STM
+  and of the ESP: the RTC block grows from 104 to 162 B with a record at its end, and NVS gets
+  `flowtgt` next to `targets`, whose 46 B stay. An image before 2.2.11 ignores both and restores
+  the target as the whole %, of the stroke and no longer of `qmax`.
+- A flow above `qmax` is no longer an error: it is clipped to `qmax`, `clipped:true` on REST and
+  accepted on MQTT. Between the top of the curve and `qmax` it is the top of the curve, `clipped`
+  too. Negative values and non-numbers are refused as before. The error text is
+  `lpm a plain number from 0`.
+- `deadbandLpm` applies to a target in l/min only, against the flow of the held position. A
+  target in % counts in pulses.
+- `minIntervalS` defaults to 60 instead of 300. A stored configuration keeps its value.
+- The panel shows a valve with a running layer in l/min, one decimal, with the % of the stroke
+  beside it, and its field sets l/min in steps of 0.1 up to `qmax`. A legacy valve looks as before.
+- The longest `/api/valves` answer is 16 299 B (16 071 before), the response buffer 16 384 B.
+
 ## 2.2.10-revamped (unreleased)
 
 ### ESP32: a target in l/min and the drift of a held position
