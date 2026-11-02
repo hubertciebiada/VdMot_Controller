@@ -494,6 +494,8 @@ fn json_patch_keeps_absent_members_and_takes_every_number_form() {
     let c = curve();
     let p = patched(&c, r#"{"offset":12,"gain":1.5}"#).expect("ok");
     assert_eq!((p.offset, p.gain_milli), (12, 1500));
+    let p = patched(&c, r#"{"fallbackPct":20}"#).expect("ok");
+    assert_eq!((p.fallback_pct, p.gain_milli), (20, c.gain_milli));
     assert_eq!(p.points(), c.points());
     let p = patched(&c, " { \"enabled\" : false , \"qmax\" : 2 } ").expect("ok");
     assert!(!p.enabled);
@@ -1472,7 +1474,9 @@ fn stm_reboot_forgets_the_hold_and_the_request_in_flight_the_fallback_goes_first
     assert_eq!(f.view(0).state, FlowState::Unknown);
     assert_eq!(f.view(1).state, FlowState::Unknown);
     assert!(!f.view(0).known);
-    assert!(f.view(0).last_valid); // the last move stays on record
+    // the last move stays on record
+    assert!(f.view(0).last_valid);
+    assert_eq!((f.view(0).last_ms, f.view(0).last_peak), (5663, 123));
     assert!(!f.busy(1));
     // The held valve lost its hold (event), the positioning valve silently.
     assert_eq!(

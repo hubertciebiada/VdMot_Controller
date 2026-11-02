@@ -1233,7 +1233,6 @@ impl FlowLayer {
                     };
                     *fv = FlowValve {
                         phase,
-                        needs_fallback: false,
                         ..FlowValve::FRESH
                     };
                 }
@@ -1276,12 +1275,10 @@ impl FlowLayer {
         self.supported && self.cfg.get(i).is_some_and(|c| c.enabled)
     }
 
-    /// Every valve unknown with the fallback target due; the interval and the last move kept.
+    /// Every valve unknown with the fallback target due; the last move kept.
     fn forget_stm(&mut self) {
         for fv in &mut self.v {
             *fv = FlowValve {
-                started_once: fv.started_once,
-                last_start_ms: fv.last_start_ms,
                 last_valid: fv.last_valid,
                 last_ms: fv.last_ms,
                 last_peak: fv.last_peak,
