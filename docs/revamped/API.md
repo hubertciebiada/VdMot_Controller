@@ -315,8 +315,9 @@ configuration and the `flow` block of the valve entry:
   than 16 points `flow` holds 16 (the first, the last and 14 evenly spaced by
   index between them) and the key `flowpts` all of them (Rust 2.2.15): an older
   version reads and shows those 16 (DESIGN.md section 9). A save writes `flowpts`
-  first, so a failed save never leaves 16 of the points as the curve: the next
-  `POST` keeps the curve the valve had. `curveCut` true (Rust 2.2.15): the valve
+  first, so after a `500` the next `POST`, also one without `points`, saves a
+  whole curve: the one the valve had, or the new one where NVS already holds all
+  of it. `curveCut` true (Rust 2.2.15): the valve
   keeps 16 points of `flow` that `flowpts` did not vouch for at the last load (a
   bad `flowpts`, a power loss between the two writes, a save of an older version),
   which may be 16 of a longer curve; event 419 `flow_curve_cut` was logged then. A
