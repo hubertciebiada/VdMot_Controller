@@ -1666,20 +1666,20 @@ fn flow_json_of_a_valve_and_the_flow_document() {
     };
     let mut buf = [0u8; 1024];
     let mut jw = JsonWriter::new(&mut buf);
-    assert!(write_valve_flow_json(&mut jw, 2, &c, &held));
+    assert!(write_valve_flow_json(&mut jw, 2, &c, &held, false));
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.starts_with(r#"{"valve":3,"config":{"enabled":true,"qmax":2.700,"#));
     assert!(j.contains(r#""points":[[630,0.000],[1180,2.600]]},"flow":{"enabled":true,"#));
     assert!(j.contains(r#""lpm":1.012,"targetLpm":1.250,"ms":5684,"#));
-    assert!(j.ends_with(r#""peak":12.3},"refDelta":-24}"#));
-    check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held), j.len());
+    assert!(j.ends_with(r#""peak":12.3},"refDelta":-24,"curveCut":false}"#));
+    check_overflow(|jw| write_valve_flow_json(jw, 2, &c, &held, false), j.len());
     let mut jw = JsonWriter::new(&mut buf);
-    assert!(write_valve_flow_json(&mut jw, 2, &c, &unknown));
+    assert!(write_valve_flow_json(&mut jw, 2, &c, &unknown, false));
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
     assert!(j.contains(r#""lpm":null,"targetLpm":1.250,"ms":5684,"#));
     let none = FlowView::default();
     let mut jw = JsonWriter::new(&mut buf);
-    assert!(write_valve_flow_json(&mut jw, 2, &c, &none));
+    assert!(write_valve_flow_json(&mut jw, 2, &c, &none, true));
     let j = String::from_utf8_lossy(jw.as_bytes()).into_owned();
-    assert!(j.ends_with(r#""peak":null},"refDelta":null}"#));
+    assert!(j.ends_with(r#""peak":null},"refDelta":null,"curveCut":true}"#));
 }

@@ -569,10 +569,11 @@ where
 
     // ------------------------------------------------------------ STM documents
 
-    /// The document of GET and POST /api/valves/{n}/flow: the stored configuration of the valve
-    /// and the state of its layer from the snapshot.
+    /// The document of GET and POST /api/valves/{n}/flow: the stored configuration of the valve,
+    /// the state of its layer from the snapshot and whether its curve may be cut.
     fn flow_document(&self, req: &mut dyn HttpRequest, w: &mut WorkSet, valve: u8) {
         let cfg = self.storage.shared().flow_config(valve);
+        let cut = self.storage.shared().flow_curve_cut(valve);
         self.host.read_stm_snapshot(&mut w.snap);
         let view = w
             .snap
@@ -581,7 +582,7 @@ where
             .copied()
             .unwrap_or_default();
         self.document(req, &mut w.response, None, |jw| {
-            write_valve_flow_json(jw, valve, &cfg, &view)
+            write_valve_flow_json(jw, valve, &cfg, &view, cut)
         });
     }
 

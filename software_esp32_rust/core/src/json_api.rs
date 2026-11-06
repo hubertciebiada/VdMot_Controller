@@ -683,12 +683,15 @@ pub fn write_flow_state_json(jw: &mut JsonWriter<'_>, f: &FlowView) {
 }
 
 /// `GET/POST /api/valves/{n}/flow`: `{"valve":n,"config":{write_flow_config_json},
-/// "flow":{write_flow_json},"refDelta":n|null}`. Returns jw.ok().
+/// "flow":{write_flow_json},"refDelta":n|null,"curveCut":false}`; `curve_cut` (Rust 2.2.15): the
+/// valve keeps 16 points of NVS `flow` that `flowpts` did not vouch for at the last load, which
+/// may be 16 of a longer curve. Returns jw.ok().
 pub fn write_valve_flow_json(
     jw: &mut JsonWriter<'_>,
     valve: u8,
     c: &FlowConfig,
     f: &FlowView,
+    curve_cut: bool,
 ) -> bool {
     jw.begin_object();
     jw.kv("valve", u32::from(valve) + 1);
@@ -697,6 +700,7 @@ pub fn write_valve_flow_json(
     jw.key("flow");
     write_flow_json(jw, f);
     jw.kv("refDelta", f.ref_delta.map(i32::from));
+    jw.kv("curveCut", curve_cut);
     jw.end_object();
     jw.ok()
 }

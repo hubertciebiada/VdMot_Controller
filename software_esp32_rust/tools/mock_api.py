@@ -799,7 +799,8 @@ class Device:
 
     def flow_document(self, i, v):
         """GET and POST /api/valves/{n}/flow."""
-        return {"valve": i + 1, "config": v["flow"], "flow": self.flow_view(v), "refDelta": v.get("refDelta")}
+        return {"valve": i + 1, "config": v["flow"], "flow": self.flow_view(v), "refDelta": v.get("refDelta"),
+                "curveCut": False}
 
     @staticmethod
     def flow_target_counts(cfg, pct):

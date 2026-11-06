@@ -261,6 +261,11 @@ pub enum EventCode {
     /// Rust 2.2.8: the STM no longer keeps the flow position (reset, calibration, lease,
     /// another move); arg1 STM flags
     FlowHoldLost = 418,
+    /// Rust 2.2.15: at the load of the flow configuration the valve keeps the 16 points of NVS
+    /// `flow`, which NVS `flowpts` does not vouch for: they may be 16 of a longer curve; arg1 1
+    /// `flowpts` bad, 2 `flowpts` names another record of the valve. Not on MQTT: the event types
+    /// of the Home Assistant event entity fill its payload with the longest fields
+    FlowCurveCut = 419,
     // sensors 5xx (valve = NO_VALVE, arg1 config slot 1-based)
     /// arg2 raw value; text sensor id
     TempSensorFailed = 500,
@@ -505,7 +510,7 @@ const fn special(
 
 /// Registry order = the order of [`event_mqtt_names`].
 #[rustfmt::skip]
-static CODES: [CodeInfo; 93] = {
+static CODES: [CodeInfo; 94] = {
     use EventCode as C;
     use EventMqtt::{Always, No, WarnPlus as Warn};
     use Severity::{Critical, Debug, Error, Info, Warning};
@@ -700,6 +705,8 @@ static CODES: [CodeInfo; 93] = {
                     ", ", txt!(), end_txt!(), ")")),
         templated(C::FlowHoldLost, Warning, Warn, "flow_hold_lost",
             concat!("flow position lost (flags 0x", name1!("2"), ")")),
+        templated(C::FlowCurveCut, Warning, No, "flow_curve_cut",
+            concat!("flow curve may be cut to 16 points (flowpts ", name1!("P"), ")")),
         templated(C::TempSensorFailed, Warning, Warn, "temp_sensor_failed",
             concat!("temp sensor ", arg1!(), " failed (raw ", arg2!(), if_txt!(), ", ", txt!(),
                     end_txt!(), ")")),
@@ -975,6 +982,7 @@ const SCHEDULE_FAILURES: [&str; 4] = ["no reply", "not sent", "no result", "STM 
 const OTA_CHECKS: [&str; 3] = ["net", "http", "stm"];
 const REBOOT_CAUSES: [&str; 4] = ["uptime", "resets", "v1 heuristic", "link recovered"];
 const SIDES: [&str; 2] = ["esp", "stm"];
+const FLOWPTS_STATES: [&str; 2] = ["bad", "of another save"];
 
 /// names[v] for v in 0..names.len(), else "unknown".
 fn zero_based(names: &[&'static str], v: i32) -> &'static str {
@@ -1024,6 +1032,7 @@ fn add_name(t: &mut TextBuf<'_>, set: u8, v: i32) {
         b't' => one_based(&RESTORE_SOURCES, v),
         b'h' => one_based(&SCHEDULE_FAILURES, v),
         b's' => zero_based(&SIDES, v),
+        b'P' => one_based(&FLOWPTS_STATES, v),
         b'z' => {
             if v == 1 {
                 "volt"

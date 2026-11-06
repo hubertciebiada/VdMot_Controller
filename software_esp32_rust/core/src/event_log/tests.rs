@@ -21,7 +21,7 @@ type C = EventCode;
 /// DESIGN.md section 13, the binding table (registry order): code, number, name, severity,
 /// MQTT class.
 #[rustfmt::skip]
-const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 93] = [
+const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 94] = [
     (C::Boot, 100, "boot", Info, Warn),
     (C::ConfigImported, 101, "config_imported", Info, Warn),
     (C::ConfigSaved, 102, "config_saved", Info, Warn),
@@ -108,6 +108,7 @@ const TABLE: [(EventCode, u16, &str, Severity, EventMqtt); 93] = [
     (C::FlowPositioned, 416, "flow_positioned", Info, Warn),
     (C::FlowPositionFailed, 417, "flow_position_failed", Warning, Warn),
     (C::FlowHoldLost, 418, "flow_hold_lost", Warning, Warn),
+    (C::FlowCurveCut, 419, "flow_curve_cut", Warning, No),
     (C::TempSensorFailed, 500, "temp_sensor_failed", Warning, Warn),
     (C::TempSensorRecovered, 501, "temp_sensor_recovered", Info, Warn),
     (C::SensorCountChanged, 502, "sensor_count_changed", Info, Warn),
@@ -222,7 +223,7 @@ fn event_code_from_raw_knows_exactly_the_registry_numbers() {
         assert_eq!(EventCode::from_raw(v), row.map(|r| r.0), "{v}");
         found += usize::from(row.is_some());
     }
-    assert_eq!(found, 93);
+    assert_eq!(found, 94);
     // the registry holds every code once, in the order of the design table
     assert_eq!(CODES.len(), TABLE.len());
     for (ci, row) in CODES.iter().zip(TABLE) {
@@ -767,6 +768,10 @@ fn event_messages_for_every_code() {
         (ev(C::FlowPositionFailed, 1, 2, 1, "no end stop"), "valve 2: flow positioning failed (step 2, code 1, no end stop)"),
         (ev(C::FlowPositionFailed, 1, 6, -1, ""), "valve 2: flow positioning failed (step 6, code -1)"),
         (ev(C::FlowHoldLost, 3, 0x204, 0, ""), "valve 4: flow position lost (flags 0x204)"),
+        // Rust 2.2.15
+        (ev(C::FlowCurveCut, 3, 1, 0, ""), "valve 4: flow curve may be cut to 16 points (flowpts bad)"),
+        (ev(C::FlowCurveCut, 11, 2, 0, ""), "valve 12: flow curve may be cut to 16 points (flowpts of another save)"),
+        (ev(C::FlowCurveCut, 0, 3, 0, ""), "valve 1: flow curve may be cut to 16 points (flowpts unknown)"),
         (ev(C::TempSensorFailed, NO_VALVE, 4, -1270, "28-84-37-94-97-ff-03-23"), "temp sensor 4 failed (raw -1270, 28-84-37-94-97-ff-03-23)"),
         (ev(C::TempSensorFailed, NO_VALVE, 4, 850, ""), "temp sensor 4 failed (raw 850)"),
         (ev(C::TempSensorRecovered, NO_VALVE, 4, 0, ""), "temp sensor 4 recovered"),

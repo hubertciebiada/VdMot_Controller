@@ -699,15 +699,39 @@ fn long_set() -> [FlowConfig; 12] {
     all
 }
 
-/// The set as NVS gives it back: `flow`, `flowlift` and `flowpts` (`points`) decoded.
-fn decoded(flow: &[u8], all: &[FlowConfig; 12], points: &[u8]) -> ([FlowConfig; 12], bool) {
+/// The set as NVS gives it back: `flow`, `flowlift` and `flowpts` (`points`, `None` without the
+/// key) decoded, with what [`decode_flow_points`] returned.
+fn decoded(
+    flow: &[u8],
+    all: &[FlowConfig; 12],
+    points: Option<&[u8]>,
+) -> ([FlowConfig; 12], (bool, u16)) {
     let mut lifts = [0; FLOW_LIFT_BLOB_SIZE];
     encode_flow_lifts(all, &mut lifts);
     let mut out = [FlowConfig::DEFAULT; 12];
     assert!(decode_flow_configs(flow, &mut out));
     assert!(decode_flow_lifts(&lifts, &mut out));
-    let ok = decode_flow_points(points, &mut out);
-    (out, ok)
+    let found = decode_flow_points(points, &mut out);
+    (out, found)
+}
+
+/// The `flow` blob of `all`.
+fn flow_of(all: &[FlowConfig; 12]) -> [u8; FLOW_BLOB_SIZE] {
+    let mut flow = [0; FLOW_BLOB_SIZE];
+    encode_flow_configs(all, &mut flow);
+    flow
+}
+
+/// The `flowpts` blob of `all` (empty without a curve of more than 16 points).
+fn points_of(all: &[FlowConfig; 12]) -> Vec<u8> {
+    let mut buf = [0; FLOW_POINTS_BLOB_MAX];
+    let n = encode_flow_points(all, &mut buf);
+    buf[..n].to_vec()
+}
+
+/// One bit for each of these valves.
+fn valves(v: &[usize]) -> u16 {
+    v.iter().fold(0, |mask, &v| mask | 1 << v)
 }
 
 /// `all` as its `flow` blob holds it: 16 points of a longer curve.
@@ -744,37 +768,55 @@ fn a_curve_of_more_than_16_points_flow_keeps_16_of_them_flowpts_all_of_them() {
     for c in &old {
         assert_eq!(validate_flow_config(c), Ok(()));
     }
-    // `flowpts`: valve 3 with 24 points, valve 7 with 32, the rest none.
+    // `flowpts`: the CRC of every record of `flow`, valve 3 with 24 points, valve 7 with 32, the
+    // rest none.
     let mut points = [0xEE; FLOW_POINTS_BLOB_MAX];
     let n = encode_flow_points(&all, &mut points);
-    assert_eq!((FLOW_POINTS_BLOB_MAX, n), (1558, 6 + 12 + 4 * 56 + 4));
-    assert_eq!(&points[..6], b"VDMP\x01\x0C");
-    assert_eq!(&points[6..18], &[0, 0, 0, 24, 0, 0, 0, 32, 0, 0, 0, 0]);
-    assert_eq!(&points[18..26], &[0, 0, 0, 0, 0x2E, 0x04, 0xF4, 0x01]); // [0,0], [1070,0.5]
-    let v7 = 18 + 4 * 24;
+    assert_eq!((FLOW_POINTS_BLOB_MAX, n), (1606, 6 + 48 + 12 + 4 * 56 + 4));
+    assert_eq!(&points[..6], b"VDMP\x02\x0C");
+    for (v, record) in flow[6..6 + 12 * FLOW_RECORD_SIZE]
+        .chunks(FLOW_RECORD_SIZE)
+        .enumerate()
+    {
+        assert_eq!(
+            &points[6 + 4 * v..10 + 4 * v],
+            &crc32(record, 0).to_le_bytes(),
+            "{v}"
+        );
+    }
+    assert_eq!(&points[54..66], &[0, 0, 0, 24, 0, 0, 0, 32, 0, 0, 0, 0]);
+    assert_eq!(&points[66..74], &[0, 0, 0, 0, 0x2E, 0x04, 0xF4, 0x01]); // [0,0], [1070,0.5]
+    let v7 = 66 + 4 * 24;
     assert_eq!(&points[v7 + 4..v7 + 8], &[0x2E, 0x04, 0xF4, 0x01]);
     assert_eq!(&points[n - 8..n - 4], &[0x5A, 0x05, 0xAC, 0x0D]); // [1370, 3.5]
     assert_eq!(&points[n - 4..n], &crc32(&points[..n - 4], 0).to_le_bytes());
-    // Read back: the whole set, lifts and all.
-    assert_eq!(decoded(&flow, &all, &points[..n]), (all, true));
+    // Read back: the whole set, lifts and all; nothing may be cut.
+    assert_eq!(decoded(&flow, &all, Some(&points[..n])), (all, (true, 0)));
     // No longer curve: no blob.
     assert_eq!(encode_flow_points(&blob_set(), &mut points), 0);
     assert_eq!(encode_flow_points(&in_flow(&all), &mut points), 0);
 }
 
 #[test]
-fn flowpts_rejections_leave_the_16_points_of_flow() {
+fn flowpts_rejections_leave_the_16_points_of_flow_which_may_be_cut() {
     let all = long_set();
-    let mut flow = [0; FLOW_BLOB_SIZE];
-    encode_flow_configs(&all, &mut flow);
-    let mut buf = [0; FLOW_POINTS_BLOB_MAX];
-    let n = encode_flow_points(&all, &mut buf);
-    let good = buf[..n].to_vec();
+    let flow = flow_of(&all);
+    let good = points_of(&all);
+    let n = good.len();
+    let cut = valves(&[3, 7]);
     let rejected = |b: &[u8], what: &str| {
-        assert_eq!(decoded(&flow, &all, b), (in_flow(&all), false), "{what}");
+        assert_eq!(
+            decoded(&flow, &all, Some(b)),
+            (in_flow(&all), (false, cut)),
+            "{what}"
+        );
     };
-    rejected(&[], "no key");
-    rejected(&good[..21], "no header");
+    // No key: nothing may be cut, since a save writes `flowpts` before `flow`.
+    assert_eq!(decoded(&flow, &all, None), (in_flow(&all), (false, 0)));
+    rejected(&[], "unreadable");
+    rejected(&good[..3], "no CRC");
+    rejected(&good[..21], "no records");
+    rejected(&good[..60], "no numbers of points");
     rejected(&good[..n - 1], "short");
     let mut long = good.clone();
     long.push(0);
@@ -782,7 +824,12 @@ fn flowpts_rejections_leave_the_16_points_of_flow() {
     let mut fixed_long = long.clone();
     fix_crc(&mut fixed_long);
     rejected(&fixed_long, "long with its CRC");
-    for (at, value, what) in [(0, b'X', "magic"), (4, 2, "version"), (5, 11, "count")] {
+    for (at, value, what) in [
+        (0, b'X', "magic"),
+        (4, 1, "version 1"),
+        (4, 3, "version 3"),
+        (5, 11, "count"),
+    ] {
         let mut bad = good.clone();
         bad[at] = value;
         fix_crc(&mut bad);
@@ -795,7 +842,7 @@ fn flowpts_rejections_leave_the_16_points_of_flow() {
     for (counts, what) in [([(3, 33), (7, 23)], "33"), ([(0, 1), (3, 23)], "1")] {
         let mut bad = good.clone();
         for (valve, count) in counts {
-            bad[6 + valve] = count;
+            bad[54 + valve] = count;
         }
         fix_crc(&mut bad);
         rejected(&bad, what);
@@ -803,49 +850,96 @@ fn flowpts_rejections_leave_the_16_points_of_flow() {
     // 16 points of valve 3 (the last 8 of its 24 cut out) next to a good valve 7: refused whole,
     // valve 7 too.
     let mut bad = good.clone();
-    bad[6 + 3] = 16;
-    bad.drain(18 + 16 * 4..18 + 24 * 4);
+    bad[54 + 3] = 16;
+    bad.drain(66 + 16 * 4..66 + 24 * 4);
     fix_crc(&mut bad);
     rejected(&bad, "16");
-    // No curve at all, the header and the CRC right: nothing changes.
-    let mut none = b"VDMP\x01\x0C".to_vec();
+    // No curve at all, the records of `flow` named: nothing changes, and the 16 points of valves 3
+    // and 7 are their whole curves.
+    let mut none = good[..54].to_vec();
     none.extend([0; 12]);
     none.extend(crc32(&none, 0).to_le_bytes());
-    assert_eq!(decoded(&flow, &all, &none), (in_flow(&all), true));
+    assert_eq!(
+        decoded(&flow, &all, Some(&none)),
+        (in_flow(&all), (true, 0))
+    );
+    // The same naming other records: those 16 points may be cut.
+    none[6..54].fill(0);
+    fix_crc(&mut none);
+    assert_eq!(
+        decoded(&flow, &all, Some(&none)),
+        (in_flow(&all), (true, cut))
+    );
 }
 
 #[test]
 fn a_curve_that_flow_no_longer_holds_or_the_rules_refuse_stays_as_flow_has_it() {
     let all = long_set();
-    let mut buf = [0; FLOW_POINTS_BLOB_MAX];
-    let n = encode_flow_points(&all, &mut buf);
-    let points = &buf[..n];
+    let points = points_of(&all);
     // A version before 2.2.15 saved another curve on valve 3: that one stays, valve 7 has its 32.
     let mut older = all;
     older[3] = curve();
-    let mut flow = [0; FLOW_BLOB_SIZE];
-    encode_flow_configs(&older, &mut flow);
-    let (out, ok) = decoded(&flow, &all, points);
-    assert!(ok);
+    let (out, found) = decoded(&flow_of(&older), &all, Some(&points));
+    assert_eq!(found, (true, 0));
     assert_eq!(out[3], curve());
     assert_eq!(out[7], all[7]);
+    // One of 16 points: they may be 16 of a longer curve.
+    older[3] = step_curve(16);
+    let (out, found) = decoded(&flow_of(&older), &all, Some(&points));
+    assert_eq!(found, (true, valves(&[3])));
+    assert_eq!(out[3], step_curve(16));
+    assert_eq!(out[7], all[7]);
     // The 16 points it keeps, but 15 of them in `flow`: those 15.
-    encode_flow_configs(&all, &mut flow);
+    let mut flow = flow_of(&all);
     flow[6 + 3 * FLOW_RECORD_SIZE + 18] = 15;
     fix_crc(&mut flow);
-    let (out, ok) = decoded(&flow, &all, points);
-    assert!(ok);
+    let (out, found) = decoded(&flow, &all, Some(&points));
+    assert_eq!(found, (true, 0));
     assert_eq!(out[3].points(), &in_flow(&all)[3].points()[..15]);
     assert_eq!(out[7], all[7]);
-    // A curve whose points are not increasing where `flow` does not look: refused alone.
+    // A curve whose points are not increasing where `flow` does not look: refused alone, and the
+    // record the blob names keeps 16 of its points.
     let mut bad = all;
     bad[3].points[1].counts = 0;
-    let n = encode_flow_points(&bad, &mut buf);
-    encode_flow_configs(&all, &mut flow);
-    let (out, ok) = decoded(&flow, &all, &buf[..n]);
-    assert!(ok);
+    let (out, found) = decoded(&flow_of(&all), &all, Some(&points_of(&bad)));
+    assert_eq!(found, (true, valves(&[3])));
     assert_eq!(out[3], in_flow(&all)[3]);
     assert_eq!(out[7], all[7]);
+}
+
+#[test]
+fn flowpts_of_a_save_that_did_not_write_flow_the_curves_in_ram_come_back() {
+    // The save wrote `flowpts` of the new set and stopped before `flow`.
+    let old = long_set();
+    let mut new = old;
+    new[3] = step_curve(20);
+    new[7] = step_curve(16);
+    new[0].enabled = false;
+    let (out, found) = decoded(&flow_of(&old), &old, Some(&points_of(&new)));
+    // Valves 3 and 7 keep 16 points of their old curves, which may be cut; valve 0 keeps its 5.
+    assert_eq!(found, (true, valves(&[3, 7])));
+    assert_eq!(out, in_flow(&old));
+    // RAM still holds the old set: its curves come back where `flow` holds 16 points of them.
+    let mut back = out;
+    assert_eq!(keep_held_curves(&points_of(&old), &mut back, found.1), 0);
+    assert_eq!(back, old);
+    // RAM with the new set: 16 points of valve 3 of another curve, none of valve 7.
+    let mut back = out;
+    assert_eq!(
+        keep_held_curves(&points_of(&new), &mut back, found.1),
+        valves(&[3, 7])
+    );
+    assert_eq!(back, out);
+    // Valve 7 only, its bit alone in the mask: the bit of valve 3 is not set by it.
+    let mut ram = old;
+    ram[3] = new[3];
+    let mut back = out;
+    assert_eq!(
+        keep_held_curves(&points_of(&ram), &mut back, valves(&[7])),
+        0
+    );
+    assert_eq!(back[7], old[7]);
+    assert_eq!(back[3], out[3]);
 }
 
 #[test]

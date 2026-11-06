@@ -690,26 +690,50 @@ pub fn decode_flow_lifts(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
 }
 
 /// NVS `vdmrev/flowpts` (Rust 2.2.15), only while a curve has more than 16 points: "VDMP" (4),
-/// version 1 (1), count 12 (1), 12 x the points of the valve (1; 0: its record in `flow` holds
-/// its curve, else 17..32), the points of those valves one valve after the other, each {counts
-/// (2), flow (2)}, CRC-32 (4); little endian. The longest blob: every valve with 32 points.
+/// version 2 (1), count 12 (1), 12 x the CRC-32 of the valve's record in `flow` as the same save
+/// wrote it (4), 12 x the points of the valve (1; 0: its record in `flow` holds its curve, else
+/// 17..32), the points of those valves one valve after the other, each {counts (2), flow (2)},
+/// CRC-32 (4); little endian. A save writes it before `flow`, so a record of 16 points of a longer
+/// curve is in `flow` only while `flowpts` holds that curve. The longest blob: every valve with 32
+/// points.
 pub const FLOW_POINTS_BLOB_MAX: usize = TABLES_AT + N * 4 * FLOW_POINTS_MAX + 4;
 
 const FLOW_POINTS_MAGIC: [u8; 4] = *b"VDMP";
-const FLOW_POINTS_VERSION: u8 = 1;
-const TABLES_AT: usize = RECORDS_AT + N;
+const FLOW_POINTS_VERSION: u8 = 2;
+const COUNTS_AT: usize = RECORDS_AT + 4 * N;
+const TABLES_AT: usize = COUNTS_AT + N;
 
-/// Writes the curves of more than 16 points and returns the length of the blob; 0 (no blob: the
-/// key goes) when the record of every valve in `flow` holds its curve.
+/// The CRC-32 of the record of `c` in NVS `flow`: `flowpts` names with it the record of every
+/// valve that the same save wrote.
+fn record_crc(c: &FlowConfig) -> u32 {
+    let mut record = [0; FLOW_RECORD_SIZE];
+    encode_record(c, &mut record);
+    crc32(&record, 0)
+}
+
+/// The valves of `c` with 16 points, one bit each (bit 0: valve 1).
+fn sixteen_points(c: &[FlowConfig; N]) -> u16 {
+    c.iter()
+        .enumerate()
+        .filter(|(_, c)| usize::from(c.count) == FLOW_V1_POINTS)
+        .fold(0, |mask, (v, _)| mask | 1 << v)
+}
+
+/// Writes the records of `flow` the set gives and the curves of more than 16 points, and returns
+/// the length of the blob; 0 (no blob: the key goes) when the record of every valve in `flow`
+/// holds its curve.
 pub fn encode_flow_points(c: &[FlowConfig; N], out: &mut [u8; FLOW_POINTS_BLOB_MAX]) -> usize {
     out[..4].copy_from_slice(&FLOW_POINTS_MAGIC);
     out[4] = FLOW_POINTS_VERSION;
     out[5] = VALVE_COUNT;
-    let (counts, rest) = out[RECORDS_AT..].split_at_mut(N);
+    let (records, rest) = out[RECORDS_AT..].split_at_mut(COUNTS_AT - RECORDS_AT);
+    let (records, _) = records.as_chunks_mut::<4>();
+    let (counts, rest) = rest.split_at_mut(N);
     let (cells, _) = rest.as_chunks_mut::<4>();
     let mut cells = cells.iter_mut();
     let mut total = 0;
-    for (n, cfg) in counts.iter_mut().zip(c) {
+    for ((record, n), cfg) in records.iter_mut().zip(counts.iter_mut()).zip(c) {
+        record.copy_from_slice(&record_crc(cfg).to_le_bytes());
         let pts = cfg.points();
         *n = 0;
         if pts.len() > FLOW_V1_POINTS {
@@ -731,18 +755,31 @@ pub fn encode_flow_points(c: &[FlowConfig; N], out: &mut [u8; FLOW_POINTS_BLOB_M
 }
 
 /// The curves of more than 16 points from the blob of [`encode_flow_points`] into `out`, the set
-/// [`decode_flow_configs`] gave: false (every curve as `flow` holds it) for a bad
-/// magic/version/count/CRC, a number of points other than 0 and 17..32 or a length that does not
-/// fit them. A valve takes its curve only where the 16 points of its record in `flow` are the
-/// ones [`v1_cells`] keeps of it and its configuration allows it; else (a version before 2.2.15
-/// wrote another curve to `flow`) it keeps the points of `flow`.
-pub fn decode_flow_points(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
-    let Some((body, crc)) = data.split_last_chunk::<4>() else {
-        return false;
+/// [`decode_flow_configs`] gave. A valve takes its curve only where the 16 points of its record
+/// in `flow` are the ones [`v1_cells`] keeps of it and its configuration allows it; else (a save
+/// wrote `flowpts` and not `flow`, or a version before 2.2.15 wrote another curve to `flow`) it
+/// keeps the points of `flow`.
+///
+/// Returns whether the blob was good and the valves (one bit each) that keep 16 points of `flow`
+/// the blob does not vouch for, which may be 16 of a longer curve: with no key (`None`) none, since
+/// a save writes `flowpts` before `flow`; with a bad blob (unreadable, magic, version, count, CRC,
+/// a number of points other than 0 and 17..32, a length that does not fit them) every valve with
+/// 16 points; with a good one every valve with 16 points but those whose record the blob names
+/// as holding the whole curve.
+pub fn decode_flow_points(data: Option<&[u8]>, out: &mut [FlowConfig; N]) -> (bool, u16) {
+    let Some(data) = data else {
+        return (false, 0);
     };
-    let (Some(head), Some(counts)) = (body.get(..RECORDS_AT), body.get(RECORDS_AT..TABLES_AT))
-    else {
-        return false;
+    let bad = (false, sixteen_points(out));
+    let Some((body, crc)) = data.split_last_chunk::<4>() else {
+        return bad;
+    };
+    let (Some(head), Some(records), Some(counts)) = (
+        body.get(..RECORDS_AT),
+        body.get(RECORDS_AT..COUNTS_AT),
+        body.get(COUNTS_AT..TABLES_AT),
+    ) else {
+        return bad;
     };
     if head[..4] != FLOW_POINTS_MAGIC
         || head[4] != FLOW_POINTS_VERSION
@@ -751,15 +788,18 @@ pub fn decode_flow_points(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
             .iter()
             .any(|&n| n != 0 && !(FLOW_V1_POINTS + 1..=FLOW_POINTS_MAX).contains(&usize::from(n)))
     {
-        return false;
+        return bad;
     }
     let total: usize = counts.iter().map(|&n| usize::from(n)).sum();
     if body.len() != TABLES_AT + 4 * total || *crc != crc32(body, 0).to_le_bytes() {
-        return false;
+        return bad;
     }
+    let (records, _) = records.as_chunks::<4>();
     let (cells, _) = body[TABLES_AT..].as_chunks::<4>();
     let mut cells = cells.iter();
-    for (c, &n) in out.iter_mut().zip(counts) {
+    let mut unvouched = 0;
+    for (v, ((c, &n), record)) in out.iter_mut().zip(counts).zip(records).enumerate() {
+        let named = u32::from_le_bytes(*record) == record_crc(c);
         let mut with = FlowConfig { count: n, ..*c };
         for (p, cell) in with
             .points
@@ -774,8 +814,21 @@ pub fn decode_flow_points(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
         if n != 0 && kept && validate_flow_config(&with).is_ok() {
             *c = with;
         }
+        // the blob vouches for 16 points only as the whole curve of the record it names
+        if usize::from(c.count) == FLOW_V1_POINTS && !(named && n == 0) {
+            unvouched |= 1 << v;
+        }
     }
-    true
+    (true, unvouched)
+}
+
+/// After [`decode_flow_points`] of `flowpts`: a valve of `out` whose record in `flow` holds the 16
+/// points [`v1_cells`] keeps of its curve in `held` (the blob of [`encode_flow_points`] of the set
+/// in RAM: after a failed save the set before it) takes that curve. Returns `unvouched` without the
+/// valves that took one.
+pub fn keep_held_curves(held: &[u8], out: &mut [FlowConfig; N], unvouched: u16) -> u16 {
+    decode_flow_points(Some(held), out);
+    unvouched & sixteen_points(out)
 }
 
 // ---------------------------------------------------------------- JSON

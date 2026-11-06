@@ -21,23 +21,39 @@ stay equal.
   with a point at every target the regulator sets needs no interpolation for them
   ([API.md](../revamped/API.md)).
 - NVS: `flow` stays the blob of 2.2.14. Of a curve of more than 16 points it holds 16, the first,
-  the last and 14 evenly spaced by index between them, as count 16. The new key `flowpts` (its own
-  magic, version and CRC, 22 B + 4 B per point of the longer curves) holds every point of those
-  curves; with no curve above 16 points the save removes it. Without it, with a bad one or for a
-  valve whose 16 points in `flow` are not the ones of its curve there (a version before 2.2.15
-  saved another curve), a valve has the points of `flow`. Going back to 2.2.14 or 2.2.13 runs such
-  a curve with those 16 points; after a later 2.2.15 every point is back on a valve whose curve
-  the older version did not change ([DESIGN.md](../revamped/DESIGN.md) section 9).
-- When `flow` was written and `flowpts` was not (a failed write or removal), the save answers
-  `500 nvs`, RAM keeps the old set and the next save reads NVS first, as with `flowlift`.
+  the last and 14 evenly spaced by index between them, as count 16; of 24 points from 0.5 to
+  2.7 l/min after `[0,0]` that drops 0.5 l/min. The new key `flowpts` (its own magic, version and
+  CRC, the CRC of every record of `flow` as the same save writes it, 70 B + 4 B per point of the
+  longer curves) holds every point of those curves; with no curve above 16 points the save removes
+  it. Without it, with a bad one or for a valve whose 16 points in `flow` are not the ones of its
+  curve there (a version before 2.2.15 saved another curve), a valve has the points of `flow`.
+  Going back to 2.2.14 or 2.2.13 runs such a curve with those 16 points; after a later 2.2.15
+  every point is back on a valve whose curve the older version did not change
+  ([DESIGN.md](../revamped/DESIGN.md) section 9).
+- A save writes `flowpts` first, then `flow` and `flowlift`, and removes `flowpts` last when no
+  curve has more than 16 points, so `flow` holds 16 points of a longer curve only while `flowpts`
+  holds that curve. A failed write of `flowpts` changes nothing in NVS. A failed write or removal
+  after it answers `500 nvs`, RAM keeps the old set and the next save reads NVS first, as with
+  `flowlift`; that load keeps the curve in RAM of a valve whose record in `flow` holds its 16
+  points, so a `POST` without `points` after a `500` saves the whole curve.
+- A valve left on 16 points of `flow` that `flowpts` does not vouch for (a bad `flowpts`, a power
+  loss between the two writes, a save of an older version) may run 16 points of a longer curve:
+  the load logs event 419 `flow_curve_cut` (arg1 1 `flowpts` bad, 2 of another save) and
+  `GET/POST /api/valves/{n}/flow` shows `"curveCut":true` until a `POST` changes the points of the
+  valve. The event stays in the log: with the longest fields the event types of the Home
+  Assistant event entity fill its payload, so it is not published on MQTT. A curve of exactly 16
+  points shows it as well after a failed removal of `flowpts`.
 - A valve is positioned again when a point in use changes, as before; the cells behind the points
   in use no longer count, since `flow` keeps no more than 16 of them.
 - RAM: the configuration of a valve grows from 88 B to 152 B; its two copies of 12 (storage and
   the flow layer, both boot blocks on the heap) take 1536 B more. Static RAM does not change. A
-  save or a load of the flow configuration takes one transient block of 2564 B (1006 B before).
+  save or a load of the flow configuration takes one transient block of 2612 B (1006 B before),
+  and the load after a failed save, while RAM holds a curve of more than 16 points, a second one
+  of at most 1606 B for those curves.
   The image grows by 1920 B to 1,213,120 B, 15,680 B under its budget of 1,228,800 B.
-- `tools/mock_api.py` takes up to 32 points, and `tools/flowbench/flowcheck.py` thins a curve
-  above 32 points, no longer above 16 (`curves` and `upload`).
+- `tools/mock_api.py` takes up to 32 points and shows `curveCut` false, and
+  `tools/flowbench/flowcheck.py` thins a curve above 32 points, no longer above 16 (`curves` and
+  `upload`).
 
 ### ESP32: a flow below the first flow of the curve
 

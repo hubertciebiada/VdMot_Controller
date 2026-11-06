@@ -301,7 +301,9 @@ and once per code and valve per 10 min. Suppressed events are counted
 
 Of the flow layer, `flow_position_failed`, `flow_hold_lost` and
 `flow_config_unreadable` reach MQTT. `flow_positioned` is an Info event of the class
-"warning and worse": it stays in the log, although `event_types` lists it.
+"warning and worse": it stays in the log, although `event_types` lists it. `flow_curve_cut`
+(Rust 2.2.15) stays in the log and is not in `event_types`: with the longest fields
+the event types fill the payload of the event entity.
 
 ## Home Assistant
 

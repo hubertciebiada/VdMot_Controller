@@ -12,7 +12,8 @@ use crate::testkit::{Device, Reset};
 use vdm_esp_core::config::DecodeResult;
 use vdm_esp_core::file_manager::FS_PATH_MAX;
 use vdm_esp_core::flow_layer::{
-    FlowConfig, FlowPoint, RefSide, FLOW_BLOB_SIZE, FLOW_LIFT_BLOB_SIZE, FLOW_RECORD_SIZE,
+    FlowConfig, FlowPoint, RefSide, FLOW_BLOB_SIZE, FLOW_LIFT_BLOB_SIZE, FLOW_POINTS_BLOB_MAX,
+    FLOW_RECORD_SIZE,
 };
 use vdm_esp_core::legacy_import::{DROPPED_MESSENGER, LEGACY_TEMPS_BLOB};
 
@@ -850,76 +851,153 @@ fn long_curve(n: usize) -> FlowConfig {
     c
 }
 
+/// The NVS writes and removals of the flow keys since journal entry `from`.
+fn flow_writes(rig: &Rig, from: usize) -> Vec<String> {
+    rig.dev.journal.entries()[from..]
+        .iter()
+        .filter(|e| e.starts_with("nvs set vdmrev/flow") || e.starts_with("nvs remove vdmrev/flow"))
+        .cloned()
+        .collect()
+}
+
 #[test]
-fn flow_a_curve_of_more_than_16_points_goes_to_flowpts_flow_keeps_16_of_it() {
+fn flow_a_curve_of_more_than_16_points_goes_to_flowpts_first_flow_keeps_16_of_it() {
     let rig = Rig::new();
     let st = rig.storage();
+    // A boot: one transient block for `flow` and `flowpts`, none for curves RAM does not hold.
+    rig.dev.heap.state().granted.clear();
     assert!(!st.load_flow_configs());
+    assert_eq!(rig.dev.heap.state().granted, [1006 + 1606]);
     let long = long_curve(24);
+    let from = rig.dev.journal.entries().len();
     assert!(st.save_flow_config(3, &long));
     assert_eq!(st.shared().flow_config(3), long);
-    // One transient block for `flow` and `flowpts`.
-    assert_eq!(rig.dev.heap.state().granted.last(), Some(&(1006 + 1558)));
-    // `flow` as Rust 2.2.14 reads it, 16 points of the curve; `flowpts` all of them.
+    assert_eq!(rig.dev.heap.state().granted.last(), Some(&(1006 + 1606)));
+    // `flowpts` first with all the points, then `flow` as Rust 2.2.14 reads it, 16 of them.
+    assert_eq!(
+        flow_writes(&rig, from),
+        [
+            "nvs set vdmrev/flowpts",
+            "nvs set vdmrev/flow",
+            "nvs set vdmrev/flowlift"
+        ]
+    );
     let flow = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW);
     assert_eq!(flow.len(), FLOW_BLOB_SIZE);
     assert_eq!(flow[6 + 3 * FLOW_RECORD_SIZE + 18], 16);
     assert_eq!(
         rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_POINTS).len(),
-        6 + 12 + 4 * 24 + 4
+        6 + 48 + 12 + 4 * 24 + 4
     );
-    // The next boot reads both, into the same block.
+    // A load with that curve in RAM: both blobs in one block, the curves of RAM in a second.
     rig.dev.heap.state().granted.clear();
     assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), long);
-    assert_eq!(rig.dev.heap.state().granted, [1006 + 1558]);
-    // A bad `flowpts`: the 16 points of `flow`, no event, saves go on.
-    let points = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_POINTS);
-    let mut bad = points.clone();
-    bad[20] ^= 1;
-    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_POINTS, &bad);
-    assert!(st.load_flow_configs());
-    let sixteen = st.shared().flow_config(3);
-    assert_eq!((sixteen.count, sixteen.points()[15]), (16, long.points[23]));
-    assert!(st.shared().flow_loaded());
-    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_POINTS, &points);
-    assert!(st.load_flow_configs());
-    assert_eq!(st.shared().flow_config(3), long);
-    // 16 points or fewer: the key goes, NVS is what Rust 2.2.14 writes; a second such save has
-    // nothing to remove.
+    assert_eq!(rig.dev.heap.state().granted, [1006 + 1606, 1606]);
+    assert!(!st.shared().flow_curve_cut(3));
+    // 16 points or fewer: `flow`, `flowlift`, then the key goes; NVS is what Rust 2.2.14 writes,
+    // and a second such save has nothing to remove.
     let short = long_curve(16);
+    let from = rig.dev.journal.entries().len();
+    assert!(st.save_flow_config(3, &short));
+    assert_eq!(
+        flow_writes(&rig, from),
+        [
+            "nvs set vdmrev/flow",
+            "nvs set vdmrev/flowlift",
+            "nvs remove vdmrev/flowpts"
+        ]
+    );
     assert!(st.save_flow_config(3, &short));
     assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_POINTS));
-    assert!(st.save_flow_config(3, &short));
+    rig.dev.heap.state().granted.clear();
     assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), short);
-    // `flowpts` left behind by a version before 2.2.15 that saved another curve: that one.
-    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_POINTS, &points);
-    assert!(st.load_flow_configs());
-    assert_eq!(st.shared().flow_config(3), short);
-    // `flow` written, `flowpts` not: RAM keeps the old set and the next save reads NVS first,
-    // whose stale `flowpts` does not fit the new `flow`.
-    let longest = long_curve(32);
-    rig.dev
-        .nvs
-        .knobs()
-        .fail_set
-        .insert(KEY_FLOW_POINTS.to_string());
+    assert_eq!(rig.dev.heap.state().granted, [1006 + 1606]);
+    assert!(!st.shared().flow_curve_cut(3));
+    assert!(rig.host.events().is_empty());
+    // A factory reset takes `flowpts` with the namespace.
+    assert!(st.save_flow_config(3, &long));
+    assert!(rig.dev.nvs.has(NAMESPACE, KEY_FLOW_POINTS));
+    assert!(st.factory_reset());
+    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_POINTS));
+}
+
+#[test]
+fn flow_a_failed_save_keeps_the_curve_ram_had_and_never_drops_points_silently() {
+    let rig = Rig::new();
+    let st = rig.storage();
+    let (long, longest, short) = (long_curve(24), long_curve(32), long_curve(16));
+    let fail_set = |key: &str| rig.dev.nvs.knobs().fail_set.insert(key.to_string());
+    let clear = || {
+        rig.dev.nvs.knobs().fail_set.clear();
+        rig.dev.nvs.knobs().fail_remove.clear();
+    };
+    let blobs = || {
+        (
+            rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW),
+            rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_POINTS),
+        )
+    };
+    assert!(!st.load_flow_configs());
+    assert!(st.save_flow_config(3, &long));
+    // `flowpts` not written: NVS holds the old set, saves go on.
+    let saved = blobs();
+    fail_set(KEY_FLOW_POINTS);
     assert!(!st.save_flow_config(3, &longest));
-    assert_eq!(st.shared().flow_config(3), short);
+    assert_eq!(st.shared().flow_config(3), long);
+    assert!(st.shared().flow_loaded());
+    assert_eq!(blobs(), saved);
+    clear();
+    // `flowpts` written, `flow` not: NVS holds neither set, and the next save reads it first. The
+    // curve of RAM stays, since `flow` holds its 16 points; a POST without points saves it whole.
+    fail_set(KEY_FLOW);
+    assert!(!st.save_flow_config(3, &longest));
+    assert_eq!(st.shared().flow_config(3), long);
     assert!(!st.shared().flow_loaded());
-    assert!(!st.save_flow_config(3, &longest));
-    rig.dev.nvs.knobs().fail_set.clear();
+    assert_eq!(blobs().0, saved.0);
+    assert_ne!(blobs().1, saved.1);
+    clear();
     assert!(st.ensure_flow_loaded());
-    let in_nvs = st.shared().flow_config(3);
-    assert_eq!(
-        (in_nvs.count, in_nvs.points()[15]),
-        (16, longest.points[31])
-    );
-    assert!(st.save_flow_config(3, &longest));
+    assert_eq!(st.shared().flow_config(3), long);
+    assert!(!st.shared().flow_curve_cut(3));
+    let mut off = long;
+    off.enabled = false;
+    assert!(st.save_flow_config(3, &off));
     assert!(st.load_flow_configs());
+    assert_eq!(st.shared().flow_config(3), off);
+    assert!(rig.host.events().is_empty());
+    // The same without memory for the curves of RAM: 16 points of the curve, marked, event 419.
+    fail_set(KEY_FLOW);
+    assert!(!st.save_flow_config(3, &longest));
+    clear();
+    rig.dev.heap.state().next.extend([true, false]);
+    assert!(st.ensure_flow_loaded());
+    let cut = st.shared().flow_config(3);
+    assert_eq!((cut.count, cut.points()[15]), (16, long.points[23]));
+    assert!(st.shared().flow_curve_cut(3));
+    assert!(!st.shared().flow_curve_cut(2));
+    let e = rig.host.with_code(EventCode::FlowCurveCut);
+    assert_eq!((e.len(), e[0].valve, e[0].arg1, e[0].arg2), (1, 3, 2, 0));
+    // A save that keeps the points keeps the mark; one that changes them clears it.
+    assert!(st.save_flow_config(3, &FlowConfig { offset: 5, ..cut }));
+    assert!(st.shared().flow_curve_cut(3));
+    fail_set(KEY_FLOW);
+    assert!(!st.save_flow_config(3, &short));
+    clear();
+    assert!(st.shared().flow_curve_cut(3));
+    assert!(st.save_flow_config(3, &long));
+    assert!(!st.shared().flow_curve_cut(3));
+    // `flow` and `flowpts` written, `flowlift` not: NVS holds the whole new curve, which the next
+    // save reads.
+    fail_set(KEY_FLOW_LIFT);
+    assert!(!st.save_flow_config(3, &longest));
+    assert_eq!(st.shared().flow_config(3), long);
+    clear();
+    assert!(st.ensure_flow_loaded());
     assert_eq!(st.shared().flow_config(3), longest);
-    // A curve of 16 points whose save cannot remove `flowpts`: the same.
+    // A curve of 16 points whose save cannot remove `flowpts`: the new `flow` with the old
+    // `flowpts`, which may hide a cut for all the load knows: marked.
     rig.dev
         .nvs
         .knobs()
@@ -927,15 +1005,63 @@ fn flow_a_curve_of_more_than_16_points_goes_to_flowpts_flow_keeps_16_of_it() {
         .insert(KEY_FLOW_POINTS.to_string());
     assert!(!st.save_flow_config(3, &short));
     assert_eq!(st.shared().flow_config(3), longest);
-    assert!(!st.shared().flow_loaded());
-    rig.dev.nvs.knobs().fail_remove.clear();
+    clear();
     assert!(st.ensure_flow_loaded());
     assert_eq!(st.shared().flow_config(3), short);
+    assert!(st.shared().flow_curve_cut(3));
+    assert_eq!(rig.host.with_code(EventCode::FlowCurveCut).len(), 2);
     assert!(st.save_flow_config(3, &short));
     assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_POINTS));
-    assert!(rig.host.events().is_empty());
-    // A factory reset takes `flowpts` with the namespace.
-    assert!(st.save_flow_config(3, &long));
+    // A factory reset clears the mark.
     assert!(st.factory_reset());
-    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_POINTS));
+    assert!(!st.shared().flow_curve_cut(3));
+}
+
+#[test]
+fn flow_a_power_loss_between_flowpts_and_flow_the_boot_marks_the_curve_cut() {
+    let mut rig = Rig::new();
+    let long = long_curve(24);
+    {
+        let st = rig.storage();
+        assert!(!st.load_flow_configs());
+        assert!(st.save_flow_config(3, &long));
+        rig.dev.nvs.knobs().fail_set.insert(KEY_FLOW.to_string());
+        assert!(!st.save_flow_config(3, &long_curve(32)));
+        rig.dev.nvs.knobs().fail_set.clear();
+    }
+    rig.reboot(Reset::PowerOn);
+    let st = rig.storage();
+    // RAM holds nothing: 16 points of the old curve, marked, event 419 (arg1 2), saves go on.
+    assert!(st.load_flow_configs());
+    let cut = st.shared().flow_config(3);
+    assert_eq!((cut.count, cut.points()[15]), (16, long.points[23]));
+    assert!(st.shared().flow_curve_cut(3));
+    assert!(!st.shared().flow_curve_cut(2));
+    assert!(st.shared().flow_loaded());
+    let e = rig.host.with_code(EventCode::FlowCurveCut);
+    assert_eq!((e.len(), e[0].valve, e[0].arg1), (1, 3, 2));
+    // A bad `flowpts`, or one that cannot be read: the same, arg1 1.
+    let points = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_POINTS);
+    let mut bad = points.clone();
+    bad[20] ^= 1;
+    for b in [bad, vec![0; FLOW_POINTS_BLOB_MAX + 1]] {
+        rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_POINTS, &b);
+        assert!(st.load_flow_configs());
+        assert_eq!(st.shared().flow_config(3), cut);
+        assert!(st.shared().flow_curve_cut(3));
+        let e = rig.host.with_code(EventCode::FlowCurveCut);
+        assert_eq!((e.last().unwrap().valve, e.last().unwrap().arg1), (3, 1));
+    }
+    assert_eq!(rig.host.with_code(EventCode::FlowCurveCut).len(), 3);
+    // Without `flowpts` the 16 points are the whole curve (a save writes it first): no mark.
+    assert!(rig
+        .dev
+        .nvs
+        .open(NAMESPACE, true)
+        .unwrap()
+        .remove(KEY_FLOW_POINTS));
+    assert!(st.load_flow_configs());
+    assert_eq!(st.shared().flow_config(3), cut);
+    assert!(!st.shared().flow_curve_cut(3));
+    assert_eq!(rig.host.with_code(EventCode::FlowCurveCut).len(), 3);
 }

@@ -35,8 +35,8 @@ use vdm_esp_core::config::{
 use vdm_esp_core::event_log::EventCode;
 use vdm_esp_core::flow_layer::{
     decode_flow_configs, decode_flow_lifts, decode_flow_points, encode_flow_configs,
-    encode_flow_lifts, encode_flow_points, FlowConfig, FLOW_BLOB_SIZE, FLOW_LIFT_BLOB_SIZE,
-    FLOW_POINTS_BLOB_MAX,
+    encode_flow_lifts, encode_flow_points, keep_held_curves, FlowConfig, FLOW_BLOB_SIZE,
+    FLOW_LIFT_BLOB_SIZE, FLOW_POINTS_BLOB_MAX, FLOW_V1_POINTS,
 };
 use vdm_esp_core::legacy_import::{import_legacy_config, ImportReport, LegacyNvsReader};
 
@@ -100,7 +100,7 @@ pub const IMPORT_REPORT_FILE: &str = "/sys/import.json";
 /// The cfg and cfgx encode/decode buffers in one heap block (4 KB + 1.5 KB; the cfg part is also
 /// the scratch of the legacy import and the text of the import report).
 const BLOBS_LEN: usize = CONFIG_BLOB_MAX + CONFIG_EXT_BLOB_MAX;
-/// The `flow` and `flowpts` buffers in one heap block (1006 B + at most 1558 B).
+/// The `flow` and `flowpts` buffers in one heap block (1006 B + at most 1606 B).
 const FLOW_BLOBS_LEN: usize = FLOW_BLOB_SIZE + FLOW_POINTS_BLOB_MAX;
 /// The larger record of the boot guard (`otaTrial`), which a factory reset keeps.
 const GUARD_RECORD_MAX: usize = 32;
@@ -202,6 +202,9 @@ pub struct StorageShared {
     /// `flow` holds what NVS holds (the load read the blob or found none, or a save or factory
     /// reset wrote it): only then may a save write the whole set
     flow_loaded: AtomicBool,
+    /// Rust 2.2.15: the valves (bit 0: valve 1) that keep 16 points of NVS `flow` the last load
+    /// found no `flowpts` curve for (`decode_flow_points`), until a save changes their points
+    flow_cut: AtomicU32,
 }
 
 impl Default for StorageShared {
@@ -228,12 +231,22 @@ impl StorageShared {
             flow: Mutex::new(Box::default()),
             flow_revision: AtomicU32::new(0),
             flow_loaded: AtomicBool::new(false),
+            flow_cut: AtomicU32::new(0),
         }
     }
 
     /// The flow configuration in RAM is what NVS holds (see `flow_loaded`).
     pub fn flow_loaded(&self) -> bool {
         self.flow_loaded.load(Ordering::Relaxed)
+    }
+
+    /// The valve keeps 16 points of NVS `flow` that `flowpts` did not vouch for at the last load,
+    /// and no save changed its points since: they may be 16 of a longer curve (event 419).
+    pub fn flow_curve_cut(&self, valve: u8) -> bool {
+        self.flow_cut
+            .load(Ordering::Relaxed)
+            .checked_shr(u32::from(valve))
+            .is_some_and(|m| m & 1 != 0)
     }
 
     /// +1 on every published flow configuration (the boot load, `save_flow_configs`).
@@ -284,10 +297,10 @@ impl StorageShared {
 
     /// Rewrites the whole set under the lock with `f` (a decode, the defaults) and publishes
     /// it (revision + 1); returns what `f` returned.
-    fn replace_flow_configs(
+    fn replace_flow_configs<R>(
         &self,
-        f: impl FnOnce(&mut [FlowConfig; VALVE_COUNT as usize]) -> bool,
-    ) -> bool {
+        f: impl FnOnce(&mut [FlowConfig; VALVE_COUNT as usize]) -> R,
+    ) -> R {
         let ok = f(&mut lock(&self.flow));
         self.flow_revision.fetch_add(1, Ordering::Relaxed);
         ok
@@ -365,21 +378,25 @@ fn load_bytes(ns: &impl NvsNamespace, key: &str, out: &mut [u8]) -> usize {
     ns.get_blob(key, out).unwrap_or(0)
 }
 
-/// `flow` and `flowpts` into `bytes` (`flowpts` from [`FLOW_BLOB_SIZE`] on): their lengths and
-/// the reason of an unreadable `flow` (0 none there, 1 NVS not open, 2 no memory for `bytes`, 3
-/// read, unreadable when it does not decode).
+/// `flow` and `flowpts` into `bytes` (`flowpts` from [`FLOW_BLOB_SIZE`] on): their lengths (that
+/// of `flowpts` `None` without the key, 0 when it cannot be read) and the reason of an unreadable
+/// `flow` (0 none there, 1 NVS not open, 2 no memory for `bytes`, 3 read, unreadable when it does
+/// not decode).
 fn read_flow_blobs(
     ns: Option<&impl NvsNamespace>,
     bytes: Option<&mut Vec<u8>>,
-) -> (usize, usize, i32) {
+) -> (usize, Option<usize>, i32) {
     match (ns, bytes) {
-        (None, _) => (0, 0, 1),
-        (Some(ns), _) if ns.blob_len(KEY_FLOW).is_none() => (0, 0, 0),
-        (Some(_), None) => (0, 0, 2),
+        (None, _) => (0, None, 1),
+        (Some(ns), _) if ns.blob_len(KEY_FLOW).is_none() => (0, None, 0),
+        (Some(_), None) => (0, None, 2),
         (Some(ns), Some(b)) => {
             let (flow, points) = b.split_at_mut(FLOW_BLOB_SIZE);
             let n = load_bytes(ns, KEY_FLOW, flow);
-            (n, load_bytes(ns, KEY_FLOW_POINTS, points), 3)
+            let n_points = ns
+                .blob_len(KEY_FLOW_POINTS)
+                .map(|_| load_bytes(ns, KEY_FLOW_POINTS, points));
+            (n, n_points, 3)
         }
     }
 }
@@ -854,6 +871,7 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
             true
         });
         self.shared.flow_loaded.store(erased, Ordering::Relaxed);
+        self.shared.flow_cut.store(0, Ordering::Relaxed);
         ns.set_int(KEY_IMPORTED, NvsInt::U8, 1) && erased
     }
 
@@ -866,9 +884,15 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
     /// read (arg1 of the event FlowConfigUnreadable: 1 NVS not open, 2 no memory for the buffer,
     /// 3 a bad blob) gives the defaults too, and no flow configuration is saved until a load
     /// read it: a save writes the whole set, the defaults over every other valve. The buffer of
-    /// `flow` and `flowpts` (about 2.5 KB) is a transient heap block.
+    /// `flow` and `flowpts` (about 2.6 KB) is a transient heap block.
+    ///
+    /// Rust 2.2.15: a valve whose record in `flow` holds 16 points of its curve in RAM keeps that
+    /// curve (the load after a failed save, when RAM holds the set before it; a second transient
+    /// block of at most 1606 B). A valve left on 16 points of `flow` that `flowpts` does not vouch
+    /// for (`decode_flow_points`) gets the event FlowCurveCut (arg1 1 `flowpts` bad, 2 of another
+    /// save) and `flow_curve_cut` until a save changes its points.
     pub fn load_flow_configs(&self) -> bool {
-        let (decoded, reason) = {
+        let (decoded, reason, cut, bad) = {
             let _cfg = self.cfg_lock();
             let mut bytes = try_bytes(&self.gate, FLOW_BLOBS_LEN);
             let ns = self.prefs();
@@ -877,21 +901,27 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
                 .as_deref()
                 .map_or((&[][..], &[][..]), |b| b.split_at(FLOW_BLOB_SIZE));
             let blob = blob.get(..n).unwrap_or_default();
-            let points = points.get(..n_points).unwrap_or_default();
+            let points = n_points.map(|n| points.get(..n).unwrap_or_default());
             let mut lifts = [0u8; FLOW_LIFT_BLOB_SIZE];
             let n_lifts = ns
                 .as_ref()
                 .map_or(0, |ns| load_bytes(ns, KEY_FLOW_LIFT, &mut lifts));
-            let decoded = self.shared.replace_flow_configs(|all| {
-                let decoded = decode_flow_configs(blob, all);
-                if decoded {
-                    // absent or bad: no lift and no floor, the 16 points of `flow`
-                    decode_flow_lifts(lifts.get(..n_lifts).unwrap_or_default(), all);
-                    decode_flow_points(points, all);
+            let (decoded, cut, bad) = self.shared.replace_flow_configs(|all| {
+                let held = self.held_curves(all);
+                if !decode_flow_configs(blob, all) {
+                    return (false, 0, false);
                 }
-                decoded
+                // absent or bad: no lift and no floor, the 16 points of `flow`
+                decode_flow_lifts(lifts.get(..n_lifts).unwrap_or_default(), all);
+                let (good, unvouched) = decode_flow_points(points, all);
+                let cut = held.map_or(unvouched, |h| keep_held_curves(&h, all, unvouched));
+                (true, cut, !good)
             });
-            (decoded, reason)
+            // under the lock: a save after this load clears the bits of its valve
+            self.shared
+                .flow_cut
+                .store(u32::from(cut), Ordering::Relaxed);
+            (decoded, reason, cut, bad)
         };
         let loaded = decoded || reason == 0;
         self.shared.flow_loaded.store(loaded, Ordering::Relaxed);
@@ -899,7 +929,24 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
             self.host
                 .log(EventCode::FlowConfigUnreadable, NO_VALVE, reason, 0, b"");
         }
+        for valve in (0..VALVE_COUNT).filter(|v| cut >> v & 1 != 0) {
+            let state = if bad { 1 } else { 2 };
+            self.host.log(EventCode::FlowCurveCut, valve, state, 0, b"");
+        }
         decoded
+    }
+
+    /// The curves of more than 16 points of `all` as `flowpts` holds them, in a transient block;
+    /// `None` without such a curve or the memory for it.
+    fn held_curves(&self, all: &[FlowConfig; VALVE_COUNT as usize]) -> Option<Vec<u8>> {
+        if all.iter().all(|c| c.points().len() <= FLOW_V1_POINTS) {
+            return None;
+        }
+        let mut held = try_bytes(&self.gate, FLOW_POINTS_BLOB_MAX)?;
+        let out = <&mut [u8; FLOW_POINTS_BLOB_MAX]>::try_from(&mut held[..]).ok()?;
+        let n = encode_flow_points(all, out);
+        held.truncate(n);
+        Some(held)
     }
 
     /// The flow configuration in RAM is what NVS holds, else the load is tried again (a save
@@ -912,13 +959,14 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
     }
 
     /// `POST /api/valves/{n}/flow`: the flow configuration of `valve` replaced by `c`, the
-    /// whole set written to NVS `flow` (as Rust 2.2.13 reads it, 16 points of a longer curve),
-    /// `flowlift` and `flowpts` (removed while no curve has more than 16 points) and published;
-    /// false (nothing published) for a valve out of range, a set that is not what NVS holds
-    /// (`flow_loaded`), no memory for the blob buffer or a failed write. When `flow` was written
-    /// and `flowlift` or `flowpts` was not, `flow_loaded` turns false: NVS holds the new set with
-    /// the old pairs or curves, and [`ensure_flow_loaded`](Self::ensure_flow_loaded) reads that
-    /// before the next save.
+    /// whole set written to NVS `flowpts` (first, while a curve has more than 16 points), `flow`
+    /// (as Rust 2.2.13 reads it, 16 points of a longer curve), `flowlift` and published, then
+    /// `flowpts` removed while no curve has more than 16 points; false (nothing published) for a
+    /// valve out of range, a set that is not what NVS holds (`flow_loaded`), no memory for the
+    /// blob buffer or a failed write. When the first write failed NVS holds the old set; after
+    /// it `flow_loaded` turns false: NVS holds a part of the new set, and
+    /// [`ensure_flow_loaded`](Self::ensure_flow_loaded) reads that before the next save. A save
+    /// that changes the points of the valve clears its `flow_curve_cut`.
     pub fn save_flow_config(&self, valve: u8, c: &FlowConfig) -> bool {
         if !self.shared.flow_loaded() {
             return false;
@@ -930,7 +978,9 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
         let Some(mut ns) = self.prefs() else {
             return false;
         };
-        self.shared
+        let before = self.shared.flow_config(valve);
+        let saved = self
+            .shared
             .update_flow_config(usize::from(valve), c, |all| {
                 let (blob, points) = bytes.split_at_mut(FLOW_BLOB_SIZE);
                 let (Ok(blob), Ok(points)) = (
@@ -943,21 +993,35 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
                 let mut lifts = [0u8; FLOW_LIFT_BLOB_SIZE];
                 encode_flow_lifts(all, &mut lifts);
                 let n_points = encode_flow_points(all, points);
-                if !ns.set_blob(KEY_FLOW, blob) {
+                // `flowpts` first: a record of 16 points of a longer curve is in `flow` only while
+                // `flowpts` holds that curve
+                if n_points > 0
+                    && !ns.set_blob(KEY_FLOW_POINTS, points.get(..n_points).unwrap_or_default())
+                {
                     return false;
                 }
-                // `flow` holds the new set: with the old pairs in `flowlift` or the old curves in
-                // `flowpts` RAM (the old set again) is not what NVS holds, and the next save
-                // reloads it first
+                // the new `flowpts` with the old `flow`, or `flow` with the old pairs in
+                // `flowlift` or the old curves in `flowpts`: RAM (the old set again) is not what
+                // NVS holds, and the next save reloads it first
+                if !ns.set_blob(KEY_FLOW, blob) {
+                    self.shared
+                        .flow_loaded
+                        .store(n_points == 0, Ordering::Relaxed);
+                    return false;
+                }
                 let written = ns.set_blob(KEY_FLOW_LIFT, &lifts)
-                    && if n_points > 0 {
-                        ns.set_blob(KEY_FLOW_POINTS, points.get(..n_points).unwrap_or_default())
-                    } else {
-                        ns.blob_len(KEY_FLOW_POINTS).is_none() || ns.remove(KEY_FLOW_POINTS)
-                    };
+                    && (n_points > 0
+                        || ns.blob_len(KEY_FLOW_POINTS).is_none()
+                        || ns.remove(KEY_FLOW_POINTS));
                 self.shared.flow_loaded.store(written, Ordering::Relaxed);
                 written
-            })
+            });
+        if saved && before.points() != c.points() {
+            self.shared
+                .flow_cut
+                .fetch_and(!(1 << valve), Ordering::Relaxed);
+        }
+        saved
     }
 
     // ------------------------------------------------------------ NVS values

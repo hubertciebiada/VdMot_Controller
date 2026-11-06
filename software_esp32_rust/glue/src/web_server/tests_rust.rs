@@ -805,7 +805,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert!(t.starts_with(r#"{"valve":1,"config":{"enabled":false,"qmax":2.700,"#));
     assert!(t.ends_with(concat!(
         r#""flow":{"enabled":false,"state":"off","counts":null,"targetCounts":0,"lpm":null,"#,
-        r#""targetLpm":null,"ms":null,"peak":null},"refDelta":null}"#
+        r#""targetLpm":null,"ms":null,"peak":null},"refDelta":null,"curveCut":false}"#
     )));
     let before = st.shared().flow_revision();
     let body = concat!(
@@ -922,7 +922,7 @@ fn flow_config_takes_and_shows_32_points_a_33rd_is_refused() {
     assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
     assert_eq!(
         rig.dev.nvs.get_blob("vdmrev", "flowpts").len(),
-        6 + 12 + 4 * 32 + 4
+        6 + 48 + 12 + 4 * 32 + 4
     );
     assert!(st.load_flow_configs());
     let r = perform(&mut web, get("/api/valves/1/flow"));
@@ -942,6 +942,73 @@ fn flow_config_takes_and_shows_32_points_a_33rd_is_refused() {
     assert_eq!(r.status, 200);
     assert!(!rig.dev.nvs.has("vdmrev", "flowpts"));
     assert_eq!(st.shared().flow_config(0).count, 16);
+}
+
+#[test]
+fn flow_a_post_after_a_failed_save_keeps_every_point_and_a_cut_curve_shows() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    assert!(!st.load_flow_configs());
+    let mut web = rig.web(&st);
+    // [0, 0], then 1070 pulses at 0.5 l/min and 10 more for each 0.1 l/min up to 2.7 l/min.
+    let mut points = vec![String::from("[0,0.000]")];
+    points.extend(
+        (0..23).map(|i| format!("[{},{}.{}00]", 1070 + 10 * i, (5 + i) / 10, (5 + i) % 10)),
+    );
+    let list = points.join(",");
+    let shown = format!(r#""points":[{list}]}},"#);
+    let body = format!(r#"{{"enabled":true,"qmax":2.7,"strokeCounts":2400,"points":[{list}]}}"#);
+    let r = perform(&mut web, api_post("/api/valves/1/flow", &body));
+    assert_eq!(r.status, 200);
+    assert!(text(&r).ends_with(r#""curveCut":false}"#));
+    // `flowpts` of a longer curve written, `flow` not: 500.
+    rig.dev.nvs.knobs().fail_set.insert("flow".to_string());
+    let longer = format!(r#"{{"qmax":2.8,"points":[{list},[1300,2.8]]}}"#);
+    let r = perform(&mut web, api_post("/api/valves/1/flow", &longer));
+    assert_eq!(r.status, 500);
+    assert_eq!(text(&r), error_body("nvs", "flow config not saved"));
+    rig.dev.nvs.knobs().fail_set.clear();
+    // A POST without points after it keeps the 24 points, in NVS too.
+    let r = perform(
+        &mut web,
+        api_post("/api/valves/1/flow", r#"{"enabled":false}"#),
+    );
+    assert_eq!(r.status, 200);
+    assert!(text(&r).contains(&shown));
+    assert!(text(&r).ends_with(r#""curveCut":false}"#));
+    assert!(st.load_flow_configs());
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert!(text(&r).contains(&shown));
+    // A bad `flowpts` and RAM without the curve (no memory for it): the 16 points of `flow`,
+    // without 0.5 l/min, and curveCut.
+    let mut bad = rig.dev.nvs.get_blob("vdmrev", "flowpts");
+    bad[20] ^= 1;
+    rig.dev.nvs.set_blob("vdmrev", "flowpts", &bad);
+    rig.dev.heap.state().next.extend([true, false]);
+    assert!(st.load_flow_configs());
+    let kept: Vec<&str> = [0, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23]
+        .iter()
+        .map(|&i| points[i].as_str())
+        .collect();
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    let t = text(&r);
+    assert!(t.contains(&format!(r#""points":[{}]}},"#, kept.join(","))));
+    assert!(!t.contains("[1070,0.500]"));
+    assert!(t.ends_with(r#""curveCut":true}"#));
+    let r = perform(&mut web, get("/api/valves/2/flow"));
+    assert!(text(&r).ends_with(r#""curveCut":false}"#));
+    // A POST without points keeps it; one with points clears it.
+    let r = perform(
+        &mut web,
+        api_post("/api/valves/1/flow", r#"{"enabled":true}"#),
+    );
+    assert_eq!(r.status, 200);
+    assert!(text(&r).ends_with(r#""curveCut":true}"#));
+    let body = format!(r#"{{"points":[{list}]}}"#);
+    let r = perform(&mut web, api_post("/api/valves/1/flow", &body));
+    assert_eq!(r.status, 200);
+    assert!(text(&r).contains(&shown));
+    assert!(text(&r).ends_with(r#""curveCut":false}"#));
 }
 
 #[test]

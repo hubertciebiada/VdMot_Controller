@@ -229,7 +229,7 @@ imported (the new failsafe starts with 60 min / 50 %).
 | POST | `/api/valves/detect` | – | 202, valve detection |
 | POST | `/api/sensors/scan` | – | 202, 1-Wire bus scan |
 | POST | `/api/stm/safe-mode/leave` | – | 202 (STM 2.1) |
-| GET | `/api/valves/{n}/flow` | – | `{"valve":n,"config":{...},"flow":{...},"refDelta":n\|null}` (Rust 2.2.8, below) |
+| GET | `/api/valves/{n}/flow` | – | `{"valve":n,"config":{...},"flow":{...},"refDelta":n\|null,"curveCut":false}` (Rust 2.2.8, below; `curveCut` Rust 2.2.15) |
 | POST | `/api/valves/{n}/flow` | a patch of the config members (below) | 200 with the document of the GET; `400 malformed` / `invalid` (unknown key) / `out_of_range` with the rule as the detail, nothing changed; `500 nvs` `flow config not saved` (the write failed) or `stored flow config unreadable` (NVS `flow` is there but could not be read, event 124 `flow_config_unreadable`: the save would put the defaults over the other valves) |
 | POST | `/api/valves/{n}/flow/counts` | `{"counts":0..10000}` | 202; positions the valve to the corrected pulses at once (0 = closed) from the reference end stop, outside the dead band and the interval; `409 flow_off` / `409 unsupported` while the layer does not run on the valve |
 | POST | `/api/valves/{n}/flow/target` | `{"lpm":2.5}`, a plain decimal from 0 up to 2000000, at most three decimals | 202 `{"valve":n,"lpm":2.512,"target":46,"clipped":false}`: what the curve gives at the position of the target and that position in % of the stroke; above `qmax` the flow is clipped (Rust 2.2.10, below); `409 flow_off` / `409 unsupported` while the layer does not run on the valve; `400 out_of_range` `lpm a plain number from 0`, `malformed`, `invalid` (another key); then the refusals of a target (`409 inactive`, `503 queue_full`) |
@@ -314,7 +314,15 @@ configuration and the `flow` block of the valve entry:
   Rust 2.2.13 reads the rest of the set and leaves them out. Of a curve of more
   than 16 points `flow` holds 16 (the first, the last and 14 evenly spaced by
   index between them) and the key `flowpts` all of them (Rust 2.2.15): an older
-  version reads and shows those 16 (DESIGN.md section 9).
+  version reads and shows those 16 (DESIGN.md section 9). A save writes `flowpts`
+  first, so a failed save never leaves 16 of the points as the curve: the next
+  `POST` keeps the curve the valve had. `curveCut` true (Rust 2.2.15): the valve
+  keeps 16 points of `flow` that `flowpts` did not vouch for at the last load (a
+  bad `flowpts`, a power loss between the two writes, a save of an older version),
+  which may be 16 of a longer curve; event 419 `flow_curve_cut` was logged then. A
+  `POST` that changes the points clears it, a restart shows it again while it
+  holds. A curve of exactly 16 points can show it too after a failed removal of
+  `flowpts`.
 - Positioning from the reference end stop: a close of the
   held pulses + 500 (the stroke when unknown) at `refmA` that must end at an
   end stop (two more closes of 800 otherwise, then `failed`), one opening move
@@ -381,7 +389,8 @@ configuration and the `flow` block of the valve entry:
 - `failsafePct` of the config and `sfspo` stay % of the STM's own scale, as
   `fallbackPct`.
 - Events 416 `flow_positioned`, 417 `flow_position_failed`, 418
-  `flow_hold_lost` (DESIGN.md section 13).
+  `flow_hold_lost`, 419 `flow_curve_cut` (Rust 2.2.15, in the log only; DESIGN.md
+  section 13).
 
 ##### A target in l/min (Rust 2.2.10)
 
