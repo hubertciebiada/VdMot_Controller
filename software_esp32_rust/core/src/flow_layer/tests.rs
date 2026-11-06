@@ -3726,3 +3726,50 @@ fn a_floor_without_a_lift_changes_nothing() {
     assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
     assert!(!flow_target(&c, 1000).clipped);
 }
+
+#[test]
+fn after_an_r2_restart_ref_delta_is_that_of_the_first_move_to_the_end_stop_or_none() {
+    let c = lift_curve(100, 100);
+    let step = |stm: &mut Stm, f: &mut FlowLayer, dir, req, cnt, stop| {
+        let ma = if dir == MoveDir::Open { 30 } else { 34 };
+        assert_eq!(stm.next(f), mv(0, dir, req, ma));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, dir, req, cnt, stop);
+        stm.tick(f);
+    };
+    // To 937 pulses: the open end stop, a close that meets the closed end stop, the open end
+    // stop again from the seat, the close, the lift, the keep.
+    let restarted = |stm: &mut Stm, f: &mut FlowLayer, opened| {
+        step(stm, f, MoveDir::Open, 10000, opened, StopReason::EndStop);
+        step(stm, f, MoveDir::Close, 3804, 3700, StopReason::EndStop);
+        step(stm, f, MoveDir::Open, 10000, 4641, StopReason::EndStop);
+        step(stm, f, MoveDir::Close, 3804, 3804, StopReason::Target);
+        step(stm, f, MoveDir::Open, 100, 100, StopReason::Target);
+        assert_eq!(stm.next(f), keep(0, true));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    };
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3853, 100, 104); // held at 892
+    assert_eq!(f.view(0).ref_delta, None);
+    // From the held position the first opening counts 3758: 3758 - (4641 - 892) = +9; the
+    // opening from the seat measures nothing.
+    stm.now += 300_000;
+    stm.flow(&c, 0, 1350);
+    restarted(&mut stm, &mut f, 3758);
+    assert_eq!((f.view(0).state, f.view(0).counts), (FlowState::Held, 937));
+    assert_eq!(f.view(0).ref_delta, Some(9));
+    assert_eq!(stm.events.last().expect("event").text.as_slice(), b"ref +9");
+    // The hold is lost: the next positioning starts from no held position and, started again,
+    // shows none, not the +9 of the last one.
+    stm.flags(0, STM_FLAG_SVC_HOLD);
+    stm.tick(&mut f);
+    assert_eq!(f.view(0).state, FlowState::Unknown);
+    restarted(&mut stm, &mut f, 4000);
+    assert_eq!(f.view(0).state, FlowState::Held);
+    assert_eq!(f.view(0).ref_delta, None);
+    assert_eq!(stm.events.last().expect("event").text.as_slice(), b"");
+}

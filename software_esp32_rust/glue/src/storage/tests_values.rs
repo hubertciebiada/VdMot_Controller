@@ -756,16 +756,35 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert!(st.save_flow_config(3, &c));
     assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), flow);
     assert_eq!(st.shared().flow_revision(), 9);
-    // A failed write of either key publishes nothing.
-    for key in [KEY_FLOW, KEY_FLOW_LIFT] {
-        rig.dev.nvs.knobs().fail_set.insert(key.to_string());
-        let mut c2 = c;
-        c2.offset = 9;
-        assert!(!st.save_flow_config(3, &c2), "{key}");
-        assert_eq!(st.shared().flow_config(3), c, "{key}");
-        assert_eq!(st.shared().flow_revision(), 9, "{key}");
-        rig.dev.nvs.knobs().fail_set.clear();
-    }
+    // A failed write of `flow` publishes nothing and changes nothing in NVS.
+    rig.dev.nvs.knobs().fail_set.insert(KEY_FLOW.to_string());
+    let mut c2 = c;
+    c2.offset = 9;
+    assert!(!st.save_flow_config(3, &c2));
+    assert_eq!(st.shared().flow_config(3), c);
+    assert_eq!(st.shared().flow_revision(), 9);
+    assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), flow);
+    assert!(st.shared().flow_loaded());
+    rig.dev.nvs.knobs().fail_set.clear();
+    // `flow` written, `flowlift` not: NVS holds the new curve with the old pair, RAM the old
+    // set; it is marked as not what NVS holds, and the next save reads NVS first.
+    assert!(st.save_flow_config(3, &lifted));
+    rig.dev
+        .nvs
+        .knobs()
+        .fail_set
+        .insert(KEY_FLOW_LIFT.to_string());
+    assert!(!st.save_flow_config(3, &c2));
+    assert_eq!(st.shared().flow_config(3), lifted);
+    assert_eq!(st.shared().flow_revision(), 10);
+    assert!(!st.shared().flow_loaded());
+    assert!(!st.save_flow_config(3, &c2));
+    rig.dev.nvs.knobs().fail_set.clear();
+    assert!(st.ensure_flow_loaded());
+    let mut in_nvs = lifted;
+    in_nvs.offset = 9;
+    assert_eq!(st.shared().flow_config(3), in_nvs);
+    assert!(st.save_flow_config(3, &c));
     assert!(st.shared().flow_loaded());
     assert!(rig.host.events().is_empty());
     // A damaged blob: the defaults, event 124, and no save over the valves it holds (the

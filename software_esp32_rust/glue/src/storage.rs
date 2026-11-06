@@ -891,7 +891,10 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
     /// `POST /api/valves/{n}/flow`: the flow configuration of `valve` replaced by `c`, the
     /// whole set written to NVS `flow` (as Rust 2.2.13 reads it) and `flowlift` and published;
     /// false (nothing published) for a valve out of range, a set that is not what NVS holds
-    /// (`flow_loaded`), no memory for the blob buffer or a failed write.
+    /// (`flow_loaded`), no memory for the blob buffer or a failed write. When `flow` was written
+    /// and `flowlift` was not, `flow_loaded` turns false: NVS holds the new set with the old
+    /// pairs, and [`ensure_flow_loaded`](Self::ensure_flow_loaded) reads that before the next
+    /// save.
     pub fn save_flow_config(&self, valve: u8, c: &FlowConfig) -> bool {
         if !self.shared.flow_loaded() {
             return false;
@@ -911,7 +914,14 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
                 encode_flow_configs(all, blob);
                 let mut lifts = [0u8; FLOW_LIFT_BLOB_SIZE];
                 encode_flow_lifts(all, &mut lifts);
-                ns.set_blob(KEY_FLOW, blob) && ns.set_blob(KEY_FLOW_LIFT, &lifts)
+                if !ns.set_blob(KEY_FLOW, blob) {
+                    return false;
+                }
+                // `flow` holds the new set: with the old pairs in `flowlift` RAM (the old set
+                // again) is not what NVS holds, and the next save reloads it first
+                let lifted = ns.set_blob(KEY_FLOW_LIFT, &lifts);
+                self.shared.flow_loaded.store(lifted, Ordering::Relaxed);
+                lifted
             })
     }
 

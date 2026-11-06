@@ -41,13 +41,17 @@ stay equal.
   change of `liftCounts` or `floorCounts` positions the valve again.
 - A closing move that meets the closed end stop (a lift from there would end at a position that
   looks right) or a lift that meets an end stop goes on from the open end stop once; a second such
-  end fails the positioning at step 5 or 7 with the code -3 of event 417.
+  end fails the positioning at step 5 or 7 with the code -3 of event 417. `refDelta` of such a
+  positioning is that of its first opening from the held position, null without one, never the
+  one of an earlier positioning.
 - NVS: `flow` stays the blob of 2.2.13, byte for byte; `liftCounts` and `floorCounts` of the 12
   valves go to the new key `flowlift` (58 B, its own magic, version and CRC). Without it or with a
   bad one every lift and floor is 0. Going back to 2.2.13 loses nothing: 2.2.13 ignores `flowlift`
   and runs every valve without a lift; after a later 2.2.14 the lifts are back, except on a valve
   whose stroke or reference side 2.2.13 changed in a way that does not allow them
-  ([DESIGN.md](../revamped/DESIGN.md) section 9).
+  ([DESIGN.md](../revamped/DESIGN.md) section 9). When `flow` is written and `flowlift` is not,
+  the save answers `500 nvs` and the next save reads NVS first, so RAM and NVS do not differ
+  unnoticed.
 - MQTT and Home Assistant do not change. `tools/mock_api.py` takes and shows both members with the
   rules of the firmware; its simulation has no lift.
 

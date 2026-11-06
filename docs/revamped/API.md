@@ -340,8 +340,10 @@ configuration and the `flow` block of the valve entry:
   minus `floorCounts`, and none at or below the floor. A closing move that meets
   the closed end stop (a lift from there would open from the seat) or a lift that
   meets an end stop goes on from the open end stop in the same positioning; a
-  second such end fails the positioning at step 5 or 7 with the code -3. A
-  target of 0 and the open end stop need no lift. A change of `liftCounts` or
+  second such end fails the positioning at step 5 or 7 with the code -3. After
+  such a restart `refDelta` is that of the first opening of the positioning,
+  from the held position (null when it started from none). A target of 0 and
+  the open end stop need no lift. A change of `liftCounts` or
   `floorCounts` positions the valve again.
 - One move (Rust 2.2.11), with `liftCounts` 0 only: a held valve reaches any
   other target with one service move of the difference in pulses and `skeep`,

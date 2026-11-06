@@ -1051,7 +1051,8 @@ pub struct FlowView {
     pub last_peak: u16,
     /// the last opening of the open reference from a held position: the pulses it counted minus
     /// the pulses from that position to the end stop. The end of the closing move no record
-    /// shows; a change of it over time is the drift of the valve.
+    /// shows; a change of it over time is the drift of the valve. A positioning that R2 started
+    /// again from the end stop shows its own (none without a held position before it).
     pub ref_delta: Option<i16>,
 }
 
@@ -1178,7 +1179,7 @@ struct Sequence {
     busy_retries: u16,
     /// the curve changed while it ran: another positioning follows
     restart: bool,
-    /// [`FlowView::ref_delta`] of the reference move of this positioning
+    /// [`FlowView::ref_delta`] of the reference move of this positioning (with R2 of its first)
     ref_delta: Option<i16>,
     /// the held position the final move starts from, with no move to an end stop before it
     from_held: Option<u16>,
@@ -2125,7 +2126,9 @@ fn move_done(
     let settled = at_end || stop == StopReason::Target;
     seq.awaiting = Await::Nothing;
     seq.step_seq = s.move_seq;
-    if at_end && seq.step == Step::Reference && seq.ref_attempts == 0 {
+    // R2 started again from the open end stop: the measure of this positioning is that of its
+    // first move there, from the held position; the next move there starts from no such one
+    if at_end && seq.step == Step::Reference && seq.ref_attempts == 0 && !seq.r2_rereferenced {
         seq.ref_delta = ref_delta(fv, cfg, s);
     }
     match seq.step {
@@ -2253,7 +2256,13 @@ fn held(
 ) -> Phase {
     fv.held_valid = true;
     fv.failures = 0;
-    fv.ref_delta = seq.ref_delta.or(fv.ref_delta);
+    // after an R2 restart from the end stop the measure of this positioning or none, never that
+    // of an earlier one
+    fv.ref_delta = if seq.r2_rereferenced {
+        seq.ref_delta
+    } else {
+        seq.ref_delta.or(fv.ref_delta)
+    };
     if seq.from_held.is_none() {
         let mut text = [0u8; 12];
         let n = seq
