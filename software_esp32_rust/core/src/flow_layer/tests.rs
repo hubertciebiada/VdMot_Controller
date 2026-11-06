@@ -791,12 +791,8 @@ fn flowpts_rejections_leave_the_16_points_of_flow() {
     let mut bad = good.clone();
     bad[n - 1] ^= 1;
     rejected(&bad, "crc");
-    // A number of points of 16, 33 or 1, the length right for the sum of them.
-    for (counts, what) in [
-        ([(3, 16), (5, 8)], "16"),
-        ([(3, 33), (7, 23)], "33"),
-        ([(0, 1), (3, 23)], "1"),
-    ] {
+    // A number of points of 33 or 1, the length right for the sum of them.
+    for (counts, what) in [([(3, 33), (7, 23)], "33"), ([(0, 1), (3, 23)], "1")] {
         let mut bad = good.clone();
         for (valve, count) in counts {
             bad[6 + valve] = count;
@@ -804,6 +800,13 @@ fn flowpts_rejections_leave_the_16_points_of_flow() {
         fix_crc(&mut bad);
         rejected(&bad, what);
     }
+    // 16 points of valve 3 (the last 8 of its 24 cut out) next to a good valve 7: refused whole,
+    // valve 7 too.
+    let mut bad = good.clone();
+    bad[6 + 3] = 16;
+    bad.drain(18 + 16 * 4..18 + 24 * 4);
+    fix_crc(&mut bad);
+    rejected(&bad, "16");
     // No curve at all, the header and the CRC right: nothing changes.
     let mut none = b"VDMP\x01\x0C".to_vec();
     none.extend([0; 12]);
