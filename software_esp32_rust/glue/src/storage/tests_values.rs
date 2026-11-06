@@ -11,7 +11,9 @@ use crate::testkit::nvs::NvsType;
 use crate::testkit::{Device, Reset};
 use vdm_esp_core::config::DecodeResult;
 use vdm_esp_core::file_manager::FS_PATH_MAX;
-use vdm_esp_core::flow_layer::{FlowConfig, FlowPoint, FLOW_BLOB_SIZE, FLOW_BLOB_V1_SIZE};
+use vdm_esp_core::flow_layer::{
+    FlowConfig, FlowPoint, RefSide, FLOW_BLOB_SIZE, FLOW_LIFT_BLOB_SIZE,
+};
 use vdm_esp_core::legacy_import::{DROPPED_MESSENGER, LEGACY_TEMPS_BLOB};
 
 /// A config with an ext key away from its default.
@@ -693,6 +695,7 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     // A save: the whole set in NVS, the shared set published.
     let mut c = FlowConfig {
         enabled: true,
+        ref_side: RefSide::Open,
         stroke_counts: 4641,
         count: 2,
         ..FlowConfig::DEFAULT
@@ -705,10 +708,14 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert_eq!(st.shared().flow_revision(), 2);
     assert_eq!(st.shared().flow_config(3), c);
     assert!(!st.shared().flow_config(2).enabled);
-    // No lift and no floor on any valve: version 1, which Rust 2.2.13 reads.
+    // `flow` as Rust 2.2.13 writes and reads it, the lifts and floors beside it.
     assert_eq!(
         rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
-        FLOW_BLOB_V1_SIZE
+        FLOW_BLOB_SIZE
+    );
+    assert_eq!(
+        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_LIFT).len(),
+        FLOW_LIFT_BLOB_SIZE
     );
     assert!(!st.save_flow_config(12, &c));
     assert_eq!(st.shared().flow_revision(), 2);
@@ -717,33 +724,48 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), c);
     assert_eq!(st.shared().flow_revision(), 3);
-    // A lift (Rust 2.2.14): version 2, read back as well; without it version 1 again.
+    // A lift (Rust 2.2.14): `flow` keeps every byte, `flowlift` holds it, a load reads both.
+    let flow = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW);
     let mut lifted = c;
     lifted.lift_counts = 100;
     lifted.floor_counts = 700;
     assert!(st.save_flow_config(3, &lifted));
-    assert_eq!(
-        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
-        FLOW_BLOB_SIZE
-    );
+    assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), flow);
     assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), lifted);
-    assert!(st.save_flow_config(3, &c));
-    assert_eq!(
-        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
-        FLOW_BLOB_V1_SIZE
-    );
+    // Without `flowlift` (a set an older version saved) or with a bad one: no lift and no
+    // floor, the rest of the set is read and saves go on.
+    let lifts = rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW_LIFT);
+    let mut bad = lifts.clone();
+    bad[7] ^= 1;
+    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_LIFT, &bad);
     assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), c);
-    assert_eq!(st.shared().flow_revision(), 7);
-    // A failed write publishes nothing.
-    rig.dev.nvs.knobs().fail_set.insert(KEY_FLOW.to_string());
-    let mut c2 = c;
-    c2.offset = 9;
-    assert!(!st.save_flow_config(3, &c2));
+    rig.dev.nvs.set_blob(NAMESPACE, KEY_FLOW_LIFT, &lifts);
+    assert!(st.load_flow_configs());
+    assert_eq!(st.shared().flow_config(3), lifted);
+    assert!(rig
+        .dev
+        .nvs
+        .open(NAMESPACE, true)
+        .unwrap()
+        .remove(KEY_FLOW_LIFT));
+    assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), c);
-    assert_eq!(st.shared().flow_revision(), 7);
-    rig.dev.nvs.knobs().fail_set.clear();
+    assert!(st.shared().flow_loaded());
+    assert!(st.save_flow_config(3, &c));
+    assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), flow);
+    assert_eq!(st.shared().flow_revision(), 9);
+    // A failed write of either key publishes nothing.
+    for key in [KEY_FLOW, KEY_FLOW_LIFT] {
+        rig.dev.nvs.knobs().fail_set.insert(key.to_string());
+        let mut c2 = c;
+        c2.offset = 9;
+        assert!(!st.save_flow_config(3, &c2), "{key}");
+        assert_eq!(st.shared().flow_config(3), c, "{key}");
+        assert_eq!(st.shared().flow_revision(), 9, "{key}");
+        rig.dev.nvs.knobs().fail_set.clear();
+    }
     assert!(st.shared().flow_loaded());
     assert!(rig.host.events().is_empty());
     // A damaged blob: the defaults, event 124, and no save over the valves it holds (the
@@ -760,9 +782,10 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert!(!st.ensure_flow_loaded());
     assert_eq!(rig.host.with_code(EventCode::FlowConfigUnreadable).len(), 2);
     assert_eq!(rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW), bad);
-    // A factory reset drops the blob and the shared set; saves work again.
+    // A factory reset drops both keys and the shared set; saves work again.
     assert!(st.factory_reset());
     assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW));
+    assert!(!rig.dev.nvs.has(NAMESPACE, KEY_FLOW_LIFT));
     assert!(!st.shared().flow_config(3).enabled);
     assert!(st.ensure_flow_loaded());
     assert!(st.save_flow_config(3, &c));

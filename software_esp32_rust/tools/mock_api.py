@@ -845,13 +845,21 @@ class Device:
                  ("gain", lambda x: self.number(x) and 0.1 <= x <= 10, "gain 0.1..10"),
                  ("strokeCounts", lambda x: self.integer(x) and 0 <= x <= 10000,
                   "strokeCounts 0..10000 (enabled or refSide open needs 1..)"),
-                 ("liftCounts", lambda x: self.integer(x) and 0 <= x <= 1000, "liftCounts 0..1000"),
-                 ("floorCounts", lambda x: self.integer(x) and 0 <= x <= 10000, "floorCounts 0..10000")]
+                 ("liftCounts", lambda x: self.integer(x) and (x == 0 or 60 <= x <= 1000),
+                  "liftCounts 0 or 60..1000"),
+                 ("floorCounts", lambda x: self.integer(x) and 0 <= x <= 10000,
+                  "floorCounts 0..10000, below strokeCounts")]
         for key, ok, detail in rules:
             if not ok(new[key]):
                 return "out_of_range", detail
         if (new["enabled"] or new["refSide"] == "open") and new["strokeCounts"] == 0:
             return "out_of_range", "strokeCounts 0..10000 (enabled or refSide open needs 1..)"
+        if 0 < new["strokeCounts"] <= new["floorCounts"]:
+            return "out_of_range", "floorCounts 0..10000, below strokeCounts"
+        if new["liftCounts"] and new["refSide"] != "open":
+            return "out_of_range", "liftCounts above 0 needs refSide open"
+        if new["liftCounts"] and not new["floorCounts"]:
+            return "out_of_range", "liftCounts above 0 needs floorCounts above 0"
         pts = new["points"]
         if not isinstance(pts, list) or any(not isinstance(p, list) or len(p) != 2 or not self.number(p[0])
                                             or not self.number(p[1]) for p in pts):

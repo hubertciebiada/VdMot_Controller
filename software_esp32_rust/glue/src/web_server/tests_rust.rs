@@ -833,19 +833,19 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert_eq!(r.status, 200);
     assert!(text(&r).contains(r#""qmax":2.300,"#));
     assert!(text(&r).contains(r#""offset":-7,"#));
-    // The lift and the floor (Rust 2.2.14): with one of them the blob is version 2, with both 0
-    // on every valve version 1 again, which Rust 2.2.13 reads.
-    let lift = r#"{"liftCounts":100,"floorCounts":700}"#;
+    // The lift and the floor (Rust 2.2.14), with the open reference: NVS `flow` stays the blob
+    // Rust 2.2.13 reads, they go to `flowlift`.
+    let lift = r#"{"refSide":"open","liftCounts":100,"floorCounts":700}"#;
     let r = perform(&mut web, api_post("/api/valves/1/flow", lift));
     assert_eq!(r.status, 200);
     assert!(text(&r).contains(r#""preClose":false,"liftCounts":100,"floorCounts":700,"points":"#));
-    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1054);
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flowlift").len(), 58);
     let r = perform(&mut web, get("/api/valves/1/flow"));
     assert!(text(&r).contains(r#""liftCounts":100,"floorCounts":700,"#));
-    let none = r#"{"liftCounts":0,"floorCounts":0}"#;
+    let none = r#"{"refSide":"closed","liftCounts":0,"floorCounts":0}"#;
     let r = perform(&mut web, api_post("/api/valves/1/flow", none));
     assert_eq!(r.status, 200);
-    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
     // Refusals, nothing changed.
     let cases = [
         ("{", "malformed", "malformed JSON"),
@@ -854,12 +854,22 @@ fn flow_config_is_read_patched_saved_and_refused() {
         (
             r#"{"liftCounts":1001}"#,
             "out_of_range",
-            "liftCounts 0..1000",
+            "liftCounts 0 or 60..1000",
         ),
         (
-            r#"{"floorCounts":10001}"#,
+            r#"{"floorCounts":2400}"#,
             "out_of_range",
-            "floorCounts 0..10000",
+            "floorCounts 0..10000, below strokeCounts",
+        ),
+        (
+            r#"{"liftCounts":100,"floorCounts":700}"#,
+            "out_of_range",
+            "liftCounts above 0 needs refSide open",
+        ),
+        (
+            r#"{"refSide":"open","liftCounts":100}"#,
+            "out_of_range",
+            "liftCounts above 0 needs floorCounts above 0",
         ),
         (
             r#"{"points":[[1,0],[1,1]]}"#,

@@ -20,29 +20,36 @@ stay equal.
   moves below the seat, and a move to the open end stop resets it. In a test on six loops two
   positionings to the same target differed by at most 0.03 l/min with R2 (10 pairs with flow) and
   by at most 0.08 l/min with the end stop and one closing move (R1, 12 pairs).
-- Two new members of `GET/POST /api/valves/{n}/flow`: `liftCounts` 0..1000 and `floorCounts`
-  0..10000, both 0 by default. With `liftCounts` 0 a valve is positioned as in 2.2.13, so nothing
-  changes until a valve gets a lift ([API.md](../revamped/API.md)).
-- With `liftCounts` above 0 and `refSide` `open` every positioning to a target between closed and
-  the open end stop goes to the open end stop, closes to the target minus the lift and opens the
-  lift (new step 7 of event 417). The lift is `liftCounts`, at most the target minus
-  `floorCounts`. The held position adds the counted pulses of the lift, and `ms` and `peak` of the
-  `flow` block are those of the lift.
-- With `floorCounts` (the seat plus a margin) a target in l/min or in % below `floorCounts` + 60
-  goes to that position; a target in l/min answers `clipped:true`. `/flow/counts` is not raised:
-  its lift ends at the floor at most, and none at or below it.
-- A valve with `liftCounts` above 0 has no one move: every new target other than 0 goes through the
-  end stop. A target of 0 still closes at once, and `minIntervalS` and `deadbandLpm` keep their
-  meaning. A change of `liftCounts` or `floorCounts` positions the valve again.
-- A lift that ends at an end stop goes on from the open end stop once; the second time the
-  positioning fails at step 7.
-- NVS `flow`: version 2 (1054 B) adds both members to every record. It is written only while a
-  valve has one of them; otherwise the blob stays version 1, which 2.2.13 reads. Going back to
-  2.2.13: set `liftCounts` and `floorCounts` to 0 on every valve first, otherwise 2.2.13 cannot read
-  the flow configuration (all valves off, event 124, `500 nvs` on a save) until the next 2.2.14 or
-  a factory reset ([DESIGN.md](../revamped/DESIGN.md) section 9).
-- MQTT and Home Assistant do not change. `tools/mock_api.py` takes and shows both members; its
-  simulation has no lift.
+- Two new members of `GET/POST /api/valves/{n}/flow`: `liftCounts` 0 or 60..1000 and
+  `floorCounts` 0..10000 and below `strokeCounts`, both 0 by default. A `liftCounts` above 0 needs
+  `refSide` `open` and a `floorCounts` above 0; each refusal has its own detail. With `liftCounts`
+  0 a valve is positioned as in 2.2.13, so nothing changes until a valve gets a lift
+  ([API.md](../revamped/API.md)).
+- With `liftCounts` above 0 every positioning to a target between closed and the open end stop
+  goes to the open end stop, closes to the target minus the lift and opens the lift (new step 7 of
+  event 417). The lift is `liftCounts`, at most the target minus `floorCounts`. The held position
+  adds the counted pulses of the lift. `ms` and `peak` of the `flow` block are those of the closing
+  move, as the final move's were before: its peak shows a sticky valve.
+- A target in l/min or in % below `floorCounts` + 60 goes to that position; a target in l/min
+  answers `clipped:true`. `/flow/counts` is not raised: its lift ends at the floor at most, and
+  none at or below it.
+- A held valve with a lift serves a new target at most 2 pulses from the target it was positioned
+  to where it stands, without a move. Several flows below `floorCounts` + 60 are one position, so a
+  regulator stepping through them does not send the valve to the end stop each time.
+- Any other new target other than 0 goes through the end stop: such a valve has no one move. A
+  target of 0 still closes at once, and `minIntervalS` and `deadbandLpm` keep their meaning. A
+  change of `liftCounts` or `floorCounts` positions the valve again.
+- A closing move that meets the closed end stop (a lift from there would end at a position that
+  looks right) or a lift that meets an end stop goes on from the open end stop once; a second such
+  end fails the positioning at step 5 or 7 with the code -3 of event 417.
+- NVS: `flow` stays the blob of 2.2.13, byte for byte; `liftCounts` and `floorCounts` of the 12
+  valves go to the new key `flowlift` (58 B, its own magic, version and CRC). Without it or with a
+  bad one every lift and floor is 0. Going back to 2.2.13 loses nothing: 2.2.13 ignores `flowlift`
+  and runs every valve without a lift; after a later 2.2.14 the lifts are back, except on a valve
+  whose stroke or reference side 2.2.13 changed in a way that does not allow them
+  ([DESIGN.md](../revamped/DESIGN.md) section 9).
+- MQTT and Home Assistant do not change. `tools/mock_api.py` takes and shows both members with the
+  rules of the firmware; its simulation has no lift.
 
 ## 2.2.13-revamped
 <!-- release-notes: through 2.2.8-revamped -->

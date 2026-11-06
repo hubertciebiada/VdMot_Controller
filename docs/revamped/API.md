@@ -289,10 +289,12 @@ configuration and the `flow` block of the valve entry:
   no position. A stored configuration from before Rust 2.2.11 that is enabled
   with 0 comes back disabled; `preClose` (closed reference only): a warm-up of
   the end stop before the final move (close, open 300 pulses, close again);
-  `liftCounts` 0..1000 (default 0) and `floorCounts` 0..10000 (default 0), Rust
-  2.2.14: the lift of R2 and the seat of the insert plus a margin, in corrected
-  pulses from the closed end stop like the target counts (below). With
-  `liftCounts` 0 the valve is positioned as in 2.2.13, whatever `floorCounts`.
+  `liftCounts` 0 or 60..1000 (default 0) and `floorCounts` 0..10000 and below
+  `strokeCounts` (default 0), Rust 2.2.14: the lift of R2 and the seat of the
+  insert plus a margin, in corrected pulses from the closed end stop like the
+  target counts (below). A `liftCounts` above 0 needs `refSide` `open` and a
+  `floorCounts` above 0. With `liftCounts` 0 the valve is positioned as in
+  2.2.13, whatever `floorCounts`.
 - `points`: 2..16 pairs `[counts, lpm]`, pulses from the closed end stop
   (whatever `refSide`) strictly increasing (the first may be 0, every one at
   most 10000), the flow non-decreasing. A flow maps to the first position where
@@ -304,9 +306,10 @@ configuration and the `flow` block of the valve entry:
 - Numbers are plain decimals with at most three decimals; `POST` applies the
   members it names (`points` replaces every point) and checks the result;
   the set is stored in NVS (`flow`) and survives restarts; a factory reset drops
-  it. The config import/export (`/api/config`) does not carry it. Rust 2.2.13
-  reads the stored set only while no valve has a `liftCounts` or `floorCounts`
-  (DESIGN.md section 9).
+  it. The config import/export (`/api/config`) does not carry it. `liftCounts`
+  and `floorCounts` are stored in a key of their own (`flowlift`, Rust 2.2.14):
+  Rust 2.2.13 reads the rest of the set and leaves them out (DESIGN.md
+  section 9).
 - Positioning from the reference end stop: a close of the
   held pulses + 500 (the stroke when unknown) at `refmA` that must end at an
   end stop (two more closes of 800 otherwise, then `failed`), one opening move
@@ -317,24 +320,29 @@ configuration and the `flow` block of the valve entry:
   opening from 0 %, an unknown position, a lost hold, a changed curve,
   `/flow/counts` and a target at or above `strokeCounts`. The moves of different
   valves run one after the other.
-- R2 (Rust 2.2.14), with `liftCounts` above 0 and `refSide` `open`: the
-  inserts are normally closed and have a hysteresis loop of 40..55 pulses, and
-  the direction of the last move picks its branch. Every positioning to a target
-  between closed and the open end stop goes to the open end stop, closes to the
-  counts minus B (`strokeCounts` minus that at `refmA`) and opens B pulses at
-  `openmA` (the lift), then `skeep`: the valve stands on the opening branch, the
-  one a curve measured the same way has. B is `liftCounts`, at most the counts
-  minus `floorCounts` (without a floor, at most the counts). The held position
-  is where the close left the valve plus the counted pulses of the lift, and
-  `ms` and `peak` are those of the lift. A target in l/min or in % whose
-  position lies below `floorCounts` + 60 (with `floorCounts` above 0) is raised
-  to that position, with a lift of at most 60; a target in l/min answers it as
-  `clipped`.
+- R2 (Rust 2.2.14), with `liftCounts` above 0 (so `refSide` `open` and a
+  `floorCounts`): the inserts are normally closed and have a hysteresis loop of
+  40..55 pulses, and the direction of the last move picks its branch. Every
+  positioning to a target between closed and the open end stop goes to the open
+  end stop, closes to the counts minus B (`strokeCounts` minus that at `refmA`)
+  and opens B pulses at `openmA` (the lift), then `skeep`: the valve stands on
+  the opening branch, the one a curve measured the same way has. B is
+  `liftCounts`, at most the counts minus `floorCounts`. The held position is
+  where the close left the valve plus the counted pulses of the lift. `ms` and
+  `peak` are those of the closing move, whose peak shows a sticky valve;
+  `ext.lastMove` is the STM's last move, the lift. A target in l/min or in %
+  whose position lies below `floorCounts` + 60 is raised to that position (a
+  lift of 60); a target in l/min answers it as `clipped`. A held valve serves a
+  new target whose position lies at most 2 pulses from the counts it was
+  positioned to where it stands, without a move: the flows below `floorCounts`
+  + 60 are all one position.
   `/flow/counts` is not raised: its lift is `liftCounts`, at most the counts
-  minus `floorCounts`, and none at or below the floor. A lift that meets an end
-  stop goes on from the open end stop in the same positioning; the second time
-  the positioning fails at step 7. A target of 0 and the open end stop need no
-  lift. A change of `liftCounts` or `floorCounts` positions the valve again.
+  minus `floorCounts`, and none at or below the floor. A closing move that meets
+  the closed end stop (a lift from there would open from the seat) or a lift that
+  meets an end stop goes on from the open end stop in the same positioning; a
+  second such end fails the positioning at step 5 or 7 with the code -3. A
+  target of 0 and the open end stop need no lift. A change of `liftCounts` or
+  `floorCounts` positions the valve again.
 - One move (Rust 2.2.11), with `liftCounts` 0 only: a held valve reaches any
   other target with one service move of the difference in pulses and `skeep`,
   opening at `openmA`, closing at
@@ -345,8 +353,7 @@ configuration and the `flow` block of the valve entry:
   positioning; any other stop fails it. A target at the held pulses needs no
   move. When the STM's target is not `fallbackPct` the `stgtp` ends the hold, so
   that positioning starts from the reference end stop. With `liftCounts` above 0
-  every new target other than 0 goes through the open end stop instead (with
-  `refSide` `closed` through the closed end stop, without a lift).
+  every new target other than 0 goes through the open end stop instead (R2).
 - A new target is applied once `minIntervalS` passed since the last positioning
   (the latest target wins then). A target in l/min must also differ from the
   flow of the held position by `deadbandLpm`. A target in % counts in pulses: two

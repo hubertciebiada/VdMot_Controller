@@ -508,20 +508,27 @@ a measured curve itself (API.md "Flow layer"):
   `rereference` in the same sequence, another stop fails at step 5. Such a move
   logs no event 416: a target can come every minute and the ring holds 32.
   `direct_seq` gives none for a valve with `liftCounts` above 0.
-- R2 (Rust 2.2.14), `FlowConfig::lifts()`: `liftCounts` above 0 and the open
-  reference. The final closing move from the open end stop stops `Sequence::lift`
-  pulses below the target, `lift_of()` = min(`liftCounts`, target -
-  `floorCounts`), fixed when the move goes out; a new step `Step::Lift` (7, in
-  `after_move`) opens those pulses at `openmA` (`distinct()`), and `held_counts`
-  becomes the position after the close plus the counted pulses of the lift.
-  With a lift of 0 (no lift, a `/flow/counts` at or below the floor) the step is
-  left out. A lift that ends at an end stop is `rereference` once
-  (`lift_rereferenced`), the second time it fails at step 7; another stop fails
-  at once. `floor_clamp()` raises the position of a flow or % target (in
-  `flow_counts()`, so in `flow_target()` with `clipped`, and in
-  `desired_counts()`) to `floorCounts` + `LIFT_MIN` (60) when a floor is set;
-  `begin_exact()` (`/flow/counts`) does not. `liftCounts` and `floorCounts` are
-  in `curve_key()`, so a change positions the valve again.
+- R2 (Rust 2.2.14), `FlowConfig::lifts()`: `liftCounts` above 0, which
+  `validate_flow_config` allows with the open reference and a `floorCounts`
+  above 0 only (`liftCounts` 0 or 60..1000, `floorCounts` below
+  `strokeCounts`). The final closing move from the open end stop stops
+  `Sequence::lift` pulses below the target, `lift_of()` = min(`liftCounts`,
+  target - `floorCounts`), fixed when the move goes out; a new step `Step::Lift`
+  (7, in `after_move`) opens those pulses at `openmA` (`distinct()`), and
+  `held_counts` becomes the position after the close plus the counted pulses of
+  the lift. `finish_move` keeps the record of the closing move (`last_ms`,
+  `last_peak`): its peak shows a sticky valve. With a lift of 0 (a
+  `/flow/counts` at or below the floor) the step is left out. A closing move
+  (step 5) or a lift that ends at an end stop is `rereference` once per
+  positioning (`r2_rereferenced`); the second time it fails with arg2
+  `R2_END_STOP_AGAIN` (-3); another stop fails at once. `floor_clamp()` raises
+  the position of a flow or % target (in `flow_counts()`, so in `flow_target()`
+  with `clipped`, and in `desired_counts()`) to `floorCounts` + `LIFT_MIN` (60);
+  `begin_exact()` (`/flow/counts`) does not. `standing_target()`: a held valve
+  with no `stgtp` due serves a new target at most `LIFT_SAME_COUNTS` (2) from
+  its `target_counts` where it stands, and `target_counts` stays (R1: a target
+  at the held pulses). `liftCounts` and `floorCounts` are in `curve_key()`, so a
+  change positions the valve again.
 - `tick` once per second: the records, the timeouts, the end of a calibration
   a refused move waits for, and a held valve whose `svcKeep` flag is gone (a
   poll after the keep) or whose `move_seq` moved -> `unknown`, event 418. A
@@ -535,8 +542,8 @@ a measured curve itself (API.md "Flow layer"):
   desired target. `flow_target` clips a flow to `qmax` (with R2 its position at
   least to `floorCounts` + 60), and `apply_flow_config`
   works the % of a target in l/min out again for a new curve.
-- The configuration (`FlowConfig`, 12 x 87 B) lives in NVS `flow`
-  (section 9), loaded next to the config at boot, published with a revision
+- The configuration (`FlowConfig`, 12 x 88 B) lives in NVS `flow` and
+  `flowlift` (section 9), loaded next to the config at boot, published with a revision
   the stm thread follows (`StmLinkHost::flow_revision`), written by
   `POST /api/valves/{n}/flow`.
 - Failed of the layer sets `HEALTH_FLOW_FAILED` on the published valve, which
@@ -716,7 +723,8 @@ NVS namespace `vdmrev`:
 | `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous interface/DHCP/addresses/WiFi, CRCs) |
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
-| `flow` | blob 1006 or 1054 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; Rust 2.2.14: version 2 (1054 B) appends liftCounts and floorCounts to each record, written only while a valve has one of them, else version 1, which Rust 2.2.13 reads (a version 2 blob is unreadable there: the defaults, event 124); both versions are read, version 1 with both 0; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it |
+| `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it. Rust 2.2.14 writes the same bytes |
+| `flowlift` | blob 58 | Rust 2.2.14, written with `flow`: "VDML", version 1, count 12, 12 x {liftCounts, floorCounts} (LE), CRC32. Absent or bad: every lift and floor 0, no event. A pair the configuration of its valve does not allow (a version before 2.2.14 changed the stroke or the reference side) gives 0 and 0 for that valve. Older versions do not read it, so a downgrade keeps the rest of the flow configuration |
 | `flowx` | blob 21 | Rust 2.2.10 only: the drift of the valves. Nothing reads it since 2.2.11, and it stays until a factory reset |
 
 Config load order (`loadConfigBlobs`): `cfg` + `cfgx` from NVS; a missing or
@@ -1088,7 +1096,7 @@ reaches `<main>events`, **W** = when the logged severity is Warning or worse,
 | 414 | service_move_done | Info | W | yes | counted / stop reason |
 | 415 | calib_stroke_short | Warning | W | yes | min(oc, cc) / minCounts |
 | 416 | flow_positioned | Info | W | yes | Rust 2.2.8: pulses from the reference end stop / target in % of the stroke / `ref +24`: refDelta of this positioning, empty without a measure. Not for one move from a held position |
-| 417 | flow_position_failed | Warning | W | yes | Rust 2.2.8: step 1 fallback target, 2 move to the end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep, 7 lift (Rust 2.2.14) / STM error code, -1 no reply, -2 timeout, or the stop reason / reason |
+| 417 | flow_position_failed | Warning | W | yes | Rust 2.2.8: step 1 fallback target, 2 move to the end stop, 3 warm-up opening, 4 warm-up close, 5 final move, 6 keep, 7 lift (Rust 2.2.14) / STM error code, -1 no reply, -2 timeout, -3 R2 met an end stop a second time (Rust 2.2.14), or the stop reason / reason |
 | 418 | flow_hold_lost | Warning | W | yes | Rust 2.2.8: STM flags |
 | 500 | temp_sensor_failed | Warning | W | - | slot / raw / id |
 | 501 | temp_sensor_recovered | Info | W | - | slot |
