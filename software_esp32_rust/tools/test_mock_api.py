@@ -516,9 +516,23 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
         self.assertEqual(r.status, 200)
         self.assertTrue(r.json["config"]["enabled"])
         self.assertEqual(r.json["config"]["points"], [[630, 0], [888, 1.0], [1180, 2.6]])
+        # the lift and the floor of R2 (Rust 2.2.14), in the order of the firmware
+        self.assertEqual((r.json["config"]["liftCounts"], r.json["config"]["floorCounts"]), (0, 0))
+        keys = list(r.json["config"])
+        self.assertEqual(keys[keys.index("preClose"):], ["preClose", "liftCounts", "floorCounts", "points"])
+        r = req("POST", "/api/valves/1/flow", {"liftCounts": 100, "floorCounts": 700})
+        self.assertEqual(r.status, 200)
+        self.assertEqual((r.json["config"]["liftCounts"], r.json["config"]["floorCounts"]), (100, 700))
+        r = req("POST", "/api/valves/1/flow", {"liftCounts": 1000, "floorCounts": 10000})
+        self.assertEqual(r.status, 200)
+        self.assertEqual(req("GET", "/api/valves/1/flow").json["config"]["floorCounts"], 10000)
         for body, detail in [({"x": 1}, "unknown key"), ({"qmax": 0}, "qmax 0.01..20 l/min"),
                              ({"points": [[1, 0], [1, 1]]}, "points counts 0..10000, increasing"),
                              ({"refSide": "up"}, "refSide closed|open"), ({"enabled": 1}, "enabled true|false"),
+                             ({"liftCounts": 1001}, "liftCounts 0..1000"), ({"liftCounts": 1.5}, "liftCounts 0..1000"),
+                             ({"liftCounts": -1}, "liftCounts 0..1000"),
+                             ({"floorCounts": 10001}, "floorCounts 0..10000"),
+                             ({"floorCounts": True}, "floorCounts 0..10000"),
                              ({"driftD": 1}, "unknown key")]:
             r = req("POST", "/api/valves/1/flow", body)
             self.assertEqual((r.status, r.json["detail"]), (400, detail), body)

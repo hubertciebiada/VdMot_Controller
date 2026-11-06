@@ -11,7 +11,7 @@ use crate::testkit::nvs::NvsType;
 use crate::testkit::{Device, Reset};
 use vdm_esp_core::config::DecodeResult;
 use vdm_esp_core::file_manager::FS_PATH_MAX;
-use vdm_esp_core::flow_layer::{FlowConfig, FlowPoint, FLOW_BLOB_SIZE};
+use vdm_esp_core::flow_layer::{FlowConfig, FlowPoint, FLOW_BLOB_SIZE, FLOW_BLOB_V1_SIZE};
 use vdm_esp_core::legacy_import::{DROPPED_MESSENGER, LEGACY_TEMPS_BLOB};
 
 /// A config with an ext key away from its default.
@@ -705,9 +705,10 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert_eq!(st.shared().flow_revision(), 2);
     assert_eq!(st.shared().flow_config(3), c);
     assert!(!st.shared().flow_config(2).enabled);
+    // No lift and no floor on any valve: version 1, which Rust 2.2.13 reads.
     assert_eq!(
         rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
-        FLOW_BLOB_SIZE
+        FLOW_BLOB_V1_SIZE
     );
     assert!(!st.save_flow_config(12, &c));
     assert_eq!(st.shared().flow_revision(), 2);
@@ -716,13 +717,32 @@ fn flow_configs_load_from_nvs_save_to_it_and_go_with_a_factory_reset() {
     assert!(st.load_flow_configs());
     assert_eq!(st.shared().flow_config(3), c);
     assert_eq!(st.shared().flow_revision(), 3);
+    // A lift (Rust 2.2.14): version 2, read back as well; without it version 1 again.
+    let mut lifted = c;
+    lifted.lift_counts = 100;
+    lifted.floor_counts = 700;
+    assert!(st.save_flow_config(3, &lifted));
+    assert_eq!(
+        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
+        FLOW_BLOB_SIZE
+    );
+    assert!(st.load_flow_configs());
+    assert_eq!(st.shared().flow_config(3), lifted);
+    assert!(st.save_flow_config(3, &c));
+    assert_eq!(
+        rig.dev.nvs.get_blob(NAMESPACE, KEY_FLOW).len(),
+        FLOW_BLOB_V1_SIZE
+    );
+    assert!(st.load_flow_configs());
+    assert_eq!(st.shared().flow_config(3), c);
+    assert_eq!(st.shared().flow_revision(), 7);
     // A failed write publishes nothing.
     rig.dev.nvs.knobs().fail_set.insert(KEY_FLOW.to_string());
     let mut c2 = c;
     c2.offset = 9;
     assert!(!st.save_flow_config(3, &c2));
     assert_eq!(st.shared().flow_config(3), c);
-    assert_eq!(st.shared().flow_revision(), 3);
+    assert_eq!(st.shared().flow_revision(), 7);
     rig.dev.nvs.knobs().fail_set.clear();
     assert!(st.shared().flow_loaded());
     assert!(rig.host.events().is_empty());

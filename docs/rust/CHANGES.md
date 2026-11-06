@@ -8,6 +8,42 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.14-revamped
+
+The STM32 code is that of 2.2.9; only its version number changes, so the versions of the two MCUs
+stay equal.
+
+### ESP32: R2, a positioning that ends with an opening move
+
+- The valve inserts are normally closed and have a hysteresis loop of 40..55 pulses: the direction
+  of the last move picks its branch. The pulse count drifts with small closing moves and with
+  moves below the seat, and a move to the open end stop resets it. In a test on six loops two
+  positionings to the same target differed by at most 0.03 l/min with R2 (10 pairs with flow) and
+  by at most 0.08 l/min with the end stop and one closing move (R1, 12 pairs).
+- Two new members of `GET/POST /api/valves/{n}/flow`: `liftCounts` 0..1000 and `floorCounts`
+  0..10000, both 0 by default. With `liftCounts` 0 a valve is positioned as in 2.2.13, so nothing
+  changes until a valve gets a lift ([API.md](../revamped/API.md)).
+- With `liftCounts` above 0 and `refSide` `open` every positioning to a target between closed and
+  the open end stop goes to the open end stop, closes to the target minus the lift and opens the
+  lift (new step 7 of event 417). The lift is `liftCounts`, at most the target minus
+  `floorCounts`. The held position adds the counted pulses of the lift, and `ms` and `peak` of the
+  `flow` block are those of the lift.
+- With `floorCounts` (the seat plus a margin) a target in l/min or in % below `floorCounts` + 60
+  goes to that position; a target in l/min answers `clipped:true`. `/flow/counts` is not raised:
+  its lift ends at the floor at most, and none at or below it.
+- A valve with `liftCounts` above 0 has no one move: every new target other than 0 goes through the
+  end stop. A target of 0 still closes at once, and `minIntervalS` and `deadbandLpm` keep their
+  meaning. A change of `liftCounts` or `floorCounts` positions the valve again.
+- A lift that ends at an end stop goes on from the open end stop once; the second time the
+  positioning fails at step 7.
+- NVS `flow`: version 2 (1054 B) adds both members to every record. It is written only while a
+  valve has one of them; otherwise the blob stays version 1, which 2.2.13 reads. Going back to
+  2.2.13: set `liftCounts` and `floorCounts` to 0 on every valve first, otherwise 2.2.13 cannot read
+  the flow configuration (all valves off, event 124, `500 nvs` on a save) until the next 2.2.14 or
+  a factory reset ([DESIGN.md](../revamped/DESIGN.md) section 9).
+- MQTT and Home Assistant do not change. `tools/mock_api.py` takes and shows both members; its
+  simulation has no lift.
+
 ## 2.2.13-revamped
 <!-- release-notes: through 2.2.8-revamped -->
 

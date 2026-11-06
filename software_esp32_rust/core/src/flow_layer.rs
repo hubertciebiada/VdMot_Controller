@@ -4,7 +4,9 @@
 //! valve is the fallback position it drives to when the hold is lost. A target is a percentage of
 //! the stroke of the valve, `strokeCounts`, or, Rust 2.2.10, a flow in l/min through the curve. The
 //! first positioning goes through a reference end stop (P1: a move to the end stop, one move of the
-//! pulses away from it); a held valve reaches a new target with one move. Hardware-free: the
+//! pulses away from it); a held valve reaches a new target with one move. With `liftCounts` and
+//! the open reference (R2, Rust 2.2.14) every positioning goes through the open end stop and ends
+//! with an opening move of the lift from below the target. Hardware-free: the
 //! per-valve configuration with its NVS blob and JSON forms, the curve mapping both ways and the
 //! positioning state machine that hands requests to the session and reads the valve model. Owned
 //! by [`crate::stm_session::StmSession`].
@@ -41,6 +43,11 @@ pub const FLOW_GAIN_MAX_MILLI: u16 = 10000;
 /// Current bounds of the moves (the svmov range).
 pub const FLOW_MA_MIN: u8 = 5;
 pub const FLOW_MA_MAX: u8 = 60;
+/// Pulses of the lift (R2): 0 .. 1000.
+pub const FLOW_LIFT_MAX: u16 = 1000;
+/// The least lift of a flow or % target above `floorCounts`: the hysteresis loop of the inserts
+/// is 40..55 pulses wide, and an opening move shorter than it leaves the valve inside the loop.
+pub const LIFT_MIN: u16 = 60;
 
 /// The end stop the curve counts from.
 #[repr(u8)]
@@ -108,6 +115,14 @@ pub struct FlowConfig {
     /// closed reference: a warm-up of the end stop (close, open 300, close) before the final
     /// move
     pub pre_close: bool,
+    /// open reference (R2, Rust 2.2.14): the final closing move stops this many pulses below the
+    /// target and an opening move of them ends the positioning, so the valve stands on the
+    /// opening branch of the insert's hysteresis; 0: no lift (R1, and a held valve reaches a new
+    /// target with one move)
+    pub lift_counts: u16,
+    /// the seat of the insert plus a margin, corrected pulses from the closed end stop (the scale
+    /// of the target counts): the closing move of R2 does not go below it; 0: unknown
+    pub floor_counts: u16,
     /// points in use (0 or [`FLOW_POINTS_MIN`]..[`FLOW_POINTS_MAX`])
     pub count: u8,
     pub points: [FlowPoint; FLOW_POINTS_MAX],
@@ -115,7 +130,7 @@ pub struct FlowConfig {
 
 impl FlowConfig {
     /// Disabled, 2.7 l/min, 34 / 30 mA, fallback 15 %, 60 s, 0.05 l/min, no correction,
-    /// closed reference without a warm-up, no points.
+    /// closed reference without a warm-up, no lift and no floor, no points.
     pub const DEFAULT: Self = Self {
         enabled: false,
         qmax_ml: 2700,
@@ -129,6 +144,8 @@ impl FlowConfig {
         ref_side: RefSide::Closed,
         stroke_counts: 0,
         pre_close: false,
+        lift_counts: 0,
+        floor_counts: 0,
         count: 0,
         points: [FlowPoint {
             counts: 0,
@@ -142,7 +159,8 @@ impl FlowConfig {
         self.points.get(..n).unwrap_or_default()
     }
 
-    /// The members that change where a target lands: a change repositions the valve.
+    /// The members that change where a target lands or on which branch of the hysteresis: a
+    /// change repositions the valve.
     fn curve_key(
         &self,
     ) -> (
@@ -151,6 +169,7 @@ impl FlowConfig {
         u16,
         RefSide,
         u16,
+        [u16; 2],
         u8,
         [FlowPoint; FLOW_POINTS_MAX],
     ) {
@@ -160,9 +179,15 @@ impl FlowConfig {
             self.gain_milli,
             self.ref_side,
             self.stroke_counts,
+            [self.lift_counts, self.floor_counts],
             self.count,
             self.points,
         )
+    }
+
+    /// R2 runs on the valve: a lift with the open reference.
+    fn lifts(&self) -> bool {
+        self.lift_counts > 0 && self.ref_side == RefSide::Open
     }
 }
 
@@ -200,6 +225,8 @@ pub enum FlowError {
     StrokeCounts = 17,
     /// `POST /api/valves/{n}/flow/target`
     Lpm = 18,
+    LiftCounts = 19,
+    FloorCounts = 20,
 }
 
 /// The API detail of an error.
@@ -224,14 +251,17 @@ pub fn flow_error_text(e: FlowError) -> &'static str {
         FlowError::PreClose => "preClose true|false",
         FlowError::StrokeCounts => "strokeCounts 0..10000 (enabled or refSide open needs 1..)",
         FlowError::Lpm => "lpm a plain number from 0",
+        FlowError::LiftCounts => "liftCounts 0..1000",
+        FlowError::FloorCounts => "floorCounts 0..10000",
     }
 }
 
 /// The rules of [`FlowConfig`]: qmax 0.01..20 l/min, both currents 5..60 mA, the fallback
 /// 0..100 %, the interval 0..3600 s, the dead band 0..5 l/min, the offset -10000..10000, the
 /// gain 0.1..10, the stroke 0..10000 (at least 1 when enabled or with the open reference: a % of
-/// the stroke needs it), no points or 2..16 (an enabled layer needs them) with counts strictly
-/// increasing (the first may be 0, every one at most 10000) and flows non-decreasing.
+/// the stroke needs it), the lift 0..1000, the floor 0..10000, no points or 2..16 (an enabled
+/// layer needs them) with counts strictly increasing (the first may be 0, every one at most
+/// 10000) and flows non-decreasing.
 pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
     if !(FLOW_QMAX_MIN_ML..=FLOW_QMAX_MAX_ML).contains(&c.qmax_ml) {
         return Err(FlowError::Qmax);
@@ -260,6 +290,12 @@ pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
     let needs_stroke = c.enabled || c.ref_side == RefSide::Open;
     if c.stroke_counts > FLOW_COUNTS_MAX || (needs_stroke && c.stroke_counts == 0) {
         return Err(FlowError::StrokeCounts);
+    }
+    if c.lift_counts > FLOW_LIFT_MAX {
+        return Err(FlowError::LiftCounts);
+    }
+    if c.floor_counts > FLOW_COUNTS_MAX {
+        return Err(FlowError::FloorCounts);
     }
     let n = usize::from(c.count);
     if n > FLOW_POINTS_MAX || (n != 0 && n < FLOW_POINTS_MIN) || (c.enabled && n == 0) {
@@ -366,12 +402,36 @@ pub fn stroke_pct(c: &FlowConfig, counts: u16) -> u8 {
 }
 
 /// The position of a flow target: round(offset + gain x curve counts), 1..10000, the flow at most
-/// qmax; 0 for no flow (closed: a close to the end stop alone, whatever the reference side).
+/// qmax, with R2 at least the lowest position of a lift ([`floor_clamp`]); 0 for no flow (closed:
+/// a close to the end stop alone, whatever the reference side).
 pub fn flow_counts(c: &FlowConfig, flow_ml: u32) -> u16 {
+    floor_clamp(c, curve_position(c, flow_ml))
+}
+
+/// [`flow_counts`] without the floor.
+fn curve_position(c: &FlowConfig, flow_ml: u32) -> u16 {
     if flow_ml == 0 {
         return 0;
     }
     corrected_counts(c, curve_counts(c, flow_ml.min(u32::from(c.qmax_ml))))
+}
+
+/// A flow or % target at `counts` with R2 and a floor: below `floorCounts` + [`LIFT_MIN`] it is
+/// that position, the lowest a lift of [`LIFT_MIN`] reaches from above the seat. Closed, a valve
+/// without R2 and one without a floor keep `counts`.
+fn floor_clamp(c: &FlowConfig, counts: u16) -> u16 {
+    if c.lifts() && c.floor_counts > 0 && counts > 0 {
+        counts.max(c.floor_counts.saturating_add(LIFT_MIN).min(FLOW_COUNTS_MAX))
+    } else {
+        counts
+    }
+}
+
+/// The lift of the final closing move of the open reference to `counts`: `liftCounts`, at most
+/// the pulses above `floorCounts` (above closed without a floor); 0 (R1) without a lift. A target
+/// of 0 or at the open end stop has no final move.
+fn lift_of(c: &FlowConfig, counts: u16) -> u16 {
+    c.lift_counts.min(counts.saturating_sub(c.floor_counts))
 }
 
 /// The flow the layer estimates at `counts` corrected pulses (ml/min); 0 at 0 (closed).
@@ -389,34 +449,42 @@ pub struct FlowTarget {
     pub ml: u16,
     /// the desired target it means: its position in % of the stroke
     pub pct: u8,
-    /// ml/min the curve gives at that position: the top of the curve when `clipped`
+    /// ml/min the curve gives at that position: the top of the curve when `clipped` from above
     pub flow_ml: u32,
-    /// the flow lies above qmax or above the last point of the curve
+    /// the flow lies above qmax or above the last point of the curve, or (R2) its position below
+    /// the lowest position of a lift
     pub clipped: bool,
 }
 
 /// The target of `flow_ml` ml/min.
 pub fn flow_target(c: &FlowConfig, flow_ml: u32) -> FlowTarget {
     let ml = flow_ml.min(u32::from(c.qmax_ml));
-    let counts = flow_counts(c, ml);
+    let on_curve = curve_position(c, ml);
+    let counts = floor_clamp(c, on_curve);
     let top = c.points().last().map_or(0, |p| u32::from(p.flow_ml));
     FlowTarget {
         ml: ml as u16,
         pct: stroke_pct(c, counts),
         flow_ml: counts_flow(c, counts),
-        clipped: flow_ml > ml || ml > top,
+        clipped: flow_ml > ml || ml > top || counts != on_curve,
     }
 }
 
 // ---------------------------------------------------------------- NVS blob
 
-/// One valve in the blob.
-pub const FLOW_RECORD_SIZE: usize = 19 + 4 * FLOW_POINTS_MAX;
-/// NVS `vdmrev/flow`: "VDMF" (4), version 1 (1), count 12 (1), 12 records, CRC-32 (4).
+/// One valve in the blob of version 1 (Rust 2.2.8 .. 2.2.13) ...
+pub const FLOW_RECORD_V1_SIZE: usize = 19 + 4 * FLOW_POINTS_MAX;
+/// ... and of version 2 (Rust 2.2.14: `liftCounts` and `floorCounts` appended).
+pub const FLOW_RECORD_SIZE: usize = FLOW_RECORD_V1_SIZE + 4;
+/// NVS `vdmrev/flow`: "VDMF" (4), version (1), count 12 (1), 12 records, CRC-32 (4); version 1
+/// ...
+pub const FLOW_BLOB_V1_SIZE: usize = 6 + N * FLOW_RECORD_V1_SIZE + 4;
+/// ... and version 2, the size of the buffer.
 pub const FLOW_BLOB_SIZE: usize = 6 + N * FLOW_RECORD_SIZE + 4;
 
 const FLOW_MAGIC: [u8; 4] = *b"VDMF";
-const FLOW_VERSION: u8 = 1;
+const FLOW_VERSION_V1: u8 = 1;
+const FLOW_VERSION: u8 = 2;
 const RECORDS_AT: usize = 6;
 const FLOW_CRC_AT: usize = RECORDS_AT + N * FLOW_RECORD_SIZE;
 const _: () = assert!(FLOW_CRC_AT + 4 == FLOW_BLOB_SIZE);
@@ -424,7 +492,7 @@ const POINTS_AT: usize = 19;
 
 /// Record: enabled (1), qmax (2), refmA (1), openmA (1), fallbackPct (1), minIntervalS (2),
 /// deadband (2), offset (2), gain (2), refSide (1), preClose (1), strokeCounts (2), count (1),
-/// 16 x {counts (2), flow (2)}; little endian.
+/// 16 x {counts (2), flow (2)}, version 2: liftCounts (2), floorCounts (2); little endian.
 fn encode_record(c: &FlowConfig, out: &mut [u8; FLOW_RECORD_SIZE]) {
     out[0] = u8::from(c.enabled);
     out[1..3].copy_from_slice(&c.qmax_ml.to_le_bytes());
@@ -439,11 +507,13 @@ fn encode_record(c: &FlowConfig, out: &mut [u8; FLOW_RECORD_SIZE]) {
     out[15] = u8::from(c.pre_close);
     out[16..18].copy_from_slice(&c.stroke_counts.to_le_bytes());
     out[18] = c.count;
-    let (cells, _) = out[POINTS_AT..].as_chunks_mut::<4>();
+    let (cells, _) = out[POINTS_AT..FLOW_RECORD_V1_SIZE].as_chunks_mut::<4>();
     for (cell, p) in cells.iter_mut().zip(&c.points) {
         cell[..2].copy_from_slice(&p.counts.to_le_bytes());
         cell[2..].copy_from_slice(&p.flow_ml.to_le_bytes());
     }
+    out[FLOW_RECORD_V1_SIZE..FLOW_RECORD_V1_SIZE + 2].copy_from_slice(&c.lift_counts.to_le_bytes());
+    out[FLOW_RECORD_V1_SIZE + 2..].copy_from_slice(&c.floor_counts.to_le_bytes());
 }
 
 fn flag(b: u8) -> Option<bool> {
@@ -469,10 +539,12 @@ fn decode_record(b: &[u8; FLOW_RECORD_SIZE]) -> Option<FlowConfig> {
         ref_side: RefSide::from_raw(b[14])?,
         pre_close: flag(b[15])?,
         stroke_counts: u16_at(16),
+        lift_counts: u16_at(FLOW_RECORD_V1_SIZE),
+        floor_counts: u16_at(FLOW_RECORD_V1_SIZE + 2),
         count: b[18],
         points: [FlowPoint::default(); FLOW_POINTS_MAX],
     };
-    let (cells, _) = b[POINTS_AT..].as_chunks::<4>();
+    let (cells, _) = b[POINTS_AT..FLOW_RECORD_V1_SIZE].as_chunks::<4>();
     for (p, cell) in c.points.iter_mut().zip(cells) {
         p.counts = u16::from_le_bytes([cell[0], cell[1]]);
         p.flow_ml = u16::from_le_bytes([cell[2], cell[3]]);
@@ -482,38 +554,53 @@ fn decode_record(b: &[u8; FLOW_RECORD_SIZE]) -> Option<FlowConfig> {
     validate_flow_config(&c).ok().map(|()| c)
 }
 
-/// Writes the blob; returns [`FLOW_BLOB_SIZE`].
+/// Writes the blob; returns its length: [`FLOW_BLOB_SIZE`], or [`FLOW_BLOB_V1_SIZE`] (version 1)
+/// while no valve has a lift or a floor, so Rust 2.2.13 reads it after a downgrade.
 pub fn encode_flow_configs(c: &[FlowConfig; N], out: &mut [u8; FLOW_BLOB_SIZE]) -> usize {
+    let v2 = c.iter().any(|c| c.lift_counts != 0 || c.floor_counts != 0);
+    let (version, size) = if v2 {
+        (FLOW_VERSION, FLOW_RECORD_SIZE)
+    } else {
+        (FLOW_VERSION_V1, FLOW_RECORD_V1_SIZE)
+    };
     out[..4].copy_from_slice(&FLOW_MAGIC);
-    out[4] = FLOW_VERSION;
+    out[4] = version;
     out[5] = VALVE_COUNT;
-    let (records, _) = out[RECORDS_AT..FLOW_CRC_AT].as_chunks_mut::<FLOW_RECORD_SIZE>();
-    for (r, cfg) in records.iter_mut().zip(c) {
-        encode_record(cfg, r);
+    let crc_at = RECORDS_AT + N * size;
+    for (r, cfg) in out[RECORDS_AT..crc_at].chunks_exact_mut(size).zip(c) {
+        let mut record = [0u8; FLOW_RECORD_SIZE];
+        encode_record(cfg, &mut record);
+        r.copy_from_slice(&record[..size]);
     }
-    let sum = crc32(&out[..FLOW_CRC_AT], 0);
-    out[FLOW_CRC_AT..].copy_from_slice(&sum.to_le_bytes());
-    FLOW_BLOB_SIZE
+    let sum = crc32(&out[..crc_at], 0);
+    out[crc_at..crc_at + 4].copy_from_slice(&sum.to_le_bytes());
+    crc_at + 4
 }
 
 /// false (out = defaults) for another length, a bad magic/version/count/CRC or a record that
-/// fails [`validate_flow_config`].
+/// fails [`validate_flow_config`]. A blob of version 1 gives no lift and no floor.
 pub fn decode_flow_configs(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
     *out = [FlowConfig::DEFAULT; N];
-    let Ok(b) = <&[u8; FLOW_BLOB_SIZE]>::try_from(data) else {
-        return false;
+    let size = match (data.len(), data.get(4).copied()) {
+        (FLOW_BLOB_V1_SIZE, Some(FLOW_VERSION_V1)) => FLOW_RECORD_V1_SIZE,
+        (FLOW_BLOB_SIZE, Some(FLOW_VERSION)) => FLOW_RECORD_SIZE,
+        _ => return false,
     };
-    let (body, crc) = b.split_at(FLOW_CRC_AT);
-    if body[..4] != FLOW_MAGIC || body[4] != FLOW_VERSION || body[5] != VALVE_COUNT {
+    let (body, crc) = data.split_at(RECORDS_AT + N * size);
+    if body[..4] != FLOW_MAGIC || body[5] != VALVE_COUNT {
         return false;
     }
     if crc != crc32(body, 0).to_le_bytes().as_slice() {
         return false;
     }
     let mut decoded = [FlowConfig::DEFAULT; N];
-    let (records, _) = body[RECORDS_AT..].as_chunks::<FLOW_RECORD_SIZE>();
-    for (slot, r) in decoded.iter_mut().zip(records) {
-        let Some(c) = decode_record(r) else {
+    for (slot, r) in decoded
+        .iter_mut()
+        .zip(body[RECORDS_AT..].chunks_exact(size))
+    {
+        let mut record = [0u8; FLOW_RECORD_SIZE];
+        record[..size].copy_from_slice(r);
+        let Some(c) = decode_record(&record) else {
             return false;
         };
         *slot = c;
@@ -526,7 +613,8 @@ pub fn decode_flow_configs(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
 
 /// `{"enabled":..,"qmax":2.700,"refmA":34,"openmA":30,"fallbackPct":15,"minIntervalS":60,
 /// "deadbandLpm":0.050,"offset":0,"gain":1.000,"refSide":"closed","strokeCounts":0,
-/// "preClose":false,"points":[[300,0.000],...]}` (the flows with three decimals).
+/// "preClose":false,"liftCounts":0,"floorCounts":0,"points":[[300,0.000],...]}` (the flows with
+/// three decimals).
 pub fn write_flow_config_json(jw: &mut JsonWriter<'_>, c: &FlowConfig) {
     jw.begin_object();
     jw.kv("enabled", c.enabled);
@@ -544,6 +632,8 @@ pub fn write_flow_config_json(jw: &mut JsonWriter<'_>, c: &FlowConfig) {
     jw.kv("refSide", ref_side_name(c.ref_side));
     jw.kv("strokeCounts", c.stroke_counts);
     jw.kv("preClose", c.pre_close);
+    jw.kv("liftCounts", c.lift_counts);
+    jw.kv("floorCounts", c.floor_counts);
     jw.key("points");
     jw.begin_array();
     for p in c.points() {
@@ -746,6 +836,8 @@ fn apply_member(cur: &mut Cursor<'_>, key: &[u8], c: &mut FlowConfig) -> Result<
                 b"fallbackPct" => FlowError::FallbackPct,
                 b"minIntervalS" => FlowError::MinInterval,
                 b"strokeCounts" => FlowError::StrokeCounts,
+                b"liftCounts" => FlowError::LiftCounts,
+                b"floorCounts" => FlowError::FloorCounts,
                 b"deadbandLpm" => FlowError::Deadband,
                 b"offset" => FlowError::Offset,
                 b"gain" => FlowError::Gain,
@@ -759,6 +851,8 @@ fn apply_member(cur: &mut Cursor<'_>, key: &[u8], c: &mut FlowConfig) -> Result<
                 b"fallbackPct" => c.fallback_pct = integer(v, 0, 255, err)? as u8,
                 b"minIntervalS" => c.min_interval_s = integer(v, 0, 65535, err)? as u16,
                 b"strokeCounts" => c.stroke_counts = integer(v, 0, 65535, err)? as u16,
+                b"liftCounts" => c.lift_counts = integer(v, 0, 65535, err)? as u16,
+                b"floorCounts" => c.floor_counts = integer(v, 0, 65535, err)? as u16,
                 b"deadbandLpm" => c.deadband_ml = u16::try_from(v).map_err(|_| err)?,
                 b"offset" => c.offset = integer(v, -32768, 32767, err)? as i16,
                 _ => c.gain_milli = u16::try_from(v).map_err(|_| err)?,
@@ -894,7 +988,7 @@ pub struct FlowView {
     pub target_ml: Option<u16>,
     /// a positioning completed since the start: `last_ms` and `last_peak` are the final move's
     pub last_valid: bool,
-    /// duration of the final move of the last positioning (ms)
+    /// duration of the final move of the last positioning, with R2 of its lift (ms)
     pub last_ms: u32,
     /// its largest filtered current (0.1 mA)
     pub last_peak: u16,
@@ -933,10 +1027,12 @@ enum Step {
     WarmUp = 3,
     /// the warm-up's close back to the end stop (preClose)
     WarmClose = 4,
-    /// the final move of the curve's pulses
+    /// the final move of the curve's pulses (with a lift: the closing move to below the target)
     Final = 5,
     /// `skeep 1`
     Keep = 6,
+    /// R2: the opening move of the lift after the final closing move
+    Lift = 7,
 }
 
 /// A request of the layer; the session builds the line and reports the result.
@@ -1029,6 +1125,11 @@ struct Sequence {
     ref_delta: Option<i16>,
     /// the held position the final move starts from, with no move to an end stop before it
     from_held: Option<u16>,
+    /// R2: the pulses of the lift, which the final closing move stops below the target (0: none)
+    lift: u16,
+    /// a lift of this positioning ended at an end stop, and the moves started again from the
+    /// reference end stop: a second one fails
+    lift_rereferenced: bool,
 }
 
 /// What the layer does on a valve (Off and Unsupported are derived from the configuration).
@@ -1330,9 +1431,10 @@ impl FlowLayer {
     }
 
     /// `POST /api/valves/{n}/flow/counts`: positions the valve to `counts` corrected pulses at
-    /// once (0: closed), outside the dead band and the interval; `desired` is the valve's desired
-    /// target, which the layer then counts as served until it changes. While a positioning runs,
-    /// the request follows it. False when the layer does not run on the valve.
+    /// once (0: closed), outside the dead band and the interval; with R2 not raised to the floor,
+    /// and its lift ends there at most; `desired` is the valve's desired target, which the layer
+    /// then counts as served until it changes. While a positioning runs, the request follows it.
+    /// False when the layer does not run on the valve.
     pub fn position_counts(
         &mut self,
         valve: u8,
@@ -1659,27 +1761,33 @@ fn begin_sequence(fv: &mut FlowValve, cfg: &FlowConfig, s: Option<&ValveState>, 
         restart: false,
         ref_delta: None,
         from_held: None,
+        lift: 0,
+        lift_rereferenced: false,
     });
 }
 
-/// The move record a held valve goes on from when it can reach `counts` with one move: neither
-/// the target nor the held position is closed (the first opening goes through the open end stop,
-/// as the curves were measured), the target lies below the open end stop, and no `stgtp` is due,
-/// which would end the hold.
+/// The move record a held valve goes on from when it can reach `counts` with one move: the valve
+/// has no lift (with one, every new target goes through the open end stop, the way its curve was
+/// measured), neither the target nor the held position is closed (the first opening goes through
+/// the open end stop, as the curves were measured), the target lies below the open end stop, and
+/// no `stgtp` is due, which would end the hold.
 fn direct_seq(fv: &FlowValve, cfg: &FlowConfig, s: &ValveState, counts: u16) -> Option<u32> {
     let Phase::Held { move_seq, .. } = fv.phase else {
         return None;
     };
-    let reachable =
-        fv.held_valid && fv.held_counts > 0 && counts != 0 && counts < cfg.stroke_counts;
+    let reachable = cfg.lift_counts == 0
+        && fv.held_valid
+        && fv.held_counts > 0
+        && counts != 0
+        && counts < cfg.stroke_counts;
     (reachable && !fallback_due(fv, cfg, Some(s))).then_some(move_seq)
 }
 
-/// The position of the desired target of a valve.
+/// The position of the desired target of a valve, with R2 at least the lowest position of a lift.
 fn desired_counts(cfg: &FlowConfig, s: &ValveState) -> u16 {
     match s.flow_target() {
         Some(ml) => flow_counts(cfg, u32::from(ml)),
-        None => target_counts(cfg, s.desired),
+        None => floor_clamp(cfg, target_counts(cfg, s.desired)),
     }
 }
 
@@ -1842,6 +1950,7 @@ fn continue_sequence(
                     distinct(WARM_UP_COUNTS + CLOSE_EXTRA_COUNTS, s),
                     cfg.ref_ma,
                 ),
+                Step::Lift => (MoveDir::Open, distinct(seq.lift, s), cfg.open_ma),
                 _ => match (seq.from_held, cfg.ref_side) {
                     (Some(held), _) => {
                         let (dir, ma) = if fv.target_counts > held {
@@ -1852,11 +1961,12 @@ fn continue_sequence(
                         (dir, distinct(fv.target_counts.abs_diff(held), s), ma)
                     }
                     (None, RefSide::Closed) => (MoveDir::Open, fv.target_counts, cfg.open_ma),
-                    (None, RefSide::Open) => (
-                        MoveDir::Close,
-                        final_close(fv.target_counts, cfg),
-                        cfg.ref_ma,
-                    ),
+                    (None, RefSide::Open) => {
+                        // R2: the close stops the lift below the target
+                        seq.lift = lift_of(cfg, fv.target_counts);
+                        let close = final_close(fv.target_counts - seq.lift, cfg);
+                        (MoveDir::Close, close, cfg.ref_ma)
+                    }
                 },
             };
             FlowRequest::Move {
@@ -1879,7 +1989,7 @@ fn continue_sequence(
 fn after_move(step: Step) -> bool {
     matches!(
         step,
-        Step::WarmUp | Step::WarmClose | Step::Final | Step::Keep
+        Step::WarmUp | Step::WarmClose | Step::Final | Step::Lift | Step::Keep
     )
 }
 
@@ -1989,6 +2099,21 @@ fn move_done(
                 (None, RefSide::Closed) => counted,
                 (None, RefSide::Open) => cfg.stroke_counts.saturating_sub(counted),
             };
+            if seq.lift > 0 {
+                seq.step = Step::Lift;
+            } else {
+                finish_move(fv, &mut seq, s);
+            }
+        }
+        // The end stop came before the pulses of the lift: where the valve stands is known from
+        // the reference end stop only, and a second time the positioning fails.
+        Step::Lift if at_end && !seq.lift_rereferenced => {
+            seq.lift_rereferenced = true;
+            rereference(&mut seq, &mut fv.held_valid);
+        }
+        Step::Lift if stop == StopReason::Target => {
+            let counted = s.last_move.counted_counts.min(u32::from(FLOW_COUNTS_MAX)) as u16;
+            fv.held_counts = fv.held_counts.saturating_add(counted).min(FLOW_COUNTS_MAX);
             finish_move(fv, &mut seq, s);
         }
         _ => {
@@ -2021,7 +2146,8 @@ impl FlowValve {
     }
 }
 
-/// The final move of a positioning ended: its record is kept, the keep follows.
+/// The last move of a positioning ended (the final move, with R2 the lift): its record is kept,
+/// the keep follows.
 fn finish_move(fv: &mut FlowValve, seq: &mut Sequence, s: &ValveState) {
     fv.last_valid = true;
     fv.last_ms = s.last_move.duration_ms;

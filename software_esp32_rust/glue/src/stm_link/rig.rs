@@ -62,7 +62,7 @@ impl Default for HostState {
             save_states: Vec::new(),
             cfg: Box::default(),
             revision: 0,
-            flow: Box::new([FlowConfig::DEFAULT; VALVE_COUNT as usize]),
+            flow: Box::default(),
             flow_revision: 0,
             load_source: LoadSource::Stored,
             config_saved: false,

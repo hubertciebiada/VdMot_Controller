@@ -297,7 +297,9 @@ class Device:
                                 # the flow layer (Rust 2.2.8): its configuration and held position
                                 "flow": {"enabled": False, "qmax": 2.7, "refmA": 34, "openmA": 30, "fallbackPct": 15,
                                          "minIntervalS": 60, "deadbandLpm": 0.05, "offset": 0, "gain": 1.0,
-                                         "refSide": "closed", "strokeCounts": 0, "preClose": False, "points": []},
+                                         "refSide": "closed", "strokeCounts": 0, "preClose": False,
+                                         # Rust 2.2.14 (R2); the simulation below ignores the lift
+                                         "liftCounts": 0, "floorCounts": 0, "points": []},
                                 "flowCounts": None, "flowTarget": None})
         for i, (name, blocked) in enumerate(STATIONS[self.station]):
             v = self.valves[i]
@@ -824,7 +826,7 @@ class Device:
     def flow_patch(self, cfg, doc):
         """Applies a flow configuration patch; returns an error detail or None (the firmware's rules)."""
         keys = {"enabled", "qmax", "refmA", "openmA", "fallbackPct", "minIntervalS", "deadbandLpm", "offset", "gain",
-                "refSide", "strokeCounts", "preClose", "points"}
+                "refSide", "strokeCounts", "preClose", "liftCounts", "floorCounts", "points"}
         for k in doc:
             if k not in keys:
                 return "invalid", "unknown key"
@@ -842,7 +844,9 @@ class Device:
                  ("offset", lambda x: self.integer(x) and -10000 <= x <= 10000, "offset -10000..10000"),
                  ("gain", lambda x: self.number(x) and 0.1 <= x <= 10, "gain 0.1..10"),
                  ("strokeCounts", lambda x: self.integer(x) and 0 <= x <= 10000,
-                  "strokeCounts 0..10000 (enabled or refSide open needs 1..)")]
+                  "strokeCounts 0..10000 (enabled or refSide open needs 1..)"),
+                 ("liftCounts", lambda x: self.integer(x) and 0 <= x <= 1000, "liftCounts 0..1000"),
+                 ("floorCounts", lambda x: self.integer(x) and 0 <= x <= 10000, "floorCounts 0..10000")]
         for key, ok, detail in rules:
             if not ok(new[key]):
                 return "out_of_range", detail

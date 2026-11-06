@@ -894,8 +894,9 @@ impl<'a, N: Nvs, F: Fs, G: HeapGate, H: StorageHost> Storage<'a, N, F, G, H> {
                 let Ok(blob) = <&mut [u8; FLOW_BLOB_SIZE]>::try_from(bytes.as_mut_slice()) else {
                     return false;
                 };
-                encode_flow_configs(all, blob);
-                ns.set_blob(KEY_FLOW, blob)
+                // version 1 while no valve has a lift or a floor (the way back to 2.2.13)
+                let n = encode_flow_configs(all, blob);
+                ns.set_blob(KEY_FLOW, blob.get(..n).unwrap_or_default())
             })
     }
 

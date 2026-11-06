@@ -108,6 +108,7 @@ fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_60_s_dead_band_0_05() {
     assert_eq!(c.ref_side, RefSide::Closed);
     assert_eq!(c.stroke_counts, 0);
     assert!(!c.pre_close);
+    assert_eq!((c.lift_counts, c.floor_counts), (0, 0));
     assert_eq!(c.count, 0);
     assert!(c.points().is_empty());
     assert_eq!(validate_flow_config(&c), Ok(()));
@@ -121,6 +122,7 @@ fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_60_s_dead_band_0_05() {
     assert_eq!(FLOW_OFFSET_MAX, 10000);
     assert_eq!((FLOW_GAIN_MIN_MILLI, FLOW_GAIN_MAX_MILLI), (100, 10000));
     assert_eq!((FLOW_MA_MIN, FLOW_MA_MAX), (5, 60));
+    assert_eq!((FLOW_LIFT_MAX, LIFT_MIN), (1000, 60));
     assert_eq!(RefSide::from_raw(0), Some(RefSide::Closed));
     assert_eq!(RefSide::from_raw(1), Some(RefSide::Open));
     assert_eq!(RefSide::from_raw(2), None);
@@ -154,6 +156,8 @@ fn validation_every_rule_with_its_error() {
         (|c| c.points[2].counts = 700, FlowError::PointCounts),
         (|c| c.points[4].counts = 10001, FlowError::PointCounts),
         (|c| c.points[2].flow_ml = 249, FlowError::PointFlow),
+        (|c| c.lift_counts = 1001, FlowError::LiftCounts),
+        (|c| c.floor_counts = 10001, FlowError::FloorCounts),
     ];
     for (i, (change, err)) in cases.into_iter().enumerate() {
         let mut bad = curve();
@@ -172,6 +176,8 @@ fn validation_every_rule_with_its_error() {
     ok.gain_milli = 100;
     ok.points[4].counts = 10000;
     ok.points[2].flow_ml = 300; // equal flows are allowed
+    ok.lift_counts = 1000;
+    ok.floor_counts = 10000;
     assert_eq!(validate_flow_config(&ok), Ok(()));
     ok.offset = 10000;
     ok.gain_milli = 10000;
@@ -251,6 +257,8 @@ fn error_texts_name_the_key_and_its_range() {
             "strokeCounts 0..10000 (enabled or refSide open needs 1..)",
         ),
         (FlowError::Lpm, "lpm a plain number from 0"),
+        (FlowError::LiftCounts, "liftCounts 0..1000"),
+        (FlowError::FloorCounts, "floorCounts 0..10000"),
     ];
     for (i, (e, text)) in all.iter().enumerate() {
         assert_eq!(*e as usize, i);
@@ -378,17 +386,87 @@ fn mapping_the_reference_side_changes_nothing_the_curve_counts_from_the_closed_s
 
 // ================================================================ blob
 
-#[test]
-fn blob_round_trip_and_rejections() {
-    assert_eq!(FLOW_RECORD_SIZE, 83);
-    assert_eq!(FLOW_BLOB_SIZE, 1006);
+/// The blob as Rust 2.2.8 .. 2.2.13 wrote it (version 1, records of 83 bytes), built by hand.
+fn blob_2_2_13(all: &[FlowConfig; 12]) -> Vec<u8> {
+    let mut b = b"VDMF\x01\x0C".to_vec();
+    for c in all {
+        b.push(u8::from(c.enabled));
+        b.extend(c.qmax_ml.to_le_bytes());
+        b.extend([c.ref_ma, c.open_ma, c.fallback_pct]);
+        b.extend(c.min_interval_s.to_le_bytes());
+        b.extend(c.deadband_ml.to_le_bytes());
+        b.extend(c.offset.to_le_bytes());
+        b.extend(c.gain_milli.to_le_bytes());
+        b.extend([c.ref_side as u8, u8::from(c.pre_close)]);
+        b.extend(c.stroke_counts.to_le_bytes());
+        b.push(c.count);
+        for p in &c.points {
+            b.extend(p.counts.to_le_bytes());
+            b.extend(p.flow_ml.to_le_bytes());
+        }
+    }
+    let crc = crc32(&b, 0);
+    b.extend(crc.to_le_bytes());
+    b
+}
+
+/// A set of every kind of record: curves on 0 and 11, an open reference with the warm-up and an
+/// offset on 5.
+fn blob_set() -> [FlowConfig; 12] {
     let mut all = configs(&curve(), &[0, 11]);
     all[5] = open_curve();
     all[5].pre_close = true;
     all[5].offset = -17;
+    all
+}
+
+/// The rejections of a good blob `good` with records of `record` bytes: the length, the magic,
+/// the version, the count, the CRC, a bad record (the CRC fixed); the defaults come back.
+fn assert_rejections(good: &[u8], record: usize) {
+    let crc_at = good.len() - 4;
+    let rejected = |b: &[u8], what: &str| {
+        let mut out = configs(&curve(), &[3]);
+        assert!(!decode_flow_configs(b, &mut out), "{what}");
+        assert_eq!(out, [FlowConfig::DEFAULT; 12], "{what}");
+    };
+    rejected(&good[..good.len() - 1], "short");
+    let mut long = good.to_vec();
+    long.push(0);
+    rejected(&long, "long");
+    for (at, value, what) in [(0, b'X', "magic"), (4, 3, "version"), (5, 11, "count")] {
+        let mut bad = good.to_vec();
+        bad[at] = value;
+        rejected(&bad, what);
+    }
+    let mut bad = good.to_vec();
+    bad[crc_at] ^= 1;
+    rejected(&bad, "crc");
+    let fix = |b: &mut Vec<u8>| {
+        let crc = crc32(&b[..crc_at], 0);
+        b[crc_at..].copy_from_slice(&crc.to_le_bytes());
+    };
+    // enabled 2, refSide 2, preClose 2, refmA 4, count 1, on valve 0 and on valve 11
+    for (at, value) in [(0, 2u8), (14, 2), (15, 2), (3, 4), (18, 1)] {
+        for valve in [0, 11] {
+            let mut bad = good.to_vec();
+            bad[6 + valve * record + at] = value;
+            fix(&mut bad);
+            rejected(&bad, &std::format!("byte {at} of valve {valve}"));
+        }
+    }
+}
+
+#[test]
+fn blob_round_trip_and_rejections() {
+    assert_eq!((FLOW_RECORD_V1_SIZE, FLOW_RECORD_SIZE), (83, 87));
+    assert_eq!((FLOW_BLOB_V1_SIZE, FLOW_BLOB_SIZE), (1006, 1054));
+    let mut all = blob_set();
+    all[5].lift_counts = 100;
+    all[5].floor_counts = 0x0302;
+    all[11].floor_counts = 640;
     let mut bytes = [0xEE; FLOW_BLOB_SIZE];
     assert_eq!(encode_flow_configs(&all, &mut bytes), FLOW_BLOB_SIZE);
-    assert_eq!(&bytes[..6], b"VDMF\x01\x0C");
+    assert_eq!(&bytes[..6], b"VDMF\x02\x0C");
     // valve 0: enabled, 2600 = 0x0A28, 34, 30, 15, 60 = 0x003C, 50, 0, 1000 = 0x03E8,
     // closed, no warm-up, 2400 = 0x0960, 5 points, the first 630 = 0x0276 at 0.
     assert_eq!(
@@ -398,47 +476,79 @@ fn blob_round_trip_and_rejections() {
             0x76, 0x02, 0, 0
         ]
     );
+    // its lift and floor: none
+    assert_eq!(&bytes[6 + 83..6 + 87], &[0, 0, 0, 0]);
     let valve5 = 6 + 5 * FLOW_RECORD_SIZE;
     assert_eq!(bytes[valve5 + 14], 1); // open
     assert_eq!(bytes[valve5 + 15], 1); // preClose
     assert_eq!(&bytes[valve5 + 16..valve5 + 18], &4641u16.to_le_bytes()); // strokeCounts
     assert_eq!(&bytes[valve5 + 10..valve5 + 12], &(-17i16).to_le_bytes());
+    assert_eq!(&bytes[valve5 + 83..valve5 + 87], &[100, 0, 0x02, 0x03]); // lift, floor
     let mut back = [FlowConfig::DEFAULT; 12];
     assert!(decode_flow_configs(&bytes, &mut back));
     assert_eq!(back, all);
-    // Rejections: the length, the magic, the version, the count, the CRC, a bad record.
-    let mut out = configs(&curve(), &[3]);
-    assert!(!decode_flow_configs(&bytes[..FLOW_BLOB_SIZE - 1], &mut out));
-    assert_eq!(out, [FlowConfig::DEFAULT; 12]);
-    let mut bad = bytes;
-    bad[0] = b'X';
-    assert!(!decode_flow_configs(&bad, &mut out));
-    let mut bad = bytes;
-    bad[4] = 2;
-    assert!(!decode_flow_configs(&bad, &mut out));
-    let mut bad = bytes;
-    bad[5] = 11;
-    assert!(!decode_flow_configs(&bad, &mut out));
-    let mut bad = bytes;
-    bad[FLOW_BLOB_SIZE - 1] ^= 1;
-    assert!(!decode_flow_configs(&bad, &mut out));
-    let fix = |b: &mut [u8; FLOW_BLOB_SIZE]| {
-        let crc = crc32(&b[..FLOW_CRC_AT], 0);
-        b[FLOW_CRC_AT..].copy_from_slice(&crc.to_le_bytes());
-    };
-    for (at, value) in [(6, 2u8), (6 + 14, 2), (6 + 15, 2), (6 + 3, 4), (6 + 18, 1)] {
-        let mut bad = bytes;
-        bad[at] = value;
-        fix(&mut bad);
+    assert_rejections(&bytes, FLOW_RECORD_SIZE);
+    // A lift or a floor out of range is a bad record.
+    for (at, value) in [(83, 1001u16), (85, 10001)] {
+        let mut bad = bytes.to_vec();
+        bad[valve5 + at..valve5 + at + 2].copy_from_slice(&value.to_le_bytes());
+        let crc = crc32(&bad[..FLOW_CRC_AT], 0);
+        bad[FLOW_CRC_AT..].copy_from_slice(&crc.to_le_bytes());
         let mut out = configs(&curve(), &[3]);
         assert!(!decode_flow_configs(&bad, &mut out), "byte {at}");
         assert_eq!(out, [FlowConfig::DEFAULT; 12]);
     }
     // Every valve at the defaults decodes to the defaults.
     let all = [FlowConfig::DEFAULT; 12];
-    assert_eq!(encode_flow_configs(&all, &mut bytes), FLOW_BLOB_SIZE);
-    assert!(decode_flow_configs(&bytes, &mut out));
+    let n = encode_flow_configs(&all, &mut bytes);
+    let mut out = configs(&curve(), &[3]);
+    assert!(decode_flow_configs(&bytes[..n], &mut out));
     assert_eq!(out, all);
+}
+
+#[test]
+fn a_set_without_a_lift_or_a_floor_is_written_as_the_2_2_13_blob_and_read_back_with_both_0() {
+    let all = blob_set();
+    let v1 = blob_2_2_13(&all);
+    assert_eq!(v1.len(), FLOW_BLOB_V1_SIZE);
+    // Rust 2.2.13 reads what 2.2.14 writes for this set: the same bytes.
+    let mut bytes = [0xEE; FLOW_BLOB_SIZE];
+    assert_eq!(encode_flow_configs(&all, &mut bytes), FLOW_BLOB_V1_SIZE);
+    assert_eq!(&bytes[..FLOW_BLOB_V1_SIZE], v1.as_slice());
+    // ... and 2.2.14 reads the blob of 2.2.13: no lift, no floor.
+    let mut out = [FlowConfig::DEFAULT; 12];
+    assert!(decode_flow_configs(&v1, &mut out));
+    assert_eq!(out, all);
+    assert!(out
+        .iter()
+        .all(|c| c.lift_counts == 0 && c.floor_counts == 0));
+    assert_rejections(&v1, FLOW_RECORD_V1_SIZE);
+    // A version 1 blob of the length of version 2 and the other way round: refused.
+    let mut v2_len = v1.clone();
+    v2_len.resize(FLOW_BLOB_SIZE, 0);
+    assert!(!decode_flow_configs(&v2_len, &mut out));
+    let mut lifted = all;
+    lifted[0].lift_counts = 1;
+    encode_flow_configs(&lifted, &mut bytes);
+    let mut v1_len = bytes[..FLOW_BLOB_V1_SIZE].to_vec();
+    let crc = crc32(&v1_len[..FLOW_BLOB_V1_SIZE - 4], 0);
+    v1_len[FLOW_BLOB_V1_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
+    assert!(!decode_flow_configs(&v1_len, &mut out));
+    // One lift or one floor anywhere makes it version 2; with both back at 0 it is version 1.
+    for (valve, lift, floor) in [(0, 1, 0), (11, 0, 1), (4, 0, 10000)] {
+        let mut set = all;
+        set[valve].lift_counts = lift;
+        set[valve].floor_counts = floor;
+        assert_eq!(encode_flow_configs(&set, &mut bytes), FLOW_BLOB_SIZE);
+        assert_eq!(bytes[4], 2);
+        let mut back = [FlowConfig::DEFAULT; 12];
+        assert!(decode_flow_configs(&bytes, &mut back));
+        assert_eq!(back, set);
+        set[valve].lift_counts = 0;
+        set[valve].floor_counts = 0;
+        assert_eq!(encode_flow_configs(&set, &mut bytes), FLOW_BLOB_V1_SIZE);
+        assert_eq!(&bytes[..FLOW_BLOB_V1_SIZE], v1.as_slice());
+    }
 }
 
 #[test]
@@ -447,13 +557,13 @@ fn a_blob_enabled_without_a_stroke_comes_back_disabled_with_the_rest_of_the_set(
     all[1].stroke_counts = 0;
     all[2].count = 0;
     let mut bytes = [0; FLOW_BLOB_SIZE];
-    encode_flow_configs(&all, &mut bytes);
+    let n = encode_flow_configs(&all, &mut bytes);
     let mut out = [FlowConfig::DEFAULT; 12];
     // No points: that is no valid record, as ever.
-    assert!(!decode_flow_configs(&bytes, &mut out));
+    assert!(!decode_flow_configs(&bytes[..n], &mut out));
     all[2].count = 5;
-    encode_flow_configs(&all, &mut bytes);
-    assert!(decode_flow_configs(&bytes, &mut out));
+    let n = encode_flow_configs(&all, &mut bytes);
+    assert!(decode_flow_configs(&bytes[..n], &mut out));
     assert_eq!(out[0], all[0]);
     assert_eq!(out[2], all[2]);
     assert!(!out[1].enabled);
@@ -472,6 +582,7 @@ fn json_document_and_patch_round_trip() {
             r#"{"enabled":true,"qmax":2.600,"refmA":34,"openmA":30,"fallbackPct":15,"#,
             r#""minIntervalS":60,"deadbandLpm":0.050,"offset":0,"gain":1.000,"#,
             r#""refSide":"closed","strokeCounts":2400,"preClose":false,"#,
+            r#""liftCounts":0,"floorCounts":0,"#,
             r#""points":[[630,0.000],[760,0.300],[888,1.000],[1070,2.300],[1180,2.600]]}"#
         )
     );
@@ -481,12 +592,15 @@ fn json_document_and_patch_round_trip() {
     open.offset = -17;
     open.gain_milli = 995;
     open.deadband_ml = 5;
+    open.lift_counts = 1000;
+    open.floor_counts = 10000;
     let text = json(&open);
     assert!(text.contains(r#""refSide":"open","strokeCounts":4641,"preClose":true,"#));
     assert!(text.contains(r#""offset":-17,"gain":0.995,"#));
     assert!(text.contains(r#""deadbandLpm":0.005,"#));
+    assert!(text.contains(r#","liftCounts":1000,"floorCounts":10000,"points":"#));
     assert_eq!(patched(&FlowConfig::DEFAULT, &text), Ok(open));
-    assert_eq!(json(&FlowConfig::DEFAULT).len(), 197);
+    assert_eq!(json(&FlowConfig::DEFAULT).len(), 228);
     assert!(json(&FlowConfig::DEFAULT).ends_with(r#""points":[]}"#));
 }
 
@@ -522,6 +636,13 @@ fn json_patch_keeps_absent_members_and_takes_every_number_form() {
     assert_eq!(p.points(), c.points());
     let p = patched(&c, r#"{"enabled":false,"points":[]}"#).expect("ok");
     assert_eq!(p.count, 0);
+    let p = patched(&c, r#"{"liftCounts":100,"floorCounts":700}"#).expect("ok");
+    assert_eq!((p.lift_counts, p.floor_counts), (100, 700));
+    assert_eq!((p.stroke_counts, p.points()), (c.stroke_counts, c.points()));
+    let p = patched(&p, r#"{"liftCounts":0}"#).expect("ok");
+    assert_eq!((p.lift_counts, p.floor_counts), (0, 700));
+    let p = patched(&p, r#"{"liftCounts":1000,"floorCounts":10000}"#).expect("ok");
+    assert_eq!((p.lift_counts, p.floor_counts), (1000, 10000));
     assert_eq!(patched(&c, "{}"), Ok(c));
     assert_eq!(
         patched(&c, r#"{"offset":-10000}"#).map(|p| p.offset),
@@ -554,6 +675,16 @@ fn json_patch_refusals_leave_the_config_alone() {
         ("{\"strokeCounts\":1.5}", FlowError::StrokeCounts),
         ("{\"strokeCounts\":-1}", FlowError::StrokeCounts),
         ("{\"strokeCounts\":70000}", FlowError::StrokeCounts),
+        ("{\"liftCounts\":1001}", FlowError::LiftCounts),
+        ("{\"liftCounts\":1.5}", FlowError::LiftCounts),
+        ("{\"liftCounts\":-1}", FlowError::LiftCounts),
+        ("{\"liftCounts\":70000}", FlowError::LiftCounts),
+        ("{\"liftCounts\":\"100\"}", FlowError::LiftCounts),
+        ("{\"floorCounts\":10001}", FlowError::FloorCounts),
+        ("{\"floorCounts\":0.5}", FlowError::FloorCounts),
+        ("{\"floorCounts\":-1}", FlowError::FloorCounts),
+        ("{\"floorCounts\":70000}", FlowError::FloorCounts),
+        ("{\"floorCounts\":true}", FlowError::FloorCounts),
         ("{\"qmax\":\"2.7\"}", FlowError::Qmax),
         ("{\"qmax\":2.7001}", FlowError::Qmax),
         ("{\"qmax\":1e3}", FlowError::Qmax),
@@ -2916,4 +3047,468 @@ fn flow_target_json_one_member_from_0_above_qmax_it_is_clipped() {
     ] {
         assert_eq!(ok(body), Err(err), "{body}");
     }
+}
+
+// ================================================================ R2: the lift (2.2.14)
+
+/// The open curve with a lift and a floor.
+fn lift_curve(lift: u16, floor: u16) -> FlowConfig {
+    let mut c = open_curve();
+    c.lift_counts = lift;
+    c.floor_counts = floor;
+    c
+}
+
+/// The moves of an R2 positioning of valve 0 that was asked for: the open end stop (its opening
+/// counts `opened`), the close of `close` pulses that counts as many, the lift of `lift` pulses
+/// that counts `counted`, the keep.
+fn r2(stm: &mut Stm, f: &mut FlowLayer, opened: u16, close: u16, lift: u16, counted: u16) {
+    assert_eq!(stm.next(f), mv(0, MoveDir::Open, 10000, 30));
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(0, MoveDir::Open, 10000, opened, StopReason::EndStop);
+    stm.tick(f);
+    assert_eq!(stm.next(f), mv(0, MoveDir::Close, close, 34));
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(0, MoveDir::Close, close, close, StopReason::Target);
+    stm.tick(f);
+    assert_eq!(stm.next(f), mv(0, MoveDir::Open, lift, 30));
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.tick(f);
+    stm.moved(0, MoveDir::Open, lift, counted, StopReason::Target);
+    stm.tick(f);
+    assert_eq!(stm.next(f), keep(0, true));
+    stm.result(f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+}
+
+#[test]
+fn r2_goes_to_the_open_end_stop_closes_to_the_target_minus_the_lift_and_opens_the_lift() {
+    let c = lift_curve(100, 0);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000); // 888 pulses
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
+    stm.tick(&mut f);
+    // 4641 - (888 - 100)
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 3853, 34));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 3853, 3855, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(f.view(0).state, FlowState::Positioning);
+    assert!(f.busy(0));
+    // The lift: 100 pulses open at the threshold of an opening move.
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 100, 30));
+    assert_eq!(stm.next(&mut f), None);
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), None); // the record is awaited
+    stm.moved(0, MoveDir::Open, 100, 104, StopReason::Target);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    let v = f.view(0);
+    // 4641 - 3855 = 786 after the close, + 104 counted by the lift
+    assert_eq!(
+        (v.state, v.counts, v.target_counts, v.pct),
+        (FlowState::Held, 890, 888, 19)
+    );
+    assert_eq!(v.flow_ml, 1014);
+    // The record kept is that of the lift, the last move.
+    assert_eq!((v.last_ms, v.last_peak), (104 * 7, 123));
+    assert_eq!(stm.codes(), [EventCode::FlowPositioned]);
+    assert_eq!((stm.events[0].arg1, stm.events[0].arg2), (890, 19));
+    assert_eq!(stm.events[0].text.as_slice(), b"");
+    // The next target goes through the open end stop again, which measures the drift from the
+    // held position; the lift ends it.
+    stm.now += 300_000;
+    stm.flow(&c, 0, 1350); // 937 pulses
+    r2(&mut stm, &mut f, 3760, 3804, 100, 100); // 4641 - 837
+    assert_eq!(f.view(0).counts, 937);
+    assert_eq!(f.view(0).ref_delta, Some(9)); // 3760 - (4641 - 890)
+    assert_eq!(stm.events.last().unwrap().text.as_slice(), b"ref +9");
+    assert_eq!(
+        stm.codes(),
+        [EventCode::FlowPositioned, EventCode::FlowPositioned]
+    );
+}
+
+#[test]
+fn with_a_lift_every_new_target_goes_through_the_open_end_stop_without_one_move() {
+    let mut c = lift_curve(100, 0);
+    c.deadband_ml = 0;
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3853, 100, 100);
+    assert_eq!(f.view(0).counts, 888);
+    stm.now += 300_000;
+    // Another flow, one in % and even one at the held pulses: the open end stop first.
+    stm.flow(&c, 0, 1350);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    let (mut stm, mut f) = (Stm::new(0x001), layer(&c, &[0]));
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3853, 100, 100);
+    stm.now += 300_000;
+    stm.target(0, 20); // 928 pulses
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    let (mut stm, mut f) = (Stm::new(0x001), layer(&c, &[0]));
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3853, 100, 100);
+    stm.now += 300_000;
+    stm.flow(&c, 0, 1001); // 888 pulses, where it stands
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    // The lift alone, with the closed reference: no R2, and no one move either.
+    let mut closed = curve();
+    closed.lift_counts = 100;
+    closed.min_interval_s = 0;
+    let mut f = layer(&closed, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 37); // 888 pulses
+    position(&mut stm, &mut f, 0, false, 4800, 888);
+    assert_eq!(f.view(0).counts, 888);
+    stm.target(0, 40); // 960 pulses
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1388, 34));
+}
+
+#[test]
+fn the_dead_band_and_the_interval_hold_a_lift_back_a_close_goes_at_once() {
+    let c = lift_curve(100, 0);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3853, 100, 104); // 892 pulses, 1.029 l/min
+                                                // within the interval
+    stm.flow(&c, 0, 1350);
+    assert_eq!(stm.next(&mut f), None);
+    // past it, within the dead band
+    stm.now += 300_000;
+    stm.flow(&c, 0, 1070); // 0.041 l/min away
+    assert_eq!(stm.next(&mut f), None);
+    stm.flow(&c, 0, 1350);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    // A close goes out within the interval.
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3853, 100, 104);
+    stm.flow(&c, 0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 1392, 34)); // 892 + 500
+}
+
+#[test]
+fn the_lift_stops_at_the_floor_and_a_flow_below_the_floor_plus_60_is_clamped_to_it() {
+    // 888 is 68 above the floor: the lift is 68.
+    let c = lift_curve(100, 820);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3821, 68, 68); // 4641 - 820
+    assert_eq!(f.view(0).counts, 888);
+    // 888 lies below 850 + 60: the target is 910, the lift 60.
+    let c = lift_curve(100, 850);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3791, 60, 60); // 4641 - 850
+    assert_eq!((f.view(0).counts, f.view(0).target_counts), (910, 910));
+    // A lift below 60 stays what it is.
+    let c = lift_curve(40, 850);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 1000);
+    r2(&mut stm, &mut f, 4000, 3771, 40, 40); // 4641 - (910 - 40)
+    assert_eq!(f.view(0).counts, 910);
+    // A target in %: 10 % is 464 pulses, below 700 + 60.
+    let c = lift_curve(100, 700);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 10);
+    r2(&mut stm, &mut f, 4000, 3941, 60, 60); // 4641 - 700
+    assert_eq!(f.view(0).target_counts, 760);
+    // Without a floor the lift ends at most at closed: 1 % is 46 pulses, all of them lifted.
+    let c = lift_curve(100, 0);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 1);
+    r2(&mut stm, &mut f, 4000, 4641, 46, 46);
+    assert_eq!(f.view(0).target_counts, 46);
+}
+
+#[test]
+fn a_flow_below_the_floor_plus_60_is_clipped_to_it_without_r2_nothing_changes() {
+    let c = lift_curve(100, 700);
+    // 0.25 l/min lies at 738 pulses: 760, the flow there, clipped.
+    assert_eq!(
+        flow_target(&c, 250),
+        FlowTarget {
+            ml: 250,
+            pct: 16,
+            flow_ml: 300,
+            clipped: true
+        }
+    );
+    assert_eq!(
+        flow_target(&c, 300),
+        FlowTarget {
+            ml: 300,
+            pct: 16,
+            flow_ml: 300,
+            clipped: false
+        }
+    );
+    assert_eq!(flow_counts(&c, 298), 760); // 759 on the curve
+    assert!(flow_target(&c, 298).clipped);
+    assert_eq!(flow_counts(&c, 1), 760);
+    assert_eq!(flow_counts(&c, 1000), 888);
+    assert!(!flow_target(&c, 1000).clipped);
+    assert!(flow_target(&c, 2601).clipped);
+    assert_eq!(
+        flow_target(&c, 0),
+        FlowTarget {
+            ml: 0,
+            pct: 0,
+            flow_ml: 0,
+            clipped: false
+        }
+    );
+    // No lift, the closed reference, no floor: the curve alone.
+    let mut cases = [lift_curve(0, 700), curve(), lift_curve(100, 0)];
+    cases[1].lift_counts = 100;
+    cases[1].floor_counts = 700;
+    for c in cases {
+        assert_eq!(flow_counts(&c, 250), 738);
+        assert!(!flow_target(&c, 250).clipped);
+    }
+    // The clamp ends at the range.
+    assert_eq!(flow_counts(&lift_curve(100, 9939), 1000), 9999);
+    assert_eq!(flow_counts(&lift_curve(100, 9940), 1000), 10000);
+    assert_eq!(flow_counts(&lift_curve(100, 9990), 1000), 10000);
+    assert_eq!(flow_counts(&lift_curve(100, 10000), 1000), 10000);
+}
+
+#[test]
+fn a_counts_request_is_not_clamped_and_lifts_down_to_the_floor_at_most() {
+    let c = lift_curve(100, 850);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    // 888: 38 above the floor, no clamp (the fallback target first: the layer knows no STM
+    // target yet).
+    assert!(f.position_counts(0, 888, None, stm.now));
+    assert_eq!(stm.next(&mut f), set_target(0, 15));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    r2(&mut stm, &mut f, 4000, 3791, 38, 38);
+    assert_eq!((f.view(0).counts, f.view(0).target_counts), (888, 888));
+    // At or below the floor: no lift, R1.
+    for counts in [850, 840] {
+        assert!(f.position_counts(0, counts, None, stm.now));
+        stm.moved_through(&mut f, 4641 - counts);
+        assert_eq!(f.view(0).counts, counts);
+        assert_eq!(f.view(0).state, FlowState::Held);
+    }
+    // Without a floor a lift ends at most at closed.
+    let c = lift_curve(100, 0);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    assert!(f.position_counts(0, 50, None, stm.now));
+    assert_eq!(stm.next(&mut f), set_target(0, 15));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    r2(&mut stm, &mut f, 4000, 4641, 50, 50);
+    assert_eq!(f.view(0).counts, 50);
+}
+
+#[test]
+fn the_open_end_stop_and_closed_need_no_lift() {
+    let c = lift_curve(100, 0);
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.target(0, 100);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.flags(0, STM_FLAG_SVC_HOLD + STM_FLAG_SVC_KEEP);
+    assert_eq!(f.view(0).counts, 4641);
+    stm.target(0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 5141, 34)); // 4641 + 500
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Close, 5141, 4700, StopReason::EndStop);
+    stm.tick(&mut f);
+    assert_eq!(stm.next(&mut f), keep(0, true));
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    assert_eq!(f.view(0).counts, 0);
+    // One pulse below the open end stop: the close and the lift.
+    let mut c = lift_curve(100, 0);
+    c.stroke_counts = 1181;
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    stm.flow(&c, 0, 2600); // 1180 pulses
+    r2(&mut stm, &mut f, 4000, 101, 100, 100); // 1181 - 1080
+    assert_eq!(f.view(0).counts, 1180);
+}
+
+#[test]
+fn a_lift_that_meets_an_end_stop_goes_on_from_the_reference_end_stop_once() {
+    for stop in [StopReason::EndStop, StopReason::EarlyEndStop] {
+        let c = lift_curve(100, 0);
+        let mut f = layer(&c, &[0]);
+        let mut stm = Stm::new(0x001);
+        stm.flow(&c, 0, 1000);
+        let lift_to = |stm: &mut Stm, f: &mut FlowLayer, stop| {
+            assert_eq!(stm.next(f), mv(0, MoveDir::Open, 10000, 30));
+            stm.result(f, 0, FlowOutcome::Ok);
+            stm.tick(f);
+            stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
+            stm.tick(f);
+            assert_eq!(stm.next(f), mv(0, MoveDir::Close, 3853, 34));
+            stm.result(f, 0, FlowOutcome::Ok);
+            stm.tick(f);
+            stm.moved(0, MoveDir::Close, 3853, 3853, StopReason::Target);
+            stm.tick(f);
+            assert_eq!(stm.next(f), mv(0, MoveDir::Open, 100, 30));
+            stm.result(f, 0, FlowOutcome::Ok);
+            stm.tick(f);
+            stm.moved(0, MoveDir::Open, 100, 30, stop);
+            stm.tick(f);
+        };
+        lift_to(&mut stm, &mut f, stop);
+        // Not a failure: the same sequence, the position forgotten.
+        assert_eq!(f.view(0).state, FlowState::Positioning);
+        assert!(!f.view(0).known);
+        lift_to(&mut stm, &mut f, stop);
+        // The second time it fails at the lift, step 7.
+        assert_eq!(f.view(0).state, FlowState::Failed);
+        let e = stm.events.last().expect("event");
+        assert_eq!(e.code, EventCode::FlowPositionFailed);
+        assert_eq!((e.arg1, e.arg2), (7, stop as i32));
+        assert_eq!(&e.text[..], stop_reason_name(stop).as_bytes());
+        assert_eq!(stm.codes(), [EventCode::FlowPositionFailed]);
+        // The retry is a whole positioning, which may meet an end stop once again.
+        stm.now += 300_000;
+        lift_to(&mut stm, &mut f, stop);
+        assert_eq!(f.view(0).state, FlowState::Positioning);
+    }
+}
+
+#[test]
+fn any_other_stop_or_a_rejection_of_the_lift_fails_at_step_7() {
+    let c = lift_curve(100, 0);
+    let until_lift = |stm: &mut Stm, f: &mut FlowLayer| {
+        stm.flow(&c, 0, 1000);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Open, 10000, 30));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
+        stm.tick(f);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Close, 3853, 34));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, MoveDir::Close, 3853, 3853, StopReason::Target);
+        stm.tick(f);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Open, 100, 30));
+    };
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    until_lift(&mut stm, &mut f);
+    stm.result(&mut f, 0, FlowOutcome::Ok);
+    stm.tick(&mut f);
+    stm.moved(0, MoveDir::Open, 100, 12, StopReason::UnderCurrent);
+    stm.tick(&mut f);
+    assert_eq!(f.view(0).state, FlowState::Failed);
+    let e = stm.events.last().expect("event");
+    assert_eq!((e.arg1, e.arg2), (7, StopReason::UnderCurrent as i32));
+    assert_eq!(&e.text[..], b"undercurrent");
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    until_lift(&mut stm, &mut f);
+    stm.result(&mut f, 0, FlowOutcome::Rejected(5));
+    let e = stm.events.last().expect("event");
+    assert_eq!(
+        (e.code, e.arg1, e.arg2),
+        (EventCode::FlowPositionFailed, 7, 5)
+    );
+    // A busy STM: the lift again after 3 s.
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    until_lift(&mut stm, &mut f);
+    stm.result(&mut f, 0, FlowOutcome::Rejected(2));
+    assert_eq!(stm.next(&mut f), None);
+    stm.now += BUSY_RETRY_MS;
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 100, 30));
+}
+
+#[test]
+fn a_valve_that_left_where_the_close_put_it_starts_again_from_the_end_stop() {
+    let c = lift_curve(100, 0);
+    let until_lift = |stm: &mut Stm, f: &mut FlowLayer| {
+        stm.flow(&c, 0, 1000);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Open, 10000, 30));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, MoveDir::Open, 10000, 4000, StopReason::EndStop);
+        stm.tick(f);
+        assert_eq!(stm.next(f), mv(0, MoveDir::Close, 3853, 34));
+        stm.result(f, 0, FlowOutcome::Ok);
+        stm.tick(f);
+        stm.moved(0, MoveDir::Close, 3853, 3853, StopReason::Target);
+        stm.tick(f);
+    };
+    // The hold ran out before the lift.
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    until_lift(&mut stm, &mut f);
+    stm.flags(0, 0);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    assert!(!f.view(0).known);
+    // Another move of the valve.
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    until_lift(&mut stm, &mut f);
+    foreign_move(&mut stm, 0, STM_FLAG_SVC_HOLD);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+    // The link went.
+    let mut f = layer(&c, &[0]);
+    let mut stm = Stm::new(0x001);
+    until_lift(&mut stm, &mut f);
+    stm.now += 2;
+    assert_eq!(f.next(&stm.m, inputs(false, false), stm.now), None);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 10000, 30));
+}
+
+#[test]
+fn a_new_lift_or_floor_positions_a_held_valve_again() {
+    let (mut stm, mut f) = held_open(&open_curve());
+    assert_eq!(f.view(0).state, FlowState::Held);
+    let c = lift_curve(100, 0);
+    f.set_configs(&configs(&c, &[0]));
+    assert_eq!(f.view(0).state, FlowState::Unknown);
+    r2(&mut stm, &mut f, 3753, 3853, 100, 100);
+    assert_eq!(f.view(0).counts, 888);
+    let floor = lift_curve(100, 820);
+    f.set_configs(&configs(&floor, &[0]));
+    assert_eq!(f.view(0).state, FlowState::Unknown);
+    r2(&mut stm, &mut f, 3753, 3821, 68, 68);
+    // The same configuration again: nothing.
+    f.set_configs(&configs(&floor, &[0]));
+    assert_eq!(f.view(0).state, FlowState::Held);
+}
+
+#[test]
+fn a_floor_without_a_lift_changes_nothing() {
+    let c = lift_curve(0, 850);
+    let (mut stm, mut f) = held_open(&c);
+    assert_eq!(f.view(0).counts, 888);
+    to_937(&mut stm);
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Open, 49, 30));
+    assert!(!flow_target(&c, 1000).clipped);
 }

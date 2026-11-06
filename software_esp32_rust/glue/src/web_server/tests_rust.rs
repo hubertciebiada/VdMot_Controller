@@ -833,11 +833,34 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert_eq!(r.status, 200);
     assert!(text(&r).contains(r#""qmax":2.300,"#));
     assert!(text(&r).contains(r#""offset":-7,"#));
+    // The lift and the floor (Rust 2.2.14): with one of them the blob is version 2, with both 0
+    // on every valve version 1 again, which Rust 2.2.13 reads.
+    let lift = r#"{"liftCounts":100,"floorCounts":700}"#;
+    let r = perform(&mut web, api_post("/api/valves/1/flow", lift));
+    assert_eq!(r.status, 200);
+    assert!(text(&r).contains(r#""preClose":false,"liftCounts":100,"floorCounts":700,"points":"#));
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1054);
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert!(text(&r).contains(r#""liftCounts":100,"floorCounts":700,"#));
+    let none = r#"{"liftCounts":0,"floorCounts":0}"#;
+    let r = perform(&mut web, api_post("/api/valves/1/flow", none));
+    assert_eq!(r.status, 200);
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
     // Refusals, nothing changed.
     let cases = [
         ("{", "malformed", "malformed JSON"),
         (r#"{"x":1}"#, "invalid", "unknown key"),
         (r#"{"qmax":0}"#, "out_of_range", "qmax 0.01..20 l/min"),
+        (
+            r#"{"liftCounts":1001}"#,
+            "out_of_range",
+            "liftCounts 0..1000",
+        ),
+        (
+            r#"{"floorCounts":10001}"#,
+            "out_of_range",
+            "floorCounts 0..10000",
+        ),
         (
             r#"{"points":[[1,0],[1,1]]}"#,
             "out_of_range",
@@ -850,7 +873,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
         assert_eq!(r.status, 400, "{body}");
         assert_eq!(text(&r), error_body(code, detail), "{body}");
     }
-    assert_eq!(st.shared().flow_revision(), before + 2);
+    assert_eq!(st.shared().flow_revision(), before + 4);
     let r = perform(&mut web, get("/api/valves/1/flow"));
     assert!(text(&r).contains(r#""offset":-7,"#));
     // A stored set that cannot be read is not saved over (the load is tried again first).
@@ -862,7 +885,7 @@ fn flow_config_is_read_patched_saved_and_refused() {
     assert_eq!(r.status, 500);
     assert_eq!(text(&r), error_body("nvs", "stored flow config unreadable"));
     assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow"), bad);
-    assert_eq!(st.shared().flow_revision(), before + 4);
+    assert_eq!(st.shared().flow_revision(), before + 6);
 }
 
 #[test]
@@ -1052,6 +1075,53 @@ fn a_flow_in_lpm_needs_a_running_layer_and_becomes_a_target() {
     rig.state().support = StmSupport::TooOld;
     assert_eq!(perform(&mut web, lpm(r#"{"lpm":1}"#)).status, 409);
     assert_eq!(rig.submitted().len(), 5);
+}
+
+#[test]
+fn a_flow_below_the_lowest_position_of_a_lift_is_clipped_to_it() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    assert!(!st.load_flow_configs());
+    let mut web = rig.web(&st);
+    let curve = concat!(
+        r#"{"enabled":true,"qmax":2.6,"strokeCounts":2400,"refSide":"open","#,
+        r#""liftCounts":100,"floorCounts":700,"points":[[630,0],[760,0.3],[1070,2.3]]}"#
+    );
+    assert_eq!(
+        perform(&mut web, api_post("/api/valves/1/flow", curve)).status,
+        200
+    );
+    rig.state().snapshot.flow[0] = FlowView {
+        enabled: true,
+        state: FlowState::Held,
+        ..FlowView::default()
+    };
+    let lpm = |b: &str| api_post("/api/valves/1/flow/target", b);
+    // 0.1 l/min lies at 673 pulses, below the floor + 60: the position is 760, 0.3 l/min.
+    let cases = [
+        (
+            r#"{"lpm":0.1}"#,
+            r#"{"valve":1,"lpm":0.300,"target":32,"clipped":true}"#,
+        ),
+        (
+            r#"{"lpm":0.3}"#,
+            r#"{"valve":1,"lpm":0.300,"target":32,"clipped":false}"#,
+        ),
+        (
+            r#"{"lpm":0}"#,
+            r#"{"valve":1,"lpm":0.000,"target":0,"clipped":false}"#,
+        ),
+    ];
+    for (body, answer) in cases {
+        let r = perform(&mut web, lpm(body));
+        assert_eq!(r.status, 202, "{body}");
+        assert_eq!(text(&r), answer, "{body}");
+    }
+    let s = rig.submitted();
+    assert_eq!(
+        s.iter().map(|c| (c.pos, c.flow_ml)).collect::<Vec<_>>(),
+        [(32, Some(100)), (32, Some(300)), (0, Some(0))]
+    );
 }
 
 // ---------------------------------------------------------------- brake (STM 2.2.9)
