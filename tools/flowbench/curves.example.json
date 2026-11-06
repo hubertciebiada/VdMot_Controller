@@ -1,5 +1,5 @@
 {
-  "_comment": "Invented curves, not a measurement: measure your own loops. Copy to curves.json and upload with flowcheck.py. A key is 'NAME IDX': NAME of --controller NAME=HOST, IDX the valve number; a key of another controller is skipped. curve: 2..16 points [pulses from the closed end stop, l/min], pulses increasing, flow not falling. Optional: strokeCounts (required to enable the layer), refSide (closed or open), qmax, offset, gain. The --sim controllers are sim-a and sim-b.",
+  "_comment": "Invented curves, not a measurement: measure your own loops. Copy to curves.json and upload with flowcheck.py. A key is 'NAME IDX': NAME of --controller NAME=HOST, IDX the valve number; a key of another controller is skipped. curve: 2..32 points (2..16 before firmware 2.2.15) [pulses from the closed end stop, l/min], pulses increasing, flow not falling. Optional: strokeCounts (required to enable the layer), refSide (closed or open), qmax, offset, gain. The --sim controllers are sim-a and sim-b.",
   "sim-a 1": {
     "curve": [[500, 0.0], [600, 0.2], [700, 0.6], [800, 1.1], [900, 1.6], [1000, 2.0], [1100, 2.3]],
     "strokeCounts": 4000,

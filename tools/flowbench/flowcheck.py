@@ -884,14 +884,14 @@ def make_handler(engine, page):
 
 
 def clean_curve(curve):
-    """At most 16 points, counts strictly increasing, flow non-decreasing."""
+    """At most 32 points (firmware 2.2.15), counts strictly increasing, flow non-decreasing."""
     clean = []
     for p, q in curve:
         p, q = max(0, int(p)), round(float(q), 3)
         if clean and p <= clean[-1][0]:
             continue
         clean.append([p, max(q, clean[-1][1] if clean else 0.0)])
-    while len(clean) > 16:
+    while len(clean) > 32:
         # drop the point that changes the curve least
         k = min(range(1, len(clean) - 1), key=lambda j: abs(
             clean[j][1] - curve_flow([clean[j - 1], clean[j + 1]], clean[j][0])))

@@ -240,8 +240,8 @@ goes over another target first (5 % on the way to 0 %). A valve that does not ge
 the page. Stopping the tool with Ctrl-C does the same; killing it leaves the layers on.
 
 The curves file holds one entry per loop, `"NAME IDX": {"curve": [[counts, lpm], ...]}`: `NAME` of
-`--controller`, the valve number, 2..16 points with the counts from the closed end stop. An entry of
-another controller is skipped. [curves.example.json](curves.example.json) has invented curves for
+`--controller`, the valve number, 2..32 points with the counts from the closed end stop (a firmware
+before 2.2.15 takes 2..16 and refuses more). An entry of another controller is skipped. [curves.example.json](curves.example.json) has invented curves for
 the `--sim` controllers:
 
 ```sh
@@ -264,7 +264,8 @@ writes one entry per loop, keyed by the controller and the valve of the session.
 opening readings with a `pos_est` by position: `Nie płynie` counts as 0 and `Powyżej skali` is left
 out, so the curve ends at the last reading on the scale. A flow that falls between neighbours (the
 sweeps scatter) merges them into their mean, of the zeros only the last one stays (the onset), and
-more than 16 points are thinned by dropping the point that changes the curve least. A loop with
+more than 32 points are thinned by dropping the point that changes the curve least (`upload` does
+the same). A loop with
 fewer than 2 points is left out. Add `strokeCounts` and the other members by hand; the `ruler` phase
 of `endstop_test.py` measures the stroke.
 

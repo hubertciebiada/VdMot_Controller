@@ -383,8 +383,8 @@ python tools/flowbench/flowbench.py --controller main=<device>
 ```
 
 Open the printed address on the phone. The tool closes the other loops, opens one loop in steps and
-asks what the float shows. "Pobierz CSV" saves the points. Turn them into a curves file of 2 to 16
-points per loop:
+asks what the float shows. "Pobierz CSV" saves the points. Turn them into a curves file of 2 to 32
+points per loop (a firmware before 2.2.15 takes 2 to 16):
 
 ```sh
 python tools/flowbench/flowcheck.py curves flowbench.csv curves.json
