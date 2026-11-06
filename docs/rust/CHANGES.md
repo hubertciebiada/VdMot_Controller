@@ -35,8 +35,9 @@ stay equal.
 - RAM: the configuration of a valve grows from 88 B to 152 B; its two copies of 12 (storage and
   the flow layer, both boot blocks on the heap) take 1536 B more. Static RAM does not change. A
   save or a load of the flow configuration takes one transient block of 2564 B (1006 B before).
-  The image grows by 1952 B and stays 15.6 KB under its budget of 1,228,800 B.
-- `tools/mock_api.py` takes up to 32 points.
+  The image grows by 1920 B to 1,213,120 B, 15,680 B under its budget of 1,228,800 B.
+- `tools/mock_api.py` takes up to 32 points, and `tools/flowbench/flowcheck.py` thins a curve
+  above 32 points, no longer above 16 (`curves` and `upload`).
 
 ### ESP32: a flow below the first flow of the curve
 
