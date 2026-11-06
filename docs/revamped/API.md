@@ -328,15 +328,16 @@ configuration and the `flow` block of the valve entry:
   is where the close left the valve plus the counted pulses of the lift, and
   `ms` and `peak` are those of the lift. A target in l/min or in % whose
   position lies below `floorCounts` + 60 (with `floorCounts` above 0) is raised
-  to that position, a lift of 60; a target in l/min answers it as `clipped`.
+  to that position, with a lift of at most 60; a target in l/min answers it as
+  `clipped`.
   `/flow/counts` is not raised: its lift is `liftCounts`, at most the counts
   minus `floorCounts`, and none at or below the floor. A lift that meets an end
   stop goes on from the open end stop in the same positioning; the second time
   the positioning fails at step 7. A target of 0 and the open end stop need no
   lift. A change of `liftCounts` or `floorCounts` positions the valve again.
 - One move (Rust 2.2.11), with `liftCounts` 0 only: a held valve reaches any
-  other target with one service
-  move of the difference in pulses and `skeep`, opening at `openmA`, closing at
+  other target with one service move of the difference in pulses and `skeep`,
+  opening at `openmA`, closing at
   `refmA`. A regulator may set a target every minute, and the next target
   corrects what one move missed, so nothing limits these moves and they log no
   event 416. The held position is the last one plus or minus the counted pulses.
