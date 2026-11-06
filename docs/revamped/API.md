@@ -321,9 +321,10 @@ configuration and the `flow` block of the valve entry:
   keeps 16 points of `flow` that `flowpts` did not vouch for at the last load (a
   bad `flowpts`, a power loss between the two writes, a save of an older version),
   which may be 16 of a longer curve; event 419 `flow_curve_cut` was logged then. A
-  `POST` that changes the points clears it, a restart shows it again while it
-  holds. A curve of exactly 16 points can show it too after a failed removal of
-  `flowpts`.
+  `POST` that changes the points clears it. A `POST` without `points` saves those
+  16 points as the curve and keeps the mark until the next restart, whose load
+  finds `flow` and `flowpts` in step. A curve of exactly 16 points can show it too
+  after a failed removal of `flowpts`.
 - Positioning from the reference end stop: a close of the
   held pulses + 500 (the stroke when unknown) at `refmA` that must end at an
   end stop (two more closes of 800 otherwise, then `failed`), one opening move

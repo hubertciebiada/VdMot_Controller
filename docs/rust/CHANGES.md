@@ -40,7 +40,8 @@ stay equal.
   loss between the two writes, a save of an older version) may run 16 points of a longer curve:
   the load logs event 419 `flow_curve_cut` (arg1 1 `flowpts` bad, 2 of another save) and
   `GET/POST /api/valves/{n}/flow` shows `"curveCut":true` until a `POST` changes the points of the
-  valve. The event stays in the log: with the longest fields the event types of the Home
+  valve; after a `POST` without `points`, which saves those 16 points as the curve, until the next
+  restart. The event stays in the log: with the longest fields the event types of the Home
   Assistant event entity fill its payload, so it is not published on MQTT. A curve of exactly 16
   points shows it as well after a failed removal of `flowpts`.
 - A valve is positioned again when a point in use changes, as before; the cells behind the points
