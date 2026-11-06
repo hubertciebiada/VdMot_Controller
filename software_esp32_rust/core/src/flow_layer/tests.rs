@@ -122,7 +122,9 @@ fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_60_s_dead_band_0_05() {
     assert_eq!(FLOW_OFFSET_MAX, 10000);
     assert_eq!((FLOW_GAIN_MIN_MILLI, FLOW_GAIN_MAX_MILLI), (100, 10000));
     assert_eq!((FLOW_MA_MIN, FLOW_MA_MAX), (5, 60));
-    assert_eq!((FLOW_LIFT_MAX, LIFT_MIN), (1000, 60));
+    assert_eq!((FLOW_LIFT_MAX, LIFT_MIN, LIFT_SAME_COUNTS), (1000, 60, 2));
+    // event 417: -1 no reply, -2 timeout, -3 R2 at an end stop again
+    assert_eq!(R2_END_STOP_AGAIN, -3);
     assert_eq!(RefSide::from_raw(0), Some(RefSide::Closed));
     assert_eq!(RefSide::from_raw(1), Some(RefSide::Open));
     assert_eq!(RefSide::from_raw(2), None);

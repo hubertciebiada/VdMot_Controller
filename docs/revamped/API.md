@@ -334,8 +334,8 @@ configuration and the `flow` block of the valve entry:
   whose position lies below `floorCounts` + 60 is raised to that position (a
   lift of 60); a target in l/min answers it as `clipped`. A held valve serves a
   new target whose position lies at most 2 pulses from the counts it was
-  positioned to where it stands, without a move: the flows below `floorCounts`
-  + 60 are all one position.
+  positioned to where it stands, without a move: the flows below
+  `floorCounts` + 60 are all one position.
   `/flow/counts` is not raised: its lift is `liftCounts`, at most the counts
   minus `floorCounts`, and none at or below the floor. A closing move that meets
   the closed end stop (a lift from there would open from the seat) or a lift that
