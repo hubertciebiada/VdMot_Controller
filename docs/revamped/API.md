@@ -295,12 +295,13 @@ configuration and the `flow` block of the valve entry:
   target counts (below). A `liftCounts` above 0 needs `refSide` `open` and a
   `floorCounts` above 0. With `liftCounts` 0 the valve is positioned as in
   2.2.13, whatever `floorCounts`.
-- `points`: 2..16 pairs `[counts, lpm]`, pulses from the closed end stop
-  (whatever `refSide`) strictly increasing (the first may be 0, every one at
-  most 10000), the flow non-decreasing. A flow maps to the first position where
-  the curve reaches it (linear between the points, the last point above the last
-  flow; Rust 2.2.15: a flow above 0 below the first flow above 0 of the curve is
-  the point of that flow, nothing between a point without flow and it), then
+- `points`: 2..32 pairs `[counts, lpm]` (2..16 up to Rust 2.2.14), pulses from
+  the closed end stop (whatever `refSide`) strictly increasing (the first may be
+  0, every one at most 10000), the flow non-decreasing. A flow maps to the first
+  position where the curve reaches it (linear between the points, the last point
+  above the last flow; Rust 2.2.15: a flow above 0 below the first flow above 0
+  of the curve is the point of that flow, nothing between a point without flow
+  and it), so the flow of a point is exactly its counts, then
   round(offset + gain x counts), 1..10000; no flow is a close to the
   closed end stop without an opening move, as a target of 0 %. `lpm` is the
   inverse: the flow of the curve at the held pulses (counted from the closed end
@@ -310,8 +311,10 @@ configuration and the `flow` block of the valve entry:
   the set is stored in NVS (`flow`) and survives restarts; a factory reset drops
   it. The config import/export (`/api/config`) does not carry it. `liftCounts`
   and `floorCounts` are stored in a key of their own (`flowlift`, Rust 2.2.14):
-  Rust 2.2.13 reads the rest of the set and leaves them out (DESIGN.md
-  section 9).
+  Rust 2.2.13 reads the rest of the set and leaves them out. Of a curve of more
+  than 16 points `flow` holds 16 (the first, the last and 14 evenly spaced by
+  index between them) and the key `flowpts` all of them (Rust 2.2.15): an older
+  version reads and shows those 16 (DESIGN.md section 9).
 - Positioning from the reference end stop: a close of the
   held pulses + 500 (the stroke when unknown) at `refmA` that must end at an
   end stop (two more closes of 800 otherwise, then `failed`), one opening move

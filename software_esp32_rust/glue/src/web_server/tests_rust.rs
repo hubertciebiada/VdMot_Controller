@@ -899,6 +899,52 @@ fn flow_config_is_read_patched_saved_and_refused() {
 }
 
 #[test]
+fn flow_config_takes_and_shows_32_points_a_33rd_is_refused() {
+    let rig = Rig::started();
+    let st = rig.storage();
+    assert!(!st.load_flow_configs());
+    let mut web = rig.web(&st);
+    // [0, 0], then 1070 pulses at 0.5 l/min and 10 more for each 0.1 l/min up to 3.5 l/min.
+    let mut points = vec![String::from("[0,0.000]")];
+    points.extend(
+        (0..31).map(|i| format!("[{},{}.{}00]", 1070 + 10 * i, (5 + i) / 10, (5 + i) % 10)),
+    );
+    let list = points.join(",");
+    let body = format!(r#"{{"enabled":true,"qmax":3.5,"strokeCounts":2400,"points":[{list}]}}"#);
+    assert!(body.len() < 700);
+    let r = perform(&mut web, api_post("/api/valves/1/flow", &body));
+    assert_eq!(r.status, 200);
+    let shown = format!(r#""points":[{list}]}},"#);
+    assert!(text(&r).contains(&shown));
+    assert!(text(&r).contains(r#"[1360,3.400],[1370,3.500]]"#));
+    assert_eq!(st.shared().flow_config(0).count, 32);
+    // NVS: 16 of them in `flow`, all of them in `flowpts`; the GET reads them back.
+    assert_eq!(rig.dev.nvs.get_blob("vdmrev", "flow").len(), 1006);
+    assert_eq!(
+        rig.dev.nvs.get_blob("vdmrev", "flowpts").len(),
+        6 + 12 + 4 * 32 + 4
+    );
+    assert!(st.load_flow_configs());
+    let r = perform(&mut web, get("/api/valves/1/flow"));
+    assert_eq!(r.status, 200);
+    assert!(text(&r).contains(&shown));
+    // A 33rd point.
+    let body = format!(r#"{{"points":[{list},[1380,3.6]]}}"#);
+    let r = perform(&mut web, api_post("/api/valves/1/flow", &body));
+    assert_eq!(r.status, 400);
+    assert_eq!(
+        text(&r),
+        error_body("out_of_range", "points 2..32 (enabled needs them)")
+    );
+    // 16 points: `flowpts` goes.
+    let body = format!(r#"{{"points":[{}]}}"#, points[..16].join(","));
+    let r = perform(&mut web, api_post("/api/valves/1/flow", &body));
+    assert_eq!(r.status, 200);
+    assert!(!rig.dev.nvs.has("vdmrev", "flowpts"));
+    assert_eq!(st.shared().flow_config(0).count, 16);
+}
+
+#[test]
 fn flow_counts_need_a_running_layer_and_queue_the_command() {
     let rig = Rig::started();
     let st = rig.storage();

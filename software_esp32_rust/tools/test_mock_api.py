@@ -539,6 +539,12 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
                              ({"driftD": 1}, "unknown key")]:
             r = req("POST", "/api/valves/1/flow", body)
             self.assertEqual((r.status, r.json["detail"]), (400, detail), body)
+        # up to 32 points (Rust 2.2.15)
+        pts = [[0, 0]] + [[1070 + 10 * i, round(0.5 + 0.1 * i, 1)] for i in range(31)]
+        r = req("POST", "/api/valves/1/flow", {"points": pts})
+        self.assertEqual((r.status, r.json["config"]["points"]), (200, pts))
+        r = req("POST", "/api/valves/1/flow", {"points": pts + [[1380, 3.6]]})
+        self.assertEqual((r.status, r.json["detail"]), (400, "points 2..32 (enabled needs them)"))
         self.assertEqual(req("DELETE", "/api/valves/1/flow").status, 405)
         self.assertEqual(req("GET", "/api/valves/1/flow/counts").status, 405)
 

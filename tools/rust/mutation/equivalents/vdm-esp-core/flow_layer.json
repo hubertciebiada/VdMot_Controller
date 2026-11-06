@@ -1,5 +1,8 @@
 [
  {"file": "core/src/flow_layer.rs", "function": "continue_sequence",
   "mutation": "replace > with >= in continue_sequence",
-  "reason": "the direction of one move from the held position: start_if_due serves a target at the held pulses without a move, so a sequence with from_held never has target_counts equal to it"}
+  "reason": "the direction of one move from the held position: start_if_due serves a target at the held pulses without a move, so a sequence with from_held never has target_counts equal to it"},
+ {"file": "core/src/flow_layer.rs", "function": "v1_index",
+  "mutation": "replace <= with < in v1_index",
+  "reason": "at n = 16 both branches give k: (2 k x 15 + 15) / 30 is k for every k of 0..15"}
 ]

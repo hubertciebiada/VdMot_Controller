@@ -13,6 +13,31 @@ firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 The STM32 code is that of 2.2.9; only its version number changes, so the versions of the two MCUs
 stay equal.
 
+### ESP32: a curve of up to 32 points
+
+- `points` of `GET/POST /api/valves/{n}/flow` takes and shows 2..32 pairs (2..16 before); a 33rd
+  answers `400 out_of_range` `points 2..32 (enabled needs them)`. The other rules of the points do
+  not change. A flow equal to the flow of a point maps to exactly that point's counts, so a curve
+  with a point at every target the regulator sets needs no interpolation for them
+  ([API.md](../revamped/API.md)).
+- NVS: `flow` stays the blob of 2.2.14. Of a curve of more than 16 points it holds 16, the first,
+  the last and 14 evenly spaced by index between them, as count 16. The new key `flowpts` (its own
+  magic, version and CRC, 22 B + 4 B per point of the longer curves) holds every point of those
+  curves; with no curve above 16 points the save removes it. Without it, with a bad one or for a
+  valve whose 16 points in `flow` are not the ones of its curve there (a version before 2.2.15
+  saved another curve), a valve has the points of `flow`. Going back to 2.2.14 or 2.2.13 runs such
+  a curve with those 16 points; after a later 2.2.15 every point is back on a valve whose curve
+  the older version did not change ([DESIGN.md](../revamped/DESIGN.md) section 9).
+- When `flow` was written and `flowpts` was not (a failed write or removal), the save answers
+  `500 nvs`, RAM keeps the old set and the next save reads NVS first, as with `flowlift`.
+- A valve is positioned again when a point in use changes, as before; the cells behind the points
+  in use no longer count, since `flow` keeps no more than 16 of them.
+- RAM: the configuration of a valve grows from 88 B to 152 B; its two copies of 12 (storage and
+  the flow layer, both boot blocks on the heap) take 1536 B more. Static RAM does not change. A
+  save or a load of the flow configuration takes one transient block of 2564 B (1006 B before).
+  The image grows by 1952 B and stays 15.6 KB under its budget of 1,228,800 B.
+- `tools/mock_api.py` takes up to 32 points.
+
 ### ESP32: a flow below the first flow of the curve
 
 - A flow target above 0 and below the first flow above 0 of the curve lay on the line between the

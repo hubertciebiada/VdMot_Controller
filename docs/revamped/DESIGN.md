@@ -546,8 +546,9 @@ a measured curve itself (API.md "Flow layer"):
   first flow above 0 of the curve to the point of that flow (Rust 2.2.15; with R2
   its position at least to `floorCounts` + 60 after that), and `apply_flow_config`
   works the % of a target in l/min out again for a new curve.
-- The configuration (`FlowConfig`, 12 x 88 B) lives in NVS `flow` and
-  `flowlift` (section 9), loaded next to the config at boot, published with a revision
+- The configuration (`FlowConfig`, 12 x 152 B with up to 32 points; 12 x 88 B
+  with 16 up to Rust 2.2.14) lives in NVS `flow`, `flowlift` and `flowpts`
+  (section 9), loaded next to the config at boot, published with a revision
   the stm thread follows (`StmLinkHost::flow_revision`), written by
   `POST /api/valves/{n}/flow`.
 - Failed of the layer sets `HEALTH_FLOW_FAILED` on the published valve, which
@@ -727,8 +728,9 @@ NVS namespace `vdmrev`:
 | `netTrial` | blob <= 136 | network trial record "VDNT" (state, previous interface/DHCP/addresses/WiFi, CRCs) |
 | `frLatch` | u8 | 1 = GPIO2 factory reset done, pin not released yet |
 | `otaStm` | u8 | 1 = STM link was up at the ESP OTA upload (read and erased at the next boot) |
-| `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it. Rust 2.2.14 writes the same bytes |
+| `flow` | blob 1006 | Rust 2.2.8: the flow layer configuration: "VDMF", version 1, count 12, 12 x {enabled, qmax, refmA, openmA, fallbackPct, minIntervalS, deadband, offset, gain, refSide, preClose, strokeCounts, count, 16 x {counts, flow}} (LE, l/min x 1000), CRC32; every record validated; a blob that is there but cannot be read (NVS, memory, a bad blob) gives the defaults, event 124, and no save until a load read it or a factory reset erased it. Rust 2.2.14 writes the same bytes. Rust 2.2.15 writes 16 points of a curve of more than 16 (round(k x (n - 1) / 15) for k = 0..15: the first, the last and 14 evenly spaced by index), count 16, which an older version reads as that curve |
 | `flowlift` | blob 58 | Rust 2.2.14, written after `flow`: "VDML", version 1, count 12, 12 x {liftCounts, floorCounts} (LE), CRC32. When `flow` was written and `flowlift` was not, the save answers `500 nvs`, RAM keeps the old set and `flow_loaded` turns false: the next `POST /api/valves/{n}/flow` loads what NVS holds (the new set with the old pairs) before it patches, and a restart runs that too. Absent or bad: every lift and floor 0, no event. A pair the configuration of its valve does not allow (a version before 2.2.14 changed the stroke or the reference side) gives 0 and 0 for that valve. Older versions do not read it, so a downgrade keeps the rest of the flow configuration |
+| `flowpts` | blob 22 + 4 x points, <= 1558 | Rust 2.2.15, written after `flowlift` while a curve has more than 16 points, else removed: "VDMP", version 1, count 12, 12 x the points of the valve (0: its record in `flow` holds its curve, else 17..32), the points of those valves one valve after the other, each {counts, flow} (LE), CRC32. A failed write or removal after `flow` is handled as one of `flowlift`. Absent or bad (another length, magic, version, count, a number of points other than 0 and 17..32, CRC): every valve has the points of `flow`, no event. A valve takes its curve only when its record in `flow` has 16 points that are the ones 2.2.15 writes of it and the configuration allows it; else it keeps the points of `flow` (a version before 2.2.15 saved another curve there). Older versions do not read it: they run a longer curve with its 16 points of `flow` |
 | `flowx` | blob 21 | Rust 2.2.10 only: the drift of the valves. Nothing reads it since 2.2.11, and it stays until a factory reset |
 
 Config load order (`loadConfigBlobs`): `cfg` + `cfgx` from NVS; a missing or

@@ -23,9 +23,12 @@ use crate::valve_model::{TargetSource, ValveModel, ValveState};
 /// Valves (the arrays of the layer).
 const N: usize = VALVE_COUNT as usize;
 
-/// Points of a curve.
+/// Points of a curve (Rust 2.2.15: up to 32, before up to 16).
 pub const FLOW_POINTS_MIN: usize = 2;
-pub const FLOW_POINTS_MAX: usize = 16;
+pub const FLOW_POINTS_MAX: usize = 32;
+/// Points of a curve in NVS `flow`, all a version before 2.2.15 reads: a longer curve keeps 16 of
+/// its points there ([`v1_index`]) and every point in `flowpts`.
+pub const FLOW_V1_POINTS: usize = 16;
 /// Pulses of a position (the svmov range).
 pub const FLOW_COUNTS_MAX: u16 = 10000;
 /// qmax in ml/min: 0.01 .. 20 l/min.
@@ -165,19 +168,9 @@ impl FlowConfig {
     }
 
     /// The members that change where a target lands or on which branch of the hysteresis: a
-    /// change repositions the valve.
-    fn curve_key(
-        &self,
-    ) -> (
-        u16,
-        i16,
-        u16,
-        RefSide,
-        u16,
-        [u16; 2],
-        u8,
-        [FlowPoint; FLOW_POINTS_MAX],
-    ) {
+    /// change repositions the valve. The points in use only: the cells behind them are not
+    /// stored beyond the 16 of NVS `flow`.
+    fn curve_key(&self) -> (u16, i16, u16, RefSide, u16, [u16; 2], &[FlowPoint]) {
         (
             self.qmax_ml,
             self.offset,
@@ -185,8 +178,7 @@ impl FlowConfig {
             self.ref_side,
             self.stroke_counts,
             [self.lift_counts, self.floor_counts],
-            self.count,
-            self.points,
+            self.points(),
         )
     }
 
@@ -254,7 +246,7 @@ pub fn flow_error_text(e: FlowError) -> &'static str {
         FlowError::Offset => "offset -10000..10000",
         FlowError::Gain => "gain 0.1..10",
         FlowError::Points => "points [[counts,lpm],...]",
-        FlowError::PointCount => "points 2..16 (enabled needs them)",
+        FlowError::PointCount => "points 2..32 (enabled needs them)",
         FlowError::PointCounts => "points counts 0..10000, increasing",
         FlowError::PointFlow => "points lpm 0..65.535, non-decreasing",
         FlowError::RefSide => "refSide closed|open",
@@ -272,7 +264,7 @@ pub fn flow_error_text(e: FlowError) -> &'static str {
 /// 0..100 %, the interval 0..3600 s, the dead band 0..5 l/min, the offset -10000..10000, the
 /// gain 0.1..10, the stroke 0..10000 (at least 1 when enabled or with the open reference: a % of
 /// the stroke needs it), the lift 0 or 60..1000 (above 0 with the open reference and a floor
-/// only), the floor 0..10000 and below a stroke, no points or 2..16 (an enabled layer needs them)
+/// only), the floor 0..10000 and below a stroke, no points or 2..32 (an enabled layer needs them)
 /// with counts strictly increasing (the first may be 0, every one at most 10000) and flows
 /// non-decreasing.
 pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
@@ -507,10 +499,11 @@ pub fn flow_target(c: &FlowConfig, flow_ml: u32) -> FlowTarget {
 // ---------------------------------------------------------------- NVS blob
 
 /// One valve in the blob.
-pub const FLOW_RECORD_SIZE: usize = 19 + 4 * FLOW_POINTS_MAX;
+pub const FLOW_RECORD_SIZE: usize = 19 + 4 * FLOW_V1_POINTS;
 /// NVS `vdmrev/flow`: "VDMF" (4), version 1 (1), count 12 (1), 12 records, CRC-32 (4). The blob
 /// of Rust 2.2.8 .. 2.2.13 byte for byte: the lift and the floor (Rust 2.2.14) are in
-/// `flowlift` ([`FLOW_LIFT_BLOB_SIZE`]), which an older version ignores.
+/// `flowlift` ([`FLOW_LIFT_BLOB_SIZE`]), a curve of more than 16 points (Rust 2.2.15) in
+/// `flowpts` ([`FLOW_POINTS_BLOB_MAX`]), which an older version ignores.
 pub const FLOW_BLOB_SIZE: usize = 6 + N * FLOW_RECORD_SIZE + 4;
 
 const FLOW_MAGIC: [u8; 4] = *b"VDMF";
@@ -520,9 +513,27 @@ const FLOW_CRC_AT: usize = RECORDS_AT + N * FLOW_RECORD_SIZE;
 const _: () = assert!(FLOW_CRC_AT + 4 == FLOW_BLOB_SIZE);
 const POINTS_AT: usize = 19;
 
+/// The index in the curve of `n` points of the `k`-th of the 16 points of its record in NVS
+/// `flow`: `k` up to 16 points (the cells behind them too, as before 2.2.15), else
+/// round(k x (n - 1) / 15): the first point, the last and 14 evenly spaced by index between them.
+fn v1_index(n: usize, k: usize) -> usize {
+    if n <= FLOW_V1_POINTS {
+        return k;
+    }
+    let span = FLOW_V1_POINTS - 1;
+    (2 * k * (n - 1) + span) / (2 * span)
+}
+
+/// The 16 points of the record of `c` in NVS `flow` ([`v1_index`]).
+fn v1_cells(c: &FlowConfig) -> [FlowPoint; FLOW_V1_POINTS] {
+    let n = c.points().len();
+    core::array::from_fn(|k| c.points.get(v1_index(n, k)).copied().unwrap_or_default())
+}
+
 /// Record: enabled (1), qmax (2), refmA (1), openmA (1), fallbackPct (1), minIntervalS (2),
 /// deadband (2), offset (2), gain (2), refSide (1), preClose (1), strokeCounts (2), count (1),
-/// 16 x {counts (2), flow (2)}; little endian.
+/// 16 x {counts (2), flow (2)}; little endian. A curve of more than 16 points has 16 of them
+/// there ([`v1_cells`]), as a version before 2.2.15 reads them.
 fn encode_record(c: &FlowConfig, out: &mut [u8; FLOW_RECORD_SIZE]) {
     out[0] = u8::from(c.enabled);
     out[1..3].copy_from_slice(&c.qmax_ml.to_le_bytes());
@@ -536,9 +547,9 @@ fn encode_record(c: &FlowConfig, out: &mut [u8; FLOW_RECORD_SIZE]) {
     out[14] = c.ref_side as u8;
     out[15] = u8::from(c.pre_close);
     out[16..18].copy_from_slice(&c.stroke_counts.to_le_bytes());
-    out[18] = c.count;
+    out[18] = c.count.min(FLOW_V1_POINTS as u8);
     let (cells, _) = out[POINTS_AT..].as_chunks_mut::<4>();
-    for (cell, p) in cells.iter_mut().zip(&c.points) {
+    for (cell, p) in cells.iter_mut().zip(&v1_cells(c)) {
         cell[..2].copy_from_slice(&p.counts.to_le_bytes());
         cell[2..].copy_from_slice(&p.flow_ml.to_le_bytes());
     }
@@ -672,6 +683,95 @@ pub fn decode_flow_lifts(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
             ..*c
         };
         if validate_flow_config(&with).is_ok() {
+            *c = with;
+        }
+    }
+    true
+}
+
+/// NVS `vdmrev/flowpts` (Rust 2.2.15), only while a curve has more than 16 points: "VDMP" (4),
+/// version 1 (1), count 12 (1), 12 x the points of the valve (1; 0: its record in `flow` holds
+/// its curve, else 17..32), the points of those valves one valve after the other, each {counts
+/// (2), flow (2)}, CRC-32 (4); little endian. The longest blob: every valve with 32 points.
+pub const FLOW_POINTS_BLOB_MAX: usize = TABLES_AT + N * 4 * FLOW_POINTS_MAX + 4;
+
+const FLOW_POINTS_MAGIC: [u8; 4] = *b"VDMP";
+const FLOW_POINTS_VERSION: u8 = 1;
+const TABLES_AT: usize = RECORDS_AT + N;
+
+/// Writes the curves of more than 16 points and returns the length of the blob; 0 (no blob: the
+/// key goes) when the record of every valve in `flow` holds its curve.
+pub fn encode_flow_points(c: &[FlowConfig; N], out: &mut [u8; FLOW_POINTS_BLOB_MAX]) -> usize {
+    out[..4].copy_from_slice(&FLOW_POINTS_MAGIC);
+    out[4] = FLOW_POINTS_VERSION;
+    out[5] = VALVE_COUNT;
+    let (counts, rest) = out[RECORDS_AT..].split_at_mut(N);
+    let (cells, _) = rest.as_chunks_mut::<4>();
+    let mut cells = cells.iter_mut();
+    let mut total = 0;
+    for (n, cfg) in counts.iter_mut().zip(c) {
+        let pts = cfg.points();
+        *n = 0;
+        if pts.len() > FLOW_V1_POINTS {
+            *n = pts.len() as u8;
+            total += pts.len();
+            for (p, cell) in pts.iter().zip(cells.by_ref()) {
+                cell[..2].copy_from_slice(&p.counts.to_le_bytes());
+                cell[2..].copy_from_slice(&p.flow_ml.to_le_bytes());
+            }
+        }
+    }
+    if total == 0 {
+        return 0;
+    }
+    let crc_at = TABLES_AT + 4 * total;
+    let sum = crc32(&out[..crc_at], 0);
+    out[crc_at..crc_at + 4].copy_from_slice(&sum.to_le_bytes());
+    crc_at + 4
+}
+
+/// The curves of more than 16 points from the blob of [`encode_flow_points`] into `out`, the set
+/// [`decode_flow_configs`] gave: false (every curve as `flow` holds it) for a bad
+/// magic/version/count/CRC, a number of points other than 0 and 17..32 or a length that does not
+/// fit them. A valve takes its curve only where the 16 points of its record in `flow` are the
+/// ones [`v1_cells`] keeps of it and its configuration allows it; else (a version before 2.2.15
+/// wrote another curve to `flow`) it keeps the points of `flow`.
+pub fn decode_flow_points(data: &[u8], out: &mut [FlowConfig; N]) -> bool {
+    let Some((body, crc)) = data.split_last_chunk::<4>() else {
+        return false;
+    };
+    let (Some(head), Some(counts)) = (body.get(..RECORDS_AT), body.get(RECORDS_AT..TABLES_AT))
+    else {
+        return false;
+    };
+    if head[..4] != FLOW_POINTS_MAGIC
+        || head[4] != FLOW_POINTS_VERSION
+        || head[5] != VALVE_COUNT
+        || counts
+            .iter()
+            .any(|&n| n != 0 && !(FLOW_V1_POINTS + 1..=FLOW_POINTS_MAX).contains(&usize::from(n)))
+    {
+        return false;
+    }
+    let total: usize = counts.iter().map(|&n| usize::from(n)).sum();
+    if body.len() != TABLES_AT + 4 * total || *crc != crc32(body, 0).to_le_bytes() {
+        return false;
+    }
+    let (cells, _) = body[TABLES_AT..].as_chunks::<4>();
+    let mut cells = cells.iter();
+    for (c, &n) in out.iter_mut().zip(counts) {
+        let mut with = FlowConfig { count: n, ..*c };
+        for (p, cell) in with
+            .points
+            .iter_mut()
+            .zip(cells.by_ref().take(usize::from(n)))
+        {
+            p.counts = u16::from_le_bytes([cell[0], cell[1]]);
+            p.flow_ml = u16::from_le_bytes([cell[2], cell[3]]);
+        }
+        let kept = usize::from(c.count) == FLOW_V1_POINTS
+            && v1_cells(&with)[..] == c.points[..FLOW_V1_POINTS];
+        if n != 0 && kept && validate_flow_config(&with).is_ok() {
             *c = with;
         }
     }

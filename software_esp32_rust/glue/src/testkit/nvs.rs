@@ -88,6 +88,8 @@ pub(crate) struct NvsKnobs {
     pub(crate) fail_open: BTreeSet<String>,
     /// Keys whose set fails (NOT_ENOUGH_SPACE): nothing is stored.
     pub(crate) fail_set: BTreeSet<String>,
+    /// Keys whose remove fails: the key stays.
+    pub(crate) fail_remove: BTreeSet<String>,
     /// Every set, remove and erase fails at its commit: nothing changes.
     pub(crate) fail_commit: bool,
     /// `erase_all` fails.
@@ -301,7 +303,7 @@ impl NvsNamespace for FakeNs {
     }
     fn remove(&mut self, key: &str) -> bool {
         let k = lock(&self.nvs.knobs);
-        if !self.write || k.fail_commit {
+        if !self.write || k.fail_commit || k.fail_remove.contains(key) {
             return false;
         }
         let removed = lock(&self.nvs.store)

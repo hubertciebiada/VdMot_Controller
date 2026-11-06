@@ -114,7 +114,8 @@ fn defaults_disabled_2_7_lpm_34_30_ma_fallback_15_60_s_dead_band_0_05() {
     assert_eq!(validate_flow_config(&c), Ok(()));
     // The limits.
     assert_eq!(FLOW_POINTS_MIN, 2);
-    assert_eq!(FLOW_POINTS_MAX, 16);
+    assert_eq!((FLOW_POINTS_MAX, FLOW_V1_POINTS), (32, 16));
+    assert_eq!(core::mem::size_of::<FlowConfig>(), 152);
     assert_eq!(FLOW_COUNTS_MAX, 10000);
     assert_eq!((FLOW_QMAX_MIN_ML, FLOW_QMAX_MAX_ML), (10, 20000));
     assert_eq!(FLOW_DEADBAND_MAX_ML, 5000);
@@ -152,7 +153,8 @@ fn validation_every_rule_with_its_error() {
         (|c| c.gain_milli = 99, FlowError::Gain),
         (|c| c.gain_milli = 10001, FlowError::Gain),
         (|c| c.count = 1, FlowError::PointCount),
-        (|c| c.count = 17, FlowError::PointCount),
+        (|c| c.count = 33, FlowError::PointCount),
+        (|c| c.count = 17, FlowError::PointCounts),
         (|c| c.count = 0, FlowError::PointCount),
         (|c| c.points[2].counts = 760, FlowError::PointCounts),
         (|c| c.points[2].counts = 700, FlowError::PointCounts),
@@ -197,9 +199,9 @@ fn validation_every_rule_with_its_error() {
     two.count = 2;
     two.points[0].counts = 0;
     assert_eq!(validate_flow_config(&two), Ok(()));
-    // 16 points.
+    // 32 points.
     let mut full = curve();
-    full.count = 16;
+    full.count = 32;
     for (i, p) in full.points.iter_mut().enumerate() {
         *p = FlowPoint {
             counts: 100 * (i as u16 + 1),
@@ -207,7 +209,7 @@ fn validation_every_rule_with_its_error() {
         };
     }
     assert_eq!(validate_flow_config(&full), Ok(()));
-    assert_eq!(full.points().len(), 16);
+    assert_eq!(full.points().len(), 32);
     // An open reference and an enabled layer need the stroke; it is bounded on both sides.
     let open = open_curve();
     assert_eq!(validate_flow_config(&open), Ok(()));
@@ -275,7 +277,7 @@ fn error_texts_name_the_key_and_its_range() {
         (FlowError::Offset, "offset -10000..10000"),
         (FlowError::Gain, "gain 0.1..10"),
         (FlowError::Points, "points [[counts,lpm],...]"),
-        (FlowError::PointCount, "points 2..16 (enabled needs them)"),
+        (FlowError::PointCount, "points 2..32 (enabled needs them)"),
         (FlowError::PointCounts, "points counts 0..10000, increasing"),
         (FlowError::PointFlow, "points lpm 0..65.535, non-decreasing"),
         (FlowError::RefSide, "refSide closed|open"),
@@ -444,7 +446,7 @@ fn blob_2_2_13(all: &[FlowConfig; 12]) -> Vec<u8> {
         b.extend([c.ref_side as u8, u8::from(c.pre_close)]);
         b.extend(c.stroke_counts.to_le_bytes());
         b.push(c.count);
-        for p in &c.points {
+        for p in &c.points[..16] {
             b.extend(p.counts.to_le_bytes());
             b.extend(p.flow_ml.to_le_bytes());
         }
@@ -531,7 +533,7 @@ fn blob_is_the_blob_of_2_2_13_byte_for_byte_round_trip_and_rejections() {
     let mut bad = bytes;
     bad[FLOW_BLOB_SIZE - 1] ^= 1;
     rejected(&bad, "crc");
-    for (at, value) in [(0, 2u8), (14, 2), (15, 2), (3, 4), (18, 1)] {
+    for (at, value) in [(0, 2u8), (14, 2), (15, 2), (3, 4), (18, 1), (18, 17)] {
         for valve in [0, 11] {
             let mut bad = bytes;
             bad[6 + valve * FLOW_RECORD_SIZE + at] = value;
@@ -652,6 +654,240 @@ fn a_pair_that_would_break_its_valve_is_left_out_the_others_are_read() {
         assert_eq!(out[11].floor_counts, 640);
         assert_eq!(out[5], without_lifts(blob_set())[5]);
     }
+}
+
+/// The indices [`v1_index`] keeps of a curve of `n` points.
+fn kept(n: usize) -> Vec<usize> {
+    (0..FLOW_V1_POINTS).map(|k| v1_index(n, k)).collect()
+}
+
+#[test]
+fn flow_keeps_16_points_of_a_longer_curve_the_first_the_last_and_14_evenly_spaced() {
+    // Up to 16 points: every cell as it is (the cells behind the points too).
+    for n in 0..=16 {
+        assert_eq!(kept(n), (0..16).collect::<Vec<_>>(), "{n}");
+    }
+    assert_eq!(
+        kept(17),
+        [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16]
+    );
+    assert_eq!(
+        kept(24),
+        [0, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23]
+    );
+    assert_eq!(
+        kept(32),
+        [0, 2, 4, 6, 8, 10, 12, 14, 17, 19, 21, 23, 25, 27, 29, 31]
+    );
+    for n in 17..=32 {
+        let k = kept(n);
+        assert_eq!((k[0], k[15]), (0, n - 1), "{n}");
+        assert!(k.windows(2).all(|w| w[0] < w[1]), "{n}");
+    }
+}
+
+/// The set of [`blob_set`] with a curve of 24 points on valve 3 (0.5 .. 2.7 l/min in steps of
+/// 0.1 after [0, 0]) and one of 32 on valve 7 (the open reference with a lift).
+fn long_set() -> [FlowConfig; 12] {
+    let mut all = blob_set();
+    all[3] = step_curve(24);
+    all[7] = step_curve(32);
+    all[7].ref_side = RefSide::Open;
+    all[7].stroke_counts = 4641;
+    all[7].lift_counts = 100;
+    all[7].floor_counts = 1000;
+    all
+}
+
+/// The set as NVS gives it back: `flow`, `flowlift` and `flowpts` (`points`) decoded.
+fn decoded(flow: &[u8], all: &[FlowConfig; 12], points: &[u8]) -> ([FlowConfig; 12], bool) {
+    let mut lifts = [0; FLOW_LIFT_BLOB_SIZE];
+    encode_flow_lifts(all, &mut lifts);
+    let mut out = [FlowConfig::DEFAULT; 12];
+    assert!(decode_flow_configs(flow, &mut out));
+    assert!(decode_flow_lifts(&lifts, &mut out));
+    let ok = decode_flow_points(points, &mut out);
+    (out, ok)
+}
+
+/// `all` as its `flow` blob holds it: 16 points of a longer curve.
+fn in_flow(all: &[FlowConfig; 12]) -> [FlowConfig; 12] {
+    let mut out = *all;
+    for c in &mut out {
+        if c.points().len() > FLOW_V1_POINTS {
+            let cells = v1_cells(c);
+            c.points = [FlowPoint::default(); FLOW_POINTS_MAX];
+            c.points[..FLOW_V1_POINTS].copy_from_slice(&cells);
+            c.count = 16;
+        }
+    }
+    out
+}
+
+#[test]
+fn a_curve_of_more_than_16_points_flow_keeps_16_of_them_flowpts_all_of_them() {
+    let all = long_set();
+    let mut flow = [0; FLOW_BLOB_SIZE];
+    encode_flow_configs(&all, &mut flow);
+    // `flow` as a version before 2.2.15 reads it: 16 points of the longer curves, valid there.
+    let mut old = [FlowConfig::DEFAULT; 12];
+    assert!(decode_flow_configs(&flow, &mut old));
+    let v3 = 6 + 3 * FLOW_RECORD_SIZE;
+    assert_eq!(flow[v3 + 18], 16);
+    assert_eq!(&flow[v3 + 19..v3 + 23], &[0, 0, 0, 0]); // [0, 0]
+    assert_eq!(&flow[v3 + 23..v3 + 27], &[0x38, 0x04, 0x58, 0x02]); // point 2: [1080, 0.6]
+    assert_eq!(old[3].count, 16);
+    let picked: Vec<FlowPoint> = kept(24).iter().map(|&i| all[3].points[i]).collect();
+    assert_eq!(old[3].points(), picked.as_slice());
+    assert_eq!(old[7].points()[15], all[7].points[31]);
+    assert_eq!(old, without_lifts(in_flow(&all)));
+    for c in &old {
+        assert_eq!(validate_flow_config(c), Ok(()));
+    }
+    // `flowpts`: valve 3 with 24 points, valve 7 with 32, the rest none.
+    let mut points = [0xEE; FLOW_POINTS_BLOB_MAX];
+    let n = encode_flow_points(&all, &mut points);
+    assert_eq!((FLOW_POINTS_BLOB_MAX, n), (1558, 6 + 12 + 4 * 56 + 4));
+    assert_eq!(&points[..6], b"VDMP\x01\x0C");
+    assert_eq!(&points[6..18], &[0, 0, 0, 24, 0, 0, 0, 32, 0, 0, 0, 0]);
+    assert_eq!(&points[18..26], &[0, 0, 0, 0, 0x2E, 0x04, 0xF4, 0x01]); // [0,0], [1070,0.5]
+    let v7 = 18 + 4 * 24;
+    assert_eq!(&points[v7 + 4..v7 + 8], &[0x2E, 0x04, 0xF4, 0x01]);
+    assert_eq!(&points[n - 8..n - 4], &[0x5A, 0x05, 0xAC, 0x0D]); // [1370, 3.5]
+    assert_eq!(&points[n - 4..n], &crc32(&points[..n - 4], 0).to_le_bytes());
+    // Read back: the whole set, lifts and all.
+    assert_eq!(decoded(&flow, &all, &points[..n]), (all, true));
+    // No longer curve: no blob.
+    assert_eq!(encode_flow_points(&blob_set(), &mut points), 0);
+    assert_eq!(encode_flow_points(&in_flow(&all), &mut points), 0);
+}
+
+#[test]
+fn flowpts_rejections_leave_the_16_points_of_flow() {
+    let all = long_set();
+    let mut flow = [0; FLOW_BLOB_SIZE];
+    encode_flow_configs(&all, &mut flow);
+    let mut buf = [0; FLOW_POINTS_BLOB_MAX];
+    let n = encode_flow_points(&all, &mut buf);
+    let good = buf[..n].to_vec();
+    let rejected = |b: &[u8], what: &str| {
+        assert_eq!(decoded(&flow, &all, b), (in_flow(&all), false), "{what}");
+    };
+    rejected(&[], "no key");
+    rejected(&good[..21], "no header");
+    rejected(&good[..n - 1], "short");
+    let mut long = good.clone();
+    long.push(0);
+    rejected(&long, "long");
+    let mut fixed_long = long.clone();
+    fix_crc(&mut fixed_long);
+    rejected(&fixed_long, "long with its CRC");
+    for (at, value, what) in [(0, b'X', "magic"), (4, 2, "version"), (5, 11, "count")] {
+        let mut bad = good.clone();
+        bad[at] = value;
+        fix_crc(&mut bad);
+        rejected(&bad, what);
+    }
+    let mut bad = good.clone();
+    bad[n - 1] ^= 1;
+    rejected(&bad, "crc");
+    // A number of points of 16, 33 or 1, the length right for the sum of them.
+    for (counts, what) in [
+        ([(3, 16), (5, 8)], "16"),
+        ([(3, 33), (7, 23)], "33"),
+        ([(0, 1), (3, 23)], "1"),
+    ] {
+        let mut bad = good.clone();
+        for (valve, count) in counts {
+            bad[6 + valve] = count;
+        }
+        fix_crc(&mut bad);
+        rejected(&bad, what);
+    }
+    // No curve at all, the header and the CRC right: nothing changes.
+    let mut none = b"VDMP\x01\x0C".to_vec();
+    none.extend([0; 12]);
+    none.extend(crc32(&none, 0).to_le_bytes());
+    assert_eq!(decoded(&flow, &all, &none), (in_flow(&all), true));
+}
+
+#[test]
+fn a_curve_that_flow_no_longer_holds_or_the_rules_refuse_stays_as_flow_has_it() {
+    let all = long_set();
+    let mut buf = [0; FLOW_POINTS_BLOB_MAX];
+    let n = encode_flow_points(&all, &mut buf);
+    let points = &buf[..n];
+    // A version before 2.2.15 saved another curve on valve 3: that one stays, valve 7 has its 32.
+    let mut older = all;
+    older[3] = curve();
+    let mut flow = [0; FLOW_BLOB_SIZE];
+    encode_flow_configs(&older, &mut flow);
+    let (out, ok) = decoded(&flow, &all, points);
+    assert!(ok);
+    assert_eq!(out[3], curve());
+    assert_eq!(out[7], all[7]);
+    // The 16 points it keeps, but 15 of them in `flow`: those 15.
+    encode_flow_configs(&all, &mut flow);
+    flow[6 + 3 * FLOW_RECORD_SIZE + 18] = 15;
+    fix_crc(&mut flow);
+    let (out, ok) = decoded(&flow, &all, points);
+    assert!(ok);
+    assert_eq!(out[3].points(), &in_flow(&all)[3].points()[..15]);
+    assert_eq!(out[7], all[7]);
+    // A curve whose points are not increasing where `flow` does not look: refused alone.
+    let mut bad = all;
+    bad[3].points[1].counts = 0;
+    let n = encode_flow_points(&bad, &mut buf);
+    encode_flow_configs(&all, &mut flow);
+    let (out, ok) = decoded(&flow, &all, &buf[..n]);
+    assert!(ok);
+    assert_eq!(out[3], in_flow(&all)[3]);
+    assert_eq!(out[7], all[7]);
+}
+
+#[test]
+fn a_curve_of_24_or_32_points_every_flow_of_a_point_is_that_point() {
+    for n in [24, 32] {
+        let mut c = step_curve(n);
+        c.qmax_ml = 3500;
+        assert_eq!(validate_flow_config(&c), Ok(()));
+        for p in &c.points()[1..] {
+            let ml = u32::from(p.flow_ml);
+            assert_eq!(flow_counts(&c, ml), p.counts, "{n} {ml}");
+            assert_eq!(
+                flow_target(&c, ml),
+                FlowTarget {
+                    ml: p.flow_ml,
+                    pct: stroke_pct(&c, p.counts),
+                    flow_ml: ml,
+                    clipped: false
+                },
+                "{n} {ml}"
+            );
+        }
+    }
+    // 0.5 .. 2.7 l/min in steps of 0.1: 1070 .. 1290 pulses in steps of 10.
+    let c = step_curve(24);
+    assert_eq!(
+        c.points()[23],
+        FlowPoint {
+            counts: 1290,
+            flow_ml: 2700
+        }
+    );
+    for step in 5..=27u16 {
+        assert_eq!(
+            flow_counts(&c, u32::from(step) * 100),
+            1020 + 10 * step,
+            "{step}"
+        );
+    }
+    // The JSON of 32 points and back.
+    let mut c = step_curve(32);
+    c.qmax_ml = 3500;
+    let text = json(&c);
+    assert!(text.ends_with(r#"[1360,3.400],[1370,3.500]]}"#));
+    assert_eq!(patched(&FlowConfig::DEFAULT, &text), Ok(c));
 }
 
 // ================================================================ JSON
@@ -834,14 +1070,14 @@ fn json_patch_refusals_leave_the_config_alone() {
         ("{\"points\":[[1,2],[2,1]]}", FlowError::PointFlow),
         ("{\"points\":[[1,2]]}", FlowError::PointCount),
         ("{\"points\":[]}", FlowError::PointCount),
-        (
-            "{\"points\":[[1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],[8,0],[9,0],[10,0],[11,0],[12,0],[13,0],[14,0],[15,0],[16,0],[17,0]]}",
-            FlowError::PointCount,
-        ),
     ];
     for (body, err) in cases {
         assert_eq!(patched(&c, body), Err(err), "{body}");
     }
+    // 33 points: one more than a curve holds, refused while it is read.
+    let points: Vec<String> = (1..=33).map(|i| std::format!("[{i},0]")).collect();
+    let body = std::format!("{{\"points\":[{}]}}", points.join(","));
+    assert_eq!(patched(&c, &body), Err(FlowError::PointCount));
     // Without a stroke: no layer and no open reference.
     let d = FlowConfig::DEFAULT;
     for body in [r#"{"refSide":"open"}"#, r#"{"enabled":true}"#] {

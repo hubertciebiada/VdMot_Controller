@@ -873,8 +873,8 @@ class Device:
         if not isinstance(pts, list) or any(not isinstance(p, list) or len(p) != 2 or not self.number(p[0])
                                             or not self.number(p[1]) for p in pts):
             return "out_of_range", "points [[counts,lpm],...]"
-        if (pts and len(pts) < 2) or len(pts) > 16 or (new["enabled"] and not pts):
-            return "out_of_range", "points 2..16 (enabled needs them)"
+        if (pts and len(pts) < 2) or len(pts) > 32 or (new["enabled"] and not pts):
+            return "out_of_range", "points 2..32 (enabled needs them)"
         for i, (c, q) in enumerate(pts):
             if not self.integer(c) or not 0 <= c <= 10000 or (i and c <= pts[i - 1][0]):
                 return "out_of_range", "points counts 0..10000, increasing"
