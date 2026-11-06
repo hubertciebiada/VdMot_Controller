@@ -433,18 +433,20 @@ fn assert_rejections(good: &[u8], record: usize) {
     let mut long = good.to_vec();
     long.push(0);
     rejected(&long, "long");
+    let fix = |b: &mut Vec<u8>| {
+        let crc = crc32(&b[..crc_at], 0);
+        b[crc_at..].copy_from_slice(&crc.to_le_bytes());
+    };
+    // each header byte alone, with a CRC that fits it
     for (at, value, what) in [(0, b'X', "magic"), (4, 3, "version"), (5, 11, "count")] {
         let mut bad = good.to_vec();
         bad[at] = value;
+        fix(&mut bad);
         rejected(&bad, what);
     }
     let mut bad = good.to_vec();
     bad[crc_at] ^= 1;
     rejected(&bad, "crc");
-    let fix = |b: &mut Vec<u8>| {
-        let crc = crc32(&b[..crc_at], 0);
-        b[crc_at..].copy_from_slice(&crc.to_le_bytes());
-    };
     // enabled 2, refSide 2, preClose 2, refmA 4, count 1, on valve 0 and on valve 11
     for (at, value) in [(0, 2u8), (14, 2), (15, 2), (3, 4), (18, 1)] {
         for valve in [0, 11] {
