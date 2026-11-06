@@ -50,7 +50,7 @@ stay equal.
   save or a load of the flow configuration takes one transient block of 2612 B (1006 B before),
   and the load after a failed save, while RAM holds a curve of more than 16 points, a second one
   of at most 1606 B for those curves.
-  The image grows by 1920 B to 1,213,120 B, 15,680 B under its budget of 1,228,800 B.
+  The image grows by 2768 B to 1,213,968 B, 14,832 B under its budget of 1,228,800 B.
 - `tools/mock_api.py` takes up to 32 points and shows `curveCut` false, and
   `tools/flowbench/flowcheck.py` thins a curve above 32 points, no longer above 16 (`curves` and
   `upload`).
