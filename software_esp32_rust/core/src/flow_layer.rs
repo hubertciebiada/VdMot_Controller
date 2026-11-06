@@ -343,8 +343,10 @@ pub fn validate_flow_config(c: &FlowConfig) -> Result<(), FlowError> {
 // ---------------------------------------------------------------- mapping
 
 /// The curve counts of a flow: the first position where the piecewise-linear curve reaches
-/// `flow_ml`; the first point's counts at or below its flow, the last point's counts above the
-/// last flow (rounded to the nearest pulse). 0 without points.
+/// `flow_ml`; the first point's counts at or below its flow, the counts of the first point with
+/// a flow above 0 for a flow above 0 below that point's flow (Rust 2.2.15: no position between a
+/// point without flow and it), the last point's counts above the last flow (rounded to the
+/// nearest pulse). 0 without points.
 pub fn curve_counts(c: &FlowConfig, flow_ml: u32) -> u16 {
     let Some((&first, rest)) = c.points().split_first() else {
         return 0;
@@ -355,6 +357,10 @@ pub fn curve_counts(c: &FlowConfig, flow_ml: u32) -> u16 {
     let mut prev = first;
     for &p in rest {
         if flow_ml <= u32::from(p.flow_ml) {
+            if prev.flow_ml == 0 {
+                // 0 < flow <= p.flow: p is the first point with a flow
+                return p.counts;
+            }
             // prev.flow < flow <= p.flow: the flow rises on this segment
             let dq = u64::from(p.flow_ml.saturating_sub(prev.flow_ml)).max(1);
             let dc = u64::from(p.counts.saturating_sub(prev.counts));
@@ -472,8 +478,9 @@ pub struct FlowTarget {
     pub pct: u8,
     /// ml/min the curve gives at that position: the top of the curve when `clipped` from above
     pub flow_ml: u32,
-    /// the flow lies above qmax or above the last point of the curve, or (R2) its position below
-    /// the lowest position of a lift
+    /// the flow lies above qmax or above the last point of the curve, above 0 below the first
+    /// flow above 0 of the curve (Rust 2.2.15), or (R2) its position below the lowest position
+    /// of a lift
     pub clipped: bool,
 }
 
@@ -483,11 +490,17 @@ pub fn flow_target(c: &FlowConfig, flow_ml: u32) -> FlowTarget {
     let on_curve = curve_position(c, ml);
     let counts = floor_clamp(c, on_curve);
     let top = c.points().last().map_or(0, |p| u32::from(p.flow_ml));
+    // the least flow of the curve: the first above 0
+    let least = c
+        .points()
+        .iter()
+        .find(|p| p.flow_ml > 0)
+        .map_or(0, |p| u32::from(p.flow_ml));
     FlowTarget {
         ml: ml as u16,
         pct: stroke_pct(c, counts),
         flow_ml: counts_flow(c, counts),
-        clipped: flow_ml > ml || ml > top || counts != on_curve,
+        clipped: flow_ml > ml || ml > top || (1..least).contains(&ml) || counts != on_curve,
     }
 }
 

@@ -542,8 +542,9 @@ a measured curve itself (API.md "Flow layer"):
   is the held position in % of `strokeCounts` (0 while unknown), so MQTT and Home
   Assistant see that % without a change. The session adds `target_ml` of a target
   in l/min to the view. With **separate** the MQTT target of such a valve is the
-  desired target. `flow_target` clips a flow to `qmax` (with R2 its position at
-  least to `floorCounts` + 60), and `apply_flow_config`
+  desired target. `flow_target` clips a flow to `qmax`, one above 0 below the
+  first flow above 0 of the curve to the point of that flow (Rust 2.2.15; with R2
+  its position at least to `floorCounts` + 60 after that), and `apply_flow_config`
   works the % of a target in l/min out again for a new curve.
 - The configuration (`FlowConfig`, 12 x 88 B) lives in NVS `flow` and
   `flowlift` (section 9), loaded next to the config at boot, published with a revision

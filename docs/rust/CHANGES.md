@@ -8,6 +8,24 @@ release first. Each entry links to its source of truth. Everything not listed be
 NVS and LittleFS, the STM EEPROM and the STM warm state, in both directions: the C++ and the Rust
 firmware read what the other wrote ([PORTING.md](PORTING.md#contract-parity)).
 
+## 2.2.15-revamped
+
+The STM32 code is that of 2.2.9; only its version number changes, so the versions of the two MCUs
+stay equal.
+
+### ESP32: a flow below the first flow of the curve
+
+- A flow target above 0 and below the first flow above 0 of the curve lay on the line between the
+  point before it and that point: with the points `[0,0]` and `[1070,0.5]` 0.3 l/min was 642
+  pulses. It is now the position of that point, 1070 pulses, and `/flow/target` answers
+  `clipped:true`. A curve whose first point has a flow kept that point's position for a flow below
+  it before; such a flow is now `clipped` as well. A target of 0 still closes, and with R2 a
+  position below `floorCounts` + 60 is raised to it after this rule, as before
+  ([API.md](../revamped/API.md)).
+- Such flows are all one position: a held valve that stands there serves another of them without
+  a move.
+- `tools/mock_api.py` maps and clips such a flow the same way.
+
 ## 2.2.14-revamped
 
 The STM32 code is that of 2.2.9; only its version number changes, so the versions of the two MCUs

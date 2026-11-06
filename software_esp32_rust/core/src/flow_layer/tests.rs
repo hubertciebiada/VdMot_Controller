@@ -313,7 +313,12 @@ fn mapping_closed_reference_first_position_where_the_curve_reaches_the_flow() {
     // Below the first flow: the first counts; on the segments: linear; above: the last.
     assert_eq!(curve_counts(&c, 0), 630);
     assert_eq!(curve_counts(&c, 300), 760);
-    assert_eq!(curve_counts(&c, 150), 695);
+    // Rust 2.2.15: between the point without flow and the first with one, that point.
+    assert_eq!(curve_counts(&c, 150), 760);
+    assert_eq!(curve_counts(&c, 1), 760);
+    assert_eq!(curve_counts(&c, 299), 760);
+    assert_eq!(curve_counts(&c, 301), 760); // 760 + 1/700 x 128 = 760.18
+    assert_eq!(curve_counts(&c, 304), 761); // 760.73
     assert_eq!(curve_counts(&c, 1000), 888);
     assert_eq!(curve_counts(&c, 1025), 892); // 888 + 25/1300 x 182 = 891.5 -> 892
     assert_eq!(curve_counts(&c, 2600), 1180);
@@ -326,7 +331,7 @@ fn mapping_closed_reference_first_position_where_the_curve_reaches_the_flow() {
     assert_eq!(curve_counts(&FlowConfig::DEFAULT, 100), 0);
     // The flow targets: 0 is closed, otherwise the corrected counts.
     assert_eq!(flow_counts(&c, 0), 0);
-    assert_eq!(flow_counts(&c, 27), 642); // 630 + 27/300 x 130 = 641.7
+    assert_eq!(flow_counts(&c, 27), 760); // below the first flow
     assert_eq!(flow_counts(&c, 999), 888); // 887.82
     assert_eq!(flow_counts(&c, 2600), 1180);
     let mut corrected = c;
@@ -3060,8 +3065,24 @@ fn flow_target_is_the_flow_the_position_on_the_curve_and_the_clip_at_qmax_and_th
             clipped: false
         }
     );
-    // Any flow above nothing has a position at the start of the curve.
-    assert_eq!(t(1).pct, 26);
+    // Any flow above nothing below the first flow of the curve (Rust 2.2.15): the point of that
+    // flow, clipped.
+    let least = FlowTarget {
+        ml: 1,
+        pct: 32,
+        flow_ml: 300,
+        clipped: true,
+    };
+    assert_eq!(t(1), least);
+    assert_eq!(t(299), FlowTarget { ml: 299, ..least });
+    assert_eq!(
+        t(300),
+        FlowTarget {
+            ml: 300,
+            clipped: false,
+            ..least
+        }
+    );
     // qmax itself, at the top of the curve.
     let top = FlowTarget {
         ml: 2600,
@@ -3125,6 +3146,147 @@ fn flow_target_is_the_flow_the_position_on_the_curve_and_the_clip_at_qmax_and_th
             clipped: true
         }
     );
+}
+
+/// A curve with a point every 0.1 l/min from 0.5 on: [0, 0], then 1070 pulses at 0.5 l/min and
+/// 10 pulses more for each 0.1 l/min, `points` points in all.
+fn step_curve(points: usize) -> FlowConfig {
+    let mut c = FlowConfig {
+        enabled: true,
+        count: points as u8,
+        stroke_counts: 2400,
+        ..FlowConfig::DEFAULT
+    };
+    for (i, p) in c.points[1..points].iter_mut().enumerate() {
+        *p = FlowPoint {
+            counts: 1070 + 10 * i as u16,
+            flow_ml: 500 + 100 * i as u16,
+        };
+    }
+    c
+}
+
+#[test]
+fn a_flow_below_the_first_flow_of_the_curve_is_that_point_clipped_0_still_closes() {
+    let c = step_curve(16);
+    assert_eq!(validate_flow_config(&c), Ok(()));
+    let at_first = FlowTarget {
+        ml: 300,
+        pct: 45, // 1070 of 2400
+        flow_ml: 500,
+        clipped: true,
+    };
+    assert_eq!(flow_target(&c, 300), at_first);
+    for ml in [1, 300, 499] {
+        assert_eq!(flow_counts(&c, ml), 1070, "{ml}");
+        assert_eq!(
+            flow_target(&c, ml),
+            FlowTarget {
+                ml: ml as u16,
+                ..at_first
+            }
+        );
+    }
+    assert_eq!(
+        flow_target(&c, 500),
+        FlowTarget {
+            ml: 500,
+            clipped: false,
+            ..at_first
+        }
+    );
+    // Every point's flow is exactly its point.
+    for p in &c.points()[1..] {
+        let t = flow_target(&c, u32::from(p.flow_ml));
+        assert_eq!(flow_counts(&c, u32::from(p.flow_ml)), p.counts);
+        assert_eq!((t.flow_ml, t.clipped), (u32::from(p.flow_ml), false));
+    }
+    // Between two points: linear, not clipped.
+    assert_eq!(flow_counts(&c, 550), 1075);
+    assert!(!flow_target(&c, 550).clipped);
+    // 0 closes.
+    assert_eq!(flow_counts(&c, 0), 0);
+    assert_eq!(
+        flow_target(&c, 0),
+        FlowTarget {
+            ml: 0,
+            pct: 0,
+            flow_ml: 0,
+            clipped: false
+        }
+    );
+    // The correction applies to that point as to any other.
+    let mut corrected = c;
+    corrected.offset = -9;
+    corrected.gain_milli = 1010;
+    // 1070 x 1.01 = 1080.7 -> 1081 - 9
+    assert_eq!(flow_counts(&corrected, 300), 1072);
+    // A curve whose first point has a flow: its counts, now clipped.
+    let mut first = curve();
+    first.points[0].flow_ml = 200;
+    assert_eq!(flow_counts(&first, 100), 630);
+    assert!(flow_target(&first, 100).clipped);
+    assert!(!flow_target(&first, 200).clipped);
+    // Several points without flow: the first with one.
+    let mut flat = curve();
+    flat.points[1].flow_ml = 0;
+    assert_eq!(flow_counts(&flat, 1), 888);
+    assert!(flow_target(&flat, 999).clipped);
+    assert!(!flow_target(&flat, 1000).clipped);
+    // No flow anywhere: above the top, as before.
+    let mut none = curve();
+    none.points.iter_mut().for_each(|p| p.flow_ml = 0);
+    assert_eq!(flow_counts(&none, 100), 1180);
+    assert!(flow_target(&none, 100).clipped);
+}
+
+#[test]
+fn below_the_first_flow_the_floor_clamp_applies_after_that_point() {
+    // R2 with the step curve from the open end stop: the floor plus 60 above the first point
+    // raises it, below it the point stays.
+    let mut c = step_curve(16);
+    c.ref_side = RefSide::Open;
+    c.stroke_counts = 4641;
+    c.lift_counts = 100;
+    c.floor_counts = 1050;
+    assert_eq!(validate_flow_config(&c), Ok(()));
+    assert_eq!(flow_counts(&c, 300), 1110);
+    assert_eq!(flow_counts(&c, 500), 1110);
+    assert_eq!(
+        (flow_target(&c, 500).clipped, flow_target(&c, 300).clipped),
+        (true, true)
+    );
+    c.floor_counts = 900;
+    assert_eq!(flow_counts(&c, 300), 1070);
+    assert_eq!(
+        (flow_target(&c, 500).clipped, flow_target(&c, 300).clipped),
+        (false, true)
+    );
+    assert_eq!(flow_counts(&c, 0), 0);
+}
+
+#[test]
+fn flows_below_the_first_flow_of_the_curve_are_one_position_and_need_no_move() {
+    let c = open_curve();
+    let (mut stm, mut f) = held_open(&c);
+    stm.flow(&c, 0, 100); // 760 pulses
+    assert_eq!(stm.next(&mut f), mv(0, MoveDir::Close, 128, 34));
+    direct_done(&mut stm, &mut f, MoveDir::Close, 128, 128);
+    assert_eq!(f.view(0).counts, 760);
+    // (beyond the dead band of 0.05 l/min from the 0.3 l/min of 760 pulses)
+    for ml in [200, 1, 250] {
+        stm.now += 300_000;
+        stm.flow(&c, 0, ml);
+        assert_eq!(stm.next(&mut f), None, "{ml}");
+        assert_eq!(
+            f.v[0].served,
+            Some(Served {
+                pct: 16,
+                flow_ml: Some(ml)
+            })
+        );
+        assert_eq!(f.view(0).counts, 760);
+    }
 }
 
 #[test]
@@ -3356,29 +3518,30 @@ fn the_lift_stops_at_the_floor_and_a_flow_below_the_floor_plus_60_is_clamped_to_
 
 #[test]
 fn a_flow_below_the_floor_plus_60_is_clipped_to_it_without_r2_nothing_changes() {
-    let c = lift_curve(100, 700);
-    // 0.25 l/min lies at 738 pulses: 760, the flow there, clipped.
+    let c = lift_curve(100, 800);
+    // 0.6 l/min lies at 815 pulses: 860, the flow there, clipped.
     assert_eq!(
-        flow_target(&c, 250),
+        flow_target(&c, 600),
         FlowTarget {
-            ml: 250,
-            pct: 16,
-            flow_ml: 300,
+            ml: 600,
+            pct: 19,
+            flow_ml: 847,
             clipped: true
         }
     );
     assert_eq!(
-        flow_target(&c, 300),
+        flow_target(&c, 847),
         FlowTarget {
-            ml: 300,
-            pct: 16,
-            flow_ml: 300,
+            ml: 847,
+            pct: 19,
+            flow_ml: 847,
             clipped: false
         }
     );
-    assert_eq!(flow_counts(&c, 298), 760); // 759 on the curve
-    assert!(flow_target(&c, 298).clipped);
-    assert_eq!(flow_counts(&c, 1), 760);
+    assert_eq!(flow_counts(&c, 840), 860); // 859 on the curve
+    assert!(flow_target(&c, 840).clipped);
+    // Below the first flow of the curve: its point, 760, then the clamp.
+    assert_eq!(flow_counts(&c, 1), 860);
     assert_eq!(flow_counts(&c, 1000), 888);
     assert!(!flow_target(&c, 1000).clipped);
     assert!(flow_target(&c, 2601).clipped);
@@ -3393,11 +3556,11 @@ fn a_flow_below_the_floor_plus_60_is_clipped_to_it_without_r2_nothing_changes() 
     );
     // No lift: the curve alone, on either reference side.
     let mut closed = curve();
-    closed.floor_counts = 700;
-    for c in [lift_curve(0, 700), closed] {
+    closed.floor_counts = 800;
+    for c in [lift_curve(0, 800), closed] {
         assert_eq!(validate_flow_config(&c), Ok(()));
-        assert_eq!(flow_counts(&c, 250), 738);
-        assert!(!flow_target(&c, 250).clipped);
+        assert_eq!(flow_counts(&c, 600), 815);
+        assert!(!flow_target(&c, 600).clipped);
     }
     // The clamp ends at the range.
     assert_eq!(flow_counts(&lift_curve(100, 9939), 1000), 9999);

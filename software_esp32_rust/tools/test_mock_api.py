@@ -579,6 +579,12 @@ class Flow(unittest.TestCase):  # the flow layer (Rust 2.2.8)
         self.assertEqual((r.status, r.json["valve"], r.json["target"], r.json["clipped"]), (202, 1, 37, False))
         v = req("GET", "/api/valves").json["valves"][0]
         self.assertEqual((v["target"], v["flow"]["state"], v["flow"]["targetLpm"]), (37, "held", 1.0))
+        # below the first flow above 0 of the curve: that point, clipped (Rust 2.2.15); 0 closes
+        r = req("POST", "/api/valves/1/flow/target", {"lpm": 0.5})
+        self.assertEqual((r.status, r.json), (202, {"valve": 1, "lpm": 1.0, "target": 37, "clipped": True}))
+        self.assertEqual(req("GET", "/api/valves").json["valves"][0]["flow"]["counts"], 888)
+        r = req("POST", "/api/valves/1/flow/target", {"lpm": 0})
+        self.assertEqual((r.status, r.json), (202, {"valve": 1, "lpm": 0, "target": 0, "clipped": False}))
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 2.6})
         self.assertEqual((r.status, r.json), (202, {"valve": 1, "lpm": 2.3, "target": 45, "clipped": True}))
         r = req("POST", "/api/valves/1/flow/target", {"lpm": 2.61})

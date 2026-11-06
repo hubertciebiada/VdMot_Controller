@@ -808,7 +808,8 @@ class Device:
 
     @staticmethod
     def flow_counts(cfg, q):
-        """The pulses of a flow (the firmware's flow_counts)."""
+        """The pulses of a flow (the firmware's flow_counts): a flow below the first flow above 0 of
+        the curve is the point of that flow (Rust 2.2.15)."""
         pts = cfg["points"]
         if q == 0 or not pts:
             return 0
@@ -819,9 +820,17 @@ class Device:
         else:
             for (c0, q0), (c1, q1) in zip(pts, pts[1:]):
                 if q1 >= q:
-                    raw = c0 + (q - q0) * (c1 - c0) / max(1e-9, q1 - q0)
+                    raw = c1 if q0 == 0 else c0 + (q - q0) * (c1 - c0) / max(1e-9, q1 - q0)
                     break
         return max(1, min(10000, int(round(raw * cfg["gain"] + cfg["offset"]))))
+
+    @staticmethod
+    def flow_clipped(cfg, lpm):
+        """`clipped` of a flow target: above qmax or the top of the curve, or above 0 below its first flow
+        above 0 (Rust 2.2.15)."""
+        kept = min(lpm, cfg["qmax"])
+        least = next((q for _, q in cfg["points"] if q > 0), 0)
+        return lpm > kept or kept > cfg["points"][-1][1] or 0 < kept < least
 
     def flow_patch(self, cfg, doc):
         """Applies a flow configuration patch; returns an error detail or None (the firmware's rules)."""
@@ -1709,8 +1718,7 @@ class Handler(BaseHTTPRequestHandler):
             kept = min(lpm, cfg["qmax"])
             counts = d.set_flow_target(i, kept)
             return self.send_json(202, {"valve": i + 1, "lpm": round(d.flow_lpm(cfg, counts), 3),
-                                        "target": v["target"],
-                                        "clipped": lpm > kept or kept > cfg["points"][-1][1]})
+                                        "target": v["target"], "clipped": d.flow_clipped(cfg, lpm)})
         if what == "brake":
             # STM 2.2.9 `sbrak`: the STM's answer is returned (the mock STM accepts every value)
             if self.stm_refused(v3=True):

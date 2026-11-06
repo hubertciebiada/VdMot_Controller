@@ -299,7 +299,9 @@ configuration and the `flow` block of the valve entry:
   (whatever `refSide`) strictly increasing (the first may be 0, every one at
   most 10000), the flow non-decreasing. A flow maps to the first position where
   the curve reaches it (linear between the points, the last point above the last
-  flow), then round(offset + gain x counts), 1..10000; no flow is a close to the
+  flow; Rust 2.2.15: a flow above 0 below the first flow above 0 of the curve is
+  the point of that flow, nothing between a point without flow and it), then
+  round(offset + gain x counts), 1..10000; no flow is a close to the
   closed end stop without an opening move, as a target of 0 %. `lpm` is the
   inverse: the flow of the curve at the held pulses (counted from the closed end
   stop on both sides), the top of the curve above its last point.
@@ -391,9 +393,12 @@ beside the targets; without a good record the target in % comes back).
 
 A flow above `qmax` is no error: it is clipped to `qmax`, and `clipped` is true.
 Between the top of the curve and `qmax` the target is the position of the top of
-the curve, `clipped` true as well. With R2 (Rust 2.2.14) a flow whose position
+the curve, `clipped` true as well. A flow above 0 below the first flow above 0 of
+the curve has the position of the point of that flow, `clipped` true (Rust
+2.2.15; before, it lay between that point and the point before it); 0 still
+closes. With R2 (Rust 2.2.14) a flow whose position
 lies below `floorCounts` + 60 has the position `floorCounts` + 60, `clipped`
-true. `lpm` of the answer is the flow of the curve at
+true, also after the rule before. `lpm` of the answer is the flow of the curve at
 that position, `target` the position in % of the stroke. A legacy valve, without
 the layer, answers `409 flow_off`.
 
